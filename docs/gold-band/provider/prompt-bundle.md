@@ -143,6 +143,11 @@ Output contract:
 {{/if}}
 - Do not invent undeclared artifacts.
 
+Attachment side-effect rule:
+- If you create free-form supporting files, write them only under: {{attachments_dir}}
+- Do not write attachments outside this directory.
+- Do not treat attachments as canonical artifacts.
+
 Cold context access rule:
 - Supporting artifacts and attachments may be exposed as cold context.
 - Cold context is optional: read it only when needed.
@@ -154,6 +159,7 @@ Cold context access rule:
 - Gold Band runtime model 这几行用于解释 `run / round / node / attempt` 的最小语义
 - 这里不要求模型自己遍历整个目录层级，只提供必要定位信息
 - `primary_artifact_schema_prompt` 不应只写 artifact 名字，必须携带其 DSL / schema 摘要
+- `attachments_dir` 属于 runtime 渲染 prompt 时注入的运行约束，用于明确附件副作用允许写入的位置
 - 若当前节点未声明 `primaryArtifact`，则输出契约必须退化为“无强制主产物”
 
 ---
@@ -199,7 +205,8 @@ The following attachments are available for optional inspection:
 说明：
 - `requirement_text` 属于稳定任务目标，应直接进入 `userPrompt`
 - `feedback_summary` 用于表达当前修复背景或上一轮验收/执行失败摘要
-- `task_instruction` 对普通 `worker` 可选，对特殊场景建议显式提供
+- `task_instruction` 对 `worker` 默认由 `worker.goal` 映射得到，并进入 `userPrompt` 的 `# Task`
+- 对特殊场景，runtime 也可在此基础上注入额外任务说明
 - 冷数据索引只给文件路径清单，不默认展开正文
 
 ---
@@ -221,6 +228,7 @@ The following attachments are available for optional inspection:
 - `{{role_contract_prompt}}`
 - `{{primary_artifact_name}}`
 - `{{primary_artifact_schema_prompt}}`
+- `{{attachments_dir}}`
 
 ### 8.3 任务内容
 - `{{requirement_text}}`
@@ -240,9 +248,9 @@ The following attachments are available for optional inspection:
 普通 `worker` 不应默认被视为 planning worker。
 
 因此：
-- `worker_generic` 不要求固定 `taskInstruction` 模板
-- 若 runtime 已有明确任务说明，则可注入 `taskInstruction`
-- 若 runtime 没有额外任务说明，则不应为了形式完整而硬造一句“Produce a new ...”
+- `worker_generic` 的默认 `taskInstruction` 来自 `worker.goal`
+- 若 runtime 还有额外任务说明，可在 `worker.goal` 映射结果基础上补充
+- 若 DSL 未提供 `goal`，runtime 不应为了形式完整而硬造一句“Produce a new ...”
 
 ### 9.1 `worker_generic`
 表示普通 worker 调用。
@@ -255,12 +263,12 @@ The following attachments are available for optional inspection:
 其本次具体任务由以下信息共同决定：
 - 原始 `requirement`
 - 当前节点 `profile`
-- 可选的 `taskInstruction`
+- 由 `worker.goal` 映射得到的 `taskInstruction`
 - 可选的 `primaryArtifact` 约束
 - runtime 显式暴露的冷数据索引
 
 ### 9.2 `worker_repair_exec`
-建议注入明确任务指令，例如：
+建议在 `worker.goal` 映射得到的默认 `taskInstruction` 基础上，追加 repair 场景补充指令，例如：
 
 ```md
 Update the worker output based on the original requirement and the latest execution failure.
@@ -269,8 +277,12 @@ Produce a new {{primary_artifact_name}}.
 {{/if}}
 ```
 
+说明：
+- repair-specific 指令是补充，不替换 `worker.goal`
+- 若 DSL 未提供 `goal`，则只注入 repair-specific 指令，不额外硬造通用 goal
+
 ### 9.3 `worker_repair_verify`
-建议注入明确任务指令，例如：
+建议在 `worker.goal` 映射得到的默认 `taskInstruction` 基础上，追加 repair 场景补充指令，例如：
 
 ```md
 Revise the worker output based on the original requirement and the latest acceptance feedback.
@@ -278,6 +290,10 @@ Revise the worker output based on the original requirement and the latest accept
 Produce a new {{primary_artifact_name}}.
 {{/if}}
 ```
+
+说明：
+- repair-specific 指令是补充，不替换 `worker.goal`
+- 若 DSL 未提供 `goal`，则只注入 repair-specific 指令，不额外硬造通用 goal
 
 ### 9.4 `verify_acceptance`
 建议注入明确任务指令，例如：

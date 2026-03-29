@@ -34,24 +34,28 @@
 - 当前 round 的关键执行证据
 - runtime 显式暴露的补充附件引用
 
-### 3.2 建议最小输入包
-首版建议 runtime 至少向 `verify` 暴露以下内容：
+### 3.2 MVP 默认输入包
+首版直接固定为以下最小验收输入包：
 
 1. **原始 requirement**
    - 来源：task 的稳定 requirement
    - 作用：判断“目标是否已满足”
 
-2. **当前 round 的关键 canonical artifacts**
-   - 至少包括当前 round 最新的 `exec-result`
-   - 若 workflow 中存在多个前置证据来源，runtime 应按 DSL / 控制流显式决定纳入哪些 artifact
-   - `verify` 不应自行猜测路径
+2. **当前 round 最新 `exec-result`**
+   - 作为首版默认的执行证据
+   - 若当前 round 内有多次 `exec` attempt，则以最新 attempt 为准
 
-3. **runtime 选中的附件引用**
-   - 例如某些 `attachments/` 下的人类可读分析、测试说明、补充报告
+3. **当前 round 最新上游 worker primary artifact**
+   - 作为首版默认的实现侧证据
+   - 若当前 round 内存在多个与验收相关的上游 worker 证据源，则由 runtime 按 DSL / 控制流显式决定纳入哪个 primary artifact
+   - 同一证据源按最新 attempt 优先
+
+4. **runtime 显式选中的附件引用**
+   - 例如 `attachments/` 下的人类可读分析、测试说明、补充报告
    - 这些附件只能由 runtime 显式选入上下文
    - `verify` 不应默认扫描整个 `attachments/` 目录
 
-4. **最小运行时上下文摘要**
+5. **最小运行时上下文摘要**
    - 例如当前 task / run / round / node 的基础标识
    - 当前轮的验收目标说明
    - 必要时可包含 workflow 中与验收相关的最小上下文
@@ -62,6 +66,11 @@
 - 整个 workspace 的无边界自由扫描结果
 - 整个 run 历史 round 的全部上下文
 - 未被 runtime 显式暴露的附件或 sidecar 文件
+
+补充规则：
+- 证据选择范围只限当前 round
+- 默认不跨 round 回溯旧证据
+- 默认不把上一轮完整证据包再次展开给新一轮 `verify`
 
 ### 3.4 输入组装责任边界
 - requirement 的读取与整理，由 runtime 完成
@@ -101,8 +110,8 @@
 - `validationGaps` 偏向“证据不足，无法放行”
 
 首版建议：
-- `status = pass` 时，这两个数组都应为空
-- `status = fail` 时，至少应有一个数组非空
+- `status = success` 时，这两个数组都应为空
+- `status = failure` 时，至少应有一个数组非空
 
 ## 5. 如何与 `onAcceptanceFailure` 协同
 `verify` 本身只负责产出验收结论，不负责决定下一步控制流。

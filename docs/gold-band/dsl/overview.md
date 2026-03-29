@@ -12,6 +12,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 - provider-first
 - 节点少于边界条件重要
 - session 策略属于边，不属于节点
+- edge 的 `session` 可省略；省略时默认 `new`
 - AI 决定做什么，runtime 决定是否通过
 
 ## 4. 子文档结构
@@ -86,7 +87,10 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 - 小循环走 `edges`
 - 大循环走 `control.onAcceptanceFailure`
 - 一个 workflow 最多只能有一个 `verify`
+- edge 的 `to` 可指向节点 id，或特殊终止目标 `"$end"`
 - 新一轮 worker 的目标不改写原始 requirement，而是消费原始 requirement 与最新 `verify-result`
+- `worker.goal` 是 runtime `taskInstruction` 的 canonical 来源，并进入 `userPrompt` 的 `# Task`
+- `exec.invalid` 允许一条受限默认规则：若未显式声明 repair edge，可默认回到 `planFrom` 对应的 worker；默认优先使用 `continue`，若 provider 不支持则降级为 `new`
 
 ## 6. 当前关键结论
 - DSL 当前使用 `worker` 作为默认 AI worker 节点名
@@ -94,6 +98,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 - `worker` 节点可显式声明 `provider`，未声明时由 runtime 使用内部默认 provider
 - `profile` 通过节点声明的 profile 名解析，优先级为项目目录 > 用户目录
 - `worker` 一次只允许一个 `primaryArtifact`
+- `failure` 与 `invalid` 同时保留，但边界不同：`failure` 表示目标未达成或执行失败，`invalid` 表示结果不满足最小 contract
 
 ## 7. 后续优先事项
 - 继续细化节点输入契约

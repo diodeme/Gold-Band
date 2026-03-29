@@ -58,7 +58,12 @@ Gold Band 的核心对象是：
 - Runtime / Layout：见 [Runtime 概览](../runtime/overview.md)
 
 ## 当前仍待继续细化
-- provider capability matrix
+- provider capability matrix 的扩展项
 - 节点状态文件 schema 细节
 - progress.events.jsonl 的精细事件模型
 - stream 到 progress 的具体映射策略
+
+当前 MVP 已固定的 capability fallback 包括：
+- 显式请求 `session = continue` 但 provider 不支持时，视为 DSL 校验错误
+- `supportsOpenSession = false` 时，CLI `open-session` 明确报错
+- `supportsRawStream = false` 时，progress 退化为 polling / 状态快照 / 最终快照

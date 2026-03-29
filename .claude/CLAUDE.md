@@ -1,7 +1,7 @@
-1.[claude agent team](../claude-agent-team.md): 关于claude code的agent team功能的文档
-2.[claude-hooks](../claude-hooks.md): 关于claude code的hooks功能的文档
-3.[claude-skills](../claude-skills.md): 关于claude code的skills功能的文档
-4.[claude-scheduler](../claude-scheduler.md): 关于claude code的scheduler功能的文档
-5.[claude-sdk](../claude-sdk.md): 关于claude code的sdk功能的文档
-6.[claude-subagents](../claude-subagents.md): 关于claude code的subagents功能的文档
-7.[ralph.sh](../ralph.sh): 关于ralph loop的实现脚本
+优秀的设计思路：
+1.分析哪些数据结构
+2.不同数据结构分属于哪些不同领域
+3.生命周期相关联的数据结构，状态应该统一管理
+4.先定数据、再定接口、再补实现
+5.杜绝硬编码，应该统一设置成变量，设计时要考虑到变量的应用范围，可复用的应该有单独的类管理，类中单独的变量则可以放在类中
+6.使用现代开发的最佳实践，积极使用现成的库、框架、工具等，避免重复造轮子

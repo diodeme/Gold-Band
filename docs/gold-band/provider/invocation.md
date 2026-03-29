@@ -1,4 +1,4 @@
-  # Worker Invocation Contract
+# Worker Invocation Contract
 
 ## 1. 一句话定义
 Worker Invocation Contract 用来定义：
@@ -63,7 +63,7 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
 
 当前应明确区分两层：
 
-### 3.1 A()：provider 对外统一接口
+### 3.1 A()：runtime 拥有的稳定接口
 这是 Gold Band runtime 直接依赖的稳定接口。
 
 它接收的就是 4.1 中定义的外层调用请求。
@@ -74,6 +74,10 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
 - 负责选择热数据与冷数据
 - 负责生成最终 `prompt bundle`
 - 是 runtime 唯一应直接依赖的 provider 入口
+
+说明：
+- A() 可以和 B() 一起放在 provider 模块里
+- 但 A() 的契约归 runtime 所有，而不是交给具体 provider 自由发散
 
 ### 3.2 B()：provider implementation 内部执行接口
 这是每个 provider 实现类真正需要实现的内部接口。
@@ -99,8 +103,8 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
 - `workspaceDir`
 - `attemptDir`
 - `primaryArtifact`（仅当当前节点声明了它时）
-- `taskInstruction`（可选）
-- `sessionMode`
+- `taskInstruction`（对 `worker` 由 `worker.goal` 映射得到）
+- `sessionMode`（可选，缺省为 `new`）
 - `continueRefPath`（仅当 `sessionMode = continue` 时）
 - `streamMode`
 - `feedbackSummary`（可选）
@@ -136,8 +140,8 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
 - `workspaceDir`：代码工作区根目录
 - `attemptDir`：本次 attempt 的私有落盘目录
 - `primaryArtifact`：当节点声明它时，表示本次调用要求返回的唯一标准输出逻辑名；若节点未声明，则该字段可省略或为 `null`
-- `taskInstruction`：runtime 为本次调用附加的任务说明；首版建议可选
-- `sessionMode`：`new | continue`
+- `taskInstruction`：本次调用的任务说明；对 `worker` 节点由 `worker.goal` 映射得到，并进入 `userPrompt` 的 `# Task`；其他特殊场景可由 runtime 额外注入
+- `sessionMode`：`new | continue`；可省略，省略时默认 `new`
 - `continueRefPath`：当需要复用历史会话时，指向上一次 `worker-ref.json` 的路径
 - `streamMode`：是否请求 provider 返回原始流式输出
 - `feedbackSummary`：runtime 对当前失败反馈或修复背景的摘要，属于热数据候选
@@ -178,7 +182,10 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
 对 `verify` 而言：
 - `requirementPath` / `requirementText` 仍表示原始 requirement
 - `verifyResultPath` / `verifyResultText` 通常不作为 `verify` 自身输入
-- runtime 应额外把“当前 round 的关键验收证据”整理进冷数据索引，必要摘要进入热数据
+- runtime 应按 MVP 固定规则组装验收输入包，并把证据整理进冷数据索引，必要摘要进入热数据
+- 首版默认输入包包括：原始 requirement、当前 round 最新 `exec-result`、当前 round 最新上游 worker primary artifact、runtime 显式选中的 attachments，以及最小 runtime 上下文摘要
+- 证据选择范围只限当前 round；同一证据源按最新 attempt 优先
+- `verify` 不应默认扫描整个 run、整个 `attachments/` 目录或 raw stream 全量内容
 
 也就是说：
 - 普通 `worker` 的 user prompt 重点是“完成需求 / 修复问题 / 执行当前任务”
@@ -256,8 +263,11 @@ runtime 内部如果需要保留额外 sidecar 文件，应把它们视为项目
 
 说明：
 - `name` 使用逻辑名，而不是文件名
-- `content` 固定为字符串；provider 不负责返回已 parse 的对象
+- `content` 固定为字符串
+- `content` 表示模型按 output structure 返回的原始内容字符串
+- provider implementation 负责从 provider 输出中抽取这段 raw content，而不是把它 parse 成对象
 - runtime 不信任 `content` 的内部结构，而是按当前 `primaryArtifact` 对应 schema 自己解析、校验并规范化落盘
+- 下游节点若需要，也可以在自己的消费阶段对该 raw content 做 JSON 提取、去除 fenced code block 等处理
 - runtime 再根据 `name` 把它规范化落盘为 canonical artifact 文件
 
 ### 重要规则
@@ -301,8 +311,7 @@ runtime 在收到 `resultPayload` 后应：
 2. 若当前节点声明了 `primaryArtifact`，校验其 `name` 是否匹配当前节点声明值
 3. 若存在合法 `primaryArtifact`，将其规范化落盘到 `artifacts/`
 4. 发现或整理 worker 写出的 `attachments/` 文件
-5. 更新 `manifest.json`
-6. 不把 `attachments` 当作控制流判断依据
+5. 不把 `attachments` 当作控制流判断依据
 
 补充规则：
 - 若当前节点未声明 `primaryArtifact`，runtime 不要求 canonical artifact
@@ -334,4 +343,4 @@ runtime 在收到 `resultPayload` 后应：
 
 ## 9. 一句话总结
 
-> **每次调用 `worker` 时，Gold Band 应显式给 A() 一份最小外层调用请求；A() 再把它整理成带有冷热分层、明确 system/user 分工的 `prompt bundle`。若节点声明了 `primaryArtifact`，则 runtime 要求它返回对应的唯一标准输出，而 `attachments/` 则属于执行过程中的自由文件副作用。**
+> **每次调用 `worker` 时，Gold Band 应显式给 A() 一份最小外层调用请求；A() 再把它整理成带有冷热分层、明确 system/user 分工的 `prompt bundle`。若节点声明了 `primaryArtifact`，则 runtime 要求它返回对应的唯一标准输出；其中 `primaryArtifact.content` 是模型返回的 raw content，而 `attachments/` 则属于执行过程中的自由文件副作用。**

@@ -39,7 +39,6 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
   - [run.json](runtime/state/run.json.md)
   - [round.json](runtime/state/round.json.md)
   - [node.json](runtime/state/node.json.md)
-  - [manifest.json](runtime/state/manifest.json.md)
 
 ## 当前原则
 - 文档主内容统一维护在 `docs/gold-band/` 下

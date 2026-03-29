@@ -3,10 +3,15 @@
 ## 1. 定位
 provider adapter 是 provider-specific 差异的隔离层。
 
-它内部应至少包含两层：
+它内部应至少包含两层接口，但这两层首先是 **ownership boundary**，其次才是代码分层：
 
-- **A() 对外统一接口**：Gold Band runtime 直接调用的稳定入口
-- **B() 内部执行接口**：每个 provider 实现类真正需要实现的执行入口
+- **A()：runtime 拥有并直接依赖的稳定接口**
+- **B()：provider implementation 拥有并实现的内部执行接口**
+
+说明：
+- A() 与 B() 可以物理上同处 provider 模块中
+- 但 A() 的契约归 runtime 所有，B() 的契约归 provider implementation 所有
+- Gold Band runtime 只应直接依赖 A()，不应直接依赖某个 provider 的 B()
 
 它整体负责：
 - 调起 provider
@@ -42,7 +47,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 ### `runWorker()`
 运行一次 AI worker attempt。
 
-`runWorker()` 应被理解为 **A() 对外统一接口**。
+`runWorker()` 应被理解为 **A()：runtime-facing 稳定接口**。
 
 其正式调用契约见 [Worker Invocation Contract](invocation.md)。
 
@@ -52,13 +57,15 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `workspaceDir`
 - `attemptDir`
 - `primaryArtifact`
-- `sessionMode`
+- `taskInstruction`
+- `sessionMode`（可选，缺省为 `new`）
 - `continueRefPath`
 - `streamMode`
 - `verifyResultPath` 或 `verifyResultText`
 
 说明：
 - `sessionMode` / `continueRefPath` 只影响 provider 如何启动本次 attempt
+- 未显式提供 `sessionMode` 时，默认使用 `new`
 - CLI 级 `continue` / `retry` 是 runtime 对 attempt 的控制动作，不等同于 provider 输入里的 `sessionMode`
 
 最小输出语义：
@@ -71,14 +78,23 @@ provider adapter 是 provider-specific 差异的隔离层。
 说明：
 - `resultPayload` 不要求顶层携带 `version`
 - 若当前节点声明了 `primaryArtifact`，则 `resultPayload.primaryArtifact` 必须存在
-- `primaryArtifact.content` 固定为字符串
+- `primaryArtifact.content` 固定为字符串，表示模型按 output structure 返回的原始内容
+- provider 不负责把 `primaryArtifact.content` parse 成语义对象
 - 若当前节点未声明 `primaryArtifact`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
 
 ### `openSession(ref)`
 根据 `worker-ref` 打开某个 provider 的原始会话。
 
+说明：
+- 这是 provider handoff 能力，不是 Gold Band runtime 内部的 `continue` 控制动作
+- 调用它意味着 Gold Band 把交互控制权交还给 provider
+
 ### `buildContinueCommand(ref)`
 用于构建 provider-specific 的继续/打开命令模板。
+
+说明：
+- 该能力既可用于 `open-session` 的 provider handoff，也可供 runtime 在内部恢复 provider 会话时使用
+- 但具体使用它并不改变 `run continue` 仍属于 Gold Band runtime 控制动作这一事实
 
 ### B()：内部执行接口（实现类提供）
 这是每个 provider implementation 真正需要实现的内部执行点。
@@ -105,6 +121,10 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `buildContinueCommand`
 - 可继续或可打开的原始会话引用
 
+运行时规则：
+- 若 workflow edge 显式请求 `session = continue`，但 provider 不支持 continue，则应在 DSL / runtime 校验阶段直接报错
+- 若 provider 不支持 `openSession`，CLI `open-session` 应明确报错，而不是静默降级为其他动作
+
 ### Level 3：增强观测能力
 - 原始流式输出
 - 更稳定的中间进度来源
@@ -120,4 +140,4 @@ provider adapter 是 provider-specific 差异的隔离层。
 
 ## 5. 一句话总结
 
-> provider adapter 的最小职责，是让 Gold Band 能描述 provider、诊断 provider、运行 worker、拿到最终结果、获取 worker reference，并在需要时继续或打开原始会话。
+> provider adapter 的最小职责，是让 Gold Band 能描述 provider、诊断 provider、运行 worker、拿到最终结果、获取 worker reference，并在需要时继续或打开原始会话；其中 A() 归 runtime 所有，B() 归 provider implementation 所有。

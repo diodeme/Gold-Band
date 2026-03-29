@@ -16,7 +16,7 @@
 ```json
 {
   "version": "0.1",
-  "status": "fail",
+  "status": "failure",
   "summary": "需求尚未完全满足",
   "unmetRequirements": [
     "缺少错误场景处理"
@@ -42,12 +42,12 @@
 
 ### `status`
 - 类型：string
-- 枚举：`pass | fail`
+- 枚举：`success | failure`
 
 说明：
-- `pass` 表示本次验收通过
-- `fail` 表示本次验收未通过
-- `fail` 不等于 `invalid`
+- `success` 表示本次验收通过
+- `failure` 表示本次验收未通过
+- `failure` 不等于 `invalid`
 - `invalid` 是 runtime 对缺失 / 不合法 `verify-result` 的归纳 outcome，不是 `verify-result.status` 的取值
 
 ### `summary`
@@ -57,7 +57,7 @@
 建议：
 - 应优先总结“为什么通过 / 为什么不通过”
 - 不应只重复 requirement 原文
-- 当 `status = fail` 时，`summary` 应能概括主要失败原因
+- 当 `status = failure` 时，`summary` 应能概括主要失败原因
 
 ### `unmetRequirements`
 - 类型：string[]
@@ -87,20 +87,20 @@
 - `summary` 为空或不是字符串
 - `unmetRequirements` 不是数组
 - `validationGaps` 不是数组
-- `status = pass` 但 `unmetRequirements` 非空
-- `status = pass` 但 `validationGaps` 非空
-- `status = fail` 且 `unmetRequirements` 与 `validationGaps` 同时为空
+- `status = success` 但 `unmetRequirements` 非空
+- `status = success` 但 `validationGaps` 非空
+- `status = failure` 且 `unmetRequirements` 与 `validationGaps` 同时为空
 
 补充说明：
 - `verify.invalid` 表示 runtime 无法接受当前 `verify-result` 为合法 contract
 - `verify.failure` 表示 contract 合法，但验收结论是不通过
-- 因此 `invalid` 与 `fail` 是两层不同语义，不应混用
+- 因此 `invalid` 与 `failure` 是两层不同语义，不应混用
 
 ---
 
 ## 6. 与控制层的关系
-- 合法且 `status = pass` 的 `verify-result` -> runtime 归纳为 `verify.success`
-- 合法且 `status = fail` 的 `verify-result` -> runtime 归纳为 `verify.failure`
+- 合法且 `status = success` 的 `verify-result` -> runtime 归纳为 `verify.success`
+- 合法且 `status = failure` 的 `verify-result` -> runtime 归纳为 `verify.failure`
 - 缺失、字段不合法或违反本规范约束的 `verify-result` -> runtime 归纳为 `verify.invalid`
 
 说明：

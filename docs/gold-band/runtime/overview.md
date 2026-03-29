@@ -33,7 +33,6 @@ preset -> task -> run -> round/attempt
   - [run.json](state/run.json.md)
   - [round.json](state/round.json.md)
   - [node.json](state/node.json.md)
-  - [manifest.json](state/manifest.json.md)
 
 实现时建议先看：
 1. [控制层](control.md) —— 状态机、continue/retry/kill、transition table
@@ -72,6 +71,8 @@ MVP 中建议统一遵循：
 - `status != completed` 时，`outcome = null`
 - `status = completed` 时，`outcome` 必须为终局值
 - `paused` 只表示 runtime 观测到的系统挂起态，不表示终局结果
+- `failure` 表示目标未达成或执行失败
+- `invalid` 表示结果不满足最小 contract
 
 ## 7. 相关边界文件
 - [Worker Ref 规范](../provider/worker-ref.md)

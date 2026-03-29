@@ -21,6 +21,8 @@
 - 只有声明 `primaryArtifact` 时，runtime 才要求生成并校验对应 canonical artifact
 - 若未声明 `primaryArtifact`，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
 - 若未声明 `primaryArtifact`，只有 provider adapter 返回包本身不合法时，runtime 才归为 `invalid`
+- 若声明了 `primaryArtifact` 但结果缺失、name 不匹配或 schema 不合法，应归为 `invalid`
+- provider 执行失败或异常结束应归为 `failure`
 - 当前 MVP 中，`worker` 的 `primaryArtifact` 通常更适合是 `exec-plan`，而不是摘要型结果
 
 ## 3. 当前关注点
@@ -28,6 +30,18 @@
 - 如何绑定 `profile`
 - 如何表达 `primaryArtifact`
 - 节点输入契约如何自动组装
+
+## 3.1 `goal` 的运行时语义
+`goal` 不是纯描述性元数据。
+
+首版规则直接固定为：
+- `worker.goal` -> runtime `taskInstruction`
+- `taskInstruction` -> `userPrompt` 的 `# Task`
+
+也就是说：
+- DSL 上的 `goal` 是该节点本次任务意图的 canonical 来源
+- runtime 不应忽略它，也不应在没有 `goal` 的情况下自行硬造等价任务语义
+- provider implementation 只消费已经映射好的 invocation / prompt，不负责反推 `goal`
 
 ## 4. `provider` 与 `profile` 的解析规则
 当前建议：

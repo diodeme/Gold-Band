@@ -26,7 +26,7 @@ Control DSL 用来定义 workflow 的**控制语法**，也就是：
 
 这些都属于 workflow 控制语法，应放在 DSL 层表达。
 
-### 2.2 显式优先，不做隐式推导
+### 2.2 显式优先，但允许受限默认规则
 控制相关关键行为应尽量显式表达。
 
 例如：
@@ -35,6 +35,11 @@ Control DSL 用来定义 workflow 的**控制语法**，也就是：
 - 大循环失败怎么处理
 
 runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
+
+首版允许的受限默认规则是：
+- `exec.invalid` 若未显式声明 edge，可默认按 repair 路径回到 `planFrom` 指向的 `worker`
+- 该默认 repair 分支优先使用 `continue`；若目标 provider 不支持 continue，则自动降级为 `new`
+- 该默认只适用于 `exec` 的 repair 场景，不扩展成通用隐式推导机制
 
 ### 2.3 内置节点名保留字必须受限
 当前内置节点类型为：
@@ -104,7 +109,7 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 ## 5.1 `control.maxRepairLoops`
 - 类型：number
 - 含义：单个 round 内，小循环允许的最大次数
-- 适用场景：`exec.failure -> worker`
+- 适用场景：`exec.failure -> worker` 或 `exec.invalid -> worker`
 
 ### 建议规则
 - 必须为正整数
@@ -184,6 +189,8 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 - `primaryArtifact`
 
 当前建议：
+- `goal` 是该节点任务意图的 canonical 来源；runtime 必须把它映射为 invocation 中的 `taskInstruction`
+- `taskInstruction` 进入 `userPrompt` 的 `# Task`
 - `primaryArtifact` 直接表达该节点这次唯一标准输出的逻辑名
 - 首版一个 `worker` 节点一次只应有一个 `primaryArtifact`
 - `primaryArtifact` 是可选字段；未声明时，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
@@ -240,7 +247,7 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
   "from": "dev",
   "to": "run-tests",
   "on": "success",
-  "session": "continue"
+  "session": "new"
 }
 ```
 
@@ -248,8 +255,9 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 - 起点节点 id
 
 ### 7.2 `to`
-- 终点节点 id
-- 若需要语法糖，可在更上层支持 `A -> B.new`，但 canonical JSON 中建议仍展开为显式 `session` 字段
+- 终点节点 id，或特殊终止目标 `"$end"`
+- `"$end"` 表示 workflow 显式进入终止态
+- 若需要语法糖，可在更上层支持 `A -> B.new`，但 canonical JSON 中不依赖语法糖
 
 ### 7.3 `on`
 - 枚举建议：`success | failure | invalid`
@@ -258,10 +266,11 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 ### 7.4 `session`
 - 枚举：`continue | new`
 - 仅在回到 `worker` 节点时有明显意义
+- 可省略；省略时默认 `new`
 
 说明：
-- `A -> B` 等价于 `session = continue` 这种语法糖，建议只出现在讨论层
-- canonical JSON 仍建议显式写成结构化字段
+- 不再采用“`A -> B` 等价于 `session = continue`”的默认规则
+- 只有明确要复用历史上下文时，才建议显式写 `continue`
 
 ---
 
@@ -282,8 +291,13 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 语义：
 - `exec.failure` 回到 `worker`
 - 不开新 round
-- session 策略按 edge 明确声明
+- session 策略按 edge 明确声明；省略时默认 `new`
 - 每当控制层实际沿这条 repair 路径回到 `worker` 一次，就消耗 1 次 repair loop 配额
+
+补充规则：
+- 若 `exec.invalid` 未显式声明 edge，runtime 可默认按 repair 路径回到 `planFrom` 指向的 `worker`
+- 该默认 repair 分支优先使用 `continue`；若目标 provider 不支持 continue，则自动降级为 `new`
+- 该默认仅用于 `exec.invalid` 的 repair 场景
 
 ## 8.2 大循环
 大循环不通过普通 edge 表达，而由全局 `control.onAcceptanceFailure` 统一控制。
@@ -315,9 +329,11 @@ runtime 在启动 control 前，应至少检查以下几类合法性。
 - 节点 `type` 必须属于支持集合
 
 ## 9.3 边合法性
-- `from` / `to` 必须指向存在的节点
+- `from` 必须指向存在的节点
+- `to` 必须指向存在的节点，或使用特殊终止目标 `"$end"`
 - `on` 必须属于合法 outcome 集合
-- `session` 必须属于 `continue | new`
+- `session` 若存在，必须属于 `continue | new`
+- 若 `to = "$end"`，MVP 中 `on` 只允许 `success | failure`
 
 ## 9.4 `exec-plan` 合法性
 - 每个 `exec` 节点若声明了 `planFrom`，该节点必须存在
@@ -330,6 +346,7 @@ runtime 在启动 control 前，应至少检查以下几类合法性。
 - 若存在多个 `verify` 节点，应直接报错
 - 若不存在 `verify` 节点却声明了 `onAcceptanceFailure`，应直接报错
 - 不应再通过普通 edge 表达 `verify.failure -> worker` 的大循环回跳
+- 若某条 edge 显式声明 `session = continue`，其目标 `worker` 对应的 provider 必须支持 continue；否则应视为 DSL 校验错误
 - `maxRepairLoops` 的语义应按“repair 回跳次数”解释，而不是 attempt 总数
 - `maxAcceptanceLoops` 的语义应按“新 acceptance round 创建次数”解释，而不是 round 总数
 
@@ -397,4 +414,4 @@ runtime 至少应给出 warning 或 error：
 
 ## 12. 一句话总结
 
-> **Control DSL 负责显式表达 workflow 的控制面：节点怎么连、loop 怎么回、session 怎么处理、上限是多少，以及 runtime 启动前要检查哪些合法性。**
+> **Control DSL 负责显式表达 workflow 的控制面：节点怎么连、loop 怎么回、session 怎么处理、上限是多少，以及 runtime 启动前要检查哪些合法性；首版只允许一条受限默认规则：`exec.invalid` 可默认回到 `planFrom` 对应的 worker，并优先使用 `continue`，若 provider 不支持则降级为 `new`。**

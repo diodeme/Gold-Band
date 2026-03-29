@@ -99,6 +99,8 @@ gold-band run open-session <run-id> --round round-001 --node develop --attempt a
 补充说明：
 - `run continue` / `run retry` 是 runtime 控制动作，不等同于 provider 的 `sessionMode = continue | new`
 - `run continue` 只允许作用于“当前 attempt”；不支持跨 attempt 指定继续
+- `run continue` 仍在 Gold Band 内完成控制判断；它可以触发 provider resume，但不把控制权交给 provider
+- `run retry` 一定新建 attempt，且手动 `retry` 默认以 `session = new` 启动；只有 workflow edge 明确声明 `session = continue` 时，runtime 才应请求历史会话复用
 - 对已满足成功条件的 attempt，runtime 应自动流转，不应要求用户再执行一次 `run continue`
 - MVP 不提供用户显式 `pause` 命令；`paused` 只表示系统观测到的挂起态
 
@@ -110,6 +112,8 @@ gold-band run open-session <run-id> --round round-001 --node develop --attempt a
   - provider-specific 引用
   - 打开/继续命令模板
 - 在新终端或新窗口中打开对应原始会话
+- 这是把控制权交还给 provider 的 handoff；打开后不再由 Gold Band 持续托管该次交互
+- 若 `supportsOpenSession = false`，CLI 必须明确报错，而不是静默降级为 `run continue`
 
 ## 7. `artifact` 命令
 
@@ -143,4 +147,4 @@ gold-band provider test <provider>
 
 ## 11. 一句话总结
 
-> CLI 是 Gold Band 的核心产品接口；它以 `task / run / artifact / inspect / provider` 为顶层命令空间，而具体使用哪个 provider、哪个 profile，则由节点配置与 runtime 解析规则共同决定。
+> CLI 是 Gold Band 的核心产品接口；它以 `task / run / artifact / inspect / provider` 为顶层命令空间，而具体使用哪个 provider、哪个 profile，则由节点配置与 runtime 解析规则共同决定。这里 `continue` 主要对应 paused 或 invalid attempt 的恢复/重结算，`retry` 对应新建 attempt。

@@ -207,6 +207,7 @@ Layout 用来定义 Gold Band runtime 的整体文件夹结构，包括：
 runs/
   run-001/
     run.json
+    run-progress.json
     workflow.snapshot.json
     events.jsonl
     rounds/
@@ -218,6 +219,9 @@ runs/
 
 #### `run.json`
 保存本次执行的全局状态。
+
+#### `run-progress.json`
+保存本次 run 的快速状态视图，用于回答“当前 workflow 走到哪里了”。
 
 #### `workflow.snapshot.json`
 保存本次 run 真正执行的 workflow 快照。
@@ -283,32 +287,27 @@ round-001/
 dev/
   attempt-001/
     node.json
-    prompt.md
     worker-ref.json
     raw.stream.jsonl
     progress.events.jsonl
-    progress.json
     artifacts/
       exec-plan.json
     attachments/
       report.md
-    manifest.json
 ```
 
 ### 文件职责
 
 #### runtime 管理
 - `node.json`
-- `prompt.md`
 - `worker-ref.json`
 - `progress.events.jsonl`
-- `progress.json`
-- `manifest.json`
 - `artifacts/` 目录结构
 - `attachments/` 目录结构
 
 补充约束：
-- `progress.json.status` 应与同 attempt 下的 `node.json.status` 对齐
+- attempt 级观测不再单独维护 `progress.json`
+- 当前 workflow 的快速状态视图统一由 run 级 `run-progress.json` 提供
 
 #### provider / worker 执行产生
 - `raw.stream.jsonl` 的内容源于 provider 流式输出
@@ -333,17 +332,17 @@ run-tests/
         command.json
         stdout.log
         stderr.log
-        result.json
       02-test/
         command.json
-        stdout.log
-        stderr.log
-        result.json
-    manifest.json
+        # 若该命令实际执行，则可有 stdout.log / stderr.log
+        # 若该命令为 skipped，则不要求生成这些 sidecar
 ```
 
 ### 语义
 - `exec` 节点的执行产物全部由 runtime 生成
+- `exec` 节点 attempt 不再单独维护 `progress.json`
+- 当前 workflow 的快速状态视图统一由 run 级 `run-progress.json` 提供
+- 每条命令的执行状态、退出码与时间信息直接收敛进 [exec-result](../dsl/artifacts/exec-result.md) 的 `commands[]`
 - 不存在自由 `attachments/` 的强需求，但允许后续扩展
 
 ---
@@ -356,21 +355,20 @@ run-tests/
 accept/
   attempt-001/
     node.json
-    prompt.md
     worker-ref.json
     raw.stream.jsonl
     progress.events.jsonl
-    progress.json
     artifacts/
       verify-result.json
     attachments/
       report.md
-    manifest.json
 ```
 
 ### 语义
 - `verify` 也属于 AI worker 节点的一种执行形态
 - 因此 layout 上与 `worker` 节点接近
+- `verify` 节点 attempt 不再单独维护 `progress.json`
+- 当前 workflow 的快速状态视图统一由 run 级 `run-progress.json` 提供
 - 但它的 canonical artifact 是 `verify-result.json`
 
 ---
@@ -419,7 +417,6 @@ accept/
 - [run.json](state/run.json.md)
 - [round.json](state/round.json.md)
 - [node.json](state/node.json.md)
-- [manifest.json](state/manifest.json.md)
 - [Worker Invocation Contract](../provider/invocation.md)
 - [Worker Ref 规范](../provider/worker-ref.md)
 - [Progress 规范](../interaction/progress.md)

@@ -30,10 +30,15 @@ CLI 必须能独立完成：
 ### 4. 查看与接管分离
 Gold Band 默认支持：
 - 查看 attempt 的输入、产物、events、progress
-- 基于 `worker-ref` 打开原始会话
+- 基于 `worker-ref` 把控制权交还给 provider，并打开原始会话
 
 Gold Band 不默认支持：
-- 直接接管一个正在运行的 provider 会话
+- 在 Gold Band 内直接接管一个正在运行的 provider 会话
+
+说明：
+- 查看 attempt 产物/事件仍是 Gold Band 自己完成的只读能力
+- `open-session` 是 handoff 给 provider；打开后是否表现为交互式 continue，由 provider 自身决定
+- `run continue` 仍是 Gold Band runtime 控制动作，即使底层可能触发 provider resume
 
 ## 细分文档
 - [CLI 规范](cli.md)

@@ -7,7 +7,7 @@
 - 这是哪个 node 的哪一次 attempt
 - 当前 attempt 的状态和 outcome 是什么
 - 这次 attempt 解析后的关键配置是什么
-- 它和 `worker-ref.json`、`manifest.json` 如何关联
+- 它和 `worker-ref.json`、canonical artifacts 如何关联
 
 ---
 
@@ -72,6 +72,8 @@
 - `paused` 时必须 `outcome = null`
 - `completed` 时应为 `success | failure | invalid | killed`
 - `paused` 只属于 `status`，不属于 `outcome`
+- `failure` 表示目标未达成或执行失败
+- `invalid` 表示结果不满足最小 contract
 
 ### `resolvedConfig`
 - 类型：object
@@ -95,6 +97,7 @@
 - `profile`
 - `primaryArtifact`（固定为 `verify-result`）
 - `onAcceptanceFailure`
+- `evidenceScope`（首版固定为 `current-round`）
 
 说明：
 - 虽然 `verify` 在 DSL 上是独立节点类型，但在执行层复用 provider worker 通道
@@ -120,17 +123,14 @@
 ## 6. 与同目录文件的关系
 同一个 attempt 目录下，`node.json` 与这些文件协同工作：
 
-- `prompt.md`
 - `worker-ref.json`
-- `manifest.json`
 - `artifacts/`
 - `attachments/`
-- `progress.json`
 
 其中：
 - `node.json` 记录 attempt 元信息
 - `worker-ref.json` 记录 provider-specific 会话引用
-- `manifest.json` 记录产物清单
+- `artifacts/` 保存 canonical artifacts
 
 ---
 
@@ -138,7 +138,6 @@
 - [Runtime 概览](../overview.md)
 - [Worker Ref 规范](../../provider/worker-ref.md)
 - [Worker Invocation Contract](../../provider/invocation.md)
-- [manifest.json](manifest.json.md)
 
 ---
 

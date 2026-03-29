@@ -10,29 +10,18 @@
 ```json
 {
   "version": "0.1",
-  "groups": [
+  "commands": [
     {
       "id": "build",
-      "onFailure": "fail-fast",
-      "commands": [
-        {
-          "id": "build",
-          "run": "pnpm build",
-          "purpose": "验证项目构建通过"
-        }
-      ]
+      "run": "pnpm build",
+      "purpose": "验证项目构建通过",
+      "cwd": ".",
+      "timeoutSec": 600
     },
     {
-      "id": "test",
-      "dependsOn": ["build"],
-      "onFailure": "fail-fast",
-      "commands": [
-        {
-          "id": "test-targeted",
-          "run": "pnpm vitest tests/auth.test.ts",
-          "purpose": "验证本次修改的核心测试通过"
-        }
-      ]
+      "id": "test-targeted",
+      "run": "pnpm vitest tests/auth.test.ts",
+      "purpose": "验证本次修改的核心测试通过"
     }
   ]
 }
@@ -42,11 +31,6 @@
 
 ## 3. 必填字段
 - `version`
-- `groups`
-
-每个 group 必填：
-- `id`
-- `onFailure`
 - `commands`
 
 每条命令必填：
@@ -57,56 +41,35 @@
 ---
 
 ## 4. 可选字段
-每个 group 可选：
-- `dependsOn`
-
 每条命令可选：
 - `cwd`
 - `timeoutSec`
 
-示意：
-
-```json
-{
-  "id": "build",
-  "onFailure": "fail-fast",
-  "commands": [
-    {
-      "id": "build",
-      "run": "pnpm --filter web build",
-      "purpose": "验证 web 包构建通过",
-      "cwd": ".",
-      "timeoutSec": 600
-    }
-  ]
-}
-```
+说明：
+- `cwd` 未声明时，默认使用 workspace root
+- `timeoutSec` 表示该命令的超时上限，超时后应在执行结果中明确体现
 
 ---
 
 ## 5. 语义约束
 - 在 `worker` 调用语义下，`exec-plan` 通常应作为该次调用的 `primaryArtifact`
-- group 内命令按数组顺序执行
-- `onFailure = fail-fast` 时，当前 group 在命令失败后立即停止后续命令
-- 依赖失败的 group 应标记为 `skipped`
-- 不依赖失败 group 的其他 group 仍可继续执行
+- `commands` 按数组顺序串行执行
+- 首版不允许并行执行
+- 首版不支持 group 调度
+- 首版不支持依赖调度
 - 首版不支持条件命令
+- 不做 shell / 平台差异标准化，模型给什么命令，执行层就按该内容执行
 
 ---
 
 ## 6. runtime 校验规则
 以下任一情况都应视为 `invalid`：
 
-- `groups` 不是数组
-- `groups` 为空数组
-- 任意 group 缺少 `id | onFailure | commands`
-- 任意两个 group 的 `id` 重复
-- `onFailure` 不属于 `fail-fast | continue`
-- `dependsOn` 存在但不是字符串数组
-- `dependsOn` 引用了不存在的 group
-- group 依赖关系存在环
+- `commands` 不是数组
+- `commands` 为空数组
 - 任意命令缺少 `id | run | purpose`
-- 同一 group 内任意两个命令的 `id` 重复
+- 任意两个命令的 `id` 重复
+- `cwd` 存在但不是字符串
 - `timeoutSec` 存在但不是正整数
 
 ---
@@ -119,4 +82,4 @@
 
 ## 8. 一句话总结
 
-> `exec-plan.json` 是 `exec` 节点唯一应程序化消费的命令计划输入；它描述“跑什么”，但不描述“跑成什么”。
+> `exec-plan.json` 是 `exec` 节点唯一应程序化消费的命令计划输入；它描述“按什么顺序跑什么命令”，但不描述“跑成什么结果”。

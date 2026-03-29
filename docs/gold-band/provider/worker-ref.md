@@ -1,0 +1,100 @@
+# Worker Ref 规范
+
+## 1. 一句话定义
+`worker-ref.json` 用来保存某个 attempt 对应的 **provider-specific worker 引用信息**。
+
+它的作用不是替代 provider 原始 transcript，而是让 Gold Band 能够：
+- 记录这次 attempt 实际调用了哪个 provider
+- 保存该 provider 返回的会话/继续引用
+- 在需要时继续或打开原始 worker 会话
+- 将 provider-specific 差异收敛到一个清晰边界文件里
+
+## 2. 设计原则
+
+### 2.1 `worker-ref.json` 是边界文件，不是业务产物
+它不参与：
+- workflow 成功判断
+- `exec / verify` 的控制流判断
+- artifact 语义计算
+
+### 2.2 由 runtime 落盘
+provider adapter 可以返回 `worker-ref` 原材料，但 canonical 的 `worker-ref.json` 应由 runtime 写入 attempt 目录。
+
+### 2.3 provider-specific 细节只能暴露在这里
+例如：
+- Claude Code 的 `session_id`
+- 某个 provider 的 `conversation_id`
+- 某个 provider 的 continue token / session 引用
+- 对应的打开/继续命令模板
+
+## 3. 最小结构
+
+```json
+{
+  "version": "0.1",
+  "provider": "claude-code",
+  "mode": "new",
+  "supportsOpenSession": true,
+  "supportsContinueSession": true,
+  "continueRef": {
+    "sessionId": "4aefdd5f-1b5c-47d0-92a3-69005afb53f9"
+  },
+  "openCommand": {
+    "command": "claude -c 4aefdd5f-1b5c-47d0-92a3-69005afb53f9"
+  }
+}
+```
+
+## 4. 最小必填字段
+- `version`
+- `provider`
+- `mode`
+- `supportsOpenSession`
+- `supportsContinueSession`
+
+说明：
+- `mode` 当前最小枚举：`new | continue`
+- `continueRef` 允许 provider-specific 内部结构
+- `openCommand` 允许为空
+- `mode` / `continueRef` / `supportsContinueSession` 描述的是 provider 会话复用能力，不等同于 CLI 层的 `continue` / `retry` 动作
+
+## 5. runtime 校验规则
+以下情况应视为 `invalid`：
+- 缺少 `version`
+- 缺少 `provider`
+- 缺少 `mode`
+- `supportsOpenSession` 不是 boolean
+- `supportsContinueSession` 不是 boolean
+- `mode` 不在 `new | continue` 之内
+
+以下情况不应直接视为错误：
+- `continueRef = null`
+- `openCommand = null`
+- `supportsOpenSession = false`
+- `supportsContinueSession = false`
+
+## 6. 与 CLI 的关系
+`worker-ref.json` 直接支撑：
+
+```bash
+gold-band run open-session <run-id> --round round-001 --node develop --attempt attempt-002
+gold-band run continue <run-id>
+```
+
+CLI 的最小消费方式：
+1. 用 `run-id + round-id + node-id + attempt-id` 唯一定位 attempt
+2. 读取 `worker-ref.json`
+3. 检查 `supportsOpenSession` / `supportsContinueSession`
+4. 若 `openCommand.command` 存在，则优先使用它
+5. 否则交给 provider adapter 运行时构建继续命令
+
+## 7. 与 layout 的关系
+建议固定路径：
+
+```text
+rounds/<round-id>/nodes/<node-id>/attempt-<n>/worker-ref.json
+```
+
+## 8. 一句话总结
+
+> `worker-ref.json` 是 Gold Band 保存 provider-specific 会话引用的统一边界文件；它不参与控制流判断，只负责让 CLI / 插件能够在需要时继续或打开原始 worker 会话。

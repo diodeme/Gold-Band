@@ -73,7 +73,7 @@ provider adapter 可以返回 `worker-ref` 原材料，但 canonical 的 `worker
 - `supportsOpenSession = false`
 - `supportsContinueSession = false`
 
-## 6. 与 CLI 的关系
+## 6. 与 CLI / Console 的关系
 `worker-ref.json` 直接支撑：
 
 ```bash
@@ -85,12 +85,13 @@ gold-band run continue <run-id>
 - `open-session`：Gold Band 读取 `worker-ref.json` 后，把控制权交给 provider，按 provider-native open/continue 方式打开原始会话
 - `run continue`：仍是 Gold Band runtime 控制动作；runtime 可读取 `worker-ref.json` 来触发 provider resume，但不会把控制流切换为 provider handoff
 
-CLI 的最小消费方式：
+CLI / Console 的最小消费方式：
 1. 用 `run-id + round-id + node-id + attempt-id` 唯一定位 attempt
 2. 读取 `worker-ref.json`
 3. 检查 `supportsOpenSession` / `supportsContinueSession`
 4. 对 `open-session`：若 `supportsOpenSession = false`，CLI 必须明确报错；若 `openCommand.command` 存在，则优先使用它；否则交给 provider adapter 构建 provider-native 打开命令
 5. 对 `run continue`：仅在 runtime 需要恢复 provider 会话时，才使用 `continueRef` / provider adapter 的继续能力
+6. 对 console：应把 `worker-ref` 作为独立 detail tab 展示，而不是混入 config/workflow snapshot 视图
 
 ## 7. 与 layout 的关系
 建议固定路径：

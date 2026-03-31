@@ -8,6 +8,10 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 ## 2. 交互层
 - [交互层概览](interaction/overview.md)
 - [CLI 规范](interaction/cli.md)
+- [Console 概览](interaction/console-overview.md)
+- [Console 信息架构](interaction/console-information-architecture.md)
+- [Console 命令模型](interaction/console-command-model.md)
+- [Console 状态与事件](interaction/console-state-and-events.md)
 - [Progress 规范](interaction/progress.md)
 
 ## 3. Provider 层

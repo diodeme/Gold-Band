@@ -31,12 +31,17 @@ Gold Band 主要解决 3 个问题：
 - 执行面 probabilistic
 - 完成判断基于 artifact 与验证，而不是 self-report
 
-### 3. CLI-first
+### 3. CLI-first，但本质是 runtime-first、command-first
 - CLI 是核心 backend 接口
+- CLI 同时包含 scriptable subcommand CLI 与 command-driven console CLI
 - VSCode 插件主要封装 CLI
 - 插件提供更好的可视化与控制体验
 
 ### 4. step-first，而不是 chat-first
+- Gold Band 当前不提供自然语言交互入口
+- console CLI 前期只接受显式命令输入，不做自然语言解析
+- 若后续接入需求 / workflow 的 AI 生成能力，再在 authoring 层扩展自然语言体验
+
 Gold Band 的核心对象是：
 
 - workflow

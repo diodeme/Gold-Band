@@ -130,7 +130,12 @@ Layout 用来定义 Gold Band runtime 的整体文件夹结构，包括：
 存放当前项目的所有 task。
 
 #### `logs/`
-存放 runtime debug 日志与 rolling 归档。
+存放 runtime debug 日志。
+
+当前实现：
+- 主日志文件固定为 `runtime.log`
+- provider command summary 与 prompt bundle summary 写入该日志
+- 仅当 runtime 配置允许时，才记录完整 `system_prompt` / `user_prompt`
 
 边界：
 - 只用于 debug / 排障 / 运行分析

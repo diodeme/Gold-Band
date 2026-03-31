@@ -8,6 +8,10 @@ Gold Band CLI 是 Gold Band 的**核心 backend 接口**。
 - VSCode 插件调用的后台执行引擎
 - runtime、provider 与 artifact 能力的外部统一接口
 
+当前 CLI 包含两种等价入口：
+- scriptable subcommand CLI：面向脚本、自动化、外部调用
+- command-driven console CLI：面向人工控制台操作与可视化浏览
+
 ## 2. 设计原则
 
 ### 2.1 CLI 是一等公民
@@ -30,22 +34,45 @@ CLI 不是调试工具，而是完整产品入口。
 
 ## 3. 顶层命令空间
 
+scriptable CLI 入口：
+
 ```bash
 gold-band task ...
 gold-band run ...
 gold-band artifact ...
 gold-band inspect ...
 gold-band provider ...
+gold-band console
 ```
+
+console CLI 入口：
+
+```text
+/task ...
+/run ...
+/artifact ...
+/inspect ...
+/provider ...
+/help
+```
+
+约束：
+- console CLI 的 slash command 与 scriptable CLI 共享同一套命令语义
+- console CLI 前期不做自然语言解析
+- `/run --help`、`/artifact --help` 等帮助以可视化方式展示，但不改变底层命令合约
 
 ## 4. 公共参数
 
 当前 MVP 只保留与 run 选择和控制直接相关的公共参数。
 
+当前已支持：
+- `--log-level <error|warn|info|debug|trace>`：控制 runtime debug 日志级别
+
 说明：
 - 不暴露用户态 `--provider`
 - 不暴露用户态 `--profile`
 - provider 与 profile 的解析都在 runtime / node 层完成
+- runtime 相关配置统一收敛到 `RuntimeConfig`，CLI 负责构造并注入 `App`
 
 ## 5. `task` 命令
 

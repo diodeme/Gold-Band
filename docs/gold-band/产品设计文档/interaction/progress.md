@@ -153,6 +153,27 @@ Gold Band Progress 用来定义工作流运行过程中的**观测层文件**。
 - 当前轮次尚未完整实现 `progress.events.jsonl`，但路径仍保留为后续扩展位
 - 所有 observability 写入都应视为 best-effort，失败不能影响主流程
 
-## 9. 一句话总结
+## 9. console / 插件读取优先级
+
+当 console CLI 或插件需要展示运行详情时，建议按以下优先级读取：
+
+### 9.1 run 摘要
+- 首选 `run-progress.json`
+- 必要时结合 `run.json` 做 canonical 状态确认
+
+### 9.2 run 时间线
+- 首选 run 级 `events.jsonl`
+- 它是整个 run 的主时间线来源
+
+### 9.3 attempt 级 provider 输出
+- 若存在 `progress.events.jsonl`，优先展示它
+- 若不存在，则回退展示 `raw.stream.jsonl`
+- 若两者都不存在，应展示 empty state，而不是猜测 provider 内部状态
+
+### 9.4 canonical 状态确认
+- `run.json` / `round.json` / `node.json` 始终是最终状态来源
+- UI 不应根据 `progress.events.jsonl` 或 `raw.stream.jsonl` 直接推断控制流结论
+
+## 10. 一句话总结
 
 > Progress 的三层结构是：`raw.stream.jsonl` 保存 provider 原始流，`progress.events.jsonl` 保存 Gold Band 规范化进度事件，`run-progress.json` 保存整个 workflow 当前运行到哪里；它们共同服务观测与调试，但不直接参与工作流控制流判断。

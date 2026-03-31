@@ -59,6 +59,10 @@ preset -> task -> run -> round/attempt
 1. 项目目录下的 profile
 2. 用户目录下的 profile
 
+约束：
+- 若 `worker` / `verify` 节点声明了 `profile`，runtime 在 `run start` 时必须解析成功，否则直接失败
+- `validate_workflow()` 只负责结构校验；profile 是否存在属于 runtime resolution
+
 ## 6. 状态语义总说明
 MVP 中建议统一遵循：
 
@@ -74,6 +78,24 @@ MVP 中建议统一遵循：
 - `failure` 表示目标未达成或执行失败
 - `invalid` 表示结果不满足最小 contract
 
-## 7. 相关边界文件
+## 7. runtime 配置
+当前 runtime 相关配置统一由 `RuntimeConfig` 管理，至少包括：
+- `default_provider`
+- `log_level`
+- `log_prompts`
+- `log_provider_command`
+- `log_retention_days`
+
+边界：
+- 配置由 CLI 或上层入口构造
+- `App` 持有配置并向 observability / provider 执行链透传
+- provider command 与完整 prompt 仅属于 debug observability，不属于 canonical state
+
+## 8. 与 console / 插件的关系
+- console CLI 是同一套 runtime 的交互壳，不引入新的 runtime 语义
+- scriptable CLI、console CLI、VSCode 插件都应复用同一套 run / round / node / attempt / artifact 模型
+- UI 可以提供更强的浏览、帮助与下钻体验，但不能改变 canonical state 的来源与控制流语义
+
+## 9. 相关边界文件
 - [Worker Ref 规范](../provider/worker-ref.md)
 - [Progress 规范](../interaction/progress.md)

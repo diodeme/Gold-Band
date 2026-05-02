@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
-use gold_band::console::controller::{activate_current, escape, move_down, move_right};
-use gold_band::console::state::{ConsoleState, DetailLevel, DetailSelection, FocusPane, WelcomeAction, WorkspaceSelection};
+use gold_band::console::controller::{activate_current, cycle_focus, escape, move_right, refresh_tick, show_help_overlay, start_command_input, toggle_log_source};
+use gold_band::console::state::{ConsoleState, DetailLevel, DetailSelection, FocusPane, LayoutMode, WelcomeAction, WorkspaceSelection};
 use gold_band::console::view_models::build_view_model;
 use tempfile::tempdir;
 
@@ -12,6 +12,8 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) {
             .as_std_path(),
     )
     .unwrap();
+    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
+    std::fs::write(repo_root.join(".gold-band/presets/profiles/developer.md").as_std_path(), "# developer").unwrap();
     std::fs::create_dir_all(
         repo_root
             .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts")
@@ -40,6 +42,16 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) {
     )
     .unwrap();
     std::fs::write(
+        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run-progress.json").as_std_path(),
+        r#"{"status":"running","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join(".gold-band/tasks/task-001/runs/run-001/events.jsonl").as_std_path(),
+        "node-started\nprovider-streaming",
+    )
+    .unwrap();
+    std::fs::write(
         repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/round.json").as_std_path(),
         r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"paused","outcome":null,"trigger":"initial","repair_loops_used":0,"started_at":"2026-03-30T10:00:00Z"}"#,
     )
@@ -47,6 +59,16 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) {
     std::fs::write(
         repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json").as_std_path(),
         r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"paused","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/progress.events.jsonl").as_std_path(),
+        "progress-line",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl").as_std_path(),
+        "raw-line",
     )
     .unwrap();
     std::fs::write(
@@ -93,12 +115,11 @@ fn entering_node_moves_focus_to_detail_and_shows_attempts() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     seed_branching_repo(&repo_root);
     let app = App::new(repo_root);
-    let mut state = open_workspace(&app);
-    activate_current(&app, &mut state).unwrap();
+    let state = open_workspace(&app);
     assert_eq!(state.focus, FocusPane::Detail);
     let workspace = state.workspace.as_ref().unwrap();
-    assert_eq!(workspace.detail_level, DetailLevel::NodeHome);
-    assert!(workspace.detail_items.iter().any(|item| matches!(item, DetailSelection::Attempt { .. })));
+    assert!(matches!(workspace.detail_level, DetailLevel::AttemptItems { .. }));
+    assert!(workspace.detail_items.iter().any(|item| matches!(item, DetailSelection::Artifact { .. } | DetailSelection::Attachment { .. })));
 }
 
 #[test]
@@ -108,9 +129,6 @@ fn entering_attempt_then_artifact_supports_escape_backtracking() {
     seed_branching_repo(&repo_root);
     let app = App::new(repo_root);
     let mut state = open_workspace(&app);
-    activate_current(&app, &mut state).unwrap();
-    move_down(&mut state);
-    activate_current(&app, &mut state).unwrap();
     {
         let workspace = state.workspace.as_ref().unwrap();
         assert!(matches!(workspace.detail_level, DetailLevel::AttemptItems { .. }));
@@ -130,6 +148,119 @@ fn entering_attempt_then_artifact_supports_escape_backtracking() {
         let workspace = state.workspace.as_ref().unwrap();
         assert_eq!(workspace.detail_level, DetailLevel::NodeHome);
     }
+}
+
+#[test]
+fn workspace_header_and_detail_surface_run_progress() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    let app = App::new(repo_root);
+    let state = open_workspace(&app);
+    let vm = build_view_model(&app, &state).unwrap();
+    assert!(vm.header.contains("status=running"));
+    let detail = vm.detail_body;
+    assert!(detail.contains("Attempt: attempt-001"));
+    assert!(detail.contains("Follow live: true"));
+    assert!(detail.contains("Provider input snapshot (progress.events.jsonl)"));
+    assert!(detail.contains("progress-line"));
+}
+
+#[test]
+fn toggle_log_source_switches_attempt_detail_view() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    let app = App::new(repo_root);
+    let mut state = open_workspace(&app);
+    state.focus = FocusPane::Detail;
+
+    toggle_log_source(&mut state);
+
+    let vm = build_view_model(&app, &state).unwrap();
+    assert!(vm.detail_body.contains("Provider output (raw.stream.jsonl)"));
+    assert!(vm.detail_body.contains("raw-line"));
+}
+
+#[test]
+fn attempt_detail_tolerates_missing_attempt_state_during_startup() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    std::fs::remove_file(
+        repo_root
+            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json")
+            .as_std_path(),
+    )
+    .unwrap();
+    let app = App::new(repo_root);
+    let state = open_workspace(&app);
+    let vm = build_view_model(&app, &state).unwrap();
+    assert!(vm.detail_body.contains("pending-persist"));
+    assert!(vm.detail_body.contains("Waiting for runtime persistence"));
+}
+
+#[test]
+fn refresh_tick_preserves_live_attempt_detail_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    let app = App::new(repo_root.clone());
+    let mut state = open_workspace(&app);
+    state.focus = FocusPane::Detail;
+    {
+        let workspace = state.workspace.as_mut().unwrap();
+        workspace.detail_level = DetailLevel::AttemptItems {
+            attempt_id: "attempt-001".to_string(),
+            follow_live: true,
+        };
+    }
+
+    refresh_tick(&app, &mut state).unwrap();
+
+    let workspace = state.workspace.as_ref().unwrap();
+    assert!(matches!(workspace.detail_level, DetailLevel::AttemptItems { follow_live: true, .. }));
+}
+
+#[test]
+fn refresh_tick_updates_workspace_progress() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    let app = App::new(repo_root.clone());
+    let mut state = open_workspace(&app);
+    std::fs::write(
+        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run-progress.json").as_std_path(),
+        r#"{"status":"paused","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001"}"#,
+    )
+    .unwrap();
+
+    refresh_tick(&app, &mut state).unwrap();
+
+    let vm = build_view_model(&app, &state).unwrap();
+    assert!(vm.header.contains("status=paused"));
+}
+
+#[test]
+fn overlay_focus_and_compact_layout_work_in_workspace() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    seed_branching_repo(&repo_root);
+    let app = App::new(repo_root);
+    let mut state = open_workspace(&app);
+    show_help_overlay(&app, &mut state).unwrap();
+    assert_eq!(state.focus, FocusPane::Overlay);
+    assert!(state.overlay.is_some());
+    escape(&app, &mut state).unwrap();
+    assert_eq!(state.focus, FocusPane::Detail);
+    start_command_input(&mut state);
+    assert_eq!(state.focus, FocusPane::Input);
+    state.layout_mode = LayoutMode::Compact;
+    state.focus = FocusPane::Detail;
+    let vm = build_view_model(&app, &state).unwrap();
+    assert!(vm.compact_detail_only);
+    cycle_focus(&mut state);
+    assert_eq!(state.focus, FocusPane::Input);
 }
 
 #[test]

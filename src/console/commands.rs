@@ -1,10 +1,12 @@
 use anyhow::{anyhow, bail, Result};
 
 use crate::command::{ArtifactCommand, Command, RunCommand};
+use crate::config::ConsoleThemeName;
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["/help", "/task", "/log", "/config", "/continue", "/run", "/artifact"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["/help", "/task", "/log", "/config", "/theme", "/continue", "/run", "/artifact"];
 const RUN_SUBCOMMANDS: &[&str] = &["start", "status", "continue", "retry", "kill", "open-session"];
 const ARTIFACT_SUBCOMMANDS: &[&str] = &["list", "show"];
+const THEME_COMMANDS: &[&str] = &["gold-band", "nord", "dracula", "cyber", "onyx", "mist", "high-contrast"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleLocalCommand {
@@ -12,6 +14,8 @@ pub enum ConsoleLocalCommand {
     Task,
     Log,
     Config,
+    ThemeShow,
+    ThemeSet(ConsoleThemeName),
     Continue,
 }
 
@@ -36,6 +40,8 @@ pub fn parse_console_command(input: &str) -> Result<ParsedConsoleCommand> {
         ["/task"] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::Task)),
         ["/log"] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::Log)),
         ["/config"] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::Config)),
+        ["/theme"] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::ThemeShow)),
+        ["/theme", name] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::ThemeSet(name.parse()?))),
         ["/continue"] => Ok(ParsedConsoleCommand::Local(ConsoleLocalCommand::Continue)),
         ["/run", "start", task_id] => Ok(ParsedConsoleCommand::Runtime(Command::Run(RunCommand::Start {
             task_id: (*task_id).to_string(),
@@ -133,6 +139,17 @@ pub fn suggest_console_commands(input: &str) -> Vec<String> {
                 }
             })
             .map(|item| format!("/artifact {item}"))
+            .collect(),
+        Some("/theme") => THEME_COMMANDS
+            .iter()
+            .filter(|item| {
+                if is_space_terminated || parts.len() == 1 {
+                    true
+                } else {
+                    item.starts_with(parts.get(1).copied().unwrap_or_default())
+                }
+            })
+            .map(|item| format!("/theme {item}"))
             .collect(),
         _ => Vec::new(),
     }

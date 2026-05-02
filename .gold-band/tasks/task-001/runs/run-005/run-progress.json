@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "status": "running",
+  "currentRoundId": "round-001",
+  "currentNodeId": "dev",
+  "currentNodeType": "worker",
+  "currentAttemptId": "attempt-001",
+  "currentStage": "calling-provider",
+  "summary": "running round-001/dev/attempt-001",
+  "updatedAt": "1775035401Z"
+}

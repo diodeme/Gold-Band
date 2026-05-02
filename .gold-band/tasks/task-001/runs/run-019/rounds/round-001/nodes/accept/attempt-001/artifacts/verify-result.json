@@ -1,0 +1,9 @@
+{
+  "version": "0.1",
+  "status": "failure",
+  "summary": "在 web 目录下已存在 Python 类 `HelloWorld`，但其 `say` 方法输出的是 `hello world`，与要求中的 `hello-world` 不一致，因此当前证据不足以证明需求已满足。",
+  "unmet_requirements": [
+    "`web` 目录下的 Python 类输出内容应为 `hello-world`，但现有实现输出为 `hello world`。"
+  ],
+  "validation_gaps": []
+}

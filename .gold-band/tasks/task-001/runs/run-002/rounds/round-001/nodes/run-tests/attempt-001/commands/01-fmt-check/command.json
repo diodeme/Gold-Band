@@ -1,0 +1,7 @@
+{
+  "id": "fmt-check",
+  "run": "cargo fmt --check",
+  "purpose": "确保实现古诗词随机展示网站后的 Rust 代码格式符合项目规范",
+  "cwd": ".",
+  "timeout_sec": null
+}

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Gold Band - 任务详情</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600&amp;family=JetBrains+Mono&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-error-container": "#ffdad6",
+                        "on-primary": "#472a00",
+                        "surface-container-lowest": "#000f21",
+                        "secondary-fixed-dim": "#c8c6c5",
+                        "surface-dim": "#031427",
+                        "outline": "#a08e7a",
+                        "secondary-fixed": "#e5e2e1",
+                        "background": "#031427",
+                        "primary-fixed-dim": "#ffb95f",
+                        "on-tertiary": "#303030",
+                        "inverse-on-surface": "#213145",
+                        "on-primary-fixed": "#2a1700",
+                        "on-tertiary-container": "#444444",
+                        "on-background": "#d3e4fe",
+                        "surface-container": "#102034",
+                        "surface": "#031427",
+                        "tertiary-container": "#b3b1b0",
+                        "on-secondary": "#313030",
+                        "surface-container-low": "#0b1c30",
+                        "on-primary-fixed-variant": "#653e00",
+                        "surface-variant": "#26364a",
+                        "primary-container": "#f59e0b",
+                        "tertiary-fixed-dim": "#c8c6c6",
+                        "primary-fixed": "#ffddb8",
+                        "on-surface-variant": "#d8c3ad",
+                        "on-error": "#690005",
+                        "inverse-surface": "#d3e4fe",
+                        "tertiary-fixed": "#e4e2e1",
+                        "surface-container-highest": "#26364a",
+                        "inverse-primary": "#855300",
+                        "surface-bright": "#2a3a4f",
+                        "on-secondary-fixed-variant": "#474746",
+                        "error-container": "#93000a",
+                        "outline-variant": "#534434",
+                        "on-surface": "#d3e4fe",
+                        "on-secondary-fixed": "#1c1b1b",
+                        "tertiary": "#cecccc",
+                        "surface-tint": "#ffb95f",
+                        "primary": "#ffc174",
+                        "error": "#ffb4ab",
+                        "secondary-container": "#474746",
+                        "secondary": "#c8c6c5",
+                        "surface-container-high": "#1b2b3f",
+                        "on-primary-container": "#613b00",
+                        "on-secondary-container": "#b7b5b4",
+                        "on-tertiary-fixed-variant": "#474747",
+                        "on-tertiary-fixed": "#1b1c1c"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk"],
+                        "display": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"],
+                        "mono": ["JetBrains Mono"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #031427;
+            font-family: 'Inter', sans-serif;
+        }
+        .space-grotesk { font-family: 'Space Grotesk', sans-serif; }
+        .node-connector {
+            position: absolute;
+            width: 2px;
+            background: #1e293b;
+            z-index: 0;
+        }
+    </style>
+</head>
+<body class="text-on-surface antialiased overflow-hidden">
+<!-- App Shell -->
+<div class="flex h-screen w-full">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full w-64 border-r border-neutral-800 bg-neutral-950 flex flex-col justify-between py-8 px-4 z-50">
+<div>
+<div class="flex items-center gap-2 mb-10 px-2">
+<div class="w-8 h-8 bg-amber-500 rounded flex items-center justify-center">
+<span class="material-symbols-outlined text-neutral-950 font-bold" style="font-variation-settings: 'FILL' 1;">deployed_code</span>
+</div>
+<div>
+<h1 class="text-xl font-bold text-amber-500 tracking-tighter space-grotesk">Gold Band</h1>
+<p class="text-[10px] text-neutral-500 uppercase tracking-widest font-medium">AI Orchestrator</p>
+</div>
+</div>
+<nav class="space-y-1">
+<a class="flex items-center gap-3 px-4 py-2 text-amber-500 bg-neutral-900 rounded-lg font-medium transition-all duration-150 active:scale-95" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">account_tree</span>
+<span class="space-grotesk text-sm">任务编排</span>
+</a>
+<div class="flex items-center justify-between px-4 py-2 text-neutral-500 opacity-50 cursor-not-allowed">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined">database</span>
+<span class="space-grotesk text-sm">知识库</span>
+</div>
+<span class="text-[9px] bg-neutral-800 px-1.5 py-0.5 rounded text-neutral-400">SOON</span>
+</div>
+<div class="flex items-center justify-between px-4 py-2 text-neutral-500 opacity-50 cursor-not-allowed">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined">smart_toy</span>
+<span class="space-grotesk text-sm">模型管理</span>
+</div>
+<span class="text-[9px] bg-neutral-800 px-1.5 py-0.5 rounded text-neutral-400">SOON</span>
+</div>
+</nav>
+</div>
+<div class="space-y-1">
+<a class="flex items-center gap-3 px-4 py-2 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200 transition-colors rounded-lg group" href="#">
+<span class="material-symbols-outlined group-hover:rotate-45 transition-transform">settings</span>
+<span class="space-grotesk text-sm">设置</span>
+</a>
+</div>
+</aside>
+<!-- Main Canvas -->
+<main class="ml-64 flex-1 flex flex-col h-screen overflow-hidden">
+<!-- TopAppBar -->
+<header class="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-md flex items-center justify-between h-16 px-8">
+<div class="flex flex-col">
+<nav class="flex items-center gap-2 text-[11px] text-neutral-500 mb-0.5">
+<a class="hover:text-amber-500" href="#">任务列表</a>
+<span class="material-symbols-outlined text-[12px]">chevron_right</span>
+<a class="hover:text-amber-500" href="#">task-001 Tauri 桌面端重写</a>
+<span class="material-symbols-outlined text-[12px]">chevron_right</span>
+<span>工作流</span>
+<span class="material-symbols-outlined text-[12px]">chevron_right</span>
+<span class="text-neutral-300">run-003</span>
+</nav>
+<div class="flex items-center gap-3">
+<h2 class="text-lg font-semibold text-neutral-100 space-grotesk">round-007</h2>
+<div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-bold uppercase tracking-wider">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                            Running
+                        </div>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-6 mr-6 border-r border-neutral-800 pr-6">
+<div class="text-right">
+<p class="text-[10px] text-neutral-500 uppercase tracking-tighter">Trigger</p>
+<p class="text-sm font-medium text-neutral-300">Resume</p>
+</div>
+<div class="text-right">
+<p class="text-[10px] text-neutral-500 uppercase tracking-tighter">RepairLoopsUsed</p>
+<p class="text-sm font-medium text-neutral-300">1</p>
+</div>
+<div class="text-right">
+<p class="text-[10px] text-neutral-500 uppercase tracking-tighter">Current Node</p>
+<p class="text-sm font-medium text-amber-500">node-03 execute</p>
+</div>
+</div>
+<button class="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-4 py-2 rounded-lg text-sm font-medium transition-all">
+<span class="material-symbols-outlined text-sm">terminal</span>
+                        导出日志
+                    </button>
+<button class="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-neutral-950 px-4 py-2 rounded-lg text-sm font-bold transition-all active:scale-95 shadow-lg shadow-amber-500/10">
+<span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+                        继续运行
+                    </button>
+<button class="p-2 text-neutral-500 hover:text-neutral-200">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</div>
+</header>
+<!-- Workspace -->
+<div class="flex-1 flex overflow-hidden">
+<!-- Left Pane: Graph + Stream -->
+<div class="w-2/3 flex flex-col border-r border-neutral-800">
+<!-- Top: Execution Graph (Bento-ish Grid) -->
+<div class="h-1/2 p-6 overflow-y-auto bg-neutral-950/30">
+<div class="flex items-center justify-between mb-6">
+<h3 class="text-xs font-bold text-neutral-500 uppercase tracking-widest flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">hub</span>
+                                Execution Graph
+                            </h3>
+<div class="flex items-center gap-4 text-[10px] text-neutral-600">
+<div class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Success</div>
+<div class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span> Running</div>
+<div class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-neutral-700"></span> Pending</div>
+</div>
+</div>
+<!-- Graph Canvas -->
+<div class="relative flex flex-col gap-8 items-center py-4">
+<!-- Connectors (Simplified) -->
+<div class="absolute top-12 bottom-12 w-0.5 bg-neutral-800 left-1/2 -translate-x-1/2 -z-10"></div>
+<!-- Node: Prepare -->
+<div class="w-80 p-4 rounded-xl border border-green-500/30 bg-green-500/5 flex items-start justify-between relative">
+<div class="flex gap-3">
+<div class="mt-1 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center">
+<span class="material-symbols-outlined text-xs text-neutral-950" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<div>
+<p class="text-xs font-bold text-green-400 font-mono">prepare</p>
+<p class="text-[10px] text-neutral-500">Initialization complete</p>
+</div>
+</div>
+<div class="flex flex-col items-end gap-1">
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 font-mono">att: 1</span>
+<div class="flex gap-1">
+<span class="text-[8px] px-1 bg-blue-500/20 text-blue-400 rounded">A1</span>
+</div>
+</div>
+</div>
+<!-- Node: Plan -->
+<div class="w-80 p-4 rounded-xl border border-green-500/30 bg-green-500/5 flex items-start justify-between">
+<div class="flex gap-3">
+<div class="mt-1 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center">
+<span class="material-symbols-outlined text-xs text-neutral-950" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<div>
+<p class="text-xs font-bold text-green-400 font-mono">plan</p>
+<p class="text-[10px] text-neutral-500">Workflow strategy defined</p>
+</div>
+</div>
+<div class="flex flex-col items-end gap-1">
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 font-mono">att: 1</span>
+<div class="flex gap-1">
+<span class="text-[8px] px-1 bg-amber-500/20 text-amber-400 rounded border border-amber-500/30">A3</span>
+</div>
+</div>
+</div>
+<!-- Node: node-03 execute (SELECTED/RUNNING) -->
+<div class="w-[340px] p-5 rounded-xl border-2 border-amber-500 bg-amber-500/10 flex items-start justify-between shadow-[0_0_20px_rgba(245,158,11,0.1)] ring-4 ring-amber-500/5">
+<div class="flex gap-3">
+<div class="mt-1 w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center animate-pulse">
+<span class="material-symbols-outlined text-xs text-neutral-950" style="font-variation-settings: 'FILL' 1;">sync</span>
+</div>
+<div>
+<p class="text-sm font-bold text-amber-500 font-mono">node-03 execute</p>
+<p class="text-[11px] text-neutral-300 font-medium">Processing code logic...</p>
+<div class="mt-3 flex gap-2">
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase">A3 Artifact</span>
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-bold uppercase">P2 Attachment</span>
+</div>
+</div>
+</div>
+<div class="flex flex-col items-end gap-1">
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500 text-neutral-950 font-bold font-mono">att: 2</span>
+</div>
+</div>
+<!-- Node: Validate (Pending) -->
+<div class="w-80 p-4 rounded-xl border border-neutral-800 bg-neutral-900/40 flex items-start justify-between opacity-60">
+<div class="flex gap-3">
+<div class="mt-1 w-6 h-6 rounded-full border border-neutral-700 flex items-center justify-center">
+<span class="material-symbols-outlined text-xs text-neutral-600">pending</span>
+</div>
+<div>
+<p class="text-xs font-bold text-neutral-500 font-mono">validate</p>
+<p class="text-[10px] text-neutral-600">Verification pending</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom: Information Stream -->
+<div class="flex-1 flex flex-col border-t border-neutral-800 bg-neutral-950">
+<div class="flex items-center px-6 py-3 border-b border-neutral-800 justify-between">
+<div class="flex gap-6">
+<button class="text-xs font-bold text-amber-500 border-b-2 border-amber-500 pb-2">Stream: node-03</button>
+<button class="text-xs font-bold text-neutral-600 pb-2 hover:text-neutral-400">Round Summary</button>
+<button class="text-xs font-bold text-neutral-600 pb-2 hover:text-neutral-400">Events (12)</button>
+</div>
+<span class="text-[10px] text-neutral-500 font-mono italic">Esc 返回 round summary</span>
+</div>
+<div class="flex-1 overflow-y-auto p-4 space-y-3">
+<!-- Requirement Card -->
+<div class="bg-neutral-900/50 rounded-lg p-4 border border-neutral-800">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-xs text-blue-400">description</span>
+<span class="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Requirement</span>
+</div>
+<p class="text-sm text-neutral-300 leading-relaxed">
+                                    重写 Tauri 桌面端的核心窗口管理逻辑，确保在 Windows 和 macOS 下的窗口阴影表现一致，并修复多显示器下的 DPI 缩放偏移问题。
+                                </p>
+</div>
+<!-- Artifacts/Attachments Stream -->
+<div class="grid grid-cols-2 gap-4">
+<div class="group cursor-pointer bg-neutral-900/50 hover:bg-neutral-800 rounded-lg p-4 border border-neutral-800 transition-all">
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-xs text-amber-500" style="font-variation-settings: 'FILL' 1;">folder_zip</span>
+<span class="text-[10px] font-bold text-neutral-500 uppercase">Artifact A3</span>
+</div>
+<span class="material-symbols-outlined text-xs text-neutral-600 group-hover:text-amber-500">open_in_new</span>
+</div>
+<p class="text-xs text-neutral-400 font-mono truncate">window_manager_v2_core.rs</p>
+<div class="mt-2 flex items-center justify-between">
+<span class="text-[9px] text-neutral-600">Updated 2m ago</span>
+<span class="text-[9px] px-1 bg-neutral-800 text-neutral-400 rounded">1.2MB</span>
+</div>
+</div>
+<div class="group cursor-pointer bg-neutral-900/50 hover:bg-neutral-800 rounded-lg p-4 border border-neutral-800 transition-all">
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-xs text-indigo-400" style="font-variation-settings: 'FILL' 1;">attachment</span>
+<span class="text-[10px] font-bold text-neutral-500 uppercase">Attachment P2</span>
+</div>
+<span class="material-symbols-outlined text-xs text-neutral-600 group-hover:text-indigo-400">open_in_new</span>
+</div>
+<p class="text-xs text-neutral-400 font-mono truncate">dpi_scaling_logs_win11.txt</p>
+<div class="mt-2 flex items-center justify-between">
+<span class="text-[9px] text-neutral-600">Captured 14m ago</span>
+<span class="text-[9px] px-1 bg-neutral-800 text-neutral-400 rounded">45KB</span>
+</div>
+</div>
+</div>
+<!-- Event Row -->
+<div class="flex items-center gap-4 px-4 py-3 bg-neutral-900/30 rounded-lg border border-neutral-800/50 group cursor-pointer hover:border-amber-500/30">
+<span class="text-[10px] font-mono text-neutral-600">14:22:05</span>
+<span class="w-2 h-2 rounded-full bg-blue-500"></span>
+<span class="text-xs text-neutral-300 flex-1">Provider <span class="text-amber-500 font-mono">gpt-4-turbo</span> started generation...</span>
+<span class="material-symbols-outlined text-sm text-neutral-600 group-hover:text-neutral-400">chevron_right</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Pane: Detail Viewer -->
+<div class="w-1/3 flex flex-col bg-neutral-950">
+<div class="p-6 border-b border-neutral-800">
+<h3 class="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-6">Detail Viewer</h3>
+<div class="space-y-6">
+<div>
+<h4 class="text-[10px] text-neutral-500 uppercase mb-2">Provider Session</h4>
+<div class="flex items-center justify-between bg-neutral-900 rounded px-3 py-2 border border-neutral-800">
+<span class="text-xs font-mono text-neutral-300">sess-9923-a20b-xk92</span>
+<button class="text-amber-500 text-[10px] font-bold hover:underline">查看会话</button>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div>
+<h4 class="text-[10px] text-neutral-500 uppercase mb-1">Attempt ID</h4>
+<p class="text-xs font-mono text-neutral-300">att-2-node03-rev1</p>
+</div>
+<div>
+<h4 class="text-[10px] text-neutral-500 uppercase mb-1">Duration</h4>
+<p class="text-xs font-mono text-neutral-300">1m 44s</p>
+</div>
+</div>
+<div class="pt-4 border-t border-neutral-800">
+<h4 class="text-[10px] text-neutral-500 uppercase mb-3">Event JSON Preview</h4>
+<div class="bg-neutral-900 rounded-lg p-4 font-mono text-[11px] text-neutral-400 overflow-x-auto leading-relaxed border border-neutral-800">
+<pre><code>{
+  "event": "node_execute_start",
+  "node_id": "node-03",
+  "params": {
+    "module": "rust_codegen",
+    "target": "tauri_core",
+    "context_depth": 4
+  },
+  "timestamp": "2023-10-24T14:22:05Z"
+}</code></pre>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-auto p-6 space-y-3">
+<button class="w-full flex items-center justify-center gap-2 py-3 rounded-lg bg-neutral-900 border border-neutral-800 text-xs font-bold text-neutral-300 hover:bg-neutral-800 transition-all">
+<span class="material-symbols-outlined text-sm">content_copy</span>
+                            复制 node id
+                        </button>
+<button class="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-amber-500/50 text-amber-500 text-xs font-bold hover:bg-amber-500/5 transition-all">
+<span class="material-symbols-outlined text-sm">replay</span>
+                            从该节点重试
+                        </button>
+</div>
+</div>
+</div>
+<!-- Resize Hint / Footer bar -->
+<div class="h-1 bg-neutral-900 flex items-center justify-center cursor-row-resize hover:bg-amber-500/20 transition-colors">
+<div class="w-8 h-0.5 bg-neutral-700 rounded-full"></div>
+</div>
+</main>
+</div>
+<!-- Hidden Resizable Divider Logic Hints -->
+<div class="fixed bottom-4 right-4 pointer-events-none opacity-20">
+<img class="w-32 h-32 object-cover rounded-lg" data-alt="A sophisticated abstract rendering of complex interconnected data nodes and glowing golden neural networks. The visual style is highly technical, featuring thin glowing lines and dark geometric surfaces that reflect the amber and deep blue color palette of a high-end engineering software dashboard. The lighting is focused and dramatic, suggesting a dark-mode professional desktop interface environment." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDQqDiCQrqc5GkgwS04xeWYiKit7gsv0YGcDfY-8Ba6j8LGv4TEbO1z5UFO1MPisu-viGlsnHj2ziGBZwdNcJidvT5LAmaPdmJM6dHh2K0_PdrKuBU6UEwtIRGX5hNG1tJyaDQnTYoXHJrfuKF5fp0x6HUbB_JJ24EHUq2qYu2sNRzUyjJxEkwaK79KmdFlEZ07KbudcbLneklpU63DigQmDYqd9_jGDsQKVDabvnZuNE-xvucFATGoOoffsh_OT6JcWa5E5pD_2w"/>
+</div>
+</body></html>

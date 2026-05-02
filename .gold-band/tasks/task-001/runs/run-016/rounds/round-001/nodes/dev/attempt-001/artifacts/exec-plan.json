@@ -1,0 +1,54 @@
+{
+  "version": "0.1",
+  "commands": [
+    {
+      "id": "inspect-web-dir",
+      "run": "ls -la",
+      "purpose": "检查 web 目录当前文件结构，确认可复用的前端项目或空目录状态",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "scaffold-random-poem-site",
+      "run": "mkdir -p assets data && touch index.html styles.css app.js data/poems.json",
+      "purpose": "在 web 目录下建立古诗词随机展示网站所需的基础文件与数据目录",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "implement-page-structure",
+      "run": "编写 index.html，包含页面标题、古诗词展示卡片、作者与朝代信息、随机切换按钮，以及适配移动端的语义化结构",
+      "purpose": "实现网站首页的 HTML 结构",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "implement-visual-style",
+      "run": "编写 styles.css，提供中国风但简洁的布局、卡片样式、按钮交互、背景与响应式适配",
+      "purpose": "实现古诗词网站的视觉样式",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "prepare-poem-dataset",
+      "run": "编写 data/poems.json，整理一组适合展示的古诗词数据，字段至少包含 title、author、dynasty、content",
+      "purpose": "准备随机展示所需的古诗词数据源",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "implement-random-display-logic",
+      "run": "编写 app.js，加载古诗词数据，页面初始化时随机展示一首，并在点击按钮时切换到新的随机诗词，避免连续重复",
+      "purpose": "实现随机展示与交互逻辑",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    },
+    {
+      "id": "verify-site-locally",
+      "run": "使用本地静态方式打开或启动简单 HTTP 服务进行检查，确认页面可加载、诗词可随机切换、样式正常显示",
+      "purpose": "验证网站实现结果可正常运行",
+      "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
+      "timeout_sec": null
+    }
+  ]
+}

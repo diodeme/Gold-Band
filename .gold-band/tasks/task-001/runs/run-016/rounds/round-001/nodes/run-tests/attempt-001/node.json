@@ -1,0 +1,15 @@
+{
+  "version": "0.1",
+  "node_id": "run-tests",
+  "node_type": "exec",
+  "run_id": "run-016",
+  "round_id": "round-001",
+  "attempt_id": "attempt-001",
+  "status": "completed",
+  "outcome": "failure",
+  "started_at": "1775574795Z",
+  "finished_at": "1775574795Z",
+  "resolved_config": {
+    "planFrom": "dev"
+  }
+}

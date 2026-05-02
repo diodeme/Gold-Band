@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Gold Band - 任务编排</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-container-low": "#0b1c30",
+                        "surface-container": "#102034",
+                        "on-primary-fixed-variant": "#653e00",
+                        "inverse-primary": "#855300",
+                        "surface-dim": "#031427",
+                        "on-secondary-fixed-variant": "#474746",
+                        "on-secondary-fixed": "#1c1b1b",
+                        "primary": "#ffc174",
+                        "on-surface": "#d3e4fe",
+                        "inverse-on-surface": "#213145",
+                        "primary-container": "#f59e0b",
+                        "background": "#031427",
+                        "surface-bright": "#2a3a4f",
+                        "on-error-container": "#ffdad6",
+                        "secondary": "#c8c6c5",
+                        "on-background": "#d3e4fe",
+                        "secondary-fixed": "#e5e2e1",
+                        "primary-fixed": "#ffddb8",
+                        "on-secondary-container": "#b7b5b4",
+                        "tertiary-fixed": "#e4e2e1",
+                        "error": "#ffb4ab",
+                        "surface": "#031427",
+                        "error-container": "#93000a",
+                        "secondary-container": "#474746",
+                        "surface-container-lowest": "#000f21",
+                        "on-primary-container": "#613b00",
+                        "on-tertiary-fixed": "#1b1c1c",
+                        "on-error": "#690005",
+                        "on-tertiary-container": "#444444",
+                        "surface-container-highest": "#26364a",
+                        "on-tertiary-fixed-variant": "#474747",
+                        "on-secondary": "#313030",
+                        "on-primary": "#472a00",
+                        "on-primary-fixed": "#2a1700",
+                        "secondary-fixed-dim": "#c8c6c5",
+                        "surface-tint": "#ffb95f",
+                        "outline": "#a08e7a",
+                        "on-tertiary": "#303030",
+                        "tertiary-fixed-dim": "#c8c6c6",
+                        "tertiary-container": "#b3b1b0",
+                        "tertiary": "#cecccc",
+                        "primary-fixed-dim": "#ffb95f",
+                        "on-surface-variant": "#d8c3ad",
+                        "surface-variant": "#26364a",
+                        "surface-container-high": "#1b2b3f",
+                        "outline-variant": "#534434",
+                        "inverse-surface": "#d3e4fe"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk"],
+                        "display": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-headline { font-family: 'Space Grotesk', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="bg-stone-950 text-stone-100 min-h-screen flex overflow-hidden">
+<!-- SideNavBar (JSON-Defined Anchor) -->
+<aside class="fixed left-0 top-0 h-full flex flex-col py-6 bg-stone-950 border-r border-stone-800 w-64 z-50">
+<div class="px-6 mb-10 flex items-center gap-3">
+<div class="w-8 h-8 bg-amber-500 rounded flex items-center justify-center">
+<span class="material-symbols-outlined text-stone-950 text-xl" style="font-variation-settings: 'FILL' 1;">deployed_code</span>
+</div>
+<div>
+<h1 class="text-amber-500 font-bold text-xl tracking-wider font-headline">Gold Band</h1>
+<p class="text-stone-500 text-xs font-headline">AI Orchestrator</p>
+</div>
+</div>
+<nav class="flex-1 px-3 space-y-1">
+<!-- Active: 任务编排 -->
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-amber-500 bg-stone-900/50 border-r-2 border-amber-500 font-headline text-sm tracking-tight transition-colors duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="account_tree">account_tree</span>
+<span>任务编排</span>
+</a>
+<!-- Inactive/Disabled: 知识库 -->
+<div class="flex items-center justify-between px-3 py-2.5 rounded-lg text-stone-600 font-headline text-sm tracking-tight cursor-not-allowed">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined" data-icon="database">database</span>
+<span>知识库</span>
+</div>
+<span class="text-[10px] bg-stone-800 px-1.5 py-0.5 rounded text-stone-500 uppercase">Soon</span>
+</div>
+<!-- Inactive/Disabled: 模型管理 -->
+<div class="flex items-center justify-between px-3 py-2.5 rounded-lg text-stone-600 font-headline text-sm tracking-tight cursor-not-allowed">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined" data-icon="neurology">neurology</span>
+<span>模型管理</span>
+</div>
+<span class="text-[10px] bg-stone-800 px-1.5 py-0.5 rounded text-stone-500 uppercase">Soon</span>
+</div>
+</nav>
+<div class="px-3 border-t border-stone-800 pt-4">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-stone-500 hover:text-stone-300 hover:bg-stone-900/30 font-headline text-sm tracking-tight transition-colors duration-200 cursor-pointer" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span>Settings</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 flex flex-col h-screen overflow-hidden bg-background">
+<!-- TopAppBar (JSON-Defined Anchor) -->
+<header class="flex justify-between items-center px-8 py-4 sticky top-0 z-40 bg-stone-950/80 backdrop-blur-md border-b border-stone-800">
+<div class="flex items-center gap-6">
+<h2 class="text-stone-100 font-semibold font-headline">任务编排</h2>
+<nav class="flex gap-6">
+<a class="text-amber-500 border-b-2 border-amber-500 pb-1 font-headline text-sm transition-all" href="#">All Tasks</a>
+<a class="text-stone-400 hover:text-stone-100 font-headline text-sm transition-all" href="#">Running</a>
+<a class="text-stone-400 hover:text-stone-100 font-headline text-sm transition-all" href="#">Completed</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<button class="bg-stone-800 text-stone-300 px-4 py-2 rounded-lg text-sm font-medium hover:bg-stone-700 transition-all flex items-center gap-2 border border-stone-700">
+<span class="material-symbols-outlined text-sm" data-icon="refresh">refresh</span>
+<span>Refresh</span>
+</button>
+<button class="bg-amber-500 text-stone-950 px-4 py-2 rounded-lg text-sm font-bold hover:bg-amber-400 transition-all shadow-lg shadow-amber-500/10">
+                    Create Task
+                </button>
+<button class="text-stone-400 hover:text-stone-100">
+<span class="material-symbols-outlined" data-icon="more_vert">more_vert</span>
+</button>
+</div>
+</header>
+<!-- Page Content Scrollable -->
+<div class="flex-1 flex overflow-hidden">
+<!-- Table Section -->
+<section class="flex-1 flex flex-col overflow-hidden p-8">
+<!-- Breadcrumbs & Title -->
+<div class="mb-8">
+<div class="flex items-center gap-2 text-stone-500 text-xs mb-2 font-medium tracking-wide">
+<span>Workspace</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-stone-400">任务列表</span>
+</div>
+<div class="flex justify-between items-end">
+<div>
+<h3 class="text-3xl font-bold text-stone-100 font-headline mb-1">任务编排</h3>
+<p class="text-stone-400 text-sm">管理 requirements、运行状态与 workflow 执行历史.</p>
+</div>
+<div class="flex gap-2">
+<button class="px-3 py-1.5 bg-stone-900 border border-stone-800 text-stone-300 rounded text-xs font-medium hover:bg-stone-800 transition-colors">导入 requirements</button>
+</div>
+</div>
+</div>
+<!-- Summary Cards Bento Grid -->
+<div class="grid grid-cols-5 gap-4 mb-8">
+<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
+<span class="text-stone-500 text-xs font-medium">全部任务</span>
+<span class="text-3xl font-bold font-headline text-stone-100">24</span>
+</div>
+<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
+<span class="text-stone-500 text-xs font-medium">运行中</span>
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+<span class="text-3xl font-bold font-headline text-blue-400">3</span>
+</div>
+</div>
+<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
+<span class="text-stone-500 text-xs font-medium">可恢复</span>
+<span class="text-3xl font-bold font-headline text-orange-400">2</span>
+</div>
+<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
+<span class="text-stone-500 text-xs font-medium">校验失败</span>
+<span class="text-3xl font-bold font-headline text-red-400">4</span>
+</div>
+<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
+<span class="text-stone-500 text-xs font-medium">最近完成</span>
+<span class="text-3xl font-bold font-headline text-green-400">8</span>
+</div>
+</div>
+<!-- Custom Task Table -->
+<div class="flex-1 bg-surface-container-low rounded-xl border border-stone-800 overflow-hidden flex flex-col">
+<div class="overflow-x-auto scrollbar-hide">
+<table class="w-full text-left border-collapse min-w-[1000px]">
+<thead>
+<tr class="border-b border-stone-800 bg-stone-900/40">
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">ID</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Title</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Status</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Workflow Validation</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Latest Run</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider">Updated</th>
+<th class="px-4 py-3 text-xs font-semibold text-stone-500 uppercase tracking-wider text-right">Artifacts</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-stone-800/50">
+<!-- Row 1 -->
+<tr class="hover:bg-stone-800/30 transition-colors group cursor-pointer">
+<td class="px-4 py-4 font-mono text-[11px] text-stone-500">task-001</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<span class="text-stone-100 font-medium text-sm">Tauri 桌面端重写</span>
+<span class="text-stone-500 text-[11px] mt-1 line-clamp-1">Refactor legacy electron to tauri...</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+<span class="text-xs text-blue-400 font-medium">Running</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-1.5 text-green-500">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+<span class="text-xs">valid</span>
+</div>
+</td>
+<td class="px-4 py-4 font-mono text-[11px] text-stone-400">run-003</td>
+<td class="px-4 py-4 text-[11px] text-stone-500">2m ago</td>
+<td class="px-4 py-4 text-right">
+<span class="text-xs bg-stone-800 px-2 py-0.5 rounded text-stone-400">8 artifacts</span>
+</td>
+</tr>
+<!-- Row 2 (Selected Row) -->
+<tr class="bg-amber-500/5 border-l-2 border-l-amber-500 group cursor-pointer">
+<td class="px-4 py-4 font-mono text-[11px] text-amber-500/70">task-002</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<span class="text-amber-500 font-semibold text-sm">修复 provider 输出</span>
+<span class="text-stone-400 text-[11px] mt-1 line-clamp-1">Fixing inconsistent JSON output from local LLM providers...</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-orange-500"></span>
+<span class="text-xs text-orange-400 font-medium">Resumable</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-1.5 text-green-500">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+<span class="text-xs">valid</span>
+</div>
+</td>
+<td class="px-4 py-4 font-mono text-[11px] text-amber-400/80">run-002</td>
+<td class="px-4 py-4 text-[11px] text-stone-400">1h ago</td>
+<td class="px-4 py-4 text-right">
+<span class="text-xs bg-amber-500/20 px-2 py-0.5 rounded text-amber-500">3 artifacts</span>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-stone-800/30 transition-colors group cursor-pointer">
+<td class="px-4 py-4 font-mono text-[11px] text-stone-500">task-003</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<span class="text-stone-100 font-medium text-sm">优化文档结构</span>
+<span class="text-stone-500 text-[11px] mt-1 line-clamp-1">Auto-summarize long project documentation...</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+<span class="text-xs text-red-400 font-medium">Failed</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5 text-red-500">
+<span class="material-symbols-outlined text-[16px]">error</span>
+<span class="text-xs">invalid</span>
+</div>
+<span class="text-[10px] text-stone-500">reason: schema mismatch</span>
+</div>
+</td>
+<td class="px-4 py-4 font-mono text-[11px] text-stone-400">run-001</td>
+<td class="px-4 py-4 text-[11px] text-stone-500">Yesterday</td>
+<td class="px-4 py-4 text-right">
+<span class="text-xs bg-stone-800 px-2 py-0.5 rounded text-stone-400">1 artifact</span>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-stone-800/30 transition-colors group cursor-pointer">
+<td class="px-4 py-4 font-mono text-[11px] text-stone-500">task-004</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<span class="text-stone-100 font-medium text-sm">新增观测索引</span>
+<span class="text-stone-500 text-[11px] mt-1 line-clamp-1">Vectorize observability logs for retrieval...</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-stone-500"></span>
+<span class="text-xs text-stone-500 font-medium">Missing Workflow</span>
+</div>
+</td>
+<td class="px-4 py-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5 text-stone-500">
+<span class="material-symbols-outlined text-[16px]">help</span>
+<span class="text-xs">missing validate node</span>
+</div>
+</div>
+</td>
+<td class="px-4 py-4 font-mono text-[11px] text-stone-600">-</td>
+<td class="px-4 py-4 text-[11px] text-stone-600">3d ago</td>
+<td class="px-4 py-4 text-right">
+<span class="text-xs bg-stone-800/40 px-2 py-0.5 rounded text-stone-600">0</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Preview Panel (Right) -->
+<aside class="w-96 bg-stone-900 border-l border-stone-800 flex flex-col">
+<div class="p-6 border-b border-stone-800 flex justify-between items-center">
+<h4 class="font-headline font-bold text-lg text-amber-500 uppercase tracking-tighter">Task Preview</h4>
+<button class="text-stone-500 hover:text-stone-300">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto p-6 scrollbar-hide space-y-8">
+<!-- Task Identity -->
+<div>
+<div class="flex items-center gap-2 mb-2">
+<span class="bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded text-[10px] font-mono tracking-tighter">task-002</span>
+<span class="bg-orange-500/10 text-orange-500 px-2 py-0.5 rounded text-[10px] font-bold">RESUMABLE</span>
+</div>
+<h5 class="text-xl font-bold text-stone-100 font-headline leading-tight">修复 provider 输出</h5>
+<p class="text-stone-400 text-xs mt-2 italic border-l-2 border-stone-700 pl-3">"LLM 响应格式不统一，需要强制 Schema 校验并对失败情况进行多次重试，直到生成有效的 JSON 对象。"</p>
+</div>
+<!-- Requirement Summary Card -->
+<div class="space-y-3">
+<div class="flex items-center gap-2 text-xs font-semibold text-stone-500 uppercase tracking-widest">
+<span class="material-symbols-outlined text-[14px]">description</span>
+<span>Requirement Summary</span>
+</div>
+<div class="bg-stone-950 p-4 rounded-lg border border-stone-800 space-y-3">
+<div class="flex justify-between items-start gap-4">
+<div class="text-[13px] text-stone-300 flex-1">
+                                    该任务旨在解决由于模型采样不稳定导致的 Provider 结果截断问题。
+                                </div>
+<div class="w-16 h-16 rounded overflow-hidden flex-shrink-0">
+<img class="w-full h-full object-cover grayscale brightness-75 hover:grayscale-0 transition-all duration-500" data-alt="A macro close-up of a high-resolution motherboard circuit with glowing gold copper traces running through deep charcoal black fiberglass. Soft amber ambient light reflects off the silicon components, creating a sophisticated technological atmosphere. The lighting is moody and focused, highlighting the precision of the engineering details in a dark mode aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCxzTMwv7JkjdJ_I5S9SpkTNFcXIpUVebVdWC5_alUQhf4wppAgc-j6tt0f_e947zuxUU2wTTeL4kP7-ylc44ZljioicHgQCAsbXNrrOGTlVU7birD-fe5hvsYqH7A8RjtSDrc5els93McTJjvxd-9wLQ5bBYXZsaRy6Mwd-uivm8LkstBF6GuBlB8YNfb3JbbTGpNMv2PrcwMuSdwgPGCwQZJ_dJSGpkUkRJGGlftxGWbYOh2cuusytL03Elwex9EzvxH2K4oMJQ"/>
+</div>
+</div>
+<div class="pt-3 border-t border-stone-800 grid grid-cols-2 gap-4">
+<div>
+<span class="text-[10px] text-stone-500 block">Nodes Used</span>
+<span class="text-xs text-stone-300 font-medium">8 LLM Nodes</span>
+</div>
+<div>
+<span class="text-[10px] text-stone-500 block">Avg. Latency</span>
+<span class="text-xs text-stone-300 font-medium">1.2s</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Latest Run Stats -->
+<div class="space-y-3">
+<div class="flex items-center gap-2 text-xs font-semibold text-stone-500 uppercase tracking-widest">
+<span class="material-symbols-outlined text-[14px]">analytics</span>
+<span>Execution Stats</span>
+</div>
+<div class="space-y-2">
+<div class="flex justify-between text-xs">
+<span class="text-stone-500">Success Rate</span>
+<span class="text-green-400 font-mono">92.4%</span>
+</div>
+<div class="w-full bg-stone-800 h-1 rounded-full overflow-hidden">
+<div class="bg-green-500 h-full w-[92.4%]"></div>
+</div>
+<div class="flex justify-between text-xs mt-4">
+<span class="text-stone-500">Token Consumption</span>
+<span class="text-stone-300 font-mono">42.1k</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer Actions -->
+<div class="p-6 bg-stone-950 border-t border-stone-800 space-y-3">
+<button class="w-full bg-amber-500 text-stone-950 font-bold py-2.5 rounded-lg text-sm flex items-center justify-center gap-2 hover:bg-amber-400 transition-all">
+<span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+<span>继续执行 (Run-002)</span>
+</button>
+<div class="grid grid-cols-2 gap-3">
+<button class="bg-stone-800 text-stone-300 font-medium py-2 rounded-lg text-xs flex items-center justify-center gap-2 hover:bg-stone-700 transition-all border border-stone-700">
+<span class="material-symbols-outlined text-[16px]">open_in_new</span>
+<span>进入任务</span>
+</button>
+<button class="bg-stone-800 text-stone-300 font-medium py-2 rounded-lg text-xs flex items-center justify-center gap-2 hover:bg-stone-700 transition-all border border-stone-700">
+<span class="material-symbols-outlined text-[16px]">inventory_2</span>
+<span>查看产物</span>
+</button>
+</div>
+</div>
+</aside>
+</div>
+</main>
+</body></html>

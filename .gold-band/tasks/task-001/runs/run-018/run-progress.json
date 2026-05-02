@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "status": "paused",
+  "currentRoundId": "round-001",
+  "currentNodeId": "accept",
+  "currentNodeType": "verify",
+  "currentAttemptId": "attempt-001",
+  "currentStage": "blocked",
+  "summary": "run run-018 blocked at round-001/accept/attempt-001: missing field `unmet_requirements` at line 1 column 318",
+  "updatedAt": "1775575713Z"
+}

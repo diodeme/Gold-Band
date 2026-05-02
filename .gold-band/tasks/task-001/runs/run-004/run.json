@@ -1,0 +1,15 @@
+{
+  "version": "0.1",
+  "id": "run-004",
+  "task_id": "task-001",
+  "status": "running",
+  "outcome": null,
+  "started_at": "1775033410Z",
+  "updated_at": "1775033410Z",
+  "workflow_snapshot": "workflow.snapshot.json",
+  "current_round": "round-001",
+  "current_node": "dev",
+  "current_attempt": "attempt-001",
+  "acceptance_loops_used": 0,
+  "pause_reason": null
+}

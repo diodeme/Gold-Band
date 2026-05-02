@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "provider": "claude-code",
+  "mode": "new",
+  "supports_open_session": true,
+  "supports_continue_session": true,
+  "continue_ref": {
+    "sessionId": "a1b3378e-4b1d-4635-abdd-b12ff516002b"
+  },
+  "open_command": "claude -c a1b3378e-4b1d-4635-abdd-b12ff516002b"
+}

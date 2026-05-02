@@ -38,6 +38,10 @@ impl GoldBandPaths {
         Utf8PathBuf::from(home).join(".gold-band")
     }
 
+    pub fn user_config_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_dir().join("config.json")
+    }
+
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
         self.user_gold_band_dir().join("presets")
     }

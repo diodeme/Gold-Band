@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Gold Band AI Orchestrator - Task Workflow</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600&amp;family=JetBrains+Mono&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-tertiary-container": "#444444",
+                        "surface": "#031427",
+                        "surface-dim": "#031427",
+                        "primary": "#ffc174",
+                        "on-primary-fixed": "#2a1700",
+                        "surface-tint": "#ffb95f",
+                        "secondary-fixed-dim": "#c8c6c5",
+                        "on-tertiary": "#303030",
+                        "outline": "#a08e7a",
+                        "on-secondary-fixed": "#1c1b1b",
+                        "primary-container": "#f59e0b",
+                        "secondary-container": "#474746",
+                        "on-surface-variant": "#d8c3ad",
+                        "on-secondary": "#313030",
+                        "tertiary": "#cecccc",
+                        "surface-bright": "#2a3a4f",
+                        "on-tertiary-fixed-variant": "#474747",
+                        "surface-container-high": "#1b2b3f",
+                        "on-surface": "#d3e4fe",
+                        "on-secondary-container": "#b7b5b4",
+                        "inverse-surface": "#d3e4fe",
+                        "tertiary-fixed": "#e4e2e1",
+                        "on-error-container": "#ffdad6",
+                        "on-secondary-fixed-variant": "#474746",
+                        "primary-fixed": "#ffddb8",
+                        "secondary": "#c8c6c5",
+                        "tertiary-fixed-dim": "#c8c6c6",
+                        "surface-container-lowest": "#000f21",
+                        "error": "#ffb4ab",
+                        "surface-container": "#102034",
+                        "on-primary-fixed-variant": "#653e00",
+                        "surface-variant": "#26364a",
+                        "primary-fixed-dim": "#ffb95f",
+                        "outline-variant": "#534434",
+                        "inverse-on-surface": "#213145",
+                        "error-container": "#93000a",
+                        "on-background": "#d3e4fe",
+                        "on-primary": "#472a00",
+                        "surface-container-highest": "#26364a",
+                        "surface-container-low": "#0b1c30",
+                        "on-error": "#690005",
+                        "on-tertiary-fixed": "#1b1c1c",
+                        "inverse-primary": "#855300",
+                        "on-primary-container": "#613b00",
+                        "tertiary-container": "#b3b1b0",
+                        "background": "#031427",
+                        "secondary-fixed": "#e5e2e1"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk"],
+                        "display": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"],
+                        "mono": ["JetBrains Mono"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-space { font-family: 'Space Grotesk', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #26364a; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #f59e0b; }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 selection:bg-amber-500/30 selection:text-amber-500 overflow-hidden">
+<!-- Fixed App Shell Wrapper -->
+<div class="flex h-screen w-full overflow-hidden">
+<!-- SideNavBar - Identity Logic -->
+<aside class="fixed left-0 top-0 h-full w-64 border-r border-zinc-800/50 bg-zinc-950 flex flex-col p-4 gap-2 font-['Space_Grotesk'] antialiased">
+<!-- Brand -->
+<div class="px-4 py-6 mb-4">
+<div class="text-amber-500 font-bold tracking-tight text-xl">Gold Band</div>
+<div class="text-xs text-zinc-500 uppercase tracking-widest mt-1">AI Orchestrator</div>
+</div>
+<!-- Main Nav Items -->
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 text-amber-500 bg-amber-500/10 rounded-lg transition-all active:scale-95 duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="account_tree">account_tree</span>
+<span class="font-medium text-sm">任务编排</span>
+</a>
+<div class="flex items-center gap-3 px-4 py-3 text-zinc-500 opacity-50 cursor-not-allowed">
+<span class="material-symbols-outlined" data-icon="menu_book">menu_book</span>
+<span class="font-medium text-sm">知识库</span>
+<span class="ml-auto text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-400">SOON</span>
+</div>
+<div class="flex items-center gap-3 px-4 py-3 text-zinc-500 opacity-50 cursor-not-allowed">
+<span class="material-symbols-outlined" data-icon="model_training">model_training</span>
+<span class="font-medium text-sm">模型管理</span>
+<span class="ml-auto text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-400">SOON</span>
+</div>
+</nav>
+<!-- Footer Nav -->
+<div class="pt-4 border-t border-zinc-800/50">
+<a class="flex items-center gap-3 px-4 py-3 text-zinc-400 hover:bg-zinc-900/50 transition-colors rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-medium text-sm">Settings</span>
+</a>
+</div>
+</aside>
+<!-- Main Workspace -->
+<main class="ml-64 flex-1 flex flex-col overflow-hidden bg-zinc-950">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full z-40 border-b border-zinc-800/50 bg-zinc-900/80 backdrop-blur-sm flex justify-between items-center px-8 h-16 font-['Space_Grotesk'] text-sm">
+<div class="flex items-center gap-4">
+<div class="font-bold text-zinc-100">任务编排 / Workflow</div>
+<div class="h-4 w-px bg-zinc-700"></div>
+<div class="flex gap-6">
+<a class="text-zinc-400 pb-4 translate-y-[8px] hover:text-zinc-200" href="#">Overview</a>
+<a class="text-amber-500 font-semibold border-b-2 border-amber-500 pb-4 translate-y-[8px]" href="#">Runs</a>
+<a class="text-zinc-400 pb-4 translate-y-[8px] hover:text-zinc-200" href="#">Nodes</a>
+<a class="text-zinc-400 pb-4 translate-y-[8px] hover:text-zinc-200" href="#">Artifacts</a>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<button class="bg-amber-500 text-black px-4 py-1.5 rounded-md font-bold hover:bg-amber-400 transition-colors active:scale-98">新建 run</button>
+<button class="bg-zinc-800 text-zinc-200 px-4 py-1.5 rounded-md font-bold hover:bg-zinc-700 transition-colors active:scale-98 border border-zinc-700">继续运行</button>
+</div>
+</header>
+<!-- Scrollable Content Canvas -->
+<div class="flex-1 overflow-y-auto overflow-x-hidden p-8 space-y-6">
+<!-- Breadcrumbs & Header -->
+<div class="space-y-4">
+<nav class="flex items-center gap-2 text-xs text-zinc-500 font-mono">
+<span class="hover:text-zinc-300 cursor-pointer">任务列表</span>
+<span class="material-symbols-outlined text-[12px]" data-icon="chevron_right">chevron_right</span>
+<span class="hover:text-zinc-300 cursor-pointer text-zinc-400">task-001 Tauri 桌面端重写</span>
+<span class="material-symbols-outlined text-[12px]" data-icon="chevron_right">chevron_right</span>
+<span class="text-amber-500/80">工作流</span>
+</nav>
+<div class="flex justify-between items-end">
+<div>
+<h1 class="text-3xl font-bold font-space tracking-tight text-zinc-100">task-001 Tauri 桌面端重写</h1>
+<p class="text-zinc-500 mt-1 max-w-2xl">Requirement summary: Migration of legacy Electron modules to native Rust/Tauri framework. <span class="text-blue-400">Current status: node-03 execute is currently active.</span></p>
+</div>
+<div class="flex gap-2">
+<button class="flex items-center gap-2 px-3 py-2 bg-zinc-900 border border-zinc-700 text-zinc-300 rounded hover:bg-zinc-800 transition-all text-xs font-medium">
+<span class="material-symbols-outlined text-sm" data-icon="description">description</span> 查看 requirement
+                            </button>
+<button class="flex items-center gap-2 px-3 py-2 border border-red-500/30 text-red-500 rounded hover:bg-red-500/10 transition-all text-xs font-medium relative group">
+<span class="material-symbols-outlined text-sm" data-icon="stop_circle">stop_circle</span> 停止当前 run
+                                <!-- Confirmation popover simulation -->
+<div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-zinc-900 border border-zinc-700 p-3 rounded-lg shadow-xl hidden group-hover:block z-50">
+<p class="text-zinc-300 text-[10px] mb-2 leading-relaxed">确定要终止运行中的 run-003 吗？这可能导致不完整的结果。</p>
+<div class="flex justify-end gap-2">
+<div class="px-2 py-1 bg-red-600 text-white rounded text-[10px] cursor-pointer">确定终止</div>
+</div>
+<div class="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-r border-b border-zinc-700 rotate-45 -mt-1"></div>
+</div>
+</button>
+</div>
+</div>
+<!-- Metrics Bar -->
+<div class="grid grid-cols-5 gap-px bg-zinc-800 border border-zinc-800 rounded-lg overflow-hidden">
+<div class="bg-zinc-900/50 p-4">
+<div class="text-[10px] uppercase text-zinc-500 font-bold mb-1">Task ID</div>
+<div class="font-mono text-zinc-200">task-001</div>
+</div>
+<div class="bg-zinc-900/50 p-4">
+<div class="text-[10px] uppercase text-zinc-500 font-bold mb-1">Workflow Status</div>
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
+<span class="font-medium text-zinc-200">Valid</span>
+</div>
+</div>
+<div class="bg-zinc-900/50 p-4">
+<div class="text-[10px] uppercase text-zinc-500 font-bold mb-1">Active Run</div>
+<div class="font-mono text-amber-500">run-003</div>
+</div>
+<div class="bg-zinc-900/50 p-4">
+<div class="text-[10px] uppercase text-zinc-500 font-bold mb-1">Outcome</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-blue-400 text-sm animate-spin" data-icon="sync" style="font-size: 14px;">sync</span>
+<span class="font-medium text-blue-400">Running</span>
+</div>
+</div>
+<div class="bg-zinc-900/50 p-4">
+<div class="text-[10px] uppercase text-zinc-500 font-bold mb-1">Artifacts</div>
+<div class="flex items-center gap-2">
+<span class="font-mono text-zinc-200">8</span>
+<span class="material-symbols-outlined text-amber-500/50 text-sm" data-icon="inventory_2" style="font-size: 16px;">inventory_2</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Upper Panel: Workflow Graph + Node Sidebar -->
+<div class="flex gap-4 h-[320px]">
+<!-- Main Graph Canvas -->
+<div class="flex-1 bg-zinc-900/30 border border-zinc-800/60 rounded-xl relative overflow-hidden flex items-center justify-center group">
+<!-- Grid Background -->
+<div class="absolute inset-0 opacity-10" style="background-image: radial-gradient(#ffffff 1px, transparent 0); background-size: 24px 24px;"></div>
+<!-- SVG Connections (Simplified) -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none">
+<path d="M120 160 L180 160" stroke="#3f3f46" stroke-width="2"></path>
+<path d="M300 160 L360 160" stroke="#3f3f46" stroke-width="2"></path>
+<path d="M480 160 L540 160" stroke="#3f3f46" stroke-width="2"></path>
+<path d="M660 160 L720 160" stroke="#3f3f46" stroke-width="2"></path>
+</svg>
+<!-- Nodes Row -->
+<div class="relative z-10 flex gap-12 items-center">
+<!-- Node: Prepare -->
+<div class="w-32 bg-zinc-900 border border-zinc-700 rounded-lg p-3 shadow-lg opacity-80">
+<div class="flex justify-between items-start mb-2">
+<span class="text-[10px] text-zinc-500 font-mono">node-01</span>
+<span class="material-symbols-outlined text-emerald-500 text-xs" data-icon="check_circle">check_circle</span>
+</div>
+<div class="text-xs font-bold text-zinc-300 mb-2">Prepare</div>
+</div>
+<!-- Node: Plan -->
+<div class="w-32 bg-zinc-900 border border-zinc-700 rounded-lg p-3 shadow-lg opacity-80">
+<div class="flex justify-between items-start mb-2">
+<span class="text-[10px] text-zinc-500 font-mono">node-02</span>
+<span class="material-symbols-outlined text-emerald-500 text-xs" data-icon="check_circle">check_circle</span>
+</div>
+<div class="text-xs font-bold text-zinc-300 mb-2">Plan</div>
+</div>
+<!-- Node: Execute (Active/Selected) -->
+<div class="bg-zinc-900 border-2 rounded-lg p-4 relative border-zinc-700 w-32">
+<div class="flex justify-between items-start mb-2">
+<span class="text-[10px] font-mono text-zinc-500">node-03</span>
+</div>
+<div class="text-sm font-bold text-zinc-100 mb-3">Execute Redesign</div>
+<!-- Context Menu (Mock) -->
+</div>
+<!-- Node: Validate -->
+<div class="w-32 bg-zinc-900/50 border border-zinc-800 border-dashed rounded-lg p-3 opacity-40">
+<div class="flex justify-between items-start mb-2">
+<span class="text-[10px] text-zinc-600 font-mono">node-04</span>
+<span class="material-symbols-outlined text-zinc-700 text-xs" data-icon="pending">pending</span>
+</div>
+<div class="text-xs font-bold text-zinc-600 mb-2">Validate</div>
+</div>
+<!-- Node: Finalize -->
+<div class="w-32 bg-zinc-900/50 border border-zinc-800 border-dashed rounded-lg p-3 opacity-40">
+<div class="flex justify-between items-start mb-2">
+<span class="text-[10px] text-zinc-600 font-mono">node-05</span>
+</div>
+<div class="text-xs font-bold text-zinc-600 mb-2">Finalize</div>
+</div>
+</div>
+</div>
+<!-- Selected Node Side Panel -->
+</div>
+<!-- Lower Panel: Execution List -->
+<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+<div class="px-6 py-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+<h2 class="font-bold font-space text-zinc-200 flex items-center gap-2">
+<span class="material-symbols-outlined text-amber-500" data-icon="list_alt">list_alt</span> 运行记录 / Execution History
+                        </h2>
+<div class="flex items-center gap-4">
+<span class="text-xs text-zinc-500">Filter by Status: <span class="text-zinc-300 ml-1">All</span></span>
+<div class="h-4 w-px bg-zinc-800"></div>
+<span class="material-symbols-outlined text-zinc-500 cursor-pointer" data-icon="filter_list">filter_list</span>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-zinc-950/30 text-[10px] uppercase tracking-widest text-zinc-500 font-bold border-b border-zinc-800/50">
+<th class="px-6 py-3">ID / Group</th>
+<th class="px-4 py-3">Status</th>
+<th class="px-4 py-3">Outcome</th>
+<th class="px-4 py-3">Trigger</th>
+<th class="px-4 py-3">Loops</th>
+<th class="px-4 py-3">Current Node</th>
+<th class="px-4 py-3 text-center">Artifacts</th>
+<th class="px-4 py-3">Duration</th>
+<th class="px-6 py-3"></th>
+</tr>
+</thead>
+<tbody class="text-sm font-mono divide-y divide-zinc-800/40">
+<!-- Run-003 Group -->
+<tr class="bg-amber-500/5 border-l-2 border-amber-500">
+<td class="px-6 py-4 text-zinc-100 font-bold"><span class="material-symbols-outlined text-xs mr-2 align-middle" data-icon="expand_more">expand_more</span>run-003</td>
+<td class="px-4 py-4">
+<span class="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[10px] border border-blue-500/30">RUNNING</span>
+</td>
+<td class="px-4 py-4 text-zinc-500 italic">In progress...</td>
+<td class="px-4 py-4 text-zinc-400">manual</td>
+<td class="px-4 py-4 text-zinc-400">1/3</td>
+<td class="px-4 py-4 text-amber-500">node-03 execute</td>
+<td class="px-4 py-4 text-center">
+<span class="bg-zinc-800 px-2 py-0.5 rounded text-amber-400 font-bold">5</span>
+</td>
+<td class="px-4 py-4 text-zinc-400">04:12</td>
+<td class="px-6 py-4 text-right">
+<span class="material-symbols-outlined text-zinc-500 hover:text-zinc-200 cursor-pointer" data-icon="arrow_forward">arrow_forward</span>
+</td>
+</tr>
+<tr class="bg-zinc-900/30 hover:bg-zinc-800/40 cursor-pointer transition-colors">
+<td class="px-10 py-3 text-xs text-zinc-500 italic border-l-2 border-amber-500/50">└─ round-007</td>
+<td class="px-4 py-3 text-[11px] text-zinc-500" colspan="7">Node node-03 executed successfully in 242s. Moving to next check...</td>
+<td class="px-6 py-3 text-right"><span class="material-symbols-outlined text-xs text-zinc-700" data-icon="chevron_right">chevron_right</span></td>
+</tr><tr class="bg-zinc-900/20 hover:bg-zinc-800/40 cursor-pointer transition-colors group/row">
+<td class="px-10 py-3 text-xs text-zinc-500 italic border-l-2 border-amber-500/30">└─ round-006</td>
+<td class="px-4 py-3 text-[11px] text-zinc-500" colspan="7">Node node-03 started. Initializing environment variables and securing workspace...</td>
+<td class="px-6 py-3 text-right">
+<span class="material-symbols-outlined text-xs text-zinc-700 group-hover/row:text-zinc-400" data-icon="chevron_right">chevron_right</span>
+</td>
+</tr>
+<!-- Run-002 Group -->
+<tr class="bg-transparent border-l-2 border-red-500/50">
+<td class="px-6 py-4 text-zinc-300">run-002</td>
+<td class="px-4 py-4">
+<span class="px-2 py-0.5 bg-red-500/20 text-red-500 rounded text-[10px] border border-red-500/30">FAILED</span>
+</td>
+<td class="px-4 py-4 text-red-400/80">Validation Error</td>
+<td class="px-4 py-4 text-zinc-500">api-trigger</td>
+<td class="px-4 py-4 text-zinc-500">3/3</td>
+<td class="px-4 py-4 text-zinc-500">node-04 validate</td>
+<td class="px-4 py-4 text-center">
+<span class="bg-zinc-800 px-2 py-0.5 rounded text-zinc-500">2</span>
+</td>
+<td class="px-4 py-4 text-zinc-500">12:45</td>
+<td class="px-6 py-4 text-right">
+<span class="material-symbols-outlined text-zinc-500 hover:text-zinc-200 cursor-pointer" data-icon="arrow_forward">arrow_forward</span>
+</td>
+</tr>
+<!-- Run-001 Group -->
+<tr class="bg-transparent border-l-2 border-emerald-500/50">
+<td class="px-6 py-4 text-zinc-300">run-001</td>
+<td class="px-4 py-4">
+<span class="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-[10px] border border-emerald-500/30">SUCCESS</span>
+</td>
+<td class="px-4 py-4 text-emerald-400/80">Goal Reached</td>
+<td class="px-4 py-4 text-zinc-500">manual</td>
+<td class="px-4 py-4 text-zinc-500">0/3</td>
+<td class="px-4 py-4 text-zinc-500">node-05 finalize</td>
+<td class="px-4 py-4 text-center">
+<span class="bg-zinc-800 px-2 py-0.5 rounded text-emerald-500/80 font-bold">12</span>
+</td>
+<td class="px-4 py-4 text-zinc-500">08:22</td>
+<td class="px-6 py-4 text-right">
+<span class="material-symbols-outlined text-zinc-500 hover:text-zinc-200 cursor-pointer" data-icon="arrow_forward">arrow_forward</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<!-- Subtle Backdrop Image for depth -->
+<div class="fixed bottom-0 right-0 -z-10 opacity-5 pointer-events-none">
+<img class="w-[800px] h-[800px] object-cover mix-blend-screen grayscale" data-alt="A futuristic and highly detailed digital topology map displaying glowing amber circuit paths and architectural node structures across a dark, near-black zinc canvas. The aesthetic is professional, technical, and engineering-focused, evoking the feeling of a sophisticated AI orchestration backend. Soft cinematic lighting highlights the depth of the abstract geometric terrain, creating a sense of advanced computational intelligence and precise data movement." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCZ1Na2NkaEcBNGHzoxNcDCvrd2docTlR5BT_UXHshDnZfowS75aZCFgFdL2g-1SfDJaj_JTHwH2f78q34Cx5q-tcjq77tr1eEV6UsI2pUzbDcvyA-TSaEhKAuiBAfgZpjKF-8SAwHIIKKL8wUAGQ8h-hiEsV_LtWFLa8Hsd_Uf8V9GKleTQ_P7LWGBxUTgXC9CDd1rmGf3KrH6DYsWT2r46PFMWpDZmOls8k1_MApOuYVrHkl15RT2IDjJ1BM8W6n4fJLr1-ZAOA"/>
+</div>
+</main>
+</div>
+</body></html>

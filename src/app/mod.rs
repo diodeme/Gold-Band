@@ -7,12 +7,12 @@ mod state_factory;
 mod transition_context;
 
 use crate::artifacts::{validate_exec_plan, validate_exec_result, validate_verify_result, ExecPlanArtifact, ExecResultArtifact, VerifyResultArtifact};
-use crate::config::RuntimeConfig;
+use crate::config::{RuntimeConfig, UserConfig, ConsoleThemeName};
 use crate::control::{decide_next_step, ControlDecision};
 use crate::domain::{PauseReason, RunStatus};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::dsl::{validate_workflow, EdgeOutcome, WorkflowDsl};
-use crate::provider::{provider_from_id, ProviderAdapter};
+use crate::provider::{provider_capabilities, provider_from_id, DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo};
 use crate::runtime::{
     validate_node_state, validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state, NodeState,
     RoundState, RunState, TaskState, WorkerRefState,
@@ -22,10 +22,21 @@ use serde::de::DeserializeOwned;
 use anyhow::{anyhow, bail, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 
 use self::ids::now_rfc3339_like;
 use self::orchestrator::{run_continue as orchestrator_run_continue, run_retry as orchestrator_run_retry, run_start as orchestrator_run_start};
 use self::profile_resolver::resolve_workflow_profiles;
+
+fn tail_text(text: &str, limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    let normalized = text.strip_suffix('\n').unwrap_or(text);
+    let lines = normalized.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(limit);
+    lines[start..].join("\n")
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskSummary {
@@ -36,6 +47,12 @@ pub struct TaskSummary {
     pub latest_run: Option<RunState>,
     pub resumable_run_id: Option<String>,
     pub suggested_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogSource {
+    ProgressEvents,
+    RawStream,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -60,6 +77,37 @@ pub struct App {
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
+    }
+
+    pub fn load_user_config(&self) -> Result<UserConfig> {
+        let path = self.paths.user_config_file();
+        if !path.exists() {
+            return Ok(UserConfig::default());
+        }
+        read_json(&path)
+    }
+
+    pub fn save_user_config(&self, config: &UserConfig) -> Result<()> {
+        write_json(&self.paths.user_config_file(), config)
+    }
+
+    pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.console_theme = Some(theme);
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn provider_info(&self) -> ProviderInfo {
+        self.provider.describe_provider()
+    }
+
+    pub fn provider_doctor(&self) -> DoctorResult {
+        self.provider.doctor()
+    }
+
+    pub fn provider_capabilities(&self) -> Result<ProviderCapabilities> {
+        provider_capabilities(&self.config.default_provider)
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
@@ -115,7 +163,7 @@ impl App {
         let workflow_valid = workflow_exists && workflow_error.is_none();
         let latest_run = self.latest_run(task_id)?;
         let resumable_run_id = self.find_resumable_run_id(task_id)?;
-        let suggested_run_id = resumable_run_id.clone().or_else(|| latest_run.as_ref().map(|run| run.id.clone()));
+        let suggested_run_id = self.find_active_or_resumable_run_id(task_id)?;
         Ok(TaskSummary {
             task,
             workflow_exists,
@@ -236,11 +284,68 @@ impl App {
         self.read_optional_text(&self.paths.runtime_log_file())
     }
 
+    pub fn runtime_log_tail_show(&self, limit: usize) -> Result<Option<String>> {
+        let path = self.paths.runtime_log_file();
+        if !path.exists() {
+            return Ok(None);
+        }
+        if limit == 0 {
+            return Ok(Some(String::new()));
+        }
+
+        let mut file = fs::File::open(path.as_std_path())?;
+        let file_len = file.metadata()?.len();
+        if file_len == 0 {
+            return Ok(Some(String::new()));
+        }
+
+        let mut position = file_len;
+        let mut chunks = Vec::new();
+        let mut newline_count = 0usize;
+        let mut buffer = [0u8; 8192];
+
+        while position > 0 && newline_count <= limit {
+            let read_len = position.min(buffer.len() as u64) as usize;
+            position -= read_len as u64;
+            file.seek(SeekFrom::Start(position))?;
+            file.read_exact(&mut buffer[..read_len])?;
+            newline_count += buffer[..read_len].iter().filter(|&&byte| byte == b'\n').count();
+            chunks.push(buffer[..read_len].to_vec());
+        }
+
+        chunks.reverse();
+        let text = String::from_utf8(chunks.concat())?;
+        let normalized = text.strip_suffix('\n').unwrap_or(&text);
+        let lines = normalized.lines().collect::<Vec<_>>();
+        let start = lines.len().saturating_sub(limit);
+        Ok(Some(lines[start..].join("\n")))
+    }
+
+    pub fn attempt_log(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, source: LogSource) -> Result<Option<String>> {
+        match source {
+            LogSource::ProgressEvents => self.attempt_progress_events(task_id, run_id, round_id, node_id, attempt_id),
+            LogSource::RawStream => self.attempt_raw_stream(task_id, run_id, round_id, node_id, attempt_id),
+        }
+    }
+
+    pub fn attempt_log_exists(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, source: LogSource) -> bool {
+        match source {
+            LogSource::ProgressEvents => self.paths.progress_events_file(task_id, run_id, round_id, node_id, attempt_id).exists(),
+            LogSource::RawStream => self.paths.raw_stream_file(task_id, run_id, round_id, node_id, attempt_id).exists(),
+        }
+    }
+
+    pub fn attempt_log_tail(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, source: LogSource, limit: usize) -> Result<Option<String>> {
+        Ok(self
+            .attempt_log(task_id, run_id, round_id, node_id, attempt_id, source)?
+            .map(|content| tail_text(&content, limit)))
+    }
+
     pub fn provider_output(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Result<Option<String>> {
-        if let Some(progress) = self.attempt_progress_events(task_id, run_id, round_id, node_id, attempt_id)? {
+        if let Some(progress) = self.attempt_log(task_id, run_id, round_id, node_id, attempt_id, LogSource::ProgressEvents)? {
             return Ok(Some(progress));
         }
-        self.attempt_raw_stream(task_id, run_id, round_id, node_id, attempt_id)
+        self.attempt_log(task_id, run_id, round_id, node_id, attempt_id, LogSource::RawStream)
     }
 
     pub fn current_attempt_selection(&self, task_id: &str, run_id: &str) -> Result<Option<(String, String, String)>> {
@@ -469,6 +574,28 @@ impl App {
         }
     }
 
+    pub fn find_active_or_resumable_run_id(&self, task_id: &str) -> Result<Option<String>> {
+        let runs = self.run_list(task_id)?;
+        if let Some(run) = runs
+            .iter()
+            .rev()
+            .find(|run| run.status == RunStatus::Running && self.paths.run_progress_file(task_id, &run.id).exists())
+        {
+            return Ok(Some(run.id.clone()));
+        }
+        if let Some(run) = runs.iter().rev().find(|run| run.status == RunStatus::Running) {
+            return Ok(Some(run.id.clone()));
+        }
+        if let Some(run) = runs
+            .iter()
+            .rev()
+            .find(|run| run.status == RunStatus::Paused && matches!(run.pause_reason, Some(PauseReason::ProcessInterrupted)))
+        {
+            return Ok(Some(run.id.clone()));
+        }
+        Ok(runs.into_iter().last().map(|run| run.id))
+    }
+
     fn find_resumable_run_id(&self, task_id: &str) -> Result<Option<String>> {
         for run in self.run_list(task_id)?.into_iter().rev() {
             if run.status == RunStatus::Paused && matches!(run.pause_reason, Some(PauseReason::ProcessInterrupted)) {
@@ -476,5 +603,46 @@ impl App {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+    use crate::config::ConsoleThemeName;
+    use camino::Utf8PathBuf;
+    use tempfile::tempdir;
+
+    #[test]
+    fn runtime_log_tail_reads_only_last_requested_lines() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(repo_root.join(".gold-band/logs").as_std_path()).unwrap();
+        std::fs::write(
+            repo_root.join(".gold-band/logs/runtime.log").as_std_path(),
+            (1..=1000).map(|n| format!("line-{n}")).collect::<Vec<_>>().join("\n"),
+        )
+        .unwrap();
+
+        let app = App::new(repo_root);
+        let tail = app.runtime_log_tail_show(3).unwrap().unwrap();
+        assert_eq!(tail, "line-998\nline-999\nline-1000");
+    }
+
+    #[test]
+    fn user_console_theme_is_persisted() {
+        static HOME_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _home_guard = HOME_ENV_LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let home_dir = repo_root.join("fake-home");
+        std::fs::create_dir_all(home_dir.as_std_path()).unwrap();
+        unsafe { std::env::set_var("HOME", home_dir.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
+
+        let config = app.load_user_config().unwrap();
+        assert_eq!(config.console_theme, Some(ConsoleThemeName::Nord));
     }
 }

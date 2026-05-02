@@ -1,0 +1,20 @@
+{
+  "version": "0.1",
+  "node_id": "dev",
+  "node_type": "worker",
+  "run_id": "run-015",
+  "round_id": "round-001",
+  "attempt_id": "attempt-001",
+  "status": "completed",
+  "outcome": "success",
+  "started_at": "1775573896Z",
+  "finished_at": "1775573920Z",
+  "resolved_config": {
+    "primaryArtifact": "exec-plan",
+    "profile": "developer",
+    "profilePath": "D:\\Projects\\code\\ai\\Gold Band\\.gold-band\\presets\\profiles\\developer.md",
+    "profileSource": "project",
+    "provider": "claude-code",
+    "sessionMode": "new"
+  }
+}

@@ -60,11 +60,18 @@ claude -c <session_id>
 - 它不等同于 Gold Band CLI 层的 `continue` / `retry` 命令语义
 
 ### 3.4 流式输出
-Claude Code 当前可作为支持 raw stream 的 provider 之一。
+Claude Code 当前以 `--output-format stream-json` 作为首选流式协议。
 
 说明：
-- raw stream 只属于观测增强层
-- raw stream 不应成为 Gold Band 稳定控制流的直接依据
+- provider 会把 Claude Code stdout 的每条 stream-json 事件原样旁路写入 `raw.stream.jsonl`
+- provider 当前会把调用 provider 的输入快照写入 `progress.events.jsonl`，用于记录本次 invocation 输入上下文；若发现旧文件中残留了非 `provider_input` 内容，会在流读取前先清理
+- 对 `exec-plan` 与 `verify-result` 这类结构化 primary artifact，schema output contract 会明确写入 system prompt，而不只是在 task/user prompt 中隐含约束
+- primary artifact 的输出契约当前放在 system prompt 中，而不是 user prompt 中
+- `raw.stream.jsonl` 仍属于 provider-specific 原始观测面
+- `progress.events.jsonl` 仍保留为 Gold Band 的 provider-agnostic 过程观测面路径；Claude Code 输出流的正式规范化解析留待后续实现
+- 两者都不应直接成为 Gold Band 稳定控制流的依据
+- 若 provider 进程启动失败或以非零状态退出，错误需要直接返回 runtime；runtime 将当前 attempt / run 标记为 blocked，而不是让 console 长时间停留在 `calling-provider`
+- Windows 下若 Claude Code 缺少 Git Bash / `CLAUDE_CODE_GIT_BASH_PATH`，provider 错误信息应显式带出该提示
 
 ---
 

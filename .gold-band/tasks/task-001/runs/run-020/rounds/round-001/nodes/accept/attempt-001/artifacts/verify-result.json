@@ -1,0 +1,9 @@
+{
+  "version": "0.1",
+  "status": "failure",
+  "summary": "web目录下存在Python类文件 web/hello.py，但该类的 say 方法输出的是\"hello\"，未满足输出\"hello-world\"的要求。",
+  "unmet_requirements": [
+    "web目录下的Python类当前未输出\"hello-world\"；现有实现打印的是\"hello\"。"
+  ],
+  "validation_gaps": []
+}

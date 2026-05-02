@@ -1,0 +1,15 @@
+{
+  "version": "0.1",
+  "id": "run-020",
+  "task_id": "task-001",
+  "status": "paused",
+  "outcome": null,
+  "started_at": "1775615395Z",
+  "updated_at": "1775615557Z",
+  "workflow_snapshot": "workflow.snapshot.json",
+  "current_round": "round-002",
+  "current_node": "accept",
+  "current_attempt": "attempt-001",
+  "acceptance_loops_used": 1,
+  "pause_reason": "error-blocked"
+}

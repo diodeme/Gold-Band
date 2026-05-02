@@ -1,0 +1,9 @@
+{
+  "version": "0.1",
+  "status": "failure",
+  "summary": "验证失败：web目录下已存在Python类文件 web/hello.py，但其中 HelloWorld.say() 输出的是 \"hello\"，不符合要求中的 \"hello-world\"。",
+  "unmet_requirements": [
+    "web/hello.py 中的 Python 类未输出要求的 \"hello-world\"，当前实际输出为 \"hello\"。"
+  ],
+  "validation_gaps": []
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "status": "completed",
+  "currentRoundId": "round-001",
+  "currentNodeId": "accept",
+  "currentNodeType": "verify",
+  "currentAttemptId": "attempt-001",
+  "currentStage": "completed",
+  "summary": "run run-021 completed with Success",
+  "updatedAt": "1775635350Z"
+}

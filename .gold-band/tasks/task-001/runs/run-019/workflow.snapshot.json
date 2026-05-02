@@ -1,0 +1,34 @@
+{
+  "version": "0.1",
+  "id": "full-flow",
+  "entry": "dev",
+  "control": {
+    "max_repair_loops": 1,
+    "max_acceptance_loops": 1,
+    "on_acceptance_failure": "auto-loop"
+  },
+  "nodes": [
+    {
+      "type": "worker",
+      "id": "dev",
+      "provider": "claude-code",
+      "profile": "developer",
+      "goal": "现在我们在测试异常场景，任务会让你输出一个python类，输出hello-world，但是第一次你应该错误输出，如果被判断为不合格后，你再输出正确的信息",
+      "primary_artifact": null
+    },
+    {
+      "type": "verify",
+      "id": "accept",
+      "provider": "claude-code",
+      "profile": "verifier"
+    }
+  ],
+  "edges": [
+    {
+      "from": "dev",
+      "to": "accept",
+      "on": "success",
+      "session": null
+    }
+  ]
+}

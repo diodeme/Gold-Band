@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "id": "round-002",
+  "run_id": "run-020",
+  "index": 2,
+  "status": "paused",
+  "outcome": null,
+  "trigger": "acceptance-loop",
+  "repair_loops_used": 0,
+  "started_at": "1775615495Z"
+}

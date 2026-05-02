@@ -1,0 +1,14 @@
+{
+  "profiles": [
+    {
+      "name": "developer",
+      "source": "project",
+      "path": "D:\\Projects\\code\\ai\\Gold Band\\.gold-band\\presets\\profiles\\developer.md"
+    },
+    {
+      "name": "verifier",
+      "source": "project",
+      "path": "D:\\Projects\\code\\ai\\Gold Band\\.gold-band\\presets\\profiles\\verifier.md"
+    }
+  ]
+}

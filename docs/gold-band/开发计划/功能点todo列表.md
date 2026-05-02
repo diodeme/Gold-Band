@@ -70,7 +70,7 @@
 | 待办 | CLI 参数契约统一 | 需统一 `run/*`、`artifact/*` 命令的参数定位模型，并与文档示例保持一致。 | `docs/gold-band/产品设计文档/interaction/cli.md:61-72, 122-128` |
 | 待办 | `open-session` handoff 语义收敛 | 需明确并实现 `run open-session` 是实际打开 provider 会话，还是只输出 provider-native command。 | `docs/gold-band/产品设计文档/interaction/cli.md:111-121`; `docs/gold-band/产品设计文档/provider/worker-ref.md:76-93` |
 | 待办 | inspect / provider 输出 schema | `inspect` 与 `provider` 目前只有命令设计，仍需补齐输出结构与交互契约。 | `docs/gold-band/产品设计文档/interaction/cli.md:130-145` |
-| 待办 | VSCode 插件层 | 文档要求插件作为 CLI 可视化封装层，当前仓库尚未实现插件交互面。当前 console 已完成 Welcome -> Task Picker -> Workspace 的 workflow-first 交互重构，可作为插件侧未来信息架构基线。 | `docs/gold-band/产品设计文档/interaction/overview.md:4-28`; `docs/gold-band/产品设计文档/product/overview.md:34-38` |
+| 待办 | 新前端 / VSCode 插件层 | 原 Tauri + React 前端已归档到 `.web_bak/`，当前主线保留 CLI/runtime 与 console CLI；新前端 / 插件层需基于现有 CLI 契约重新设计。 | `docs/gold-band/产品设计文档/interaction/overview.md:4-28`; `docs/gold-band/产品设计文档/product/overview.md:34-38` |
 | 待办 | 多 provider 接入 | 当前仅实现 `claude-code`，其他 provider 仍未接入。 | `docs/gold-band/产品设计文档/provider/overview.md:23-28`; `docs/gold-band/开发计划/gold-band-mvp-plan.md:46-53` |
 | 待办 | provider 命令级诊断入口 | provider `doctor()` 已有代码实现，但 CLI 侧尚未提供 list/show/doctor/test 命令。 | `docs/gold-band/产品设计文档/provider/adapter.md:27-46`; `docs/gold-band/产品设计文档/interaction/cli.md:138-145` |
 | 待办 | 项目索引 `index.json` | 目录设计中定义了项目级索引，当前 storage 尚未落地。 | `docs/gold-band/产品设计文档/runtime/layout.md:109-150` |

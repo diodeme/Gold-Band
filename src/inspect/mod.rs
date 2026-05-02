@@ -29,11 +29,22 @@ pub fn render_console_banner() -> String {
 
 pub fn render_console_help() -> String {
     [
-        "Available entry points:",
+        "Keyboard:",
+        "  ?                open help",
+        "  /                focus command bar",
+        "  Tab              switch focus / pane",
+        "  Enter            open selection",
+        "  s                start selected task (Task Picker)",
+        "  l                toggle log source (Attempt detail)",
+        "  Esc              back / close overlay / quit from Welcome",
+        "  Arrow keys       move selection; in attempt detail they scroll history",
+        "",
+        "Local commands:",
         "  /help",
         "  /task",
         "  /log",
         "  /config",
+        "  /theme [gold-band|nord|dracula|cyber|onyx|mist|high-contrast]",
         "  /continue",
         "",
         "Runtime passthrough:",

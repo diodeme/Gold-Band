@@ -116,6 +116,27 @@ pub struct RawStreamEnvelope<'a> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AttemptProgressEventEnvelope<T: Serialize> {
+    pub version: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub timestamp: String,
+    pub data: T,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptProgressEventData {
+    pub stream: Option<String>,
+    pub session_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub content: Option<String>,
+    pub raw_event_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEventData {
     pub trace_id: String,
@@ -131,7 +152,7 @@ pub struct RunEventData {
     pub pause_reason: Option<PauseReason>,
 }
 
-pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig) {
+pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
     let _ = TRACE_ID.get_or_init(trace_id_seed);
     cleanup_old_logs(paths, config.log_retention_days);
     if TRACING_INITIALIZED.swap(true, Ordering::SeqCst) {
@@ -169,7 +190,12 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig) {
         .with_writer(stderr_writer)
         .with_filter(progress_filter);
 
-    tracing_subscriber::registry().with(file_layer).with(stderr_layer).init();
+    let registry = tracing_subscriber::registry().with(file_layer);
+    if enable_stderr_progress {
+        registry.with(stderr_layer).init();
+    } else {
+        registry.init();
+    }
 }
 
 pub fn progress(run_summary: &str) {
@@ -229,6 +255,29 @@ pub fn append_raw_stream_best_effort(path: &Utf8Path, timestamp: &str, stream: &
     };
     if let Err(err) = append_jsonl(path, &envelope) {
         warn!(path = %path, error = %err, "failed to append raw stream envelope");
+    }
+}
+
+pub fn append_progress_event_best_effort(
+    paths: &GoldBandPaths,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    event_type: impl Into<String>,
+    timestamp: impl Into<String>,
+    data: AttemptProgressEventData,
+) {
+    let envelope = AttemptProgressEventEnvelope {
+        version: VERSION.to_string(),
+        event_type: event_type.into(),
+        timestamp: timestamp.into(),
+        data,
+    };
+    let path = paths.progress_events_file(task_id, run_id, round_id, node_id, attempt_id);
+    if let Err(err) = append_jsonl(&path, &envelope) {
+        warn!(path = %path, error = %err, "failed to append attempt progress event");
     }
 }
 

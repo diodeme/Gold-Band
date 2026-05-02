@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "status": "paused",
+  "currentRoundId": "round-001",
+  "currentNodeId": "run-tests",
+  "currentNodeType": "exec",
+  "currentAttemptId": "attempt-001",
+  "currentStage": "blocked",
+  "summary": "run run-016 paused at round-001/run-tests/attempt-001",
+  "updatedAt": "1775574795Z"
+}

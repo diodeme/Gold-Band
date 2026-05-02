@@ -1,0 +1,2711 @@
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\ids.rs:21:
+ 
+ pub(crate) fn next_attempt_id(node_dir: &Utf8Path) -> Result<String> {
+     let next = latest_attempt_id(node_dir)?
+[31m-        .and_then(|value| value.strip_prefix("attempt-").and_then(|v| v.parse::<u32>().ok()))
+[0m[32m+        .and_then(|value| {
+[0m[32m+            value
+[0m[32m+                .strip_prefix("attempt-")
+[0m[32m+                .and_then(|v| v.parse::<u32>().ok())
+[0m[32m+        })
+[0m         .unwrap_or(0)
+         + 1;
+     Ok(format!("attempt-{next:03}"))
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:5:
+ mod state_factory;
+ mod transition_context;
+ 
+[31m-use crate::artifacts::{validate_exec_plan, validate_exec_result, validate_verify_result, ExecPlanArtifact, ExecResultArtifact, VerifyResultArtifact};
+[0m[31m-use crate::control::{decide_next_step, ControlDecision};
+[0m[32m+use crate::artifacts::{
+[0m[32m+    ExecPlanArtifact, ExecResultArtifact, VerifyResultArtifact, validate_exec_plan,
+[0m[32m+    validate_exec_result, validate_verify_result,
+[0m[32m+};
+[0m[32m+use crate::control::{ControlDecision, decide_next_step};
+[0m use crate::domain::{NodeOutcome, RunOutcome, RunStatus};
+[31m-use crate::dsl::{validate_workflow, WorkflowDsl};
+[0m[31m-use crate::provider::{default_provider, ProviderAdapter};
+[0m[31m-use crate::runtime::{validate_node_state, validate_round_state, validate_run_state, validate_worker_ref_state, NodeState, RoundState, RunState, TaskState, WorkerRefState};
+[0m[31m-use crate::storage::{read_json, write_json, GoldBandPaths};
+[0m[31m-use anyhow::{anyhow, bail, Result};
+[0m[32m+use crate::dsl::{WorkflowDsl, validate_workflow};
+[0m[32m+use crate::provider::{ProviderAdapter, default_provider};
+[0m[32m+use crate::runtime::{
+[0m[32m+    NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
+[0m[32m+    validate_round_state, validate_run_state, validate_worker_ref_state,
+[0m[32m+};
+[0m[32m+use crate::storage::{GoldBandPaths, read_json, write_json};
+[0m[32m+use anyhow::{Result, anyhow, bail};
+[0m use camino::{Utf8Path, Utf8PathBuf};
+ use std::fs;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:19:
+ use self::ids::now_rfc3339_like;
+[31m-use self::orchestrator::{run_continue as orchestrator_run_continue, run_retry as orchestrator_run_retry, run_start as orchestrator_run_start};
+[0m[32m+use self::orchestrator::{
+[0m[32m+    run_continue as orchestrator_run_continue, run_retry as orchestrator_run_retry,
+[0m[32m+    run_start as orchestrator_run_start,
+[0m[32m+};
+[0m 
+ pub struct App {
+     pub paths: GoldBandPaths,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:47:
+         Ok(fs::read_to_string(path)?)
+     }
+ 
+[31m-    pub fn artifact_show(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, name: &str) -> Result<String> {
+[0m[31m-        let path = self.paths.artifact_file(task_id, run_id, round_id, node_id, attempt_id, name);
+[0m[32m+    pub fn artifact_show(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+        name: &str,
+[0m[32m+    ) -> Result<String> {
+[0m[32m+        let path = self
+[0m[32m+            .paths
+[0m[32m+            .artifact_file(task_id, run_id, round_id, node_id, attempt_id, name);
+[0m         self.artifact_show_path(&path)
+     }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:55:
+[31m-    pub fn artifact_list(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Result<Vec<String>> {
+[0m[31m-        let dir = self.paths.artifacts_dir(task_id, run_id, round_id, node_id, attempt_id);
+[0m[32m+    pub fn artifact_list(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Result<Vec<String>> {
+[0m[32m+        let dir = self
+[0m[32m+            .paths
+[0m[32m+            .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id);
+[0m         if !dir.exists() {
+             return Ok(Vec::new());
+         }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:82:
+         write_json(&self.paths.run_file(task_id, run_id), &run)?;
+ 
+         if let Some(round_id) = &run.current_round {
+[31m-            let mut round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+[0m[32m+            let mut round: RoundState =
+[0m[32m+                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+[0m             round.status = RunStatus::Completed;
+             round.outcome = Some(RunOutcome::Killed);
+             validate_round_state(&round)?;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:89:
+             write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
+ 
+             if let (Some(node_id), Some(attempt_id)) = (&run.current_node, &run.current_attempt) {
+[31m-                let node_path = self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id);
+[0m[32m+                let node_path = self
+[0m[32m+                    .paths
+[0m[32m+                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
+[0m                 if node_path.exists() {
+                     let mut node: NodeState = read_json(&node_path)?;
+                     node.status = RunStatus::Completed;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:104:
+         Ok(run)
+     }
+ 
+[31m-    pub fn run_open_session(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Result<String> {
+[0m[31m-        let worker_ref: WorkerRefState = read_json(&self.paths.worker_ref_file(task_id, run_id, round_id, node_id, attempt_id))?;
+[0m[32m+    pub fn run_open_session(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Result<String> {
+[0m[32m+        let worker_ref: WorkerRefState = read_json(
+[0m[32m+            &self
+[0m[32m+                .paths
+[0m[32m+                .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
+[0m[32m+        )?;
+[0m         validate_worker_ref_state(&worker_ref)?;
+         if !worker_ref.supports_open_session {
+             bail!("provider does not support open-session");
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:134:
+         orchestrator_run_retry(self, task_id, run_id)
+     }
+ 
+[31m-    pub fn run_start(&self, task_id: &str, workflow_override: Option<&Utf8Path>) -> Result<RunState> {
+[0m[32m+    pub fn run_start(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        workflow_override: Option<&Utf8Path>,
+[0m[32m+    ) -> Result<RunState> {
+[0m         orchestrator_run_start(self, task_id, workflow_override)
+     }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:141:
+[31m-    pub fn decide(&self, workflow: WorkflowDsl, run: &RunState, round: &RoundState, node: &NodeState) -> Result<ControlDecision> {
+[0m[32m+    pub fn decide(
+[0m[32m+        &self,
+[0m[32m+        workflow: WorkflowDsl,
+[0m[32m+        run: &RunState,
+[0m[32m+        round: &RoundState,
+[0m[32m+        node: &NodeState,
+[0m[32m+    ) -> Result<ControlDecision> {
+[0m         let validated = validate_workflow(workflow)?;
+         Ok(decide_next_step(&validated, run, round, node))
+     }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\mod.rs:154:
+         validate_verify_result(verify_result)?;
+         Ok(())
+     }
+[31m-
+[0m }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:1:
+[31m-use anyhow::{anyhow, bail, Result};
+[0m[32m+use anyhow::{Result, anyhow, bail};
+[0m use camino::Utf8Path;
+ 
+ use crate::artifacts::{
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:5:
+[31m-    validate_exec_plan, validate_exec_result, validate_verify_result, ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, VerifyResultArtifact,
+[0m[31m-    VerifyStatus,
+[0m[32m+    ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, VerifyResultArtifact, VerifyStatus,
+[0m[32m+    validate_exec_plan, validate_exec_result, validate_verify_result,
+[0m };
+ use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
+ use crate::dsl::{NodeDsl, ValidatedWorkflow};
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:10:
+ use crate::exec::run_exec_plan;
+[31m-use crate::observability::{progress, ProgressStage};
+[0m[31m-use crate::provider::{ColdFileRef, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation};
+[0m[31m-use crate::runtime::{validate_node_state, validate_worker_ref_state, NodeState, WorkerRefState};
+[0m[32m+use crate::observability::{ProgressStage, progress};
+[0m[32m+use crate::provider::{
+[0m[32m+    ColdFileRef, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
+[0m[32m+};
+[0m[32m+use crate::runtime::{NodeState, WorkerRefState, validate_node_state, validate_worker_ref_state};
+[0m use crate::storage::{read_json, write_json};
+ 
+[32m+use super::App;
+[0m use super::ids::now_rfc3339_like;
+ use super::transition_context::{find_latest_artifact_path, find_latest_worker_primary_artifact};
+[31m-use super::App;
+[0m 
+ pub(crate) fn execute_ai_node(
+     app: &App,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:32:
+     verify_result_path: Option<&Utf8Path>,
+ ) -> Result<NodeState> {
+     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
+[31m-    let (profile, primary_artifact, task_instruction, invocation_kind, cold_artifacts) = match node_dsl {
+[0m[31m-        NodeDsl::Worker(worker) => {
+[0m[31m-            let kind = if verify_result_path.is_some() {
+[0m[31m-                InvocationKind::WorkerRepairVerify
+[0m[31m-            } else if feedback_summary.is_some() {
+[0m[31m-                InvocationKind::WorkerRepairExec
+[0m[31m-            } else {
+[0m[31m-                InvocationKind::WorkerGeneric
+[0m[31m-            };
+[0m[31m-            (worker.profile.clone(), worker.primary_artifact.clone(), worker.goal.clone(), kind, Vec::new())
+[0m[31m-        }
+[0m[31m-        NodeDsl::Verify(verify) => {
+[0m[31m-            let mut artifacts = Vec::new();
+[0m[31m-            if let Some(path) = find_latest_artifact_path(app, task_id, run_id, round_id, node_id, "exec-result")? {
+[0m[31m-                artifacts.push(ColdFileRef {
+[0m[31m-                    name: Some("exec-result".to_string()),
+[0m[31m-                    path,
+[0m[31m-                });
+[0m[32m+    let (profile, primary_artifact, task_instruction, invocation_kind, cold_artifacts) =
+[0m[32m+        match node_dsl {
+[0m[32m+            NodeDsl::Worker(worker) => {
+[0m[32m+                let kind = if verify_result_path.is_some() {
+[0m[32m+                    InvocationKind::WorkerRepairVerify
+[0m[32m+                } else if feedback_summary.is_some() {
+[0m[32m+                    InvocationKind::WorkerRepairExec
+[0m[32m+                } else {
+[0m[32m+                    InvocationKind::WorkerGeneric
+[0m[32m+                };
+[0m[32m+                (
+[0m[32m+                    worker.profile.clone(),
+[0m[32m+                    worker.primary_artifact.clone(),
+[0m[32m+                    worker.goal.clone(),
+[0m[32m+                    kind,
+[0m[32m+                    Vec::new(),
+[0m[32m+                )
+[0m             }
+[31m-            if let Some(path) = find_latest_worker_primary_artifact(app, task_id, run_id, round_id, workflow)? {
+[0m[31m-                artifacts.push(ColdFileRef {
+[0m[31m-                    name: Some("worker-primary-artifact".to_string()),
+[0m[31m-                    path,
+[0m[31m-                });
+[0m[31m-            }
+[0m[31m-            (
+[0m[32m+            NodeDsl::Verify(verify) => {
+[0m[32m+                let mut artifacts = Vec::new();
+[0m[32m+                if let Some(path) = find_latest_artifact_path(
+[0m[32m+                    app,
+[0m[32m+                    task_id,
+[0m[32m+                    run_id,
+[0m[32m+                    round_id,
+[0m[32m+                    node_id,
+[0m[32m+                    "exec-result",
+[0m[32m+                )? {
+[0m[32m+                    artifacts.push(ColdFileRef {
+[0m[32m+                        name: Some("exec-result".to_string()),
+[0m[32m+                        path,
+[0m[32m+                    });
+[0m[32m+                }
+[0m[32m+                if let Some(path) =
+[0m[32m+                    find_latest_worker_primary_artifact(app, task_id, run_id, round_id, workflow)?
+[0m[32m+                {
+[0m[32m+                    artifacts.push(ColdFileRef {
+[0m[32m+                        name: Some("worker-primary-artifact".to_string()),
+[0m[32m+                        path,
+[0m[32m+                    });
+[0m[32m+                }
+[0m[32m+                (
+[0m                 verify.profile.clone(),
+                 Some("verify-result".to_string()),
+                 Some("Evaluate whether the requirement is satisfied based only on the provided evidence and produce a verify-result.".to_string()),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:64:
+                 InvocationKind::VerifyAcceptance,
+                 artifacts,
+             )
+[31m-        }
+[0m[31m-        NodeDsl::Exec(_) => bail!("execute_ai_node cannot run exec nodes"),
+[0m[31m-    };
+[0m[32m+            }
+[0m[32m+            NodeDsl::Exec(_) => bail!("execute_ai_node cannot run exec nodes"),
+[0m[32m+        };
+[0m 
+     let invocation = WorkerInvocation {
+         invocation_kind,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:74:
+         requirement_path: Some(app.paths.requirement_file(task_id)),
+         requirement_text: None,
+         workspace_dir: app.paths.repo_root.clone(),
+[31m-        attempt_dir: app.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+[0m[32m+        attempt_dir: app
+[0m[32m+            .paths
+[0m[32m+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+[0m         primary_artifact,
+         task_instruction,
+         session_mode,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:82:
+         stream_mode: StreamMode::Raw,
+         feedback_summary,
+         verify_result_path: verify_result_path.map(ToOwned::to_owned),
+[31m-        attachments_dir: Some(app.paths.attachments_dir(task_id, run_id, round_id, node_id, attempt_id)),
+[0m[32m+        attachments_dir: Some(
+[0m[32m+            app.paths
+[0m[32m+                .attachments_dir(task_id, run_id, round_id, node_id, attempt_id),
+[0m[32m+        ),
+[0m         cold_artifacts,
+         cold_attachments: Vec::new(),
+     };
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:89:
+ 
+[31m-    progress(&format!("calling provider for {}/{}/{}", round_id, node_id, attempt_id));
+[0m[31m-    progress(&format!("raw stream file: {}", app.paths.raw_stream_file(task_id, run_id, round_id, node_id, attempt_id)));
+[0m[32m+    progress(&format!(
+[0m[32m+        "calling provider for {}/{}/{}",
+[0m[32m+        round_id, node_id, attempt_id
+[0m[32m+    ));
+[0m[32m+    progress(&format!(
+[0m[32m+        "raw stream file: {}",
+[0m[32m+        app.paths
+[0m[32m+            .raw_stream_file(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+    ));
+[0m     tracing::debug!(task_id, run_id, round_id, node_id, attempt_id, stage = ?ProgressStage::CallingProvider, "calling provider");
+     let result = app.provider.run_worker(invocation)?;
+[31m-    progress(&format!("normalizing artifact for {}/{}/{}", round_id, node_id, attempt_id));
+[0m[32m+    progress(&format!(
+[0m[32m+        "normalizing artifact for {}/{}/{}",
+[0m[32m+        round_id, node_id, attempt_id
+[0m[32m+    ));
+[0m     tracing::debug!(task_id, run_id, round_id, node_id, attempt_id, stage = ?ProgressStage::NormalizingArtifact, "normalizing provider result");
+[31m-    finalize_ai_attempt(app, task_id, run_id, round_id, attempt_id, node_id, node, result)
+[0m[32m+    finalize_ai_attempt(
+[0m[32m+        app, task_id, run_id, round_id, attempt_id, node_id, node, result,
+[0m[32m+    )
+[0m }
+ 
+ pub(crate) fn execute_exec_node(
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:104:
+     workflow: &ValidatedWorkflow,
+     mut node: NodeState,
+ ) -> Result<NodeState> {
+[31m-    let node_dsl = workflow.get_node(&node.node_id).expect("validated node exists");
+[0m[32m+    let node_dsl = workflow
+[0m[32m+        .get_node(&node.node_id)
+[0m[32m+        .expect("validated node exists");
+[0m     let exec_node = match node_dsl {
+         NodeDsl::Exec(exec) => exec,
+         _ => bail!("execute_exec_node requires exec node"),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:111:
+     };
+ 
+[31m-    let exec_plan_path = find_latest_artifact_path(app, task_id, run_id, round_id, &exec_node.plan_from, "exec-plan")?
+[0m[31m-        .ok_or_else(|| anyhow!("exec-plan not found for current round"))?;
+[0m[32m+    let exec_plan_path = find_latest_artifact_path(
+[0m[32m+        app,
+[0m[32m+        task_id,
+[0m[32m+        run_id,
+[0m[32m+        round_id,
+[0m[32m+        &exec_node.plan_from,
+[0m[32m+        "exec-plan",
+[0m[32m+    )?
+[0m[32m+    .ok_or_else(|| anyhow!("exec-plan not found for current round"))?;
+[0m     let exec_plan: ExecPlanArtifact = read_json(&exec_plan_path)?;
+     validate_exec_plan(&exec_plan)?;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:118:
+[31m-    progress(&format!("running command for {}/{}/{}", round_id, node.node_id, node.attempt_id));
+[0m[32m+    progress(&format!(
+[0m[32m+        "running command for {}/{}/{}",
+[0m[32m+        round_id, node.node_id, node.attempt_id
+[0m[32m+    ));
+[0m     tracing::debug!(task_id, run_id, round_id, node_id = %node.node_id, attempt_id = %node.attempt_id, stage = ?ProgressStage::RunningCommand, "running exec plan");
+     let exec_result = run_exec_plan(
+         &exec_plan,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:122:
+         &app.paths.repo_root,
+[31m-        &app.paths.attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
+[0m[32m+        &app.paths
+[0m[32m+            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
+[0m     )?;
+     validate_exec_result(&exec_result)?;
+     write_json(
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:127:
+[31m-        &app.paths.artifact_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id, "exec-result"),
+[0m[32m+        &app.paths.artifact_file(
+[0m[32m+            task_id,
+[0m[32m+            run_id,
+[0m[32m+            round_id,
+[0m[32m+            &node.node_id,
+[0m[32m+            &node.attempt_id,
+[0m[32m+            "exec-result",
+[0m[32m+        ),
+[0m         &exec_result,
+     )?;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:153:
+         ProviderRunStatus::Success => {
+             if let Some(payload) = result.result_payload {
+                 if let Some(primary_artifact) = payload.primary_artifact {
+[31m-                    let artifact_path = app.paths.artifact_file(task_id, run_id, round_id, node_id, attempt_id, &primary_artifact.name);
+[0m[32m+                    let artifact_path = app.paths.artifact_file(
+[0m[32m+                        task_id,
+[0m[32m+                        run_id,
+[0m[32m+                        round_id,
+[0m[32m+                        node_id,
+[0m[32m+                        attempt_id,
+[0m[32m+                        &primary_artifact.name,
+[0m[32m+                    );
+[0m                     match primary_artifact.name.as_str() {
+                         "exec-plan" => {
+[31m-                            let plan: ExecPlanArtifact = serde_json::from_str(&primary_artifact.content)?;
+[0m[32m+                            let plan: ExecPlanArtifact =
+[0m[32m+                                serde_json::from_str(&primary_artifact.content)?;
+[0m                             validate_exec_plan(&plan)?;
+                             write_json(&artifact_path, &plan)?;
+                         }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:163:
+                         "verify-result" => {
+[31m-                            let verify: VerifyResultArtifact = serde_json::from_str(&primary_artifact.content)?;
+[0m[32m+                            let verify: VerifyResultArtifact =
+[0m[32m+                                serde_json::from_str(&primary_artifact.content)?;
+[0m                             validate_verify_result(&verify)?;
+                             write_json(&artifact_path, &verify)?;
+                         }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:168:
+                         _ => {
+[31m-                            std::fs::create_dir_all(app.paths.artifacts_dir(task_id, run_id, round_id, node_id, attempt_id).as_std_path())?;
+[0m[32m+                            std::fs::create_dir_all(
+[0m[32m+                                app.paths
+[0m[32m+                                    .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+                                    .as_std_path(),
+[0m[32m+                            )?;
+[0m                             std::fs::write(artifact_path.as_std_path(), primary_artifact.content)?;
+                         }
+                     }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:184:
+                     open_command: seed.open_command,
+                 };
+                 validate_worker_ref_state(&worker_ref)?;
+[31m-                write_json(&app.paths.worker_ref_file(task_id, run_id, round_id, node_id, attempt_id), &worker_ref)?;
+[0m[32m+                write_json(
+[0m[32m+                    &app.paths
+[0m[32m+                        .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
+[0m[32m+                    &worker_ref,
+[0m[32m+                )?;
+[0m             }
+ 
+             let needs_primary_artifact = node.resolved_config.contains_key("primaryArtifact");
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:194:
+                 .and_then(|value| value.as_str())
+                 .map(str::to_string);
+             let has_artifact = expected_artifact.as_ref().is_some_and(|artifact| {
+[31m-                app.paths.artifact_file(task_id, run_id, round_id, node_id, attempt_id, artifact).exists()
+[0m[32m+                app.paths
+[0m[32m+                    .artifact_file(task_id, run_id, round_id, node_id, attempt_id, artifact)
+[0m[32m+                    .exists()
+[0m             });
+             node.status = RunStatus::Completed;
+             node.outcome = Some(if needs_primary_artifact && !has_artifact {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:201:
+                 NodeOutcome::Invalid
+             } else if matches!(node.node_type, crate::domain::NodeType::Verify) {
+[31m-                let verify: VerifyResultArtifact = read_json(
+[0m[31m-                    &app.paths.artifact_file(task_id, run_id, round_id, node_id, attempt_id, "verify-result"),
+[0m[31m-                )?;
+[0m[32m+                let verify: VerifyResultArtifact = read_json(&app.paths.artifact_file(
+[0m[32m+                    task_id,
+[0m[32m+                    run_id,
+[0m[32m+                    round_id,
+[0m[32m+                    node_id,
+[0m[32m+                    attempt_id,
+[0m[32m+                    "verify-result",
+[0m[32m+                ))?;
+[0m                 match verify.status {
+                     VerifyStatus::Success => NodeOutcome::Success,
+                     VerifyStatus::Failure => NodeOutcome::Failure,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:224:
+     Ok(node)
+ }
+ 
+[31m-pub(crate) fn re_evaluate_attempt(app: &App, task_id: &str, run_id: &str, round_id: &str, mut node: NodeState) -> Result<NodeState> {
+[0m[32m+pub(crate) fn re_evaluate_attempt(
+[0m[32m+    app: &App,
+[0m[32m+    task_id: &str,
+[0m[32m+    run_id: &str,
+[0m[32m+    round_id: &str,
+[0m[32m+    mut node: NodeState,
+[0m[32m+) -> Result<NodeState> {
+[0m     let artifact_name = match node.node_type {
+[31m-        crate::domain::NodeType::Worker => node.resolved_config.get("primaryArtifact").and_then(|value| value.as_str()).map(str::to_string),
+[0m[32m+        crate::domain::NodeType::Worker => node
+[0m[32m+            .resolved_config
+[0m[32m+            .get("primaryArtifact")
+[0m[32m+            .and_then(|value| value.as_str())
+[0m[32m+            .map(str::to_string),
+[0m         crate::domain::NodeType::Exec => Some("exec-result".to_string()),
+         crate::domain::NodeType::Verify => Some("verify-result".to_string()),
+     };
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:233:
+ 
+     if let Some(artifact_name) = artifact_name {
+[31m-        let path = app.paths.artifact_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id, &artifact_name);
+[0m[32m+        let path = app.paths.artifact_file(
+[0m[32m+            task_id,
+[0m[32m+            run_id,
+[0m[32m+            round_id,
+[0m[32m+            &node.node_id,
+[0m[32m+            &node.attempt_id,
+[0m[32m+            &artifact_name,
+[0m[32m+        );
+[0m         if !path.exists() {
+             node.status = RunStatus::Completed;
+             node.outcome = Some(NodeOutcome::Invalid);
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:239:
+             validate_node_state(&node)?;
+[31m-            write_json(&app.paths.node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id), &node)?;
+[0m[32m+            write_json(
+[0m[32m+                &app.paths
+[0m[32m+                    .node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
+[0m[32m+                &node,
+[0m[32m+            )?;
+[0m             return Ok(node);
+         }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\node_executor.rs:270:
+     node.status = RunStatus::Completed;
+     node.finished_at = Some(now_rfc3339_like());
+     validate_node_state(&node)?;
+[31m-    write_json(&app.paths.node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id), &node)?;
+[0m[32m+    write_json(
+[0m[32m+        &app.paths
+[0m[32m+            .node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
+[0m[32m+        &node,
+[0m[32m+    )?;
+[0m     Ok(node)
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:1:
+[31m-use anyhow::{bail, Result};
+[0m[32m+use anyhow::{Result, bail};
+[0m use camino::Utf8Path;
+ use camino::Utf8PathBuf;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:5:
+[31m-use crate::control::{decide_next_step, ControlDecision};
+[0m[31m-use crate::domain::{NodeOutcome, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode, VERSION};
+[0m[31m-use crate::dsl::{validate_workflow, ValidatedWorkflow, WorkflowDsl};
+[0m[31m-use crate::observability::{append_run_event_best_effort, progress, run_event_data, write_progress_hint, write_run_progress_best_effort, ExecutionContext, ProgressStage};
+[0m[31m-use crate::runtime::{validate_round_state, validate_run_state, NodeState, RoundState, RunState, WorkerRefState};
+[0m[32m+use crate::control::{ControlDecision, decide_next_step};
+[0m[32m+use crate::domain::{
+[0m[32m+    NodeOutcome, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode, VERSION,
+[0m[32m+};
+[0m[32m+use crate::dsl::{ValidatedWorkflow, WorkflowDsl, validate_workflow};
+[0m[32m+use crate::observability::{
+[0m[32m+    ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
+[0m[32m+    write_progress_hint, write_run_progress_best_effort,
+[0m[32m+};
+[0m[32m+use crate::runtime::{
+[0m[32m+    NodeState, RoundState, RunState, WorkerRefState, validate_round_state, validate_run_state,
+[0m[32m+};
+[0m use crate::storage::{read_json, write_json};
+ 
+[32m+use super::App;
+[0m use super::ids::{next_attempt_id, next_run_id, now_rfc3339_like};
+ use super::node_executor::{execute_ai_node, execute_exec_node, re_evaluate_attempt};
+ use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:15:
+ use super::state_factory::create_node_state;
+[31m-use super::transition_context::{feedback_summary_from_previous_node, find_latest_artifact_path, find_latest_worker_ref_for_transition};
+[0m[31m-use super::App;
+[0m[32m+use super::transition_context::{
+[0m[32m+    feedback_summary_from_previous_node, find_latest_artifact_path,
+[0m[32m+    find_latest_worker_ref_for_transition,
+[0m[32m+};
+[0m 
+[31m-pub(crate) fn run_start(app: &App, task_id: &str, workflow_override: Option<&Utf8Path>) -> Result<RunState> {
+[0m[32m+pub(crate) fn run_start(
+[0m[32m+    app: &App,
+[0m[32m+    task_id: &str,
+[0m[32m+    workflow_override: Option<&Utf8Path>,
+[0m[32m+) -> Result<RunState> {
+[0m     let workflow_path = workflow_override
+         .map(|path| path.to_owned())
+         .unwrap_or_else(|| app.paths.workflow_file(task_id));
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:45:
+     };
+     validate_run_state(&run)?;
+     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
+[31m-    write_json(&app.paths.workflow_snapshot_file(task_id, &run_id), &workflow)?;
+[0m[32m+    write_json(
+[0m[32m+        &app.paths.workflow_snapshot_file(task_id, &run_id),
+[0m[32m+        &workflow,
+[0m[32m+    )?;
+[0m 
+     let mut round = RoundState {
+         version: VERSION.to_string(),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:61:
+     validate_round_state(&round)?;
+     write_json(&app.paths.round_file(task_id, &run_id, &round_id), &round)?;
+ 
+[31m-    let node = create_node_state(&run_id, &round_id, &validated.raw.entry, &attempt_id, validated.get_node(&validated.raw.entry).expect("validated entry exists"));
+[0m[32m+    let node = create_node_state(
+[0m[32m+        &run_id,
+[0m[32m+        &round_id,
+[0m[32m+        &validated.raw.entry,
+[0m[32m+        &attempt_id,
+[0m[32m+        validated
+[0m[32m+            .get_node(&validated.raw.entry)
+[0m[32m+            .expect("validated entry exists"),
+[0m[32m+    );
+[0m     let ctx = ExecutionContext::for_run(task_id, &run.id)
+         .with_round(round.id.clone())
+         .with_node(node.node_id.clone())
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:68:
+         .with_attempt(node.attempt_id.clone());
+[31m-    let summary = format!("starting run {} at {}/{}/{}", run.id, round.id, node.node_id, node.attempt_id);
+[0m[32m+    let summary = format!(
+[0m[32m+        "starting run {} at {}/{}/{}",
+[0m[32m+        run.id, round.id, node.node_id, node.attempt_id
+[0m[32m+    );
+[0m     progress(&summary);
+[31m-    write_run_progress_best_effort(&app.paths, task_id, &run, Some(node.node_type), ProgressStage::Starting, summary.clone());
+[0m[32m+    write_run_progress_best_effort(
+[0m[32m+        &app.paths,
+[0m[32m+        task_id,
+[0m[32m+        &run,
+[0m[32m+        Some(node.node_type),
+[0m[32m+        ProgressStage::Starting,
+[0m[32m+        summary.clone(),
+[0m[32m+    );
+[0m     append_run_event_best_effort(
+         &app.paths,
+         task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:75:
+         &run.id,
+         "run_started",
+         now.clone(),
+[31m-        run_event_data(&ctx, Some(ProgressStage::Starting), Some(run.status), Some(summary), None),
+[0m[32m+        run_event_data(
+[0m[32m+            &ctx,
+[0m[32m+            Some(ProgressStage::Starting),
+[0m[32m+            Some(run.status),
+[0m[32m+            Some(summary),
+[0m[32m+            None,
+[0m[32m+        ),
+[0m     );
+[31m-    write_progress_hint(&app.paths, task_id, &run.id, Some(app.paths.raw_stream_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id).as_path()));
+[0m[32m+    write_progress_hint(
+[0m[32m+        &app.paths,
+[0m[32m+        task_id,
+[0m[32m+        &run.id,
+[0m[32m+        Some(
+[0m[32m+            app.paths
+[0m[32m+                .raw_stream_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+[0m[32m+                .as_path(),
+[0m[32m+        ),
+[0m[32m+    );
+[0m     drive_from_node(app, task_id, &validated, &mut run, &mut round, node)?;
+     Ok(run)
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:92:
+         .with_round(round.id.clone())
+         .with_node(node.node_id.clone())
+         .with_attempt(node.attempt_id.clone());
+[31m-    let summary = format!("continuing run {} at {}/{}/{}", run.id, round.id, node.node_id, node.attempt_id);
+[0m[32m+    let summary = format!(
+[0m[32m+        "continuing run {} at {}/{}/{}",
+[0m[32m+        run.id, round.id, node.node_id, node.attempt_id
+[0m[32m+    );
+[0m     progress(&summary);
+[31m-    write_run_progress_best_effort(&app.paths, task_id, &run, Some(node.node_type), ProgressStage::Starting, summary.clone());
+[0m[32m+    write_run_progress_best_effort(
+[0m[32m+        &app.paths,
+[0m[32m+        task_id,
+[0m[32m+        &run,
+[0m[32m+        Some(node.node_type),
+[0m[32m+        ProgressStage::Starting,
+[0m[32m+        summary.clone(),
+[0m[32m+    );
+[0m     append_run_event_best_effort(
+         &app.paths,
+         task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:101:
+         &run.id,
+         "run_continue_requested",
+         run.updated_at.clone(),
+[31m-        run_event_data(&ctx, Some(ProgressStage::Starting), Some(run.status), Some(summary), run.pause_reason),
+[0m[32m+        run_event_data(
+[0m[32m+            &ctx,
+[0m[32m+            Some(ProgressStage::Starting),
+[0m[32m+            Some(run.status),
+[0m[32m+            Some(summary),
+[0m[32m+            run.pause_reason,
+[0m[32m+        ),
+[0m     );
+ 
+     match node.status {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:108:
+         RunStatus::Paused => {
+             if run.pause_reason == Some(PauseReason::ProcessInterrupted) {
+[31m-                let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(task_id, run_id, &round.id, &node.node_id, &node.attempt_id))?.continue_ref;
+[0m[32m+                let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
+[0m[32m+                    task_id,
+[0m[32m+                    run_id,
+[0m[32m+                    &round.id,
+[0m[32m+                    &node.node_id,
+[0m[32m+                    &node.attempt_id,
+[0m[32m+                ))?
+[0m[32m+                .continue_ref;
+[0m                 node = execute_ai_node(
+                     app,
+                     task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:143:
+     let (mut round, node) = current_attempt_state(app, task_id, &run)?;
+     let node_id = node.node_id.clone();
+     let attempt_id = next_attempt_id(&app.paths.node_dir(task_id, run_id, &round.id, &node_id))?;
+[31m-    let fresh = create_node_state(run_id, &round.id, &node_id, &attempt_id, validated.get_node(&node_id).expect("validated node exists"));
+[0m[32m+    let fresh = create_node_state(
+[0m[32m+        run_id,
+[0m[32m+        &round.id,
+[0m[32m+        &node_id,
+[0m[32m+        &attempt_id,
+[0m[32m+        validated.get_node(&node_id).expect("validated node exists"),
+[0m[32m+    );
+[0m     let ctx = ExecutionContext::for_run(task_id, &run.id)
+         .with_round(round.id.clone())
+         .with_node(node_id.clone())
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:156:
+         &run.id,
+         "run_retry_requested",
+         run.updated_at.clone(),
+[31m-        run_event_data(&ctx, Some(ProgressStage::Starting), Some(run.status), Some(summary), None),
+[0m[32m+        run_event_data(
+[0m[32m+            &ctx,
+[0m[32m+            Some(ProgressStage::Starting),
+[0m[32m+            Some(run.status),
+[0m[32m+            Some(summary),
+[0m[32m+            None,
+[0m[32m+        ),
+[0m     );
+     drive_from_node(app, task_id, &validated, &mut run, &mut round, fresh)?;
+     Ok(run)
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:187:
+             crate::domain::NodeType::Verify => ProgressStage::Verifying,
+             crate::domain::NodeType::Worker => ProgressStage::CallingProvider,
+         };
+[31m-        let summary = format!("running {}/{}/{}", round.id, current_node_id, current_attempt_id);
+[0m[32m+        let summary = format!(
+[0m[32m+            "running {}/{}/{}",
+[0m[32m+            round.id, current_node_id, current_attempt_id
+[0m[32m+        );
+[0m         progress(&summary);
+[31m-        write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), node_stage, summary.clone());
+[0m[32m+        write_run_progress_best_effort(
+[0m[32m+            &app.paths,
+[0m[32m+            task_id,
+[0m[32m+            run,
+[0m[32m+            Some(node.node_type),
+[0m[32m+            node_stage,
+[0m[32m+            summary.clone(),
+[0m[32m+        );
+[0m         append_run_event_best_effort(
+             &app.paths,
+             task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:196:
+             &run.id,
+             "node_started",
+             now_rfc3339_like(),
+[31m-            run_event_data(&ctx, Some(node_stage), Some(run.status), Some(summary), run.pause_reason),
+[0m[32m+            run_event_data(
+[0m[32m+                &ctx,
+[0m[32m+                Some(node_stage),
+[0m[32m+                Some(run.status),
+[0m[32m+                Some(summary),
+[0m[32m+                run.pause_reason,
+[0m[32m+            ),
+[0m         );
+[31m-        node = match workflow.get_node(&current_node_id).expect("validated node exists") {
+[0m[32m+        node = match workflow
+[0m[32m+            .get_node(&current_node_id)
+[0m[32m+            .expect("validated node exists")
+[0m[32m+        {
+[0m             crate::dsl::NodeDsl::Worker(_) | crate::dsl::NodeDsl::Verify(_) => execute_ai_node(
+                 app,
+                 task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:213:
+                 feedback_summary.clone(),
+                 verify_result_path.as_deref(),
+             )?,
+[31m-            crate::dsl::NodeDsl::Exec(_) => execute_exec_node(app, task_id, &run.id, &round.id, workflow, node)?,
+[0m[32m+            crate::dsl::NodeDsl::Exec(_) => {
+[0m[32m+                execute_exec_node(app, task_id, &run.id, &round.id, workflow, node)?
+[0m[32m+            }
+[0m         };
+ 
+[31m-        let completion_summary = format!("completed {}/{}/{}", round.id, node.node_id, node.attempt_id);
+[0m[31m-        write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), ProgressStage::NormalizingArtifact, completion_summary.clone());
+[0m[32m+        let completion_summary = format!(
+[0m[32m+            "completed {}/{}/{}",
+[0m[32m+            round.id, node.node_id, node.attempt_id
+[0m[32m+        );
+[0m[32m+        write_run_progress_best_effort(
+[0m[32m+            &app.paths,
+[0m[32m+            task_id,
+[0m[32m+            run,
+[0m[32m+            Some(node.node_type),
+[0m[32m+            ProgressStage::NormalizingArtifact,
+[0m[32m+            completion_summary.clone(),
+[0m[32m+        );
+[0m         append_run_event_best_effort(
+             &app.paths,
+             task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:241:
+         match decision {
+             ControlDecision::TransitionToNode { node_id, session } => {
+                 if matches!(node.node_type, crate::domain::NodeType::Exec)
+[31m-                    && matches!(node.outcome, Some(NodeOutcome::Failure | NodeOutcome::Invalid))
+[0m[32m+                    && matches!(
+[0m[32m+                        node.outcome,
+[0m[32m+                        Some(NodeOutcome::Failure | NodeOutcome::Invalid)
+[0m[32m+                    )
+[0m                 {
+                     round.repair_loops_used += 1;
+                 }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:248:
+ 
+[31m-                let next_node_dsl = workflow.get_node(&node_id).expect("validated transition target exists");
+[0m[31m-                let next_attempt_id = next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
+[0m[32m+                let next_node_dsl = workflow
+[0m[32m+                    .get_node(&node_id)
+[0m[32m+                    .expect("validated transition target exists");
+[0m[32m+                let next_attempt_id =
+[0m[32m+                    next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
+[0m                 session_mode = session;
+[31m-                continue_ref = find_latest_worker_ref_for_transition(app, task_id, &run.id, &round.id, &node, &node_id, session)?
+[0m[31m-                    .map(|path| read_json::<WorkerRefState>(&path))
+[0m[31m-                    .transpose()?
+[0m[31m-                    .and_then(|worker_ref| worker_ref.continue_ref);
+[0m[31m-                feedback_summary = feedback_summary_from_previous_node(app, task_id, &run.id, &round.id, &node)?;
+[0m[32m+                continue_ref = find_latest_worker_ref_for_transition(
+[0m[32m+                    app, task_id, &run.id, &round.id, &node, &node_id, session,
+[0m[32m+                )?
+[0m[32m+                .map(|path| read_json::<WorkerRefState>(&path))
+[0m[32m+                .transpose()?
+[0m[32m+                .and_then(|worker_ref| worker_ref.continue_ref);
+[0m[32m+                feedback_summary =
+[0m[32m+                    feedback_summary_from_previous_node(app, task_id, &run.id, &round.id, &node)?;
+[0m                 verify_result_path = None;
+[31m-                node = create_node_state(&run.id, &round.id, &node_id, &next_attempt_id, next_node_dsl);
+[0m[32m+                node = create_node_state(
+[0m[32m+                    &run.id,
+[0m[32m+                    &round.id,
+[0m[32m+                    &node_id,
+[0m[32m+                    &next_attempt_id,
+[0m[32m+                    next_node_dsl,
+[0m[32m+                );
+[0m                 run.current_node = Some(node_id.clone());
+                 run.current_attempt = Some(next_attempt_id.clone());
+                 run.status = RunStatus::Running;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:262:
+                 run.pause_reason = None;
+                 run.updated_at = now_rfc3339_like();
+[31m-                let transition_summary = format!("transitioned to {}/{}/{}", round.id, node_id, next_attempt_id);
+[0m[32m+                let transition_summary = format!(
+[0m[32m+                    "transitioned to {}/{}/{}",
+[0m[32m+                    round.id, node_id, next_attempt_id
+[0m[32m+                );
+[0m                 progress(&transition_summary);
+[31m-                write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), ProgressStage::Starting, transition_summary.clone());
+[0m[32m+                write_run_progress_best_effort(
+[0m[32m+                    &app.paths,
+[0m[32m+                    task_id,
+[0m[32m+                    run,
+[0m[32m+                    Some(node.node_type),
+[0m[32m+                    ProgressStage::Starting,
+[0m[32m+                    transition_summary.clone(),
+[0m[32m+                );
+[0m                 append_run_event_best_effort(
+                     &app.paths,
+                     task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:308:
+                 validate_round_state(round)?;
+                 write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+ 
+[31m-                let next_node_dsl = workflow.get_node(&workflow.raw.entry).expect("validated entry exists");
+[0m[32m+                let next_node_dsl = workflow
+[0m[32m+                    .get_node(&workflow.raw.entry)
+[0m[32m+                    .expect("validated entry exists");
+[0m                 let next_attempt_id = "attempt-001".to_string();
+[31m-                verify_result_path = find_latest_artifact_path(app, task_id, &run.id, &format!("round-{:03}", next_round_index - 1), &node.node_id, "verify-result")?;
+[0m[31m-                feedback_summary = feedback_summary_from_previous_node(app, task_id, &run.id, &format!("round-{:03}", next_round_index - 1), &node)?;
+[0m[32m+                verify_result_path = find_latest_artifact_path(
+[0m[32m+                    app,
+[0m[32m+                    task_id,
+[0m[32m+                    &run.id,
+[0m[32m+                    &format!("round-{:03}", next_round_index - 1),
+[0m[32m+                    &node.node_id,
+[0m[32m+                    "verify-result",
+[0m[32m+                )?;
+[0m[32m+                feedback_summary = feedback_summary_from_previous_node(
+[0m[32m+                    app,
+[0m[32m+                    task_id,
+[0m[32m+                    &run.id,
+[0m[32m+                    &format!("round-{:03}", next_round_index - 1),
+[0m[32m+                    &node,
+[0m[32m+                )?;
+[0m                 continue_ref = None;
+                 session_mode = SessionMode::New;
+[31m-                node = create_node_state(&run.id, &round.id, &workflow.raw.entry, &next_attempt_id, next_node_dsl);
+[0m[32m+                node = create_node_state(
+[0m[32m+                    &run.id,
+[0m[32m+                    &round.id,
+[0m[32m+                    &workflow.raw.entry,
+[0m[32m+                    &next_attempt_id,
+[0m[32m+                    next_node_dsl,
+[0m[32m+                );
+[0m                 run.current_round = Some(round.id.clone());
+                 run.current_node = Some(node.node_id.clone());
+                 run.current_attempt = Some(next_attempt_id.clone());
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:321:
+                 run.status = RunStatus::Running;
+                 run.pause_reason = None;
+                 run.updated_at = now_rfc3339_like();
+[31m-                let round_summary = format!("opened {} and restarted at {}/{}", round.id, node.node_id, next_attempt_id);
+[0m[32m+                let round_summary = format!(
+[0m[32m+                    "opened {} and restarted at {}/{}",
+[0m[32m+                    round.id, node.node_id, next_attempt_id
+[0m[32m+                );
+[0m                 progress(&round_summary);
+[31m-                write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), ProgressStage::Starting, round_summary.clone());
+[0m[32m+                write_run_progress_best_effort(
+[0m[32m+                    &app.paths,
+[0m[32m+                    task_id,
+[0m[32m+                    run,
+[0m[32m+                    Some(node.node_type),
+[0m[32m+                    ProgressStage::Starting,
+[0m[32m+                    round_summary.clone(),
+[0m[32m+                );
+[0m                 append_run_event_best_effort(
+                     &app.paths,
+                     task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:354:
+                 } else {
+                     ProgressStage::Paused
+                 };
+[31m-                let pause_summary = format!("run {} paused at {}/{}/{}", run.id, round.id, node.node_id, node.attempt_id);
+[0m[32m+                let pause_summary = format!(
+[0m[32m+                    "run {} paused at {}/{}/{}",
+[0m[32m+                    run.id, round.id, node.node_id, node.attempt_id
+[0m[32m+                );
+[0m                 progress(&pause_summary);
+[31m-                write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), pause_stage, pause_summary.clone());
+[0m[32m+                write_run_progress_best_effort(
+[0m[32m+                    &app.paths,
+[0m[32m+                    task_id,
+[0m[32m+                    run,
+[0m[32m+                    Some(node.node_type),
+[0m[32m+                    pause_stage,
+[0m[32m+                    pause_summary.clone(),
+[0m[32m+                );
+[0m                 append_run_event_best_effort(
+                     &app.paths,
+                     task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\orchestrator.rs:386:
+                 round.outcome = Some(outcome);
+                 let complete_summary = format!("run {} completed with {:?}", run.id, outcome);
+                 progress(&complete_summary);
+[31m-                write_run_progress_best_effort(&app.paths, task_id, run, Some(node.node_type), ProgressStage::Completed, complete_summary.clone());
+[0m[32m+                write_run_progress_best_effort(
+[0m[32m+                    &app.paths,
+[0m[32m+                    task_id,
+[0m[32m+                    run,
+[0m[32m+                    Some(node.node_type),
+[0m[32m+                    ProgressStage::Completed,
+[0m[32m+                    complete_summary.clone(),
+[0m[32m+                );
+[0m                 append_run_event_best_effort(
+                     &app.paths,
+                     task_id,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_access.rs:1:
+[31m-use anyhow::{anyhow, Result};
+[0m[32m+use anyhow::{Result, anyhow};
+[0m 
+ use crate::dsl::WorkflowDsl;
+ use crate::runtime::{NodeState, RoundState, RunState};
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_access.rs:6:
+ 
+ use super::App;
+ 
+[31m-pub(crate) fn current_attempt_state(app: &App, task_id: &str, run: &RunState) -> Result<(RoundState, NodeState)> {
+[0m[31m-    let round_id = run.current_round.as_ref().ok_or_else(|| anyhow!("run has no current round"))?;
+[0m[31m-    let node_id = run.current_node.as_ref().ok_or_else(|| anyhow!("run has no current node"))?;
+[0m[31m-    let attempt_id = run.current_attempt.as_ref().ok_or_else(|| anyhow!("run has no current attempt"))?;
+[0m[32m+pub(crate) fn current_attempt_state(
+[0m[32m+    app: &App,
+[0m[32m+    task_id: &str,
+[0m[32m+    run: &RunState,
+[0m[32m+) -> Result<(RoundState, NodeState)> {
+[0m[32m+    let round_id = run
+[0m[32m+        .current_round
+[0m[32m+        .as_ref()
+[0m[32m+        .ok_or_else(|| anyhow!("run has no current round"))?;
+[0m[32m+    let node_id = run
+[0m[32m+        .current_node
+[0m[32m+        .as_ref()
+[0m[32m+        .ok_or_else(|| anyhow!("run has no current node"))?;
+[0m[32m+    let attempt_id = run
+[0m[32m+        .current_attempt
+[0m[32m+        .as_ref()
+[0m[32m+        .ok_or_else(|| anyhow!("run has no current attempt"))?;
+[0m     let round: RoundState = read_json(&app.paths.round_file(task_id, &run.id, round_id))?;
+[31m-    let node: NodeState = read_json(&app.paths.node_file(task_id, &run.id, round_id, node_id, attempt_id))?;
+[0m[32m+    let node: NodeState = read_json(
+[0m[32m+        &app.paths
+[0m[32m+            .node_file(task_id, &run.id, round_id, node_id, attempt_id),
+[0m[32m+    )?;
+[0m     Ok((round, node))
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_access.rs:19:
+     read_json(&app.paths.workflow_snapshot_file(task_id, run_id))
+ }
+ 
+[31m-pub(crate) fn persist_runtime_state(app: &App, task_id: &str, run: &RunState, round: &RoundState, node: &NodeState) -> Result<()> {
+[0m[32m+pub(crate) fn persist_runtime_state(
+[0m[32m+    app: &App,
+[0m[32m+    task_id: &str,
+[0m[32m+    run: &RunState,
+[0m[32m+    round: &RoundState,
+[0m[32m+    node: &NodeState,
+[0m[32m+) -> Result<()> {
+[0m     write_json(&app.paths.run_file(task_id, &run.id), run)?;
+     write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+[31m-    write_json(&app.paths.node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id), node)?;
+[0m[32m+    write_json(
+[0m[32m+        &app.paths
+[0m[32m+            .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
+[0m[32m+        node,
+[0m[32m+    )?;
+[0m     Ok(())
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_factory.rs:4:
+ 
+ use super::ids::now_rfc3339_like;
+ 
+[31m-pub(crate) fn create_node_state(run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, node_dsl: &NodeDsl) -> NodeState {
+[0m[32m+pub(crate) fn create_node_state(
+[0m[32m+    run_id: &str,
+[0m[32m+    round_id: &str,
+[0m[32m+    node_id: &str,
+[0m[32m+    attempt_id: &str,
+[0m[32m+    node_dsl: &NodeDsl,
+[0m[32m+) -> NodeState {
+[0m     NodeState {
+         version: VERSION.to_string(),
+         node_id: node_id.to_string(),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_factory.rs:26:
+         NodeDsl::Worker(worker) => {
+             config.insert(
+                 "provider".to_string(),
+[31m-                serde_json::Value::String(worker.provider.clone().unwrap_or_else(|| "claude-code".to_string())),
+[0m[32m+                serde_json::Value::String(
+[0m[32m+                    worker
+[0m[32m+                        .provider
+[0m[32m+                        .clone()
+[0m[32m+                        .unwrap_or_else(|| "claude-code".to_string()),
+[0m[32m+                ),
+[0m             );
+             if let Some(profile) = &worker.profile {
+[31m-                config.insert("profile".to_string(), serde_json::Value::String(profile.clone()));
+[0m[32m+                config.insert(
+[0m[32m+                    "profile".to_string(),
+[0m[32m+                    serde_json::Value::String(profile.clone()),
+[0m[32m+                );
+[0m             }
+             if let Some(primary_artifact) = &worker.primary_artifact {
+[31m-                config.insert("primaryArtifact".to_string(), serde_json::Value::String(primary_artifact.clone()));
+[0m[32m+                config.insert(
+[0m[32m+                    "primaryArtifact".to_string(),
+[0m[32m+                    serde_json::Value::String(primary_artifact.clone()),
+[0m[32m+                );
+[0m             }
+[31m-            config.insert("sessionMode".to_string(), serde_json::Value::String("new".to_string()));
+[0m[32m+            config.insert(
+[0m[32m+                "sessionMode".to_string(),
+[0m[32m+                serde_json::Value::String("new".to_string()),
+[0m[32m+            );
+[0m         }
+         NodeDsl::Exec(exec) => {
+[31m-            config.insert("planFrom".to_string(), serde_json::Value::String(exec.plan_from.clone()));
+[0m[32m+            config.insert(
+[0m[32m+                "planFrom".to_string(),
+[0m[32m+                serde_json::Value::String(exec.plan_from.clone()),
+[0m[32m+            );
+[0m         }
+         NodeDsl::Verify(verify) => {
+             config.insert(
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\state_factory.rs:44:
+                 "provider".to_string(),
+[31m-                serde_json::Value::String(verify.provider.clone().unwrap_or_else(|| "claude-code".to_string())),
+[0m[32m+                serde_json::Value::String(
+[0m[32m+                    verify
+[0m[32m+                        .provider
+[0m[32m+                        .clone()
+[0m[32m+                        .unwrap_or_else(|| "claude-code".to_string()),
+[0m[32m+                ),
+[0m             );
+             if let Some(profile) = &verify.profile {
+[31m-                config.insert("profile".to_string(), serde_json::Value::String(profile.clone()));
+[0m[32m+                config.insert(
+[0m[32m+                    "profile".to_string(),
+[0m[32m+                    serde_json::Value::String(profile.clone()),
+[0m[32m+                );
+[0m             }
+[31m-            config.insert("primaryArtifact".to_string(), serde_json::Value::String("verify-result".to_string()));
+[0m[31m-            config.insert("evidenceScope".to_string(), serde_json::Value::String("current-round".to_string()));
+[0m[32m+            config.insert(
+[0m[32m+                "primaryArtifact".to_string(),
+[0m[32m+                serde_json::Value::String("verify-result".to_string()),
+[0m[32m+            );
+[0m[32m+            config.insert(
+[0m[32m+                "evidenceScope".to_string(),
+[0m[32m+                serde_json::Value::String("current-round".to_string()),
+[0m[32m+            );
+[0m         }
+     }
+     config
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:6:
+ use crate::dsl::{NodeDsl, ValidatedWorkflow};
+ use crate::runtime::NodeState;
+ 
+[31m-use super::ids::latest_attempt_id;
+[0m use super::App;
+[32m+use super::ids::latest_attempt_id;
+[0m 
+ pub(crate) fn find_latest_artifact_path(
+     app: &App,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:22:
+         return Ok(None);
+     }
+     let attempt_id = latest_attempt_id(&node_dir)?;
+[31m-    Ok(attempt_id.map(|attempt_id| app.paths.artifact_file(task_id, run_id, round_id, node_id, &attempt_id, name)))
+[0m[32m+    Ok(attempt_id.map(|attempt_id| {
+[0m[32m+        app.paths
+[0m[32m+            .artifact_file(task_id, run_id, round_id, node_id, &attempt_id, name)
+[0m[32m+    }))
+[0m }
+ 
+ pub(crate) fn find_latest_worker_primary_artifact(
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:35:
+     for node in workflow.raw.nodes.iter().rev() {
+         if let NodeDsl::Worker(worker) = node
+             && let Some(primary_artifact) = &worker.primary_artifact
+[31m-            && let Some(path) = find_latest_artifact_path(app, task_id, run_id, round_id, &worker.id, primary_artifact)?
+[0m[32m+            && let Some(path) = find_latest_artifact_path(
+[0m[32m+                app,
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round_id,
+[0m[32m+                &worker.id,
+[0m[32m+                primary_artifact,
+[0m[32m+            )?
+[0m         {
+             return Ok(Some(path));
+         }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:58:
+     if previous_node.node_type != NodeType::Exec {
+         return Ok(None);
+     }
+[31m-    let path = app.paths.worker_ref_file(task_id, run_id, round_id, target_node_id, "attempt-001");
+[0m[32m+    let path = app
+[0m[32m+        .paths
+[0m[32m+        .worker_ref_file(task_id, run_id, round_id, target_node_id, "attempt-001");
+[0m     if path.exists() {
+         Ok(Some(path))
+     } else {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:75:
+ ) -> Result<Option<String>> {
+     match node.node_type {
+         NodeType::Exec => {
+[31m-            let path = app.paths.artifact_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id, "exec-result");
+[0m[32m+            let path = app.paths.artifact_file(
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round_id,
+[0m[32m+                &node.node_id,
+[0m[32m+                &node.attempt_id,
+[0m[32m+                "exec-result",
+[0m[32m+            );
+[0m             if path.exists() {
+                 Ok(Some(fs::read_to_string(path)?))
+             } else {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\app\transition_context.rs:83:
+             }
+         }
+         NodeType::Verify => {
+[31m-            let path = app.paths.artifact_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id, "verify-result");
+[0m[32m+            let path = app.paths.artifact_file(
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round_id,
+[0m[32m+                &node.node_id,
+[0m[32m+                &node.attempt_id,
+[0m[32m+                "verify-result",
+[0m[32m+            );
+[0m             if path.exists() {
+                 Ok(Some(fs::read_to_string(path)?))
+             } else {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:1:
+ use crate::domain::CommandStatus;
+[31m-use anyhow::{bail, ensure, Result};
+[0m[32m+use anyhow::{Result, bail, ensure};
+[0m use serde::{Deserialize, Serialize};
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:61:
+ }
+ 
+ pub fn validate_exec_plan(plan: &ExecPlanArtifact) -> Result<()> {
+[31m-    ensure!(plan.version == "0.1", "unsupported exec-plan version: {}", plan.version);
+[0m[31m-    ensure!(!plan.commands.is_empty(), "exec-plan commands cannot be empty");
+[0m[32m+    ensure!(
+[0m[32m+        plan.version == "0.1",
+[0m[32m+        "unsupported exec-plan version: {}",
+[0m[32m+        plan.version
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !plan.commands.is_empty(),
+[0m[32m+        "exec-plan commands cannot be empty"
+[0m[32m+    );
+[0m 
+     let mut ids = std::collections::HashSet::new();
+     for command in &plan.commands {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:69:
+         ensure!(!command.id.trim().is_empty(), "command id cannot be empty");
+[31m-        ensure!(ids.insert(command.id.clone()), "duplicate command id: {}", command.id);
+[0m[31m-        ensure!(!command.run.trim().is_empty(), "command run cannot be empty");
+[0m[31m-        ensure!(!command.purpose.trim().is_empty(), "command purpose cannot be empty");
+[0m[32m+        ensure!(
+[0m[32m+            ids.insert(command.id.clone()),
+[0m[32m+            "duplicate command id: {}",
+[0m[32m+            command.id
+[0m[32m+        );
+[0m[32m+        ensure!(
+[0m[32m+            !command.run.trim().is_empty(),
+[0m[32m+            "command run cannot be empty"
+[0m[32m+        );
+[0m[32m+        ensure!(
+[0m[32m+            !command.purpose.trim().is_empty(),
+[0m[32m+            "command purpose cannot be empty"
+[0m[32m+        );
+[0m         if let Some(timeout_sec) = command.timeout_sec {
+             ensure!(timeout_sec > 0, "timeoutSec must be positive");
+         }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:79:
+ }
+ 
+ pub fn validate_exec_result(result: &ExecResultArtifact) -> Result<()> {
+[31m-    ensure!(result.version == "0.1", "unsupported exec-result version: {}", result.version);
+[0m[31m-    ensure!(!result.commands.is_empty(), "exec-result commands cannot be empty");
+[0m[32m+    ensure!(
+[0m[32m+        result.version == "0.1",
+[0m[32m+        "unsupported exec-result version: {}",
+[0m[32m+        result.version
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !result.commands.is_empty(),
+[0m[32m+        "exec-result commands cannot be empty"
+[0m[32m+    );
+[0m 
+[31m-    let has_failure = result.commands.iter().any(|command| command.status == CommandStatus::Failure);
+[0m[31m-    let expected = if has_failure { ExecResultStatus::Failure } else { ExecResultStatus::Success };
+[0m[31m-    ensure!(result.status == expected, "exec-result top-level status does not match command aggregation");
+[0m[32m+    let has_failure = result
+[0m[32m+        .commands
+[0m[32m+        .iter()
+[0m[32m+        .any(|command| command.status == CommandStatus::Failure);
+[0m[32m+    let expected = if has_failure {
+[0m[32m+        ExecResultStatus::Failure
+[0m[32m+    } else {
+[0m[32m+        ExecResultStatus::Success
+[0m[32m+    };
+[0m[32m+    ensure!(
+[0m[32m+        result.status == expected,
+[0m[32m+        "exec-result top-level status does not match command aggregation"
+[0m[32m+    );
+[0m 
+     for command in &result.commands {
+[31m-        ensure!(!command.id.trim().is_empty(), "exec-result command id cannot be empty");
+[0m[32m+        ensure!(
+[0m[32m+            !command.id.trim().is_empty(),
+[0m[32m+            "exec-result command id cannot be empty"
+[0m[32m+        );
+[0m         if command.status == CommandStatus::Skipped {
+[31m-            ensure!(command.exit_code.is_none(), "skipped command must not include exitCode");
+[0m[32m+            ensure!(
+[0m[32m+                command.exit_code.is_none(),
+[0m[32m+                "skipped command must not include exitCode"
+[0m[32m+            );
+[0m         } else {
+[31m-            ensure!(command.exit_code.is_some(), "executed command must include exitCode");
+[0m[31m-            ensure!(command.stdout_path.as_deref().is_some_and(|value| !value.is_empty()), "executed command must include stdoutPath");
+[0m[31m-            ensure!(command.stderr_path.as_deref().is_some_and(|value| !value.is_empty()), "executed command must include stderrPath");
+[0m[32m+            ensure!(
+[0m[32m+                command.exit_code.is_some(),
+[0m[32m+                "executed command must include exitCode"
+[0m[32m+            );
+[0m[32m+            ensure!(
+[0m[32m+                command
+[0m[32m+                    .stdout_path
+[0m[32m+                    .as_deref()
+[0m[32m+                    .is_some_and(|value| !value.is_empty()),
+[0m[32m+                "executed command must include stdoutPath"
+[0m[32m+            );
+[0m[32m+            ensure!(
+[0m[32m+                command
+[0m[32m+                    .stderr_path
+[0m[32m+                    .as_deref()
+[0m[32m+                    .is_some_and(|value| !value.is_empty()),
+[0m[32m+                "executed command must include stderrPath"
+[0m[32m+            );
+[0m         }
+     }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:101:
+ }
+ 
+ pub fn validate_verify_result(result: &VerifyResultArtifact) -> Result<()> {
+[31m-    ensure!(result.version == "0.1", "unsupported verify-result version: {}", result.version);
+[0m[31m-    ensure!(!result.summary.trim().is_empty(), "verify-result summary cannot be empty");
+[0m[32m+    ensure!(
+[0m[32m+        result.version == "0.1",
+[0m[32m+        "unsupported verify-result version: {}",
+[0m[32m+        result.version
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !result.summary.trim().is_empty(),
+[0m[32m+        "verify-result summary cannot be empty"
+[0m[32m+    );
+[0m 
+     match result.status {
+         VerifyStatus::Success => {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\artifacts\mod.rs:109:
+[31m-            ensure!(result.unmet_requirements.is_empty(), "success verify-result must not contain unmetRequirements");
+[0m[31m-            ensure!(result.validation_gaps.is_empty(), "success verify-result must not contain validationGaps");
+[0m[32m+            ensure!(
+[0m[32m+                result.unmet_requirements.is_empty(),
+[0m[32m+                "success verify-result must not contain unmetRequirements"
+[0m[32m+            );
+[0m[32m+            ensure!(
+[0m[32m+                result.validation_gaps.is_empty(),
+[0m[32m+                "success verify-result must not contain validationGaps"
+[0m[32m+            );
+[0m         }
+         VerifyStatus::Failure => {
+             if result.unmet_requirements.is_empty() && result.validation_gaps.is_empty() {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:14:
+ 
+ #[derive(Debug, Subcommand)]
+ enum Commands {
+[31m-    Task { #[command(subcommand)] command: TaskCommands },
+[0m[31m-    Run { #[command(subcommand)] command: RunCommands },
+[0m[31m-    Artifact { #[command(subcommand)] command: ArtifactCommands },
+[0m[32m+    Task {
+[0m[32m+        #[command(subcommand)]
+[0m[32m+        command: TaskCommands,
+[0m[32m+    },
+[0m[32m+    Run {
+[0m[32m+        #[command(subcommand)]
+[0m[32m+        command: RunCommands,
+[0m[32m+    },
+[0m[32m+    Artifact {
+[0m[32m+        #[command(subcommand)]
+[0m[32m+        command: ArtifactCommands,
+[0m[32m+    },
+[0m }
+ 
+ #[derive(Debug, Subcommand)]
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:26:
+ 
+ #[derive(Debug, Subcommand)]
+ enum RunCommands {
+[31m-    Start { task_id: String, #[arg(long)] workflow: Option<Utf8PathBuf> },
+[0m[31m-    Status { task_id: String, run_id: String },
+[0m[31m-    Continue { task_id: String, run_id: String },
+[0m[31m-    Retry { task_id: String, run_id: String },
+[0m[31m-    Kill { task_id: String, run_id: String },
+[0m[31m-    OpenSession { task_id: String, run_id: String, #[arg(long)] round: String, #[arg(long)] node: String, #[arg(long)] attempt: String },
+[0m[32m+    Start {
+[0m[32m+        task_id: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        workflow: Option<Utf8PathBuf>,
+[0m[32m+    },
+[0m[32m+    Status {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+    },
+[0m[32m+    Continue {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+    },
+[0m[32m+    Retry {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+    },
+[0m[32m+    Kill {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+    },
+[0m[32m+    OpenSession {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        round: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        node: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        attempt: String,
+[0m[32m+    },
+[0m }
+ 
+ #[derive(Debug, Subcommand)]
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:38:
+ enum ArtifactCommands {
+[31m-    List { task_id: String, run_id: String, #[arg(long)] round: String, #[arg(long)] node: String, #[arg(long)] attempt: String },
+[0m[31m-    Show { task_id: String, run_id: String, #[arg(long)] round: String, #[arg(long)] node: String, #[arg(long)] attempt: String, #[arg(long)] name: String },
+[0m[31m-    ShowPath { path: Utf8PathBuf },
+[0m[32m+    List {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        round: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        node: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        attempt: String,
+[0m[32m+    },
+[0m[32m+    Show {
+[0m[32m+        task_id: String,
+[0m[32m+        run_id: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        round: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        node: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        attempt: String,
+[0m[32m+        #[arg(long)]
+[0m[32m+        name: String,
+[0m[32m+    },
+[0m[32m+    ShowPath {
+[0m[32m+        path: Utf8PathBuf,
+[0m[32m+    },
+[0m }
+ 
+ pub async fn run() -> Result<()> {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:45:
+     let cli = Cli::parse();
+     let cwd = std::env::current_dir()?;
+[31m-    let repo_root = Utf8PathBuf::from_path_buf(cwd).map_err(|_| anyhow::anyhow!("working directory is not valid UTF-8"))?;
+[0m[32m+    let repo_root = Utf8PathBuf::from_path_buf(cwd)
+[0m[32m+        .map_err(|_| anyhow::anyhow!("working directory is not valid UTF-8"))?;
+[0m     let app = App::new(repo_root);
+     init_tracing(&app.paths);
+     touch_log_file_best_effort(&app.paths);
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:77:
+                 let run = app.run_kill(&task_id, &run_id)?;
+                 println!("{}", serde_json::to_string_pretty(&run)?);
+             }
+[31m-            RunCommands::OpenSession { task_id, run_id, round, node, attempt } => {
+[0m[32m+            RunCommands::OpenSession {
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round,
+[0m[32m+                node,
+[0m[32m+                attempt,
+[0m[32m+            } => {
+[0m                 let command = app.run_open_session(&task_id, &run_id, &round, &node, &attempt)?;
+                 println!("{command}");
+             }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:84:
+         },
+         Commands::Artifact { command } => match command {
+[31m-            ArtifactCommands::List { task_id, run_id, round, node, attempt } => {
+[0m[32m+            ArtifactCommands::List {
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round,
+[0m[32m+                node,
+[0m[32m+                attempt,
+[0m[32m+            } => {
+[0m                 let artifacts = app.artifact_list(&task_id, &run_id, &round, &node, &attempt)?;
+                 println!("{}", serde_json::to_string_pretty(&artifacts)?);
+             }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\cli\mod.rs:90:
+[31m-            ArtifactCommands::Show { task_id, run_id, round, node, attempt, name } => {
+[0m[31m-                let artifact = app.artifact_show(&task_id, &run_id, &round, &node, &attempt, &name)?;
+[0m[32m+            ArtifactCommands::Show {
+[0m[32m+                task_id,
+[0m[32m+                run_id,
+[0m[32m+                round,
+[0m[32m+                node,
+[0m[32m+                attempt,
+[0m[32m+                name,
+[0m[32m+            } => {
+[0m[32m+                let artifact =
+[0m[32m+                    app.artifact_show(&task_id, &run_id, &round, &node, &attempt, &name)?;
+[0m                 println!("{artifact}");
+             }
+             ArtifactCommands::ShowPath { path } => {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:1:
+ use crate::domain::{PauseReason, RunOutcome, SessionMode};
+[31m-use crate::dsl::{EdgeOutcome, ValidatedWorkflow, END_NODE};
+[0m[32m+use crate::dsl::{END_NODE, EdgeOutcome, ValidatedWorkflow};
+[0m use crate::runtime::{NodeState, RoundState, RunState};
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:6:
+ pub enum ControlDecision {
+[31m-    TransitionToNode { node_id: String, session: SessionMode },
+[0m[32m+    TransitionToNode {
+[0m[32m+        node_id: String,
+[0m[32m+        session: SessionMode,
+[0m[32m+    },
+[0m     OpenNewRound,
+     CompleteRun(RunOutcome),
+     PauseRun(PauseReason),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:11:
+ }
+ 
+[31m-pub fn decide_next_step(workflow: &ValidatedWorkflow, run: &RunState, round: &RoundState, node: &NodeState) -> ControlDecision {
+[0m[32m+pub fn decide_next_step(
+[0m[32m+    workflow: &ValidatedWorkflow,
+[0m[32m+    run: &RunState,
+[0m[32m+    round: &RoundState,
+[0m[32m+    node: &NodeState,
+[0m[32m+) -> ControlDecision {
+[0m     match node.outcome {
+         Some(crate::domain::NodeOutcome::Success) => {
+[31m-            if let Some(edge) = workflow.raw.edges.iter().find(|edge| edge.from == node.node_id && edge.on == EdgeOutcome::Success) {
+[0m[32m+            if let Some(edge) = workflow
+[0m[32m+                .raw
+[0m[32m+                .edges
+[0m[32m+                .iter()
+[0m[32m+                .find(|edge| edge.from == node.node_id && edge.on == EdgeOutcome::Success)
+[0m[32m+            {
+[0m                 if edge.to == END_NODE {
+                     ControlDecision::CompleteRun(RunOutcome::Success)
+                 } else {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:30:
+         }
+         Some(crate::domain::NodeOutcome::Failure) => match node.node_type {
+             crate::domain::NodeType::Exec => {
+[31m-                if let Some(edge) = workflow.raw.edges.iter().find(|edge| edge.from == node.node_id && edge.on == EdgeOutcome::Failure) {
+[0m[32m+                if let Some(edge) = workflow
+[0m[32m+                    .raw
+[0m[32m+                    .edges
+[0m[32m+                    .iter()
+[0m[32m+                    .find(|edge| edge.from == node.node_id && edge.on == EdgeOutcome::Failure)
+[0m[32m+                {
+[0m                     if edge.to == END_NODE {
+                         ControlDecision::CompleteRun(RunOutcome::Failure)
+                     } else {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:53:
+                         ControlDecision::OpenNewRound
+                     }
+                 }
+[31m-                crate::domain::AcceptanceFailurePolicy::Stop => ControlDecision::CompleteRun(RunOutcome::Failure),
+[0m[32m+                crate::domain::AcceptanceFailurePolicy::Stop => {
+[0m[32m+                    ControlDecision::CompleteRun(RunOutcome::Failure)
+[0m[32m+                }
+[0m             },
+             crate::domain::NodeType::Worker => ControlDecision::PauseRun(PauseReason::ErrorBlocked),
+         },
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\control\mod.rs:60:
+[31m-        Some(crate::domain::NodeOutcome::Invalid) => ControlDecision::PauseRun(PauseReason::ErrorBlocked),
+[0m[31m-        Some(crate::domain::NodeOutcome::Killed) => ControlDecision::CompleteRun(RunOutcome::Killed),
+[0m[32m+        Some(crate::domain::NodeOutcome::Invalid) => {
+[0m[32m+            ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+[0m[32m+        }
+[0m[32m+        Some(crate::domain::NodeOutcome::Killed) => {
+[0m[32m+            ControlDecision::CompleteRun(RunOutcome::Killed)
+[0m[32m+        }
+[0m         None => ControlDecision::PauseRun(PauseReason::ProcessInterrupted),
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:1:
+[31m-use crate::domain::{AcceptanceFailurePolicy, NodeType, SessionMode, DEFAULT_PROVIDER};
+[0m[31m-use anyhow::{anyhow, bail, ensure, Result};
+[0m[32m+use crate::domain::{AcceptanceFailurePolicy, DEFAULT_PROVIDER, NodeType, SessionMode};
+[0m[32m+use anyhow::{Result, anyhow, bail, ensure};
+[0m use indexmap::IndexMap;
+ use serde::{Deserialize, Serialize};
+ use std::collections::HashSet;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:109:
+ }
+ 
+ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+[31m-    ensure!(workflow.version == "0.1", "unsupported workflow version: {}", workflow.version);
+[0m[31m-    ensure!(!workflow.id.trim().is_empty(), "workflow id cannot be empty");
+[0m[31m-    ensure!(!workflow.entry.trim().is_empty(), "workflow entry cannot be empty");
+[0m[31m-    ensure!(!workflow.nodes.is_empty(), "workflow must contain at least one node");
+[0m[32m+    ensure!(
+[0m[32m+        workflow.version == "0.1",
+[0m[32m+        "unsupported workflow version: {}",
+[0m[32m+        workflow.version
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !workflow.id.trim().is_empty(),
+[0m[32m+        "workflow id cannot be empty"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !workflow.entry.trim().is_empty(),
+[0m[32m+        "workflow entry cannot be empty"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !workflow.nodes.is_empty(),
+[0m[32m+        "workflow must contain at least one node"
+[0m[32m+    );
+[0m 
+     let mut nodes_by_id = IndexMap::new();
+     let mut seen_ids = HashSet::new();
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:124:
+         ensure!(seen_ids.insert(id.to_string()), "duplicate node id: {id}");
+ 
+         if let NodeDsl::Verify(_) = node {
+[31m-            ensure!(verify_node_id.is_none(), "workflow can contain at most one verify node");
+[0m[32m+            ensure!(
+[0m[32m+                verify_node_id.is_none(),
+[0m[32m+                "workflow can contain at most one verify node"
+[0m[32m+            );
+[0m             verify_node_id = Some(id.to_string());
+         }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:131:
+         nodes_by_id.insert(id.to_string(), node.clone());
+     }
+ 
+[31m-    ensure!(nodes_by_id.contains_key(&workflow.entry), "entry node not found: {}", workflow.entry);
+[0m[32m+    ensure!(
+[0m[32m+        nodes_by_id.contains_key(&workflow.entry),
+[0m[32m+        "entry node not found: {}",
+[0m[32m+        workflow.entry
+[0m[32m+    );
+[0m 
+     for edge in &workflow.edges {
+[31m-        ensure!(nodes_by_id.contains_key(&edge.from), "edge source not found: {}", edge.from);
+[0m[31m-        ensure!(edge.to == END_NODE || nodes_by_id.contains_key(&edge.to), "edge target not found: {}", edge.to);
+[0m[32m+        ensure!(
+[0m[32m+            nodes_by_id.contains_key(&edge.from),
+[0m[32m+            "edge source not found: {}",
+[0m[32m+            edge.from
+[0m[32m+        );
+[0m[32m+        ensure!(
+[0m[32m+            edge.to == END_NODE || nodes_by_id.contains_key(&edge.to),
+[0m[32m+            "edge target not found: {}",
+[0m[32m+            edge.to
+[0m[32m+        );
+[0m 
+         if matches!(edge.session, Some(SessionMode::Continue)) {
+             let source = nodes_by_id
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:142:
+                 .get(&edge.from)
+                 .ok_or_else(|| anyhow!("edge source not found: {}", edge.from))?;
+             let provider = source.provider().unwrap_or(DEFAULT_PROVIDER);
+[31m-            ensure!(provider == DEFAULT_PROVIDER, "session=continue currently only supports provider `{DEFAULT_PROVIDER}`");
+[0m[32m+            ensure!(
+[0m[32m+                provider == DEFAULT_PROVIDER,
+[0m[32m+                "session=continue currently only supports provider `{DEFAULT_PROVIDER}`"
+[0m[32m+            );
+[0m         }
+     }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\dsl\mod.rs:153:
+                 .ok_or_else(|| anyhow!("exec planFrom not found: {}", exec.plan_from))?;
+             match source {
+                 NodeDsl::Worker(worker) => {
+[31m-                    ensure!(worker.primary_artifact.as_deref() == Some("exec-plan"), "exec node `{}` requires planFrom worker `{}` to declare primaryArtifact=exec-plan", exec.id, exec.plan_from);
+[0m[32m+                    ensure!(
+[0m[32m+                        worker.primary_artifact.as_deref() == Some("exec-plan"),
+[0m[32m+                        "exec node `{}` requires planFrom worker `{}` to declare primaryArtifact=exec-plan",
+[0m[32m+                        exec.id,
+[0m[32m+                        exec.plan_from
+[0m[32m+                    );
+[0m                 }
+[31m-                _ => bail!("exec node `{}` planFrom must point to a worker node", exec.id),
+[0m[32m+                _ => bail!(
+[0m[32m+                    "exec node `{}` planFrom must point to a worker node",
+[0m[32m+                    exec.id
+[0m[32m+                ),
+[0m             }
+         }
+     }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\layout.rs:8:
+     commands_dir(attempt_dir).join(format!("{:02}-{}", index + 1, command_id))
+ }
+ 
+[31m-pub(crate) fn command_json_path(attempt_dir: &Utf8Path, index: usize, command_id: &str) -> Utf8PathBuf {
+[0m[32m+pub(crate) fn command_json_path(
+[0m[32m+    attempt_dir: &Utf8Path,
+[0m[32m+    index: usize,
+[0m[32m+    command_id: &str,
+[0m[32m+) -> Utf8PathBuf {
+[0m     command_dir(attempt_dir, index, command_id).join("command.json")
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\layout.rs:15:
+[31m-pub(crate) fn stdout_log_path(attempt_dir: &Utf8Path, index: usize, command_id: &str) -> Utf8PathBuf {
+[0m[32m+pub(crate) fn stdout_log_path(
+[0m[32m+    attempt_dir: &Utf8Path,
+[0m[32m+    index: usize,
+[0m[32m+    command_id: &str,
+[0m[32m+) -> Utf8PathBuf {
+[0m     command_dir(attempt_dir, index, command_id).join("stdout.log")
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\layout.rs:19:
+[31m-pub(crate) fn stderr_log_path(attempt_dir: &Utf8Path, index: usize, command_id: &str) -> Utf8PathBuf {
+[0m[32m+pub(crate) fn stderr_log_path(
+[0m[32m+    attempt_dir: &Utf8Path,
+[0m[32m+    index: usize,
+[0m[32m+    command_id: &str,
+[0m[32m+) -> Utf8PathBuf {
+[0m     command_dir(attempt_dir, index, command_id).join("stderr.log")
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:1:
+ mod layout;
+ 
+ use crate::artifacts::{
+[31m-    validate_exec_plan, validate_exec_result, ExecCommandResult, ExecPlanArtifact, ExecResultArtifact, ExecResultStatus,
+[0m[32m+    ExecCommandResult, ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, validate_exec_plan,
+[0m[32m+    validate_exec_result,
+[0m };
+ use crate::domain::CommandStatus;
+ use anyhow::Result;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:10:
+ use std::process::Command;
+ use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ 
+[31m-use self::layout::{command_dir, command_json_path, commands_dir, stderr_log_path, stderr_rel_path, stdout_log_path, stdout_rel_path};
+[0m[32m+use self::layout::{
+[0m[32m+    command_dir, command_json_path, commands_dir, stderr_log_path, stderr_rel_path,
+[0m[32m+    stdout_log_path, stdout_rel_path,
+[0m[32m+};
+[0m 
+ pub fn build_skipped_exec_result(plan: &ExecPlanArtifact) -> Result<ExecResultArtifact> {
+     let commands = plan
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:36:
+     })
+ }
+ 
+[31m-pub fn run_exec_plan(plan: &ExecPlanArtifact, workspace_dir: &Utf8Path, attempt_dir: &Utf8Path) -> Result<ExecResultArtifact> {
+[0m[32m+pub fn run_exec_plan(
+[0m[32m+    plan: &ExecPlanArtifact,
+[0m[32m+    workspace_dir: &Utf8Path,
+[0m[32m+    attempt_dir: &Utf8Path,
+[0m[32m+) -> Result<ExecResultArtifact> {
+[0m     validate_exec_plan(plan)?;
+ 
+     let commands_dir = commands_dir(attempt_dir);
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:63:
+ 
+         let command_dir = command_dir(attempt_dir, index, &command.id);
+         std::fs::create_dir_all(command_dir.as_std_path())?;
+[31m-        write_json_file(command_json_path(attempt_dir, index, &command.id).as_std_path(), command)?;
+[0m[32m+        write_json_file(
+[0m[32m+            command_json_path(attempt_dir, index, &command.id).as_std_path(),
+[0m[32m+            command,
+[0m[32m+        )?;
+[0m 
+         let start_stamp = timestamp_like();
+         let started = Instant::now();
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:82:
+ 
+         let stdout_rel = stdout_rel_path(index, &command.id);
+         let stderr_rel = stderr_rel_path(index, &command.id);
+[31m-        std::fs::write(stdout_log_path(attempt_dir, index, &command.id).as_std_path(), &output.stdout)?;
+[0m[31m-        std::fs::write(stderr_log_path(attempt_dir, index, &command.id).as_std_path(), &output.stderr)?;
+[0m[32m+        std::fs::write(
+[0m[32m+            stdout_log_path(attempt_dir, index, &command.id).as_std_path(),
+[0m[32m+            &output.stdout,
+[0m[32m+        )?;
+[0m[32m+        std::fs::write(
+[0m[32m+            stderr_log_path(attempt_dir, index, &command.id).as_std_path(),
+[0m[32m+            &output.stderr,
+[0m[32m+        )?;
+[0m 
+         let status = if output.status.success() {
+             CommandStatus::Success
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\exec\mod.rs:105:
+         });
+     }
+ 
+[31m-    let top_level_status = if results.iter().any(|command| command.status == CommandStatus::Failure) {
+[0m[32m+    let top_level_status = if results
+[0m[32m+        .iter()
+[0m[32m+        .any(|command| command.status == CommandStatus::Failure)
+[0m[32m+    {
+[0m         ExecResultStatus::Failure
+     } else {
+         ExecResultStatus::Success
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:1:
+ use std::fs::{self, File, OpenOptions};
+ use std::io::Write as _;
+[31m-use std::sync::atomic::{AtomicBool, Ordering};
+[0m use std::sync::OnceLock;
+[32m+use std::sync::atomic::{AtomicBool, Ordering};
+[0m 
+ use camino::Utf8Path;
+ use serde::Serialize;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:9:
+ use tracing_subscriber::fmt::writer::BoxMakeWriter;
+ use tracing_subscriber::layer::SubscriberExt;
+ use tracing_subscriber::util::SubscriberInitExt;
+[31m-use tracing_subscriber::{fmt, EnvFilter, Layer};
+[0m[32m+use tracing_subscriber::{EnvFilter, Layer, fmt};
+[0m 
+ use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
+ use crate::inspect::render_run_status;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:16:
+ use crate::runtime::RunState;
+[31m-use crate::storage::{append_jsonl, ensure_parent_dir, write_json, GoldBandPaths};
+[0m[32m+use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json};
+[0m 
+ const PROGRESS_TARGET: &str = "gold_band.progress";
+ const LOG_RETENTION_DAYS: u64 = 7;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:149:
+     let stderr_writer = BoxMakeWriter::new(std::io::stderr);
+ 
+     let progress_filter = EnvFilter::new(format!("{PROGRESS_TARGET}=info"));
+[31m-    let debug_filter = EnvFilter::from_default_env().add_directive("gold_band=debug".parse().expect("valid directive"));
+[0m[32m+    let debug_filter = EnvFilter::from_default_env()
+[0m[32m+        .add_directive("gold_band=debug".parse().expect("valid directive"));
+[0m 
+     let file_layer = fmt::layer()
+         .with_ansi(false)
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:169:
+         .with_writer(stderr_writer)
+         .with_filter(progress_filter);
+ 
+[31m-    tracing_subscriber::registry().with(file_layer).with(stderr_layer).init();
+[0m[32m+    tracing_subscriber::registry()
+[0m[32m+        .with(file_layer)
+[0m[32m+        .with(stderr_layer)
+[0m[32m+        .init();
+[0m }
+ 
+ pub fn progress(run_summary: &str) {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:221:
+     }
+ }
+ 
+[31m-pub fn append_raw_stream_best_effort(path: &Utf8Path, timestamp: &str, stream: &str, content: &str) {
+[0m[32m+pub fn append_raw_stream_best_effort(
+[0m[32m+    path: &Utf8Path,
+[0m[32m+    timestamp: &str,
+[0m[32m+    stream: &str,
+[0m[32m+    content: &str,
+[0m[32m+) {
+[0m     let envelope = RawStreamEnvelope {
+         timestamp,
+         stream,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:288:
+     format!("trace-{millis}")
+ }
+ 
+[31m-pub fn write_progress_hint(paths: &GoldBandPaths, task_id: &str, run_id: &str, node_raw_stream: Option<&Utf8Path>) {
+[0m[31m-    progress(&format!("progress file: {}", paths.run_progress_file(task_id, run_id)));
+[0m[31m-    progress(&format!("events file: {}", paths.run_events_file(task_id, run_id)));
+[0m[32m+pub fn write_progress_hint(
+[0m[32m+    paths: &GoldBandPaths,
+[0m[32m+    task_id: &str,
+[0m[32m+    run_id: &str,
+[0m[32m+    node_raw_stream: Option<&Utf8Path>,
+[0m[32m+) {
+[0m[32m+    progress(&format!(
+[0m[32m+        "progress file: {}",
+[0m[32m+        paths.run_progress_file(task_id, run_id)
+[0m[32m+    ));
+[0m[32m+    progress(&format!(
+[0m[32m+        "events file: {}",
+[0m[32m+        paths.run_events_file(task_id, run_id)
+[0m[32m+    ));
+[0m     if let Some(raw_stream) = node_raw_stream {
+         progress(&format!("raw stream: {raw_stream}"));
+     }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\observability\mod.rs:302:
+         warn!(path = %path, error = %err, "failed to prepare runtime log path");
+         return;
+     }
+[31m-    if let Err(err) = File::options().create(true).append(true).open(path.as_std_path()).and_then(|mut file| file.write_all(b"")) {
+[0m[32m+    if let Err(err) = File::options()
+[0m[32m+        .create(true)
+[0m[32m+        .append(true)
+[0m[32m+        .open(path.as_std_path())
+[0m[32m+        .and_then(|mut file| file.write_all(b""))
+[0m[32m+    {
+[0m         warn!(path = %path, error = %err, "failed to touch runtime log file");
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:2:
+ use crate::domain::{InvocationKind, SessionMode};
+ use crate::observability::append_raw_stream_best_effort;
+ use crate::storage::ensure_parent_dir;
+[31m-use anyhow::{anyhow, bail, ensure, Result};
+[0m[32m+use anyhow::{Result, anyhow, bail, ensure};
+[0m use camino::Utf8PathBuf;
+ use serde::{Deserialize, Serialize};
+ use std::io::{BufReader, Read};
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:92:
+     pub content: String,
+ }
+ 
+[31m-
+[0m #[derive(Debug, Clone)]
+ pub struct PromptBundle {
+     pub system_prompt: String,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:132:
+             },
+             Ok(output) => DoctorResult {
+                 available: false,
+[31m-                reason: Some(format!("claude --version failed with status {:?}", output.status.code())),
+[0m[32m+                reason: Some(format!(
+[0m[32m+                    "claude --version failed with status {:?}",
+[0m[32m+                    output.status.code()
+[0m[32m+                )),
+[0m             },
+             Err(err) => DoctorResult {
+                 available: false,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:147:
+         debug!(invocation_kind = ?req.invocation_kind, attempt_dir = %req.attempt_dir, session_mode = ?req.session_mode, stream_mode = ?req.stream_mode, "starting claude provider invocation");
+         command.current_dir(req.workspace_dir.as_std_path());
+         command.arg("--bare").arg("-p");
+[31m-        command.arg(format!("{}\n\n{}", prompt.system_prompt, prompt.user_prompt));
+[0m[32m+        command.arg(format!(
+[0m[32m+            "{}\n\n{}",
+[0m[32m+            prompt.system_prompt, prompt.user_prompt
+[0m[32m+        ));
+[0m         command.arg("--output-format").arg("json");
+ 
+         match req.session_mode {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:167:
+ 
+         command.stdout(Stdio::piped());
+         command.stderr(Stdio::piped());
+[31m-        let raw_stream_path = matches!(req.stream_mode, StreamMode::Raw).then(|| req.attempt_dir.join("raw.stream.jsonl"));
+[0m[32m+        let raw_stream_path = matches!(req.stream_mode, StreamMode::Raw)
+[0m[32m+            .then(|| req.attempt_dir.join("raw.stream.jsonl"));
+[0m         if let Some(path) = raw_stream_path.as_ref() {
+             ensure_parent_dir(path)?;
+[31m-            let _ = std::fs::File::options().create(true).append(true).open(path.as_std_path())?;
+[0m[32m+            let _ = std::fs::File::options()
+[0m[32m+                .create(true)
+[0m[32m+                .append(true)
+[0m[32m+                .open(path.as_std_path())?;
+[0m             debug!(path = %path, "prepared raw stream file");
+         }
+         let mut child = command.spawn()?;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:177:
+ 
+[31m-        let stdout = child.stdout.take().ok_or_else(|| anyhow!("failed to capture claude stdout"))?;
+[0m[31m-        let stderr = child.stderr.take().ok_or_else(|| anyhow!("failed to capture claude stderr"))?;
+[0m[32m+        let stdout = child
+[0m[32m+            .stdout
+[0m[32m+            .take()
+[0m[32m+            .ok_or_else(|| anyhow!("failed to capture claude stdout"))?;
+[0m[32m+        let stderr = child
+[0m[32m+            .stderr
+[0m[32m+            .take()
+[0m[32m+            .ok_or_else(|| anyhow!("failed to capture claude stderr"))?;
+[0m         let stdout_path = raw_stream_path.clone();
+         let stderr_path = raw_stream_path.clone();
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:185:
+ 
+         let status = child.wait()?;
+         let exit_code = status.code();
+[31m-        let stdout = stdout_handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
+[0m[31m-        let stderr = stderr_handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
+[0m[32m+        let stdout = stdout_handle
+[0m[32m+            .join()
+[0m[32m+            .map_err(|_| anyhow!("stdout reader thread panicked"))?;
+[0m[32m+        let stderr = stderr_handle
+[0m[32m+            .join()
+[0m[32m+            .map_err(|_| anyhow!("stderr reader thread panicked"))?;
+[0m         let stdout = stdout.trim().to_string();
+         let stderr = stderr.trim().to_string();
+         let stream_path = raw_stream_path;
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:193:
+[31m-        debug!(?exit_code, stdout_len = stdout.len(), stderr_len = stderr.len(), "claude provider finished");
+[0m[32m+        debug!(
+[0m[32m+            ?exit_code,
+[0m[32m+            stdout_len = stdout.len(),
+[0m[32m+            stderr_len = stderr.len(),
+[0m[32m+            "claude provider finished"
+[0m[32m+        );
+[0m 
+         if !status.success() {
+             warn!(?exit_code, "claude provider returned failure status");
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:203:
+             });
+         }
+ 
+[31m-        let response: ClaudeJsonResponse = serde_json::from_str(&stdout)
+[0m[31m-            .map_err(|err| anyhow!("failed to parse Claude Code JSON output: {err}; stdout={stdout}; stderr={stderr}"))?;
+[0m[32m+        let response: ClaudeJsonResponse = serde_json::from_str(&stdout).map_err(|err| {
+[0m[32m+            anyhow!(
+[0m[32m+                "failed to parse Claude Code JSON output: {err}; stdout={stdout}; stderr={stderr}"
+[0m[32m+            )
+[0m[32m+        })?;
+[0m 
+         let worker_ref_seed = response.session_id.as_ref().map(|session_id| SessionRef {
+             provider: "claude-code".to_string(),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:215:
+             open_command: Some(format!("claude -c {session_id}")),
+         });
+ 
+[31m-        let result_payload = req.primary_artifact.as_ref().map(|primary_artifact| ProviderResultPayload {
+[0m[31m-            primary_artifact: Some(PrimaryArtifactPayload {
+[0m[31m-                name: primary_artifact.clone(),
+[0m[31m-                content: response.result,
+[0m[31m-            }),
+[0m[31m-        });
+[0m[32m+        let result_payload =
+[0m[32m+            req.primary_artifact
+[0m[32m+                .as_ref()
+[0m[32m+                .map(|primary_artifact| ProviderResultPayload {
+[0m[32m+                    primary_artifact: Some(PrimaryArtifactPayload {
+[0m[32m+                        name: primary_artifact.clone(),
+[0m[32m+                        content: response.result,
+[0m[32m+                    }),
+[0m[32m+                });
+[0m 
+         Ok(ProviderRunResult {
+             status: ProviderRunStatus::Success,
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\provider\mod.rs:282:
+ }
+ 
+ fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
+[31m-    ensure!(req.requirement_path.is_some() || req.requirement_text.is_some(), "worker invocation requires requirementPath or requirementText");
+[0m[32m+    ensure!(
+[0m[32m+        req.requirement_path.is_some() || req.requirement_text.is_some(),
+[0m[32m+        "worker invocation requires requirementPath or requirementText"
+[0m[32m+    );
+[0m 
+     let requirement_text = match (&req.requirement_text, &req.requirement_path) {
+         (Some(text), _) => text.clone(),
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\runtime\mod.rs:1:
+[31m-use crate::domain::{NodeOutcome, NodeType, PauseReason, ResolvedConfig, RoundTrigger, RunOutcome, RunStatus, SessionMode, VERSION};
+[0m[31m-use anyhow::{ensure, Result};
+[0m[32m+use crate::domain::{
+[0m[32m+    NodeOutcome, NodeType, PauseReason, ResolvedConfig, RoundTrigger, RunOutcome, RunStatus,
+[0m[32m+    SessionMode, VERSION,
+[0m[32m+};
+[0m[32m+use anyhow::{Result, ensure};
+[0m use serde::{Deserialize, Serialize};
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\runtime\mod.rs:77:
+ 
+ pub fn validate_run_state(state: &RunState) -> Result<()> {
+     ensure!(state.version == VERSION, "unsupported run state version");
+[31m-    ensure!(!(state.status != RunStatus::Completed && state.outcome.is_some()), "non-completed run cannot have outcome");
+[0m[31m-    ensure!(!(state.status == RunStatus::Completed && state.outcome.is_none()), "completed run must have outcome");
+[0m[31m-    ensure!(!(state.status != RunStatus::Paused && state.pause_reason.is_some()), "non-paused run cannot have pauseReason");
+[0m[31m-    ensure!(!(state.current_attempt.is_some() && state.current_node.is_none()), "currentAttempt requires currentNode");
+[0m[31m-    ensure!(!(state.current_node.is_some() && state.current_round.is_none()), "currentNode requires currentRound");
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status != RunStatus::Completed && state.outcome.is_some()),
+[0m[32m+        "non-completed run cannot have outcome"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status == RunStatus::Completed && state.outcome.is_none()),
+[0m[32m+        "completed run must have outcome"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status != RunStatus::Paused && state.pause_reason.is_some()),
+[0m[32m+        "non-paused run cannot have pauseReason"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.current_attempt.is_some() && state.current_node.is_none()),
+[0m[32m+        "currentAttempt requires currentNode"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.current_node.is_some() && state.current_round.is_none()),
+[0m[32m+        "currentNode requires currentRound"
+[0m[32m+    );
+[0m     Ok(())
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\runtime\mod.rs:88:
+ pub fn validate_round_state(state: &RoundState) -> Result<()> {
+     ensure!(state.version == VERSION, "unsupported round state version");
+     ensure!(state.index > 0, "round index must be positive");
+[31m-    ensure!(!(state.status != RunStatus::Completed && state.outcome.is_some()), "non-completed round cannot have outcome");
+[0m[31m-    ensure!(!(state.status == RunStatus::Completed && state.outcome.is_none()), "completed round must have outcome");
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status != RunStatus::Completed && state.outcome.is_some()),
+[0m[32m+        "non-completed round cannot have outcome"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status == RunStatus::Completed && state.outcome.is_none()),
+[0m[32m+        "completed round must have outcome"
+[0m[32m+    );
+[0m     Ok(())
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\runtime\mod.rs:96:
+ pub fn validate_node_state(state: &NodeState) -> Result<()> {
+     ensure!(state.version == VERSION, "unsupported node state version");
+[31m-    ensure!(!(state.status != RunStatus::Completed && state.outcome.is_some()), "non-completed node cannot have outcome");
+[0m[31m-    ensure!(!(state.status == RunStatus::Completed && state.outcome.is_none()), "completed node must have outcome");
+[0m[31m-    ensure!(!(state.status == RunStatus::Completed && state.finished_at.is_none()), "completed node must have finishedAt");
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status != RunStatus::Completed && state.outcome.is_some()),
+[0m[32m+        "non-completed node cannot have outcome"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status == RunStatus::Completed && state.outcome.is_none()),
+[0m[32m+        "completed node must have outcome"
+[0m[32m+    );
+[0m[32m+    ensure!(
+[0m[32m+        !(state.status == RunStatus::Completed && state.finished_at.is_none()),
+[0m[32m+        "completed node must have finishedAt"
+[0m[32m+    );
+[0m     Ok(())
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\runtime\mod.rs:104:
+ pub fn validate_worker_ref_state(state: &WorkerRefState) -> Result<()> {
+     ensure!(state.version == VERSION, "unsupported worker-ref version");
+[31m-    ensure!(!state.provider.trim().is_empty(), "worker-ref provider cannot be empty");
+[0m[32m+    ensure!(
+[0m[32m+        !state.provider.trim().is_empty(),
+[0m[32m+        "worker-ref provider cannot be empty"
+[0m[32m+    );
+[0m     Ok(())
+ }
+[31m-
+[0m 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\storage\mod.rs:14:
+     pub fn new(repo_root: impl Into<Utf8PathBuf>) -> Self {
+         let repo_root = repo_root.into();
+         let runtime_root = repo_root.join(".gold-band");
+[31m-        Self { repo_root, runtime_root }
+[0m[32m+        Self {
+[0m[32m+            repo_root,
+[0m[32m+            runtime_root,
+[0m[32m+        }
+[0m     }
+ 
+     pub fn logs_dir(&self) -> Utf8PathBuf {
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\storage\mod.rs:77:
+         self.round_dir(task_id, run_id, round_id).join("round.json")
+     }
+ 
+[31m-    pub fn node_dir(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.round_dir(task_id, run_id, round_id).join("nodes").join(node_id)
+[0m[32m+    pub fn node_dir(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.round_dir(task_id, run_id, round_id)
+[0m[32m+            .join("nodes")
+[0m[32m+            .join(node_id)
+[0m     }
+ 
+[31m-    pub fn attempt_dir(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.node_dir(task_id, run_id, round_id, node_id).join(attempt_id)
+[0m[32m+    pub fn attempt_dir(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.node_dir(task_id, run_id, round_id, node_id)
+[0m[32m+            .join(attempt_id)
+[0m     }
+ 
+[31m-    pub fn node_file(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("node.json")
+[0m[32m+    pub fn node_file(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("node.json")
+[0m     }
+ 
+[31m-    pub fn worker_ref_file(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("worker-ref.json")
+[0m[32m+    pub fn worker_ref_file(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("worker-ref.json")
+[0m     }
+ 
+[31m-    pub fn artifacts_dir(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("artifacts")
+[0m[32m+    pub fn artifacts_dir(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("artifacts")
+[0m     }
+ 
+[31m-    pub fn artifact_file(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str, name: &str) -> Utf8PathBuf {
+[0m[32m+    pub fn artifact_file(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+        name: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m         self.artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
+             .join(format!("{name}.json"))
+     }
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\storage\mod.rs:104:
+ 
+[31m-    pub fn attachments_dir(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("attachments")
+[0m[32m+    pub fn attachments_dir(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("attachments")
+[0m     }
+ 
+[31m-    pub fn progress_events_file(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("progress.events.jsonl")
+[0m[32m+    pub fn progress_events_file(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("progress.events.jsonl")
+[0m     }
+ 
+[31m-    pub fn raw_stream_file(&self, task_id: &str, run_id: &str, round_id: &str, node_id: &str, attempt_id: &str) -> Utf8PathBuf {
+[0m[31m-        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id).join("raw.stream.jsonl")
+[0m[32m+    pub fn raw_stream_file(
+[0m[32m+        &self,
+[0m[32m+        task_id: &str,
+[0m[32m+        run_id: &str,
+[0m[32m+        round_id: &str,
+[0m[32m+        node_id: &str,
+[0m[32m+        attempt_id: &str,
+[0m[32m+    ) -> Utf8PathBuf {
+[0m[32m+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+[0m[32m+            .join("raw.stream.jsonl")
+[0m     }
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\src\storage\mod.rs:136:
+ 
+ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+     ensure_parent_dir(path)?;
+[31m-    let mut file = OpenOptions::new().create(true).append(true).open(path.as_std_path())?;
+[0m[32m+    let mut file = OpenOptions::new()
+[0m[32m+        .create(true)
+[0m[32m+        .append(true)
+[0m[32m+        .open(path.as_std_path())?;
+[0m     serde_json::to_writer(&mut file, value)?;
+     file.write_all(b"\n")?;
+     Ok(())
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:2:
+ use gold_band::app::App;
+ use gold_band::domain::SessionMode;
+ use gold_band::provider::{
+[31m-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderResultPayload, ProviderRunResult,
+[0m[31m-    ProviderRunStatus, WorkerInvocation, SessionRef,
+[0m[32m+    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+[0m[32m+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+[0m };
+ use tempfile::tempdir;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:27:
+     }
+ 
+     fn doctor(&self) -> DoctorResult {
+[31m-        DoctorResult { available: true, reason: None }
+[0m[32m+        DoctorResult {
+[0m[32m+            available: true,
+[0m[32m+            reason: None,
+[0m[32m+        }
+[0m     }
+ 
+     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:71:
+         Ok(())
+     }
+ 
+[31m-    fn build_continue_command(&self, worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<Option<String>> {
+[0m[32m+    fn build_continue_command(
+[0m[32m+        &self,
+[0m[32m+        worker_ref: &gold_band::domain::SessionRef,
+[0m[32m+    ) -> anyhow::Result<Option<String>> {
+[0m         Ok(worker_ref.open_command.clone())
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:82:
+     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+     let task_id = "task-001";
+ 
+[31m-    std::fs::create_dir_all(repo_root.join(".gold-band/tasks/task-001/authoring").as_std_path()).unwrap();
+[0m[31m-    std::fs::write(repo_root.join(".gold-band/tasks/task-001/authoring/requirement.md").as_std_path(), "Implement feature").unwrap();
+[0m[32m+    std::fs::create_dir_all(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring")
+[0m[32m+            .as_std_path(),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     std::fs::write(
+[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/requirement.md")
+[0m[32m+            .as_std_path(),
+[0m[32m+        "Implement feature",
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m[32m+    std::fs::write(
+[0m         repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+         r#"{
+           "version": "0.1",
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:107:
+         }"#,
+     )
+     .unwrap();
+[31m-    std::fs::write(repo_root.join(".gold-band/tasks/task-001/task.json").as_std_path(), r#"{"version":"0.1","id":"task-001"}"#).unwrap();
+[0m[32m+    std::fs::write(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/task.json")
+[0m[32m+            .as_std_path(),
+[0m[32m+        r#"{"version":"0.1","id":"task-001"}"#,
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m 
+     let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
+     let run = app.run_start(task_id, None).unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\acceptance_loop_and_commands.rs:114:
+     assert_eq!(run.id, "run-001");
+ 
+     let continued = app.run_status(task_id, "run-001").unwrap();
+[31m-    assert_eq!(continued.outcome, Some(gold_band::domain::RunOutcome::Success));
+[0m[31m-    assert!(repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-002").exists());
+[0m[32m+    assert_eq!(
+[0m[32m+        continued.outcome,
+[0m[32m+        Some(gold_band::domain::RunOutcome::Success)
+[0m[32m+    );
+[0m[32m+    assert!(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-002")
+[0m[32m+            .exists()
+[0m[32m+    );
+[0m 
+[31m-    let command = app.run_open_session(task_id, "run-001", "round-002", "accept", "attempt-001").unwrap();
+[0m[32m+    let command = app
+[0m[32m+        .run_open_session(task_id, "run-001", "round-002", "accept", "attempt-001")
+[0m[32m+        .unwrap();
+[0m     assert!(command.starts_with("claude -c session-"));
+ 
+[31m-    let artifacts = app.artifact_list(task_id, "run-001", "round-002", "accept", "attempt-001").unwrap();
+[0m[32m+    let artifacts = app
+[0m[32m+        .artifact_list(task_id, "run-001", "round-002", "accept", "attempt-001")
+[0m[32m+        .unwrap();
+[0m     assert!(artifacts.iter().any(|name| name == "verify-result.json"));
+ 
+     let killed = app.run_kill(task_id, "run-001").unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\control_engine.rs:1:
+[31m-use gold_band::control::{decide_next_step, ControlDecision};
+[0m[32m+use gold_band::control::{ControlDecision, decide_next_step};
+[0m use gold_band::domain::{NodeOutcome, NodeType, RunStatus, VERSION};
+ use gold_band::dsl::WorkflowDsl;
+ use gold_band::runtime::{NodeState, RoundState, RunState};
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\control_engine.rs:65:
+     };
+ 
+     let decision = decide_next_step(&validated, &run, &round, &node);
+[31m-    assert!(matches!(decision, ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Success)));
+[0m[32m+    assert!(matches!(
+[0m[32m+        decision,
+[0m[32m+        ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Success)
+[0m[32m+    ));
+[0m }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\dsl_validation.rs:1:
+[31m-use gold_band::dsl::{validate_workflow, WorkflowDsl};
+[0m[32m+use gold_band::dsl::{WorkflowDsl, validate_workflow};
+[0m 
+ #[test]
+ fn validates_basic_workflow() {
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:2:
+ use gold_band::app::App;
+ use gold_band::domain::SessionMode;
+ use gold_band::provider::{
+[31m-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderResultPayload, ProviderRunResult,
+[0m[31m-    ProviderRunStatus, WorkerInvocation, SessionRef,
+[0m[32m+    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+[0m[32m+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+[0m };
+ use gold_band::runtime::RunState;
+ use std::sync::{Arc, Mutex};
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:29:
+     }
+ 
+     fn doctor(&self) -> DoctorResult {
+[31m-        DoctorResult { available: true, reason: None }
+[0m[32m+        DoctorResult {
+[0m[32m+            available: true,
+[0m[32m+            reason: None,
+[0m[32m+        }
+[0m     }
+ 
+     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:70:
+         Ok(())
+     }
+ 
+[31m-    fn build_continue_command(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<Option<String>> {
+[0m[32m+    fn build_continue_command(
+[0m[32m+        &self,
+[0m[32m+        _worker_ref: &gold_band::domain::SessionRef,
+[0m[32m+    ) -> anyhow::Result<Option<String>> {
+[0m         Ok(Some("claude -c session-1".to_string()))
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:81:
+     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+     let task_id = "task-001";
+ 
+[31m-    std::fs::create_dir_all(repo_root.join(".gold-band/tasks/task-001/authoring").as_std_path()).unwrap();
+[0m[31m-    std::fs::write(repo_root.join(".gold-band/tasks/task-001/authoring/requirement.md").as_std_path(), "Implement feature").unwrap();
+[0m[32m+    std::fs::create_dir_all(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring")
+[0m[32m+            .as_std_path(),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     std::fs::write(
+[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/requirement.md")
+[0m[32m+            .as_std_path(),
+[0m[32m+        "Implement feature",
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m[32m+    std::fs::write(
+[0m         repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+         r#"{
+           "version": "0.1",
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:106:
+         }"#,
+     )
+     .unwrap();
+[31m-    std::fs::write(repo_root.join(".gold-band/tasks/task-001/task.json").as_std_path(), r#"{"version":"0.1","id":"task-001"}"#).unwrap();
+[0m[32m+    std::fs::write(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/task.json")
+[0m[32m+            .as_std_path(),
+[0m[32m+        r#"{"version":"0.1","id":"task-001"}"#,
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m 
+     let app = App::with_provider(repo_root.clone(), Box::new(SequencedProvider::default()));
+     let run = app.run_start(task_id, None).unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\full_mvp_flow.rs:113:
+     assert_eq!(run.id, "run-001");
+ 
+[31m-    let run_state: RunState = gold_band::storage::read_json(&repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json")).unwrap();
+[0m[32m+    let run_state: RunState = gold_band::storage::read_json(
+[0m[32m+        &repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json"),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     assert_eq!(run_state.status, gold_band::domain::RunStatus::Completed);
+[31m-    assert_eq!(run_state.outcome, Some(gold_band::domain::RunOutcome::Success));
+[0m[32m+    assert_eq!(
+[0m[32m+        run_state.outcome,
+[0m[32m+        Some(gold_band::domain::RunOutcome::Success)
+[0m[32m+    );
+[0m 
+     assert!(repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/accept/attempt-001/artifacts/verify-result.json").exists());
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\provider_prompt_bundle.rs:7:
+     let invocation = WorkerInvocation {
+         invocation_kind: InvocationKind::WorkerGeneric,
+         profile: Some("developer".to_string()),
+[31m-        requirement_path: Some(Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/authoring/requirement.md")),
+[0m[32m+        requirement_path: Some(Utf8PathBuf::from(
+[0m[32m+            "/repo/.gold-band/tasks/task-001/authoring/requirement.md",
+[0m[32m+        )),
+[0m         requirement_text: None,
+         workspace_dir: Utf8PathBuf::from("/repo"),
+[31m-        attempt_dir: Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001"),
+[0m[32m+        attempt_dir: Utf8PathBuf::from(
+[0m[32m+            "/repo/.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
+[0m[32m+        ),
+[0m         primary_artifact: Some("exec-plan".to_string()),
+         task_instruction: Some("Create an exec plan".to_string()),
+         session_mode: SessionMode::New,
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\runtime_layout.rs:5:
+ fn builds_expected_runtime_paths() {
+     let paths = GoldBandPaths::new(Utf8PathBuf::from("/repo"));
+ 
+[31m-    assert_eq!(paths.task_file("task-001"), Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/task.json"));
+[0m[31m-    assert_eq!(paths.run_file("task-001", "run-001"), Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/runs/run-001/run.json"));
+[0m     assert_eq!(
+[32m+        paths.task_file("task-001"),
+[0m[32m+        Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/task.json")
+[0m[32m+    );
+[0m[32m+    assert_eq!(
+[0m[32m+        paths.run_file("task-001", "run-001"),
+[0m[32m+        Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/runs/run-001/run.json")
+[0m[32m+    );
+[0m[32m+    assert_eq!(
+[0m         paths.node_file("task-001", "run-001", "round-001", "dev", "attempt-001"),
+[31m-        Utf8PathBuf::from("/repo/.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json")
+[0m[32m+        Utf8PathBuf::from(
+[0m[32m+            "/repo/.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json"
+[0m[32m+        )
+[0m     );
+ }
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:2:
+ use gold_band::app::App;
+ use gold_band::domain::SessionMode;
+ use gold_band::provider::{
+[31m-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderResultPayload, ProviderRunResult,
+[0m[31m-    ProviderRunStatus, WorkerInvocation, SessionRef,
+[0m[32m+    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+[0m[32m+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+[0m };
+ use gold_band::runtime::RunState;
+ use std::sync::{Arc, Mutex};
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:29:
+     }
+ 
+     fn doctor(&self) -> DoctorResult {
+[31m-        DoctorResult { available: true, reason: None }
+[0m[32m+        DoctorResult {
+[0m[32m+            available: true,
+[0m[32m+            reason: None,
+[0m[32m+        }
+[0m     }
+ 
+     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:59:
+         Ok(())
+     }
+ 
+[31m-    fn build_continue_command(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<Option<String>> {
+[0m[32m+    fn build_continue_command(
+[0m[32m+        &self,
+[0m[32m+        _worker_ref: &gold_band::domain::SessionRef,
+[0m[32m+    ) -> anyhow::Result<Option<String>> {
+[0m         Ok(Some("claude -c session-123".to_string()))
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:70:
+     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+     let task_id = "task-001";
+ 
+[31m-    std::fs::create_dir_all(repo_root.join(".gold-band/tasks/task-001/authoring").as_std_path()).unwrap();
+[0m[32m+    std::fs::create_dir_all(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring")
+[0m[32m+            .as_std_path(),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/authoring/requirement.md").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/requirement.md")
+[0m[32m+            .as_std_path(),
+[0m         "Implement feature",
+     )
+     .unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:79:
+     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/workflow.json")
+[0m[32m+            .as_std_path(),
+[0m         r#"{
+           "version": "0.1",
+           "id": "dev-only",
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:102:
+     )
+     .unwrap();
+     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/task.json").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/task.json")
+[0m[32m+            .as_std_path(),
+[0m         r#"{"version":"0.1","id":"task-001"}"#,
+     )
+     .unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_bootstrap.rs:116:
+     let invocation_count = provider.invocations.lock().unwrap().len();
+     assert_eq!(invocation_count, 1);
+ 
+[31m-    let run_state: RunState = gold_band::storage::read_json(&repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json")).unwrap();
+[0m[32m+    let run_state: RunState = gold_band::storage::read_json(
+[0m[32m+        &repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json"),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     assert_eq!(run_state.id, "run-001");
+ 
+     let artifact_path = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts/exec-plan.json");
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:2:
+ use gold_band::app::App;
+ use gold_band::domain::SessionMode;
+ use gold_band::provider::{
+[31m-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderResultPayload, ProviderRunResult,
+[0m[31m-    ProviderRunStatus, WorkerInvocation, SessionRef,
+[0m[32m+    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+[0m[32m+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+[0m };
+ use tempfile::tempdir;
+ 
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:25:
+     }
+ 
+     fn doctor(&self) -> DoctorResult {
+[31m-        DoctorResult { available: true, reason: None }
+[0m[32m+        DoctorResult {
+[0m[32m+            available: true,
+[0m[32m+            reason: None,
+[0m[32m+        }
+[0m     }
+ 
+     fn run_worker(&self, _req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:54:
+         Ok(())
+     }
+ 
+[31m-    fn build_continue_command(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<Option<String>> {
+[0m[32m+    fn build_continue_command(
+[0m[32m+        &self,
+[0m[32m+        _worker_ref: &gold_band::domain::SessionRef,
+[0m[32m+    ) -> anyhow::Result<Option<String>> {
+[0m         Ok(Some("claude -c session-123".to_string()))
+     }
+ }
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:65:
+     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+     let task_id = "task-001";
+ 
+[31m-    std::fs::create_dir_all(repo_root.join(".gold-band/tasks/task-001/authoring").as_std_path()).unwrap();
+[0m[32m+    std::fs::create_dir_all(
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring")
+[0m[32m+            .as_std_path(),
+[0m[32m+    )
+[0m[32m+    .unwrap();
+[0m     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/authoring/requirement.md").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/requirement.md")
+[0m[32m+            .as_std_path(),
+[0m         "Implement feature",
+     )
+     .unwrap();
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:74:
+     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/authoring/workflow.json")
+[0m[32m+            .as_std_path(),
+[0m         r#"{
+           "version": "0.1",
+           "id": "dev-exec",
+Diff in \\?\D:\Projects\code\ai\Gold Band\tests\worker_exec_happy_path.rs:104:
+     )
+     .unwrap();
+     std::fs::write(
+[31m-        repo_root.join(".gold-band/tasks/task-001/task.json").as_std_path(),
+[0m[32m+        repo_root
+[0m[32m+            .join(".gold-band/tasks/task-001/task.json")
+[0m[32m+            .as_std_path(),
+[0m         r#"{"version":"0.1","id":"task-001"}"#,
+     )
+     .unwrap();

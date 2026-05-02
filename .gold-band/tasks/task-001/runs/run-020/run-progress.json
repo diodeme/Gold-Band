@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "status": "paused",
+  "currentRoundId": "round-002",
+  "currentNodeId": "accept",
+  "currentNodeType": "verify",
+  "currentAttemptId": "attempt-001",
+  "currentStage": "blocked",
+  "summary": "run run-020 blocked at round-002/accept/attempt-001: Claude Code provider exited with status Some(-1073740791)",
+  "updatedAt": "1775615557Z"
+}

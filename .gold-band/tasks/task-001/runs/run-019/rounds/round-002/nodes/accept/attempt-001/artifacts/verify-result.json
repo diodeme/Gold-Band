@@ -1,0 +1,7 @@
+{
+  "version": "0.1",
+  "status": "success",
+  "summary": "已验证 web 目录下存在 Python 文件 web/hello.py，其中定义了一个 Python 类 HelloWorld，并通过 say 方法输出 hello-world，满足要求。",
+  "unmet_requirements": [],
+  "validation_gaps": []
+}

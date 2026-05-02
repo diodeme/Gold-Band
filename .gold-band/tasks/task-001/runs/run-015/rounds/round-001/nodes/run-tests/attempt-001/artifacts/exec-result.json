@@ -1,0 +1,50 @@
+{
+  "version": "0.1",
+  "status": "failure",
+  "commands": [
+    {
+      "id": "inspect-web",
+      "exit_code": 1,
+      "status": "failure",
+      "start_time": "1775573920Z",
+      "end_time": "1775573920Z",
+      "duration_ms": 24,
+      "timed_out": false,
+      "stdout_path": "commands/01-inspect-web/stdout.log",
+      "stderr_path": "commands/01-inspect-web/stderr.log"
+    },
+    {
+      "id": "install-deps",
+      "exit_code": null,
+      "status": "skipped",
+      "start_time": null,
+      "end_time": null,
+      "duration_ms": null,
+      "timed_out": null,
+      "stdout_path": null,
+      "stderr_path": null
+    },
+    {
+      "id": "implement-poetry-page",
+      "exit_code": null,
+      "status": "skipped",
+      "start_time": null,
+      "end_time": null,
+      "duration_ms": null,
+      "timed_out": null,
+      "stdout_path": null,
+      "stderr_path": null
+    },
+    {
+      "id": "build-verify",
+      "exit_code": null,
+      "status": "skipped",
+      "start_time": null,
+      "end_time": null,
+      "duration_ms": null,
+      "timed_out": null,
+      "stdout_path": null,
+      "stderr_path": null
+    }
+  ]
+}

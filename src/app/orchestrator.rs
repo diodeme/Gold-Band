@@ -217,8 +217,9 @@ pub(crate) fn drive_from_node(
             now_rfc3339_like(),
             run_event_data(&ctx, Some(node_stage), Some(run.status), Some(summary), run.pause_reason),
         );
+        persist_runtime_state(app, task_id, run, round, &node)?;
         node = match workflow.get_node(&current_node_id).expect("validated node exists") {
-            crate::dsl::NodeDsl::Worker(_) | crate::dsl::NodeDsl::Verify(_) => execute_ai_node(
+            crate::dsl::NodeDsl::Worker(_) | crate::dsl::NodeDsl::Verify(_) => match execute_ai_node(
                 app,
                 task_id,
                 &run.id,
@@ -226,13 +227,83 @@ pub(crate) fn drive_from_node(
                 &current_attempt_id,
                 workflow,
                 &current_node_id,
-                node,
+                node.clone(),
                 session_mode,
                 continue_ref.as_ref().cloned(),
                 feedback_summary.clone(),
                 verify_result_path.as_deref(),
-            )?,
-            crate::dsl::NodeDsl::Exec(_) => execute_exec_node(app, task_id, &run.id, &round.id, workflow, node)?,
+            ) {
+                Ok(node) => node,
+                Err(err) => {
+                    let error_summary = format!(
+                        "run {} blocked at {}/{}/{}: {}",
+                        run.id, round.id, current_node_id, current_attempt_id, err
+                    );
+                    progress(&error_summary);
+                    run.status = RunStatus::Paused;
+                    run.pause_reason = Some(PauseReason::ErrorBlocked);
+                    run.updated_at = now_rfc3339_like();
+                    round.status = RunStatus::Paused;
+                    let mut failed_node = node;
+                    failed_node.status = RunStatus::Paused;
+                    failed_node.outcome = None;
+                    failed_node.finished_at = Some(run.updated_at.clone());
+                    write_run_progress_best_effort(
+                        &app.paths,
+                        task_id,
+                        run,
+                        Some(failed_node.node_type),
+                        ProgressStage::Blocked,
+                        error_summary.clone(),
+                    );
+                    append_run_event_best_effort(
+                        &app.paths,
+                        task_id,
+                        &run.id,
+                        "run_paused",
+                        run.updated_at.clone(),
+                        run_event_data(&ctx, Some(ProgressStage::Blocked), Some(run.status), Some(error_summary), run.pause_reason),
+                    );
+                    persist_runtime_state(app, task_id, run, round, &failed_node)?;
+                    return Ok(());
+                }
+            },
+            crate::dsl::NodeDsl::Exec(_) => match execute_exec_node(app, task_id, &run.id, &round.id, workflow, node.clone()) {
+                Ok(node) => node,
+                Err(err) => {
+                    let error_summary = format!(
+                        "run {} blocked at {}/{}/{}: {}",
+                        run.id, round.id, current_node_id, current_attempt_id, err
+                    );
+                    progress(&error_summary);
+                    run.status = RunStatus::Paused;
+                    run.pause_reason = Some(PauseReason::ErrorBlocked);
+                    run.updated_at = now_rfc3339_like();
+                    round.status = RunStatus::Paused;
+                    let mut failed_node = node;
+                    failed_node.status = RunStatus::Paused;
+                    failed_node.outcome = None;
+                    failed_node.finished_at = Some(run.updated_at.clone());
+                    write_run_progress_best_effort(
+                        &app.paths,
+                        task_id,
+                        run,
+                        Some(failed_node.node_type),
+                        ProgressStage::Blocked,
+                        error_summary.clone(),
+                    );
+                    append_run_event_best_effort(
+                        &app.paths,
+                        task_id,
+                        &run.id,
+                        "run_paused",
+                        run.updated_at.clone(),
+                        run_event_data(&ctx, Some(ProgressStage::Blocked), Some(run.status), Some(error_summary), run.pause_reason),
+                    );
+                    persist_runtime_state(app, task_id, run, round, &failed_node)?;
+                    return Ok(());
+                }
+            },
         };
 
         let completion_summary = format!("completed {}/{}/{}", round.id, node.node_id, node.attempt_id);

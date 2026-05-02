@@ -86,7 +86,7 @@ pub(crate) fn execute_ai_node(
         task_instruction,
         session_mode,
         continue_ref,
-        stream_mode: StreamMode::Raw,
+        stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
         log_provider_command: app.config.log_provider_command,
         feedback_summary,

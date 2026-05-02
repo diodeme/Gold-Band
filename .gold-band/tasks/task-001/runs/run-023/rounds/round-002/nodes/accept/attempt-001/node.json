@@ -1,0 +1,20 @@
+{
+  "version": "0.1",
+  "node_id": "accept",
+  "node_type": "verify",
+  "run_id": "run-023",
+  "round_id": "round-002",
+  "attempt_id": "attempt-001",
+  "status": "completed",
+  "outcome": "success",
+  "started_at": "1776080400Z",
+  "finished_at": "1776080434Z",
+  "resolved_config": {
+    "evidenceScope": "current-round",
+    "primaryArtifact": "verify-result",
+    "profile": "verifier",
+    "profilePath": "D:\\Projects\\code\\ai\\Gold Band\\.gold-band\\presets\\profiles\\verifier.md",
+    "profileSource": "project",
+    "provider": "claude-code"
+  }
+}

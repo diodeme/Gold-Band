@@ -126,4 +126,5 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
 
     let worker_ref_path = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/worker-ref.json");
     assert!(worker_ref_path.exists());
+
 }

@@ -35,7 +35,7 @@ Gold Band 主要解决 3 个问题：
 - CLI 是核心 backend 接口
 - CLI 同时包含 scriptable subcommand CLI 与 command-driven console CLI
 - VSCode 插件主要封装 CLI
-- 插件提供更好的可视化与控制体验
+- 新前端 / 插件层将在保留 CLI/runtime 契约的前提下重新设计
 
 ### 4. step-first，而不是 chat-first
 - Gold Band 当前不提供自然语言交互入口

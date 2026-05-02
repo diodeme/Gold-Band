@@ -1,9 +1,10 @@
 use crate::app::App;
 use crate::command::execute::execute_command;
 use crate::command::{ArtifactCommand, Command, CommandResult, RunCommand, TaskCommand};
-use crate::config::{RuntimeConfig, RuntimeLogLevel};
+use crate::config::{ConsoleThemeName, RuntimeConfig, RuntimeLogLevel, UserConfig};
 use crate::console::run_console;
 use crate::observability::{init_tracing, touch_log_file_best_effort};
+use crate::storage::{read_json, GoldBandPaths};
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -23,7 +24,7 @@ enum Commands {
     Task { #[command(subcommand)] command: TaskCommands },
     Run { #[command(subcommand)] command: RunCommands },
     Artifact { #[command(subcommand)] command: ArtifactCommands },
-    Console,
+    Console { #[arg(long)] theme: Option<ConsoleThemeName> },
 }
 
 #[derive(Debug, Subcommand)]
@@ -52,20 +53,32 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
     let repo_root = Utf8PathBuf::from_path_buf(cwd).map_err(|_| anyhow::anyhow!("working directory is not valid UTF-8"))?;
-    let config = RuntimeConfig {
-        log_level: cli.log_level,
-        ..RuntimeConfig::default()
+    let paths = GoldBandPaths::new(repo_root.clone());
+    let user_config: UserConfig = match read_json(&paths.user_config_file()) {
+        Ok(config) => config,
+        Err(_) => UserConfig::default(),
     };
+    let enable_stderr_progress = !matches!(cli.command, Commands::Console { .. });
+    let config = resolve_runtime_config(&cli, &user_config);
     let app = App::with_config(repo_root, config);
-    init_tracing(&app.paths, &app.config);
+    init_tracing(&app.paths, &app.config, enable_stderr_progress);
     touch_log_file_best_effort(&app.paths);
 
     match cli.command {
-        Commands::Console => run_console(&app),
+        Commands::Console { .. } => run_console(&app),
         Commands::Task { command } => print_result(execute_command(&app, Command::Task(map_task_command(command)?))?),
         Commands::Run { command } => print_result(execute_command(&app, Command::Run(map_run_command(command)?))?),
         Commands::Artifact { command } => print_result(execute_command(&app, Command::Artifact(map_artifact_command(command)?))?),
     }
+}
+
+fn resolve_runtime_config(cli: &Cli, user_config: &UserConfig) -> RuntimeConfig {
+    let mut config = RuntimeConfig::default().apply_user_config(user_config);
+    config.log_level = cli.log_level;
+    if let Commands::Console { theme: Some(theme) } = &cli.command {
+        config.console_theme = *theme;
+    }
+    config
 }
 
 fn map_task_command(command: TaskCommands) -> Result<TaskCommand> {
@@ -118,4 +131,58 @@ fn print_result(result: CommandResult) -> Result<()> {
         CommandResult::Text(text) => println!("{text}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_runtime_config, Cli, Commands};
+
+    fn stderr_progress_enabled(cli: &Cli) -> bool {
+        !matches!(cli.command, Commands::Console { .. })
+    }
+    use crate::config::{ConsoleThemeName, RuntimeLogLevel, UserConfig};
+    use clap::Parser;
+
+    #[test]
+    fn console_disables_stderr_progress() {
+        let cli = Cli::parse_from(["gold-band", "console"]);
+        assert!(!stderr_progress_enabled(&cli));
+    }
+
+    #[test]
+    fn non_console_commands_keep_stderr_progress() {
+        let cli = Cli::parse_from(["gold-band", "run", "status", "task-001", "run-001"]);
+        assert!(stderr_progress_enabled(&cli));
+    }
+
+    #[test]
+    fn console_without_theme_uses_user_config_theme() {
+        let cli = Cli::parse_from(["gold-band", "console"]);
+        let config = resolve_runtime_config(
+            &cli,
+            &UserConfig {
+                console_theme: Some(ConsoleThemeName::Nord),
+                ..UserConfig::default()
+            },
+        );
+
+        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
+        assert!(matches!(cli.command, Commands::Console { theme: None }));
+    }
+
+    #[test]
+    fn console_theme_flag_overrides_user_config_theme() {
+        let cli = Cli::parse_from(["gold-band", "console", "--theme", "cyber"]);
+        let config = resolve_runtime_config(
+            &cli,
+            &UserConfig {
+                console_theme: Some(ConsoleThemeName::Nord),
+                ..UserConfig::default()
+            },
+        );
+
+        assert_eq!(config.console_theme, ConsoleThemeName::Cyber);
+        assert!(matches!(cli.command, Commands::Console { theme: Some(ConsoleThemeName::Cyber) }));
+        assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+    }
 }

@@ -157,12 +157,15 @@ export type TaskPage =
   | { kind: 'workflow'; taskId: string }
   | { kind: 'round-detail'; taskId: string; runId: string; roundId: string };
 
-export type RoundSelection =
+type RoundSelectionContext = { contextNodeId?: string };
+
+export type RoundSelection = RoundSelectionContext & (
   | { kind: 'round' }
-  | { kind: 'requirement'; nodeId?: string }
+  | { kind: 'requirement' }
   | { kind: 'node'; nodeId: string }
   | { kind: 'artifact'; nodeId: string; attemptId: string; name: string }
   | { kind: 'attachment'; nodeId: string; attemptId: string; name: string }
   | { kind: 'worker-ref'; nodeId: string; attemptId: string }
   | { kind: 'event'; id: string; nodeId?: string; attemptId?: string }
-  | { kind: 'log'; id: string; nodeId?: string; attemptId?: string };
+  | { kind: 'log'; id: string; nodeId?: string; attemptId?: string }
+);

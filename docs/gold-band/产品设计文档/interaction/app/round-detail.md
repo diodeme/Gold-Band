@@ -127,8 +127,8 @@ Attachments
 ```
 
 ### 5.3 信息流交互
-- 点击 requirement 或日志项：右侧详情抽屉打开对应详情；如果当前处于 node 上下文，selection 需要保留 node id，不能因为打开全局详情而退回 round 上下文。
-- 点击 event：右侧详情抽屉打开 event JSON / 格式化说明；如果 event 没有自己的 node id，则沿用当前 node 上下文。
+- 点击信息流任意条目：右侧详情抽屉打开对应详情；selection 使用通用 `contextNodeId` 保留当前 node 上下文，不能因为打开 round、requirement、event 或 log 等全局详情而退回 round 上下文。
+- 点击 event：右侧详情抽屉打开 event JSON / 格式化说明；event 自身可携带 node id，否则沿用 `contextNodeId`。
 - 点击 artifact：右侧详情抽屉打开 artifact 内容。
 - 点击 attachment：右侧详情抽屉打开 attachment 内容。
 - 点击 artifact / attachment / worker-ref 后，左下仍保留其所属 node 的信息流，避免用户丢失节点上下文。

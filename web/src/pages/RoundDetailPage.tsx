@@ -73,7 +73,7 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
     openDetail();
   };
   const openStreamDetail = (nextSelection: RoundSelection) => {
-    onSelect(preserveSelectedNode(nextSelection, selection));
+    onSelect(withCurrentNodeContext(nextSelection, selection));
     openDetail();
   };
 
@@ -231,18 +231,18 @@ function canonicalNodeId(node: GraphNodeVm) {
 }
 
 function selectedNodeIdFromSelection(selection: RoundSelection) {
-  if (selection.kind === 'node' || selection.kind === 'artifact' || selection.kind === 'attachment' || selection.kind === 'worker-ref' || selection.kind === 'event' || selection.kind === 'log' || selection.kind === 'requirement') {
+  if (selection.kind === 'node' || selection.kind === 'artifact' || selection.kind === 'attachment' || selection.kind === 'worker-ref') {
     return selection.nodeId;
   }
-  return undefined;
+  if (selection.kind === 'event' || selection.kind === 'log') {
+    return selection.nodeId ?? selection.contextNodeId;
+  }
+  return selection.contextNodeId;
 }
 
-function preserveSelectedNode(nextSelection: RoundSelection, currentSelection: RoundSelection) {
-  if ((nextSelection.kind === 'requirement' || nextSelection.kind === 'event' || nextSelection.kind === 'log') && !nextSelection.nodeId) {
-    const nodeId = selectedNodeIdFromSelection(currentSelection);
-    if (nodeId) return { ...nextSelection, nodeId };
-  }
-  return nextSelection;
+function withCurrentNodeContext(nextSelection: RoundSelection, currentSelection: RoundSelection) {
+  const contextNodeId = nextSelection.contextNodeId ?? selectedNodeIdFromSelection(nextSelection) ?? selectedNodeIdFromSelection(currentSelection);
+  return contextNodeId ? { ...nextSelection, contextNodeId } : nextSelection;
 }
 
 function streamTarget(item: StreamItemVm): RoundSelection | null {

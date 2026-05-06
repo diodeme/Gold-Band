@@ -199,36 +199,44 @@ pub struct ContentVm {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RoundSelectionInput {
-    Round,
+    Round {
+        context_node_id: Option<String>,
+    },
     Requirement {
-        node_id: Option<String>,
+        context_node_id: Option<String>,
     },
     Node {
         node_id: String,
+        context_node_id: Option<String>,
     },
     Artifact {
         node_id: String,
         attempt_id: String,
         name: String,
+        context_node_id: Option<String>,
     },
     Attachment {
         node_id: String,
         attempt_id: String,
         name: String,
+        context_node_id: Option<String>,
     },
     WorkerRef {
         node_id: String,
         attempt_id: String,
+        context_node_id: Option<String>,
     },
     Event {
         id: String,
         node_id: Option<String>,
         attempt_id: Option<String>,
+        context_node_id: Option<String>,
     },
     Log {
         id: String,
         node_id: Option<String>,
         attempt_id: Option<String>,
+        context_node_id: Option<String>,
     },
 }
 
@@ -356,7 +364,7 @@ pub fn round_detail_vm(
         .ok_or_else(|| anyhow::anyhow!("round not found: {round_id}"))?;
     let nodes = app.node_list(task_id, run_id, round_id)?;
     let graph = round_graph_vm(app, task_id, &run, &round, &nodes)?;
-    let selection = selection.unwrap_or(RoundSelectionInput::Round);
+    let selection = selection.unwrap_or(RoundSelectionInput::Round { context_node_id: None });
     let stream = round_stream_vm(
         app, task_id, run_id, round_id, &run, &round, &nodes, &selection,
     )?;
@@ -718,14 +726,16 @@ fn node_summary_text(labels: &Translator, node: &NodeState) -> String {
 
 fn selected_node_id(selection: &RoundSelectionInput) -> Option<&str> {
     match selection {
-        RoundSelectionInput::Node { node_id }
+        RoundSelectionInput::Node { node_id, .. }
         | RoundSelectionInput::Artifact { node_id, .. }
         | RoundSelectionInput::Attachment { node_id, .. }
         | RoundSelectionInput::WorkerRef { node_id, .. } => Some(node_id),
         RoundSelectionInput::Log { node_id: Some(node_id), .. } => Some(node_id),
         RoundSelectionInput::Event { node_id: Some(node_id), .. } => Some(node_id),
-        RoundSelectionInput::Requirement { node_id: Some(node_id) } => Some(node_id),
-        RoundSelectionInput::Round | RoundSelectionInput::Requirement { .. } | RoundSelectionInput::Event { .. } | RoundSelectionInput::Log { .. } => None,
+        RoundSelectionInput::Round { context_node_id }
+        | RoundSelectionInput::Requirement { context_node_id }
+        | RoundSelectionInput::Event { context_node_id, .. }
+        | RoundSelectionInput::Log { context_node_id, .. } => context_node_id.as_deref(),
     }
 }
 
@@ -804,20 +814,20 @@ fn detail_vm(
 ) -> Result<ContentVm> {
     let labels = Translator::new(app.config.desktop_language);
     match selection {
-        RoundSelectionInput::Round => Ok(ContentVm {
+        RoundSelectionInput::Round { context_node_id } => Ok(ContentVm {
             title: labels.format("detail.round", &round.id),
             kind: "round".to_string(),
             content: serde_json::to_string_pretty(round)?,
-            metadata: serde_json::json!({ "runId": run.id, "source": "canonical-state" }),
+            metadata: serde_json::json!({ "runId": run.id, "source": "canonical-state", "contextNodeId": context_node_id }),
         }),
-        RoundSelectionInput::Requirement { node_id } => Ok(ContentVm {
+        RoundSelectionInput::Requirement { context_node_id } => Ok(ContentVm {
             title: labels.tr("detail.requirement"),
             kind: "requirement".to_string(),
             content: read_optional_text(&app.paths.requirement_file(task_id))?
                 .unwrap_or_else(|| labels.tr("fallback.missingRequirement")),
-            metadata: serde_json::json!({ "source": "task-authoring", "nodeId": node_id }),
+            metadata: serde_json::json!({ "source": "task-authoring", "contextNodeId": context_node_id }),
         }),
-        RoundSelectionInput::Node { node_id } => {
+        RoundSelectionInput::Node { node_id, .. } => {
             let node = nodes
                 .iter()
                 .find(|node| node.node_id == *node_id)
@@ -833,6 +843,7 @@ fn detail_vm(
             node_id,
             attempt_id,
             name,
+            ..
         } => Ok(ContentVm {
             title: labels.format("detail.artifact", name),
             kind: "artifact".to_string(),
@@ -843,6 +854,7 @@ fn detail_vm(
             node_id,
             attempt_id,
             name,
+            ..
         } => Ok(ContentVm {
             title: labels.format("detail.attachment", name),
             kind: "attachment".to_string(),
@@ -852,6 +864,7 @@ fn detail_vm(
         RoundSelectionInput::WorkerRef {
             node_id,
             attempt_id,
+            ..
         } => Ok(ContentVm {
             title: labels.format("detail.workerRef", node_id),
             kind: "worker-ref".to_string(),
@@ -860,15 +873,15 @@ fn detail_vm(
                 .unwrap_or_else(|| labels.tr("fallback.missingWorkerRef")),
             metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id }),
         }),
-        RoundSelectionInput::Event { id, node_id, attempt_id } => Ok(ContentVm {
+        RoundSelectionInput::Event { id, node_id, attempt_id, context_node_id } => Ok(ContentVm {
             title: labels.tr("detail.runEvents"),
             kind: "event".to_string(),
             content: app
                 .run_events(task_id, run_id)?
                 .unwrap_or_else(|| labels.tr("fallback.missingEvents")),
-            metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id }),
+            metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id, "contextNodeId": context_node_id }),
         }),
-        RoundSelectionInput::Log { id, node_id, attempt_id } => {
+        RoundSelectionInput::Log { id, node_id, attempt_id, context_node_id } => {
             let content = if let (Some(node_id), Some(attempt_id)) = (node_id.as_deref(), attempt_id.as_deref()) {
                 app.attempt_progress_events(task_id, run_id, round_id, node_id, attempt_id)?
                     .unwrap_or_else(|| labels.tr("fallback.missingEvents"))
@@ -880,7 +893,7 @@ fn detail_vm(
                 title: labels.tr("detail.runtimeLog"),
                 kind: "log".to_string(),
                 content,
-                metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id }),
+                metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id, "contextNodeId": context_node_id }),
             })
         },
     }

@@ -6,9 +6,9 @@
   "round_id": "round-001",
   "attempt_id": "attempt-001",
   "status": "completed",
-  "outcome": "failure",
+  "outcome": "killed",
   "started_at": "1775574795Z",
-  "finished_at": "1775574795Z",
+  "finished_at": "1778057558Z",
   "resolved_config": {
     "planFrom": "dev"
   }

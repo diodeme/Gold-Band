@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GraphNodeVm, RoundDetailVm, RoundSelection, StreamItemVm } from '../types';
 import { displayStatus } from '../i18n';
-import { DetailViewer } from '../components/DetailViewer';
+import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
@@ -11,9 +11,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { MoreVertical } from 'lucide-react';
+import { MoreVertical, Pin, PinOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toneSurfaceClass } from '@/lib/status';
 
@@ -28,6 +29,8 @@ type RoundTab = 'requirement' | 'log' | 'artifacts' | 'attachments';
 export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<RoundTab>('requirement');
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailPinned, setDetailPinned] = useState(false);
   const selectedNodeId = selectedNodeIdFromSelection(selection);
   const streamGroups = useMemo(() => groupStream(vm?.stream ?? []), [vm?.stream]);
   const availableTabs = useMemo(() => {
@@ -43,8 +46,30 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
 
   if (!vm) return <Page><EmptyState>{t('common.loading')}</EmptyState></Page>;
 
-  const selectGraphNode = (node: GraphNodeVm) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
-  const openGraphSession = (node: GraphNodeVm) => node.attemptId && onSelect({ kind: 'worker-ref', nodeId: canonicalNodeId(node), attemptId: node.attemptId });
+  const closeDetail = () => {
+    setDetailOpen(false);
+    setDetailPinned(false);
+  };
+
+  const openDetail = () => setDetailOpen(true);
+
+  const selectGraphNode = (node: GraphNodeVm) => {
+    onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
+    if (detailPinned) setDetailOpen(true);
+  };
+  const openGraphNodeDetail = (node: GraphNodeVm) => {
+    onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
+    openDetail();
+  };
+  const openGraphSession = (node: GraphNodeVm) => {
+    if (!node.attemptId) return;
+    onSelect({ kind: 'worker-ref', nodeId: canonicalNodeId(node), attemptId: node.attemptId });
+    openDetail();
+  };
+  const openStreamDetail = (nextSelection: RoundSelection) => {
+    onSelect(nextSelection);
+    openDetail();
+  };
 
   return (
     <Page flush className="flex flex-col">
@@ -63,6 +88,7 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
           <Metric label={t('common.currentNode')} value={vm.round.currentNode ?? vm.run.currentNode ?? '-'} compact />
         </div>
         <div className="flex shrink-0 gap-2">
+          <Button variant="outline" onClick={openDetail}>{t('roundDetail.openDetail')}</Button>
           <Button variant="outline">{t('roundDetail.exportLog')}</Button>
           <Button>{t('common.continueRun')}</Button>
           <DropdownMenu>
@@ -71,14 +97,14 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
           </DropdownMenu>
         </div>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-auto p-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
+      <div className="min-h-0 flex-1 overflow-auto p-5">
         <div className="grid min-h-[620px] min-w-0 grid-rows-[minmax(300px,0.9fr)_minmax(280px,1fr)] gap-5">
           <AppCard className="flex min-h-0 min-w-0 flex-col overflow-hidden py-0">
             <CardHeader className="flex-row items-center justify-between border-b px-5 py-3">
               <CardTitle>{t('roundDetail.graph')}</CardTitle>
               <div className="flex flex-wrap gap-2 text-xs text-muted-foreground"><Legend tone="success" label={t('roundDetail.success')} /><Legend tone="running" label={t('roundDetail.running')} /><Legend tone="pending" label={t('roundDetail.pending')} /><Legend tone="artifact" label={t('roundDetail.hasArtifacts')} /><Legend tone="attachment" label={t('roundDetail.hasAttachments')} /></div>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 px-4 py-4"><GraphView graph={vm.graph} variant="actual" selectedNodeId={selectedNodeId} onNodeSelect={selectGraphNode} onNodeOpenDetail={selectGraphNode} onNodeOpenSession={openGraphSession} /></CardContent>
+            <CardContent className="min-h-0 flex-1 px-4 py-4"><GraphView graph={vm.graph} variant="actual" selectedNodeId={selectedNodeId} onNodeSelect={selectGraphNode} onNodeOpenDetail={openGraphNodeDetail} onNodeOpenSession={openGraphSession} /></CardContent>
           </AppCard>
           <AppCard className="flex min-h-0 min-w-0 flex-col overflow-hidden py-0">
             <CardHeader className="border-b px-4 py-2">
@@ -98,12 +124,52 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
                 <TabsContent value="attachments" className="m-0 min-h-0" />
               </Tabs>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 px-0 py-0"><ScrollArea className="h-full"><div className="space-y-2 p-3">{tabItems(activeTab, streamGroups).map((item) => <StreamItem item={item} key={item.id} onSelect={onSelect} />)}{tabItems(activeTab, streamGroups).length === 0 ? <EmptyState>{t('common.empty')}</EmptyState> : null}</div></ScrollArea></CardContent>
+            <CardContent className="min-h-0 flex-1 px-0 py-0"><ScrollArea className="h-full"><div className="space-y-2 p-3">{tabItems(activeTab, streamGroups).map((item) => <StreamItem item={item} key={item.id} onOpenDetail={openStreamDetail} />)}{tabItems(activeTab, streamGroups).length === 0 ? <EmptyState>{t('common.empty')}</EmptyState> : null}</div></ScrollArea></CardContent>
           </AppCard>
         </div>
-        <DetailViewer title={t('common.detail')} content={vm.detail} emptyLabel={t('common.empty')} />
+        <RoundDetailSheet
+          content={vm.detail}
+          emptyLabel={t('common.empty')}
+          open={detailOpen}
+          pinned={detailPinned}
+          onOpenChange={(open) => { if (open) setDetailOpen(true); else closeDetail(); }}
+          onPinnedChange={setDetailPinned}
+        />
       </div>
     </Page>
+  );
+}
+
+function RoundDetailSheet({ content, emptyLabel, open, pinned, onOpenChange, onPinnedChange }: { content: RoundDetailVm['detail']; emptyLabel: string; open: boolean; pinned: boolean; onOpenChange: (open: boolean) => void; onPinnedChange: (pinned: boolean) => void }) {
+  const { t } = useTranslation();
+  return (
+    <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        className="w-[520px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[520px]"
+        closeLabel={t('common.close')}
+        onInteractOutside={(event) => {
+          if (pinned) event.preventDefault();
+        }}
+        showOverlay={false}
+      >
+        <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
+          <div className="flex min-w-0 items-center justify-between gap-3 pr-8">
+            <div className="min-w-0">
+              <SheetTitle className="truncate text-base">{t('common.detail')}</SheetTitle>
+              <SheetDescription className="sr-only">{t('roundDetail.detailDrawerDescription')}</SheetDescription>
+            </div>
+            {content ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{content.kind}</span> : null}
+          </div>
+          <Button className="w-fit" variant="outline" size="sm" onClick={() => onPinnedChange(!pinned)}>
+            {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+            {pinned ? t('roundDetail.unpinDetail') : t('roundDetail.pinDetail')}
+          </Button>
+        </SheetHeader>
+        <div className="min-h-0 flex-1">
+          <DetailViewerContent content={content} emptyLabel={emptyLabel} />
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -111,10 +177,10 @@ function Legend({ tone, label }: { tone: string; label: string }) {
   return <span className="inline-flex items-center gap-1.5"><i className={cn('size-2 rounded-full', tone === 'success' && 'bg-gold-success', tone === 'running' && 'bg-gold-running', tone === 'pending' && 'bg-muted-foreground', tone === 'artifact' && 'bg-gold-warning', tone === 'attachment' && 'bg-slate-400')} />{label}</span>;
 }
 
-function StreamItem({ item, onSelect }: { item: StreamItemVm; onSelect: (selection: RoundSelection) => void }) {
+function StreamItem({ item, onOpenDetail }: { item: StreamItemVm; onOpenDetail: (selection: RoundSelection) => void }) {
   const target = streamTarget(item);
   return (
-    <Button variant="outline" className={cn('h-auto w-full flex-col items-stretch justify-start gap-2 p-3 text-left', toneSurfaceClass(item.tone), !target && 'opacity-60')} onClick={() => target && onSelect(target)} disabled={!target}>
+    <Button variant="outline" className={cn('h-auto w-full flex-col items-stretch justify-start gap-2 p-3 text-left', toneSurfaceClass(item.tone), !target && 'opacity-60')} onClick={() => target && onOpenDetail(target)} disabled={!target}>
       <span className="flex items-start justify-between gap-3">
         <strong className="line-clamp-1 text-sm">{item.title}</strong>
         <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">{item.kind}</Badge>

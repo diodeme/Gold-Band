@@ -20,17 +20,23 @@ export function DetailViewer({ title, content, emptyLabel }: DetailViewerProps) 
         </div>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 px-0 py-0">
-        <ScrollArea className="h-full">
-          {content ? (
-            <div className="space-y-4 p-5">
-              <h4 className="text-lg font-semibold">{content.title}</h4>
-              <CodeBlock>{content.content}</CodeBlock>
-            </div>
-          ) : (
-            <div className="p-5"><EmptyState>{emptyLabel}</EmptyState></div>
-          )}
-        </ScrollArea>
+        <DetailViewerContent content={content} emptyLabel={emptyLabel} />
       </CardContent>
     </AppCard>
+  );
+}
+
+export function DetailViewerContent({ content, emptyLabel }: Omit<DetailViewerProps, 'title'>) {
+  return (
+    <ScrollArea className="h-full">
+      {content ? (
+        <div className="space-y-4 p-5">
+          <h4 className="text-lg font-semibold">{content.title}</h4>
+          <CodeBlock>{content.content}</CodeBlock>
+        </div>
+      ) : (
+        <div className="p-5"><EmptyState>{emptyLabel}</EmptyState></div>
+      )}
+    </ScrollArea>
   );
 }

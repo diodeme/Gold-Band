@@ -2,14 +2,14 @@
   "version": "0.1",
   "id": "run-016",
   "task_id": "task-001",
-  "status": "paused",
-  "outcome": null,
+  "status": "completed",
+  "outcome": "killed",
   "started_at": "1775574754Z",
-  "updated_at": "1775574795Z",
+  "updated_at": "1778057558Z",
   "workflow_snapshot": "workflow.snapshot.json",
   "current_round": "round-001",
   "current_node": "run-tests",
   "current_attempt": "attempt-001",
   "acceptance_loops_used": 0,
-  "pause_reason": "error-blocked"
+  "pause_reason": null
 }

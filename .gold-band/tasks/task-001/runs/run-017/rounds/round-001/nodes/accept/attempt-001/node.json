@@ -5,10 +5,10 @@
   "run_id": "run-017",
   "round_id": "round-001",
   "attempt_id": "attempt-001",
-  "status": "paused",
-  "outcome": null,
+  "status": "completed",
+  "outcome": "killed",
   "started_at": "1775575252Z",
-  "finished_at": "1775575301Z",
+  "finished_at": "1778057555Z",
   "resolved_config": {
     "evidenceScope": "current-round",
     "primaryArtifact": "verify-result",

@@ -3,9 +3,10 @@
   "id": "round-001",
   "run_id": "run-017",
   "index": 1,
-  "status": "paused",
-  "outcome": null,
+  "status": "completed",
+  "outcome": "killed",
   "trigger": "initial",
   "repair_loops_used": 0,
-  "started_at": "1775575200Z"
+  "started_at": "1775575200Z",
+  "trace": []
 }

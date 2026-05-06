@@ -97,45 +97,38 @@ P2  表示 2 个 attachments
 ## 5. 左下：全局信息流
 
 ### 5.1 选中 round 时
-如果当前选中对象是 round，左下展示：
-- 当前 task 的 requirement 摘要
-- 当前 round 的状态摘要
-- run / round 日志信息
-- progress events
-- validation 摘要
+如果当前选中对象是 round，左下采用分 tab 信息架构：
+- `上下文`：当前 task 的 requirement 摘要、当前 round 的可读状态摘要，避免直接把完整 `round.json` 当主内容展示。
+- `运行记录`：run / round 事件、progress events、runtime log 摘要，只保留与时间线排障相关的内容。
+- `产物` / `附件`：仅在选中 node 且存在对应内容时展示。
 
 内容顺序建议：
 
 ```text
-Requirement
-Round Summary
-Validation
-Events
-Runtime Log
+Context: Requirement -> Round Summary
+Activity: Events -> Progress Events -> Runtime Log
 ```
 
 ### 5.2 选中 node 时
 如果当前选中对象是 node，左下在 round 信息基础上追加：
-- node 摘要
+- node 可读状态摘要
 - node attempts
 - node artifacts
 - node attachments
-- node 相关日志过滤结果
+- node 相关进度事件过滤结果
 
 内容顺序建议：
 
 ```text
-Requirement
-Round Summary
-Selected Node
+Context: Requirement -> Round Summary -> Selected Node
+Activity: Events filtered by node -> Progress Events
 Artifacts
 Attachments
-Events filtered by node
 ```
 
 ### 5.3 信息流交互
-- 点击日志项：右侧详情抽屉打开日志详情。
-- 点击 event：右侧详情抽屉打开 event JSON / 格式化说明。
+- 点击 requirement 或日志项：右侧详情抽屉打开对应详情；如果当前处于 node 上下文，selection 需要保留 node id，不能因为打开全局详情而退回 round 上下文。
+- 点击 event：右侧详情抽屉打开 event JSON / 格式化说明；如果 event 没有自己的 node id，则沿用当前 node 上下文。
 - 点击 artifact：右侧详情抽屉打开 artifact 内容。
 - 点击 attachment：右侧详情抽屉打开 attachment 内容。
 - 点击 artifact / attachment / worker-ref 后，左下仍保留其所属 node 的信息流，避免用户丢失节点上下文。
@@ -173,7 +166,8 @@ Events filtered by node
 抽屉规则：
 - 使用 shadcn/ui Sheet 右侧滑出。
 - 非模态、无遮罩，不阻塞用户继续操作工作图和信息流。
-- 支持固定详情：固定后点击图节点或信息流条目不会关闭抽屉，只切换内容。
+- 支持固定详情：固定后点击图节点或信息流条目不会关闭抽屉，只切换内容；同时抽屉从覆盖式 Sheet 切换为右侧占位面板，主工作区自动收窄让位。
+- 固定态面板不继续复用 Sheet Portal / Dialog Title 结构，避免非模态 Sheet 卸载过程残留 portal、focus guard 或全屏遮罩状态导致主界面变黑；固定后主工作区应自适应收窄，不出现中缝滚动条或横向滚动条。
 - 关闭按钮、Escape 或未固定时点击非交互空白可收回抽屉。
 
 ### 6.3 查看日志
@@ -233,6 +227,7 @@ MVP 中 Round 详情页由 Tauri command `get_round_detail` 提供 view model，
 - 页面布局对齐桌面工作台：顶部全局面包屑由应用壳统一提供，页面 header 展示 round id、trigger、repairLoopsUsed、currentNode 与直接操作；主体为上方实际工作图、下方全局信息流，详情以右侧 Sheet 抽屉按需展示。
 - 左下信息流默认展示 requirement、round summary、run events；选中 node 后追加 node、artifact、attachment 和 progress events。
 - 右侧详情抽屉展示当前选择对象，默认关闭；点击“打开详情”、双击节点、右键查看节点详情/会话或点击信息流条目时打开。
+- requirement、round summary、event、log、artifact、attachment、worker-ref 都可进入详情抽屉查看完整内容；artifact 在 UI selection 中使用逻辑名（如 `verify-result`），落盘文件仍为 `verify-result.json`，后端读取兼容两种形式。
 - 选择 artifact / attachment / worker-ref 时通过独立 Tauri command 或 round selection 加载内容。
 - 前端页面状态保持 camelCase，调用 `get_round_detail` 时将嵌套 `selection` 字段转换为 Rust `RoundSelectionInput` 所需的 snake_case，避免节点、artifact、attachment、worker-ref 选择反序列化失败。
 - status/outcome 只来自 canonical state，日志和 raw stream 仅作为观测内容；运行态轮询只依据结构化 run/round/node 状态，不扫描详情文本或历史 events。

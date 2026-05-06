@@ -159,9 +159,10 @@ export type TaskPage =
 
 export type RoundSelection =
   | { kind: 'round' }
+  | { kind: 'requirement'; nodeId?: string }
   | { kind: 'node'; nodeId: string }
   | { kind: 'artifact'; nodeId: string; attemptId: string; name: string }
   | { kind: 'attachment'; nodeId: string; attemptId: string; name: string }
   | { kind: 'worker-ref'; nodeId: string; attemptId: string }
-  | { kind: 'event'; id: string }
-  | { kind: 'log'; id: string };
+  | { kind: 'event'; id: string; nodeId?: string; attemptId?: string }
+  | { kind: 'log'; id: string; nodeId?: string; attemptId?: string };

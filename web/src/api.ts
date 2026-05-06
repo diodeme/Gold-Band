@@ -65,7 +65,9 @@ export function getRoundDetail(taskId: string, runId: string, roundId: string, s
 }
 
 function toRoundSelectionInput(selection?: RoundSelection) {
-  if (!selection || selection.kind === 'round' || selection.kind === 'event' || selection.kind === 'log') return selection;
+  if (!selection || selection.kind === 'round') return selection;
+  if (selection.kind === 'requirement') return { kind: selection.kind, node_id: selection.nodeId };
+  if (selection.kind === 'event' || selection.kind === 'log') return { kind: selection.kind, id: selection.id, node_id: selection.nodeId, attempt_id: selection.attemptId };
   if (selection.kind === 'node') return { kind: selection.kind, node_id: selection.nodeId };
   if (selection.kind === 'worker-ref') return { kind: selection.kind, node_id: selection.nodeId, attempt_id: selection.attemptId };
   return { kind: selection.kind, node_id: selection.nodeId, attempt_id: selection.attemptId, name: selection.name };

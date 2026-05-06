@@ -11,10 +11,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { MoreVertical, Pin, PinOff } from 'lucide-react';
+import { MoreVertical, Pin, PinOff, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toneSurfaceClass } from '@/lib/status';
 
@@ -32,6 +32,7 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailPinned, setDetailPinned] = useState(false);
   const selectedNodeId = selectedNodeIdFromSelection(selection);
+  const pinnedPanelWidth = detailOpen && detailPinned ? 'clamp(360px, 34vw, 520px)' : undefined;
   const streamGroups = useMemo(() => groupStream(vm?.stream ?? []), [vm?.stream]);
   const availableTabs = useMemo(() => {
     const tabs: RoundTab[] = ['requirement', 'log'];
@@ -51,6 +52,11 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
     setDetailPinned(false);
   };
 
+  const pinDetail = (pinned: boolean) => {
+    setDetailPinned(pinned);
+    setDetailOpen(true);
+  };
+
   const openDetail = () => setDetailOpen(true);
 
   const selectGraphNode = (node: GraphNodeVm) => {
@@ -67,7 +73,7 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
     openDetail();
   };
   const openStreamDetail = (nextSelection: RoundSelection) => {
-    onSelect(nextSelection);
+    onSelect(preserveSelectedNode(nextSelection, selection));
     openDetail();
   };
 
@@ -97,8 +103,9 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
           </DropdownMenu>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-5">
-        <div className="grid min-h-[620px] min-w-0 grid-rows-[minmax(300px,0.9fr)_minmax(280px,1fr)] gap-5">
+      <div className="grid min-h-0 flex-1 overflow-hidden" style={{ gridTemplateColumns: pinnedPanelWidth ? `minmax(0, 1fr) ${pinnedPanelWidth}` : 'minmax(0, 1fr)' }}>
+        <div className="min-w-0 overflow-hidden p-5">
+          <div className="grid h-full min-h-[620px] min-w-0 grid-rows-[minmax(300px,0.9fr)_minmax(280px,1fr)] gap-5">
           <AppCard className="flex min-h-0 min-w-0 flex-col overflow-hidden py-0">
             <CardHeader className="flex-row items-center justify-between border-b px-5 py-3">
               <CardTitle>{t('roundDetail.graph')}</CardTitle>
@@ -111,8 +118,8 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
               <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as RoundTab)}>
                 <div className="flex flex-wrap items-center gap-3">
                   <TabsList className="h-9">
-                    <TabsTrigger value="requirement" className="h-7 px-3">{t('roundDetail.requirement')}</TabsTrigger>
-                    <TabsTrigger value="log" className="h-7 px-3">{t('roundDetail.log')}</TabsTrigger>
+                    <TabsTrigger value="requirement" className="h-7 px-3">{t('roundDetail.contextTab')}</TabsTrigger>
+                    <TabsTrigger value="log" className="h-7 px-3">{t('roundDetail.activityTab')}</TabsTrigger>
                     {availableTabs.includes('artifacts') ? <TabsTrigger value="artifacts" className="h-7 px-3">{t('roundDetail.artifactTab', { count: streamGroups.artifacts.length })}</TabsTrigger> : null}
                     {availableTabs.includes('attachments') ? <TabsTrigger value="attachments" className="h-7 px-3">{t('roundDetail.attachmentTab', { count: streamGroups.attachments.length })}</TabsTrigger> : null}
                   </TabsList>
@@ -127,14 +134,22 @@ export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProp
             <CardContent className="min-h-0 flex-1 px-0 py-0"><ScrollArea className="h-full"><div className="space-y-2 p-3">{tabItems(activeTab, streamGroups).map((item) => <StreamItem item={item} key={item.id} onOpenDetail={openStreamDetail} />)}{tabItems(activeTab, streamGroups).length === 0 ? <EmptyState>{t('common.empty')}</EmptyState> : null}</div></ScrollArea></CardContent>
           </AppCard>
         </div>
-        <RoundDetailSheet
-          content={vm.detail}
-          emptyLabel={t('common.empty')}
-          open={detailOpen}
-          pinned={detailPinned}
-          onOpenChange={(open) => { if (open) setDetailOpen(true); else closeDetail(); }}
-          onPinnedChange={setDetailPinned}
-        />
+        </div>
+        {detailOpen && detailPinned ? (
+          <aside className="min-h-0 min-w-0 border-l bg-card">
+            <RoundDetailPanelContent content={vm.detail} emptyLabel={t('common.empty')} pinned={detailPinned} onClose={closeDetail} onPinnedChange={pinDetail} />
+          </aside>
+        ) : null}
+        {!detailPinned ? (
+          <RoundDetailSheet
+            content={vm.detail}
+            emptyLabel={t('common.empty')}
+            open={detailOpen}
+            pinned={detailPinned}
+            onOpenChange={(open) => { if (open) setDetailOpen(true); else closeDetail(); }}
+            onPinnedChange={pinDetail}
+          />
+        ) : null}
       </div>
     </Page>
   );
@@ -144,32 +159,37 @@ function RoundDetailSheet({ content, emptyLabel, open, pinned, onOpenChange, onP
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        className="w-[520px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[520px]"
-        closeLabel={t('common.close')}
-        onInteractOutside={(event) => {
-          if (pinned) event.preventDefault();
-        }}
-        showOverlay={false}
-      >
-        <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
-          <div className="flex min-w-0 items-center justify-between gap-3 pr-8">
-            <div className="min-w-0">
-              <SheetTitle className="truncate text-base">{t('common.detail')}</SheetTitle>
-              <SheetDescription className="sr-only">{t('roundDetail.detailDrawerDescription')}</SheetDescription>
-            </div>
-            {content ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{content.kind}</span> : null}
+      <SheetContent className="w-[520px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden border-border bg-card p-0 sm:max-w-[520px]" closeLabel={t('common.close')} showOverlay={false}>
+        <RoundDetailPanelContent content={content} emptyLabel={emptyLabel} pinned={pinned} onClose={() => onOpenChange(false)} onPinnedChange={onPinnedChange} />
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function RoundDetailPanelContent({ content, emptyLabel, pinned, onClose, onPinnedChange }: { content: RoundDetailVm['detail']; emptyLabel: string; pinned: boolean; onClose: () => void; onPinnedChange: (pinned: boolean) => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 space-y-3 border-b px-5 py-4 text-left">
+        <div className="flex min-w-0 items-center justify-between gap-3 pr-8">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold text-foreground">{t('common.detail')}</h2>
+            <p className="sr-only">{t('roundDetail.detailDrawerDescription')}</p>
           </div>
+          {content ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{content.kind}</span> : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
           <Button className="w-fit" variant="outline" size="sm" onClick={() => onPinnedChange(!pinned)}>
             {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
             {pinned ? t('roundDetail.unpinDetail') : t('roundDetail.pinDetail')}
           </Button>
-        </SheetHeader>
-        <div className="min-h-0 flex-1">
-          <DetailViewerContent content={content} emptyLabel={emptyLabel} />
+          {pinned ? <Button className="w-fit" variant="outline" size="sm" onClick={onClose}><X className="size-4" />{t('common.close')}</Button> : null}
         </div>
-      </SheetContent>
-    </Sheet>
+      </div>
+      <div className="min-h-0 flex-1">
+        <DetailViewerContent content={content} emptyLabel={emptyLabel} />
+      </div>
+    </div>
   );
 }
 
@@ -192,8 +212,8 @@ function StreamItem({ item, onOpenDetail }: { item: StreamItemVm; onOpenDetail: 
 
 function groupStream(items: StreamItemVm[]) {
   return {
-    requirement: items.filter((item) => item.kind === 'requirement' || item.id === 'requirement'),
-    log: items.filter((item) => item.kind === 'round' || item.kind === 'event' || item.kind === 'log' || item.kind === 'node'),
+    requirement: items.filter((item) => item.kind === 'requirement' || item.kind === 'round' || item.kind === 'node'),
+    log: items.filter((item) => item.kind === 'event' || item.kind === 'log'),
     artifacts: items.filter((item) => item.kind === 'artifact'),
     attachments: items.filter((item) => item.kind === 'attachment'),
   };
@@ -211,17 +231,27 @@ function canonicalNodeId(node: GraphNodeVm) {
 }
 
 function selectedNodeIdFromSelection(selection: RoundSelection) {
-  if (selection.kind === 'node' || selection.kind === 'artifact' || selection.kind === 'attachment' || selection.kind === 'worker-ref') {
+  if (selection.kind === 'node' || selection.kind === 'artifact' || selection.kind === 'attachment' || selection.kind === 'worker-ref' || selection.kind === 'event' || selection.kind === 'log' || selection.kind === 'requirement') {
     return selection.nodeId;
   }
   return undefined;
 }
 
+function preserveSelectedNode(nextSelection: RoundSelection, currentSelection: RoundSelection) {
+  if ((nextSelection.kind === 'requirement' || nextSelection.kind === 'event' || nextSelection.kind === 'log') && !nextSelection.nodeId) {
+    const nodeId = selectedNodeIdFromSelection(currentSelection);
+    if (nodeId) return { ...nextSelection, nodeId };
+  }
+  return nextSelection;
+}
+
 function streamTarget(item: StreamItemVm): RoundSelection | null {
+  if (item.kind === 'requirement') return { kind: 'requirement' };
+  if (item.kind === 'round') return { kind: 'round' };
   if (item.kind === 'artifact' && item.nodeId && item.attemptId && item.name) return { kind: 'artifact', nodeId: item.nodeId, attemptId: item.attemptId, name: item.name };
   if (item.kind === 'attachment' && item.nodeId && item.attemptId && item.name) return { kind: 'attachment', nodeId: item.nodeId, attemptId: item.attemptId, name: item.name };
   if (item.kind === 'node' && item.nodeId) return { kind: 'node', nodeId: item.nodeId };
-  if (item.kind === 'event') return { kind: 'event', id: item.id };
-  if (item.kind === 'log') return { kind: 'log', id: item.id };
+  if (item.kind === 'event') return { kind: 'event', id: item.id, nodeId: item.nodeId ?? undefined, attemptId: item.attemptId ?? undefined };
+  if (item.kind === 'log') return { kind: 'log', id: item.id, nodeId: item.nodeId ?? undefined, attemptId: item.attemptId ?? undefined };
   return null;
 }

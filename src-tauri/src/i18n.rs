@@ -21,6 +21,10 @@ impl Translator {
     pub fn format(&self, key: &str, value: &str) -> String {
         self.tr(key).replace("{value}", value)
     }
+
+    pub fn format_pair(&self, key: &str, value: &str) -> String {
+        self.tr(key).replace("{value}", value)
+    }
 }
 
 fn zh_cn(key: &str) -> Option<&'static str> {
@@ -37,7 +41,16 @@ fn zh_cn(key: &str) -> Option<&'static str> {
         "stream.artifact" => "产物 {value}",
         "stream.attachment" => "附件 {value}",
         "stream.progressEvents" => "进度事件",
+        "stream.field.status" => "状态：{value}",
+        "stream.field.outcome" => "结果：{value}",
+        "stream.field.trigger" => "触发：{value}",
+        "stream.field.repairLoops" => "修复循环：{value}",
+        "stream.field.currentNode" => "当前节点：{value}",
+        "stream.field.attempt" => "Attempt：{value}",
+        "stream.field.startedAt" => "开始时间：{value}",
+        "stream.field.finishedAt" => "结束时间：{value}",
         "detail.round" => "轮次 {value}",
+        "detail.requirement" => "需求",
         "detail.node" => "节点 {value}",
         "detail.artifact" => "产物 {value}",
         "detail.attachment" => "附件 {value}",
@@ -66,7 +79,16 @@ fn en(key: &str) -> Option<&'static str> {
         "stream.artifact" => "Artifact {value}",
         "stream.attachment" => "Attachment {value}",
         "stream.progressEvents" => "Progress Events",
+        "stream.field.status" => "Status: {value}",
+        "stream.field.outcome" => "Outcome: {value}",
+        "stream.field.trigger" => "Trigger: {value}",
+        "stream.field.repairLoops" => "Repair loops: {value}",
+        "stream.field.currentNode" => "Current node: {value}",
+        "stream.field.attempt" => "Attempt: {value}",
+        "stream.field.startedAt" => "Started at: {value}",
+        "stream.field.finishedAt" => "Finished at: {value}",
         "detail.round" => "Round {value}",
+        "detail.requirement" => "Requirement",
         "detail.node" => "Node {value}",
         "detail.artifact" => "Artifact {value}",
         "detail.attachment" => "Attachment {value}",

@@ -156,11 +156,12 @@ export function mockRoundDetail(selection?: RoundSelection): RoundDetailVm {
     graph,
     stream: [
       { id: 'requirement', title: 'Requirement', kind: 'requirement', tone: 'accent', content: task.requirementPreview },
-      { id: 'node-03', title: 'Selected Node', kind: 'node', tone: 'running', nodeId: 'node-03 execute', content: 'node-03 execute 正在处理代码逻辑，已产生 3 个 artifact 与 2 个 attachment。' },
+      { id: 'round-summary', title: 'Round Summary', kind: 'round', tone: 'success', content: '状态：已完成\n结果：成功\n触发：初始\n修复循环：0\n当前节点：accept' },
+      { id: 'node-03', title: 'Selected Node', kind: 'node', tone: 'running', nodeId: 'node-03 execute', content: '状态：运行中\nAttempt：att-2-node03-rev1\n已产出：3 个 artifact / 2 个 attachment' },
       { id: 'artifact-a3', title: 'ARTIFACT A3', kind: 'artifact', tone: 'success', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1', name: 'window_manager_v2_core.rs', content: 'window_manager_v2_core.rs updated 2m ago' },
       { id: 'attachment-p2', title: 'ATTACHMENT P2', kind: 'attachment', tone: 'warning', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1', name: 'dpi_scaling_logs_win11.txt', content: 'Captured 14m ago' },
-      { id: 'event-1', title: 'Provider started generation...', kind: 'event', tone: 'running', content: '14:22:05 provider started generation for node-03.' },
-      { id: 'log-1', title: 'Runtime Log', kind: 'log', tone: 'muted', content: 'node-03 execute stdout: compiling workspace and collecting artifacts.' },
+      { id: 'event-1', title: 'Provider started generation...', kind: 'event', tone: 'running', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1', content: '14:22:05 provider started generation for node-03.' },
+      { id: 'log-1', title: 'Runtime Log', kind: 'log', tone: 'muted', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1', content: 'node-03 execute stdout: compiling workspace and collecting artifacts.' },
     ],
     detail: mockRoundContent(selection),
   };
@@ -173,6 +174,14 @@ function mockRoundContent(selection?: RoundSelection): ContentVm {
       kind: 'round',
       content: JSON.stringify({ round_id: 'round-007', run_id: 'run-003', status: 'running', current_node: 'node-03 execute' }, null, 2),
       metadata: { source: 'mock-round' },
+    };
+  }
+  if (selection.kind === 'requirement') {
+    return {
+      title: 'Requirement',
+      kind: 'requirement',
+      content: task.requirementPreview,
+      metadata: { source: 'mock-requirement' },
     };
   }
   if (selection.kind === 'node') {

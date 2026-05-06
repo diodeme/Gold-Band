@@ -200,6 +200,9 @@ pub struct ContentVm {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RoundSelectionInput {
     Round,
+    Requirement {
+        node_id: Option<String>,
+    },
     Node {
         node_id: String,
     },
@@ -219,9 +222,13 @@ pub enum RoundSelectionInput {
     },
     Event {
         id: String,
+        node_id: Option<String>,
+        attempt_id: Option<String>,
     },
     Log {
         id: String,
+        node_id: Option<String>,
+        attempt_id: Option<String>,
     },
 }
 
@@ -661,7 +668,7 @@ fn round_stream_vm(
         title: labels.format("stream.round", &round.id),
         kind: "round".to_string(),
         tone: tone_for_status(round.status, round.outcome),
-        content: serde_json::to_string_pretty(round)?,
+        content: round_summary_text(&labels, run, round),
         node_id: None,
         attempt_id: None,
         name: None,
@@ -687,13 +694,38 @@ fn round_stream_vm(
     Ok(items)
 }
 
+fn round_summary_text(labels: &Translator, run: &RunState, round: &RoundState) -> String {
+    [
+        labels.format_pair("stream.field.status", &enum_label(&round.status)),
+        labels.format_pair("stream.field.outcome", &round.outcome.map(|outcome| enum_label(&outcome)).unwrap_or_else(|| "-".to_string())),
+        labels.format_pair("stream.field.trigger", &enum_label(&round.trigger)),
+        labels.format_pair("stream.field.repairLoops", &round.repair_loops_used.to_string()),
+        labels.format_pair("stream.field.currentNode", run.current_node.as_deref().unwrap_or("-")),
+    ]
+    .join("\n")
+}
+
+fn node_summary_text(labels: &Translator, node: &NodeState) -> String {
+    [
+        labels.format_pair("stream.field.status", &enum_label(&node.status)),
+        labels.format_pair("stream.field.outcome", &node.outcome.map(|outcome| enum_label(&outcome)).unwrap_or_else(|| "-".to_string())),
+        labels.format_pair("stream.field.attempt", &node.attempt_id),
+        labels.format_pair("stream.field.startedAt", &node.started_at),
+        labels.format_pair("stream.field.finishedAt", node.finished_at.as_deref().unwrap_or("-")),
+    ]
+    .join("\n")
+}
+
 fn selected_node_id(selection: &RoundSelectionInput) -> Option<&str> {
     match selection {
         RoundSelectionInput::Node { node_id }
         | RoundSelectionInput::Artifact { node_id, .. }
         | RoundSelectionInput::Attachment { node_id, .. }
         | RoundSelectionInput::WorkerRef { node_id, .. } => Some(node_id),
-        RoundSelectionInput::Round | RoundSelectionInput::Event { .. } | RoundSelectionInput::Log { .. } => None,
+        RoundSelectionInput::Log { node_id: Some(node_id), .. } => Some(node_id),
+        RoundSelectionInput::Event { node_id: Some(node_id), .. } => Some(node_id),
+        RoundSelectionInput::Requirement { node_id: Some(node_id) } => Some(node_id),
+        RoundSelectionInput::Round | RoundSelectionInput::Requirement { .. } | RoundSelectionInput::Event { .. } | RoundSelectionInput::Log { .. } => None,
     }
 }
 
@@ -713,7 +745,7 @@ fn append_node_stream_items(
             title: labels.format("stream.node", node_id),
             kind: "node".to_string(),
             tone: tone_for_node(node.status, node.outcome),
-            content: serde_json::to_string_pretty(node)?,
+            content: node_summary_text(&labels, node),
             node_id: Some(node_id.to_string()),
             attempt_id: Some(node.attempt_id.clone()),
             name: None,
@@ -778,6 +810,13 @@ fn detail_vm(
             content: serde_json::to_string_pretty(round)?,
             metadata: serde_json::json!({ "runId": run.id, "source": "canonical-state" }),
         }),
+        RoundSelectionInput::Requirement { node_id } => Ok(ContentVm {
+            title: labels.tr("detail.requirement"),
+            kind: "requirement".to_string(),
+            content: read_optional_text(&app.paths.requirement_file(task_id))?
+                .unwrap_or_else(|| labels.tr("fallback.missingRequirement")),
+            metadata: serde_json::json!({ "source": "task-authoring", "nodeId": node_id }),
+        }),
         RoundSelectionInput::Node { node_id } => {
             let node = nodes
                 .iter()
@@ -821,22 +860,29 @@ fn detail_vm(
                 .unwrap_or_else(|| labels.tr("fallback.missingWorkerRef")),
             metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id }),
         }),
-        RoundSelectionInput::Event { id } => Ok(ContentVm {
+        RoundSelectionInput::Event { id, node_id, attempt_id } => Ok(ContentVm {
             title: labels.tr("detail.runEvents"),
             kind: "event".to_string(),
             content: app
                 .run_events(task_id, run_id)?
                 .unwrap_or_else(|| labels.tr("fallback.missingEvents")),
-            metadata: serde_json::json!({ "id": id }),
+            metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id }),
         }),
-        RoundSelectionInput::Log { id } => Ok(ContentVm {
-            title: labels.tr("detail.runtimeLog"),
-            kind: "log".to_string(),
-            content: app
-                .runtime_log_tail_show(200)?
-                .unwrap_or_else(|| labels.tr("fallback.missingRuntimeLog")),
-            metadata: serde_json::json!({ "id": id }),
-        }),
+        RoundSelectionInput::Log { id, node_id, attempt_id } => {
+            let content = if let (Some(node_id), Some(attempt_id)) = (node_id.as_deref(), attempt_id.as_deref()) {
+                app.attempt_progress_events(task_id, run_id, round_id, node_id, attempt_id)?
+                    .unwrap_or_else(|| labels.tr("fallback.missingEvents"))
+            } else {
+                app.runtime_log_tail_show(200)?
+                    .unwrap_or_else(|| labels.tr("fallback.missingRuntimeLog"))
+            };
+            Ok(ContentVm {
+                title: labels.tr("detail.runtimeLog"),
+                kind: "log".to_string(),
+                content,
+                metadata: serde_json::json!({ "id": id, "nodeId": node_id, "attemptId": attempt_id }),
+            })
+        },
     }
 }
 

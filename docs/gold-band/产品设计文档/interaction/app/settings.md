@@ -1,7 +1,7 @@
 # 桌面客户端设置页
 
 ## 1. 一句话定义
-设置页用于管理桌面客户端本地偏好；当前 MVP 只包含主题切换和语言选择。
+设置页用于调整桌面端主题和语言；当前 MVP 只包含主题切换和语言选择。
 
 ---
 
@@ -39,9 +39,7 @@
 - System
 
 ### 4.2 行为
-- 选择后立即预览。
 - 设置保存到本地用户偏好。
-- System 跟随操作系统主题。
 
 ### 4.3 UI 形式
 推荐使用 segmented control：
@@ -61,7 +59,6 @@
 
 ### 5.2 行为
 - 选择后立即切换界面语言，或提示重启后生效。
-- 语言设置保存到本地用户偏好。
 
 ### 5.3 UI 形式
 推荐使用下拉选择：
@@ -72,18 +69,7 @@
 
 ---
 
-## 6. 设置范围
-当前设置是桌面客户端本地偏好，不属于 task / run / round 的 canonical state。
-
-后续如果加入 provider、workspace、workflow preset 等设置，应区分：
-- 用户级设置
-- workspace 级设置
-- task 级设置
-- provider 级设置
-
----
-
-## 7. Tauri 2.x MVP 对应实现
+## 6. Tauri 2.x MVP 对应实现
 
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
@@ -92,11 +78,11 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
 - 主题使用 segmented control，语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认主题为 `dark`，以匹配当前 desktop dark 原型；用户显式选择 `system` 后再跟随操作系统主题。
-- 设置属于用户级桌面偏好，不写入 task / run / round canonical state。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
+- 2026-05-07 起设置页移除标题副文案、范围提示卡片，以及外观/语言卡片中的辅助说明，页面仅保留主题与语言控件。
 
 ---
 
-## 8. 一句话总结
+## 7. 一句话总结
 
 > 当前设置页只解决“我想用什么主题和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。

@@ -4,10 +4,9 @@ import type { DesktopLanguage, DesktopThemePreference, PreferencesVm } from '../
 import { AppCard } from '@/components/AppCard';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
-import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SettingsPageProps {
@@ -43,22 +42,11 @@ export function SettingsPage({ preferences, onSave }: SettingsPageProps) {
         </div>
       </div>
 
-      <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
-
-      <AppCard className="border-primary/25 bg-primary/5">
-        <CardContent className="flex gap-4 px-6 py-5">
-          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/15 text-primary"><Info className="size-4" /></span>
-          <div className="space-y-1">
-            <h3 className="font-semibold">{t('settings.scopeTitle')}</h3>
-            <p className="text-sm leading-6 text-muted-foreground">{t('settings.scopeDescription')}</p>
-          </div>
-        </CardContent>
-      </AppCard>
+      <PageHeader title={t('settings.title')} />
 
       <AppCard>
         <CardHeader>
           <CardTitle>{t('settings.appearance')}</CardTitle>
-          <CardDescription>{t('settings.appearanceDescription')}</CardDescription>
         </CardHeader>
         <CardContent className="flex gap-2">
           {(['light', 'dark', 'system'] as DesktopThemePreference[]).map((value) => (
@@ -72,7 +60,6 @@ export function SettingsPage({ preferences, onSave }: SettingsPageProps) {
       <AppCard>
         <CardHeader>
           <CardTitle>{t('settings.language')}</CardTitle>
-          <CardDescription>{t('settings.languageDescription')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Select value={language} onValueChange={(value) => chooseLanguage(value as DesktopLanguage)}>

@@ -215,9 +215,9 @@ MVP 范围：
 
 ## 14. 2026-05-07 工作流蓝图默认折叠记录
 
-本轮将任务工作流页的原始 workflow 全貌图改为默认折叠：
+本轮将任务工作流页的工作流改为默认折叠：
 - 首屏优先展示 task 摘要、关键指标和运行记录，蓝图不再默认占据大块高度。
-- 折叠态保留“原始 workflow 全貌图”标题与展开按钮，用户需要检查 authoring workflow 时再展开。
+- 折叠态保留“工作流”标题与展开按钮，用户需要检查 authoring workflow 时再展开。
 - 展开后仍显示 control 规则条与只读节点-边画布，不改变 Tauri command、view model 或 canonical state 契约。
 
 ---
@@ -245,7 +245,7 @@ MVP 范围：
 
 本轮桌面端任务编排主导航收敛为三页：
 - 任务列表：展示 requirement 摘要、当前状态和 Task Preview，双击或按钮进入任务工作流。
-- 任务工作流：承载 task context、原始 workflow 全貌图，以及按 run -> round 展开的执行历史；run 只作为分组行，不再打开独立详情页。
+- 任务工作流：承载 task context、工作流，以及按 run -> round 展开的执行历史；run 只作为分组行，不再打开独立详情页。
 - Round 详情：保持左上实际工作图、左下全局信息流、右侧 Detail Viewer；日志、会话、artifact、attachment 都在右侧查看。
 
 任务详情页面合并到任务工作流页顶部上下文，run 详情页面合并到工作流页的 run 分组与 Round 详情上下文。

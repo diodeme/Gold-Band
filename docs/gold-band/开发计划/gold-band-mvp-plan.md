@@ -75,10 +75,11 @@
 - 2026-05-06：浏览器调试模式支持轻量 deep link：`/tasks`、`/tasks/:taskId/workflow`、`/tasks/:taskId/runs/:runId/rounds/:roundId`、`/settings`，用于 agent-browser 直达页面验证。
 - 2026-05-07：任务工作流页顶部 task 摘要移除“当前状态：某节点正在执行”句子；Run/Round 记录与 Round 详情的当前节点展示改为可读化格式，组合展示节点类型、workflow 节点说明和原始 node id；Round 详情实际工作图从 workflow snapshot 补齐节点说明。
 - 2026-05-07：修复 Round 详情实际工作图默认视口偏下和底部裁切的问题；GraphView 改为受控 viewport，按节点 bounds 和容器尺寸计算初始平移/缩放，并移除实际工作图超过父内容区的固定最小高度，确保打开页面时执行路径图边框与节点卡片完整居中展示；浏览器 fallback 对 `/run-024/round-001` 复现两节点失败验收图用于验证。
-- 2026-05-07：任务工作流页原始 workflow 全貌图默认折叠，仅保留展开入口；展开后仍显示 control 规则条与只读 GraphView，首屏优先给运行记录。
+- 2026-05-07：任务工作流页工作流默认折叠，仅保留展开入口；展开后仍显示 control 规则条与只读 GraphView，首屏优先给运行记录。
 - 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的默认展开 run 不再使用黄色背景或左侧金线，所有 run 分组保持一致黑色背景，避免默认展开被误解为选中态。
+- 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。
 - 2026-05-07：统一压缩桌面端卡片 header 与内容之间的过大空白；Round 详情左下信息流、Workflow 运行记录、Workspace 最近列表、Settings 表单卡片和遗留 Task/Run 详情页均移除 Card 默认 gap、覆盖 border header 大底部 padding，并降低内容区内边距。
 - 2026-05-07：Settings 页面移除标题副文案、范围提示块，以及外观/语言卡片的辅助说明文案，保留主题切换与语言选择两组本地偏好控件。
 - 启动：`npm run dev`；构建：`npm run build`。

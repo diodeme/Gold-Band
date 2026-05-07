@@ -20,7 +20,7 @@ export function PageHeader({ eyebrow, title, subtitle, actions, className }: { e
       <div className="min-w-0 space-y-2">
         {eyebrow ? <p className="font-mono text-xs uppercase tracking-[0.22em] text-primary">{eyebrow}</p> : null}
         <h1 className="truncate text-3xl font-semibold tracking-tight text-foreground">{title}</h1>
-        {subtitle ? <p className="max-w-4xl text-sm leading-6 text-muted-foreground">{subtitle}</p> : null}
+        {subtitle ? <div className="max-w-4xl text-sm leading-6 text-muted-foreground">{subtitle}</div> : null}
       </div>
       {actions ? <Actions>{actions}</Actions> : null}
     </div>

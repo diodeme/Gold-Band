@@ -8,11 +8,11 @@ import { GraphView } from '../components/GraphView';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Metric, MetricsBar, ModuleBar, Page, PageHeader } from '@/components/PageScaffold';
+import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '@/components/RequirementDisclosure';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { normalizeTone } from '@/lib/status';
@@ -31,8 +31,9 @@ type StatusFilter = 'all' | 'running' | 'paused' | 'completed' | 'failed' | 'res
 type SortDir = 'asc' | 'desc';
 const pageSizes = [5, 10, 20];
 
-export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, onKillRun }: WorkflowPageProps) {
+export function WorkflowPage({ vm, busy, onNavigate, onStartRun }: WorkflowPageProps) {
   const { t } = useTranslation();
+  const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState(0);
@@ -65,21 +66,25 @@ export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, 
   const safePageIndex = Math.min(pageIndex, pageCount - 1);
   const pagedRuns = sortedRuns.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
   const emptyMessage = vm.runs.length === 0 ? t('workflow.noRuns') : t('workflow.noRunsForFilter');
+  const requirement = fullRequirementText(vm.task.requirement, vm.task.requirementPreview || vm.task.description, t('common.empty'));
 
   return (
     <Page flush className="flex flex-col">
       <ModuleBar
         title={t('workflow.moduleTitle')}
-        tabs={<Tabs value="runs"><TabsList><TabsTrigger value="overview">{t('workflow.overview')}</TabsTrigger><TabsTrigger value="runs">{t('workflow.runs')}</TabsTrigger><TabsTrigger value="nodes">{t('workflow.nodes')}</TabsTrigger><TabsTrigger value="artifacts">{t('workflow.artifacts')}</TabsTrigger></TabsList></Tabs>}
-        actions={<><Button disabled={busy || !vm.task.workflowValid} onClick={() => onStartRun(vm.task.id)}>{t('common.startRun')}</Button><Button variant="outline" disabled={busy || !activeRun?.resumable} onClick={() => activeRun && onContinueRun(vm.task.id, activeRun.id)}>{t('common.continueRun')}</Button></>}
+        actions={<Button disabled={busy || !vm.task.workflowValid} onClick={() => onStartRun(vm.task.id)}>{t('common.startRun')}</Button>}
       />
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-5 p-6">
           <PageHeader
             eyebrow={vm.task.id}
             title={vm.task.title}
-            subtitle={t('workflow.requirementSummary', { summary: vm.task.requirementPreview || vm.task.description || '-' })}
-            actions={<><Button variant="outline" disabled>{t('workflow.viewRequirement')}</Button>{activeRun && (activeRun.status === 'running' || activeRun.status === 'paused') ? <Button variant="destructive" disabled={busy} onClick={() => onKillRun(vm.task.id, activeRun.id)}>{t('common.stopRun')}</Button> : null}</>}
+            subtitle={(
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 font-medium text-foreground">{t('common.requirement')}</span>
+                <RequirementTeaser text={requirement} detailLabel={t('common.viewFullRequirement')} onOpenDetail={() => setRequirementOpen(true)} />
+              </div>
+            )}
           />
           <MetricsBar>
             <Metric label={t('workflow.taskId')} value={vm.task.id} />
@@ -141,11 +146,8 @@ export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, 
                           key={group.run.id}
                           group={group}
                           graph={vm.graph}
-                          busy={busy}
                           expanded={expanded}
                           onToggle={() => toggleRun(group.run.id, expanded)}
-                          onContinue={() => onContinueRun(vm.task.id, group.run.id)}
-                          onKill={() => onKillRun(vm.task.id, group.run.id)}
                           onOpenRound={(roundId) => onNavigate({ kind: 'round-detail', taskId: vm.task.id, runId: group.run.id, roundId })}
                           t={t}
                         />
@@ -170,6 +172,14 @@ export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, 
           </AppCard>
         </div>
       </ScrollArea>
+      <RequirementDetailSheet
+        open={requirementOpen}
+        title={t('common.fullRequirement')}
+        description={t('common.fullRequirementDescription')}
+        requirement={requirement}
+        closeLabel={t('common.close')}
+        onOpenChange={setRequirementOpen}
+      />
     </Page>
   );
 }
@@ -183,14 +193,11 @@ function ControlPill({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function RunGroupRow({ group, graph, busy, expanded, onToggle, onContinue, onKill, onOpenRound, t }: {
+function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, t }: {
   group: RunGroupVm;
   graph: GraphVm;
-  busy: boolean;
   expanded: boolean;
   onToggle: () => void;
-  onContinue: () => void;
-  onKill: () => void;
   onOpenRound: (roundId: string) => void;
   t: TFunction;
 }) {
@@ -199,7 +206,7 @@ function RunGroupRow({ group, graph, busy, expanded, onToggle, onContinue, onKil
 
   return (
     <section className="bg-background/20">
-      <div className="grid gap-3 px-4 py-3 xl:grid-cols-[minmax(220px,0.9fr)_minmax(260px,0.8fr)_auto]">
+      <div className="grid gap-3 px-4 py-3 xl:grid-cols-[minmax(220px,0.9fr)_minmax(260px,0.8fr)]">
         <div className="flex min-w-0 items-center gap-2">
           <Button
             type="button"
@@ -222,10 +229,6 @@ function RunGroupRow({ group, graph, busy, expanded, onToggle, onContinue, onKil
           <InlineMeta label={t('workflow.currentRound')} value={group.run.currentRound ?? '-'} />
           <InlineMeta label={t('workflow.currentNode')} value={formatCurrentNode(t, graph, group.run.currentNode)} />
           {group.run.pauseReason ? <InlineMeta label={t('workflow.pauseReason')} value={displayStatus(t, group.run.pauseReason)} /> : null}
-        </div>
-        <div className="flex shrink-0 items-center justify-end gap-2">
-          {group.run.resumable ? <Button variant="outline" size="sm" disabled={busy} onClick={onContinue}>{t('common.continueRun')}</Button> : null}
-          {group.run.status === 'running' || group.run.status === 'paused' ? <Button variant="destructive" size="sm" disabled={busy} onClick={onKill}>{t('common.stopRun')}</Button> : null}
         </div>
       </div>
       {expanded ? <RoundList id={regionId} runId={group.run.id} graph={graph} rounds={rounds} onOpenRound={onOpenRound} t={t} /> : null}

@@ -27,10 +27,13 @@ const latestRun: RunSummaryVm = {
   pauseReason: null,
 };
 
+const requirement = '重写 Tauri 桌面端的核心窗口管理逻辑，确保 Windows 和 macOS 下的窗口阴影表现一致，并修复多显示器下的 DPI 缩放偏移问题。\n\n目标：重写桌面端窗口与任务编排主界面。\n约束：不引入命令输入或聊天入口；终局状态只来自 canonical state。\n验收：任务列表、工作流、round 详情与设置页均匹配 app 原型。';
+
 const task = {
   id: 'task-001',
   title: 'Tauri 桌面端重写',
   description: 'Refactor legacy electron modules to native Rust/Tauri framework.',
+  requirement,
   requirementPreview: '重写 Tauri 桌面端的核心窗口管理逻辑，确保 Windows 和 macOS 下的窗口阴影表现一致，并修复多显示器下的 DPI 缩放偏移问题。',
   displayStatus: 'running',
   workflowExists: true,
@@ -115,7 +118,7 @@ export const mockTaskList: TaskListVm = {
     task,
     { ...task, id: 'task-002', title: '修复 provider 输出', displayStatus: 'resumable', latestRun: { ...latestRun, id: 'run-002', status: 'paused', outcome: 'failure', resumable: true }, resumableRunId: 'run-002', artifactCount: 3, attachmentCount: 1 },
     { ...task, id: 'task-003', title: '优化文档结构', displayStatus: 'failed', workflowValid: false, workflowError: 'validation failed', latestRun: { ...latestRun, id: 'run-001', status: 'completed', outcome: 'failure', resumable: false }, resumableRunId: null, artifactCount: 1, attachmentCount: 0 },
-    { ...task, id: 'task-004', title: '新增观测索引', displayStatus: 'missing-workflow', workflowExists: false, workflowValid: false, latestRun: null, resumableRunId: null, artifactCount: 0, attachmentCount: 0 },
+    { ...task, id: 'task-004', title: '新增观测索引', requirement: '在web目录下输出一个python类，输出hello-world', requirementPreview: '在web目录下输出一个python类，输出hello-world', displayStatus: 'missing-workflow', workflowExists: false, workflowValid: false, latestRun: null, resumableRunId: null, artifactCount: 0, attachmentCount: 0 },
     ...Array.from({ length: 10 }, (_, index) => ({
       ...task,
       id: `task-${String(index + 5).padStart(3, '0')}`,
@@ -131,7 +134,7 @@ export const mockTaskList: TaskListVm = {
 
 export const mockTaskDetail: TaskDetailVm = {
   task,
-  requirement: `${task.requirementPreview}\n\n目标：重写桌面端窗口与任务编排主界面。\n约束：不引入命令输入或聊天入口；终局状态只来自 canonical state。\n验收：任务列表、工作流、round 详情与设置页均匹配 app 原型。`,
+  requirement,
   runs: [latestRun, { ...latestRun, id: 'run-002', status: 'completed', outcome: 'failure', resumable: false, currentRound: 'round-004' }],
 };
 

@@ -1,11 +1,12 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TaskListVm, TaskPage, TaskRowVm } from '../types';
 import { displayStatus } from '../i18n';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { EmptyState, ModuleBar, Page } from '@/components/PageScaffold';
+import { CodeBlock, EmptyState, ModuleBar, Page } from '@/components/PageScaffold';
+import { RequirementTeaser, fullRequirementText } from '@/components/RequirementDisclosure';
 import { TaskTableSkeleton } from '@/components/LoadingState';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,12 +32,14 @@ interface TaskListPageProps {
 type TaskFilter = 'all' | 'running' | 'completed';
 type TaskSortKey = 'id' | 'title' | 'status' | 'workflow' | 'latest' | 'assets';
 type SortDir = 'asc' | 'desc';
+type PreviewMode = 'summary' | 'requirement';
 
 const pageSizes = [10, 20, 50];
 
 export function TaskListPage({ vm, loading, onNavigate, onRefresh }: TaskListPageProps) {
   const { t } = useTranslation();
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('summary');
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>('all');
   const [sortKey, setSortKey] = useState<TaskSortKey>('id');
@@ -73,6 +76,7 @@ export function TaskListPage({ vm, loading, onNavigate, onRefresh }: TaskListPag
     if (!previewTaskId) return;
     if (sortedTasks.some((task) => task.id === previewTaskId)) return;
     setPreviewTaskId(null);
+    setPreviewMode('summary');
     setIsPreviewOpen(false);
   }, [previewTaskId, sortedTasks]);
 
@@ -88,10 +92,12 @@ export function TaskListPage({ vm, loading, onNavigate, onRefresh }: TaskListPag
   const closePreview = () => {
     setIsPreviewOpen(false);
     setPreviewTaskId(null);
+    setPreviewMode('summary');
   };
 
   const openPreview = (taskId: string) => {
     setPreviewTaskId(taskId);
+    setPreviewMode('summary');
     setIsPreviewOpen(true);
   };
 
@@ -199,7 +205,7 @@ export function TaskListPage({ vm, loading, onNavigate, onRefresh }: TaskListPag
               </AppCard>
             </div>
           </ScrollArea>
-          <TaskPreviewSheet task={previewTask} open={isPreviewOpen && previewTask !== null} onOpenChange={(open) => { if (open) setIsPreviewOpen(true); else closePreview(); }} onNavigate={onNavigate} />
+          <TaskPreviewSheet task={previewTask} mode={previewMode} open={isPreviewOpen && previewTask !== null} onOpenChange={(open) => { if (open) setIsPreviewOpen(true); else closePreview(); }} onNavigate={onNavigate} onOpenRequirement={() => setPreviewMode('requirement')} onBack={() => setPreviewMode('summary')} />
         </div>
       ) : null}
     </Page>
@@ -274,12 +280,12 @@ function SummaryCard({ card }: { card: TaskListVm['cards'][number] }) {
   );
 }
 
-function TaskPreviewSheet({ task, open, onOpenChange, onNavigate }: { task: TaskRowVm | null; open: boolean; onOpenChange: (open: boolean) => void; onNavigate: (page: TaskPage) => void }) {
+function TaskPreviewSheet({ task, mode, open, onOpenChange, onNavigate, onOpenRequirement, onBack }: { task: TaskRowVm | null; mode: PreviewMode; open: boolean; onOpenChange: (open: boolean) => void; onNavigate: (page: TaskPage) => void; onOpenRequirement: () => void; onBack: () => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        className="w-[420px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[420px]"
+        className={cn('max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0', mode === 'requirement' ? 'w-[560px] sm:max-w-[560px]' : 'w-[420px] sm:max-w-[420px]')}
         closeLabel={t('common.close')}
         onInteractOutside={(event) => {
           const target = event.target as HTMLElement | null;
@@ -287,14 +293,16 @@ function TaskPreviewSheet({ task, open, onOpenChange, onNavigate }: { task: Task
         }}
         showOverlay={false}
       >
-        {task ? <TaskPreviewContent task={task} onNavigate={onNavigate} /> : null}
+        {task && mode === 'requirement' ? <TaskRequirementContent task={task} onBack={onBack} /> : null}
+        {task && mode === 'summary' ? <TaskPreviewContent task={task} onNavigate={onNavigate} onOpenRequirement={onOpenRequirement} /> : null}
       </SheetContent>
     </Sheet>
   );
 }
 
-function TaskPreviewContent({ task, onNavigate }: { task: TaskRowVm; onNavigate: (page: TaskPage) => void }) {
+function TaskPreviewContent({ task, onNavigate, onOpenRequirement }: { task: TaskRowVm; onNavigate: (page: TaskPage) => void; onOpenRequirement: () => void }) {
   const { t } = useTranslation();
+  const requirement = fullRequirementText(task.requirement, task.requirementPreview || task.description, t('common.empty'));
   return (
     <>
       <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
@@ -308,10 +316,9 @@ function TaskPreviewContent({ task, onNavigate }: { task: TaskRowVm; onNavigate:
       </SheetHeader>
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-5 p-5">
-          <blockquote className="break-words rounded-lg border-l-2 border-primary bg-primary/5 p-4 text-sm leading-6 text-muted-foreground">“{task.requirementPreview || task.description || t('common.empty')}”</blockquote>
-          <section className="space-y-2">
-            <h3 className="font-semibold">{t('taskList.requirementSummary')}</h3>
-            <p className="break-words text-sm leading-6 text-muted-foreground">{task.requirementPreview || task.description || t('common.empty')}</p>
+          <section className="space-y-2 rounded-lg border-l-2 border-primary bg-primary/5 p-4">
+            <h3 className="font-semibold">{t('common.requirement')}</h3>
+            <RequirementTeaser text={requirement} detailLabel={t('common.viewFullRequirement')} quote onOpenDetail={onOpenRequirement} />
           </section>
           <section className="space-y-3">
             <h3 className="font-semibold">{t('taskList.executionStats')}</h3>
@@ -327,6 +334,28 @@ function TaskPreviewContent({ task, onNavigate }: { task: TaskRowVm; onNavigate:
             <Button className="w-full" variant="outline" onClick={() => onNavigate({ kind: 'workflow', taskId: task.id })}>{t('common.workflow')}</Button>
             <Button className="w-full" variant="outline" disabled>{t('taskList.viewArtifacts')}</Button>
           </div>
+        </div>
+      </ScrollArea>
+    </>
+  );
+}
+
+function TaskRequirementContent({ task, onBack }: { task: TaskRowVm; onBack: () => void }) {
+  const { t } = useTranslation();
+  const requirement = fullRequirementText(task.requirement, task.requirementPreview || task.description, t('common.empty'));
+  return (
+    <>
+      <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
+        <Button variant="ghost" size="sm" className="h-8 w-fit px-2 text-muted-foreground" onClick={onBack}>
+          <ArrowLeft className="h-4 w-4" />
+          {t('common.back')}
+        </Button>
+        <SheetDescription className="sr-only">{t('common.fullRequirementDescription')}</SheetDescription>
+        <SheetTitle className="break-words text-xl">{task.title} · {t('common.fullRequirement')}</SheetTitle>
+      </SheetHeader>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="p-5">
+          <CodeBlock className="whitespace-pre-wrap text-sm leading-7">{requirement}</CodeBlock>
         </div>
       </ScrollArea>
     </>

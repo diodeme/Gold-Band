@@ -48,6 +48,7 @@ pub struct TaskRowVm {
     pub id: String,
     pub title: String,
     pub description: Option<String>,
+    pub requirement: String,
     pub requirement_preview: String,
     pub display_status: String,
     pub workflow_exists: bool,
@@ -410,6 +411,7 @@ fn task_row_vm(app: &App, summary: &TaskSummary) -> Result<TaskRowVm> {
             .clone()
             .unwrap_or_else(|| summary.task.id.clone()),
         description: summary.task.description.clone(),
+        requirement,
         requirement_preview,
         display_status: display_status(summary),
         workflow_exists: summary.workflow_exists,

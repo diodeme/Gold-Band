@@ -28,6 +28,7 @@ export interface TaskRowVm {
   id: string;
   title: string;
   description?: string | null;
+  requirement: string;
   requirementPreview: string;
   displayStatus: string;
   workflowExists: boolean;

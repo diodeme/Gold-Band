@@ -82,6 +82,7 @@
 - 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。
 - 2026-05-07：统一压缩桌面端卡片 header 与内容之间的过大空白；Round 详情左下信息流、Workflow 运行记录、Workspace 最近列表、Settings 表单卡片和遗留 Task/Run 详情页均移除 Card 默认 gap、覆盖 border header 大底部 padding，并降低内容区内边距。
 - 2026-05-07：Settings 页面移除标题副文案、范围提示块，以及外观/语言卡片的辅助说明文案，保留主题切换与语言选择两组本地偏好控件。
+- 2026-05-07：Settings 主题选择器升级为 `Sync with OS` 开关 + Light/Dark 分组主题预览卡；`desktopTheme` 扩展为 `system`、`light`、`light-warm`、`dark`、`black`，默认浅色调整为白蓝配色，保留暖金浅色和 Gold Band 深色，并新增终端黑主题；前端验证继续通过 `/settings` deep link 使用 agent-browser 完成。
 - 启动：`npm run dev`；构建：`npm run build`。
 
 ---

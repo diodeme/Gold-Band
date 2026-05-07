@@ -73,7 +73,9 @@ impl FromStr for ConsoleThemeName {
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopThemePreference {
     Light,
+    LightWarm,
     Dark,
+    Black,
     System,
 }
 
@@ -83,7 +85,9 @@ impl FromStr for DesktopThemePreference {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "light" => Ok(Self::Light),
+            "light-warm" => Ok(Self::LightWarm),
             "dark" => Ok(Self::Dark),
+            "black" => Ok(Self::Black),
             "system" => Ok(Self::System),
             _ => Err(anyhow!("unsupported desktop theme: {value}")),
         }
@@ -229,8 +233,16 @@ mod tests {
             DesktopThemePreference::Light
         ));
         assert!(matches!(
+            DesktopThemePreference::from_str("light-warm").unwrap(),
+            DesktopThemePreference::LightWarm
+        ));
+        assert!(matches!(
             DesktopThemePreference::from_str("dark").unwrap(),
             DesktopThemePreference::Dark
+        ));
+        assert!(matches!(
+            DesktopThemePreference::from_str("black").unwrap(),
+            DesktopThemePreference::Black
         ));
         assert!(matches!(
             DesktopThemePreference::from_str("system").unwrap(),

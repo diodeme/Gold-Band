@@ -36,7 +36,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'dark', language: 'zh-cn' };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn' };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
@@ -59,6 +59,14 @@ export function App() {
 
   useEffect(() => {
     applyTheme(preferences.theme);
+  }, [preferences.theme]);
+
+  useEffect(() => {
+    if (preferences.theme !== 'system') return undefined;
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => applyTheme('system');
+    colorScheme.addEventListener('change', syncSystemTheme);
+    return () => colorScheme.removeEventListener('change', syncSystemTheme);
   }, [preferences.theme]);
 
   useEffect(() => {

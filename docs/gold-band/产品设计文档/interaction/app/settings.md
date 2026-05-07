@@ -1,7 +1,7 @@
 # 桌面客户端设置页
 
 ## 1. 一句话定义
-设置页用于调整桌面端主题和语言；当前 MVP 只包含主题切换和语言选择。
+设置页用于调整桌面端主题和语言；当前 MVP 只包含主题选择、跟随系统开关和语言选择。
 
 ---
 
@@ -21,7 +21,11 @@
 │ 标题：设置                                                     │
 ├──────────────────────────────────────────────────────────────┤
 │ 外观                                                         │
-│   主题：Light / Dark / System                                 │
+│   Sync with OS 开关                                           │
+│   Light                                                       │
+│     [ 默认浅色预览卡 ] [ 暖色浅色预览卡 ]                       │
+│   Dark                                                        │
+│     [ Gold Band 深色预览卡 ] [ 终端黑预览卡 ]                   │
 │                                                              │
 │ 语言                                                         │
 │   语言选择：中文 / English                                    │
@@ -30,23 +34,43 @@
 
 ---
 
-## 4. 主题切换
+## 4. 主题选择
 
 ### 4.1 选项
 当前支持：
-- Light
-- Dark
-- System
+- System / 跟随系统：由 `Sync with OS` 开关控制。
+- Light / 默认浅色：白色界面 + 蓝色强调，作为新的默认浅色主题。
+- Light Warm / 暖色浅色：象牙白界面 + 暖金强调，保留原浅色 Gold Band 质感。
+- Gold Band Dark / Gold Band 深色：黑色界面 + 暖金强调，保留原深色主题。
+- Black / 终端黑：近黑界面 + 冷蓝强调，更接近代码终端。
 
 ### 4.2 行为
 - 设置保存到本地用户偏好。
+- `Sync with OS` 开启时保存 `desktopTheme = system`，应用根据操作系统浅色/深色自动解析到默认浅色或 Gold Band 深色。
+- `Sync with OS` 关闭时保存当前解析出的具体主题。
+- 点击任一主题预览卡会立即保存该具体主题，并隐式关闭 `Sync with OS`。
+- 所有主题选择后立即预览，不需要重启。
 
 ### 4.3 UI 形式
-推荐使用 segmented control：
+推荐使用顶部开关 + 分组预览卡：
 
 ```text
-主题    [ Light | Dark | System ]
+Sync with OS                                      ( on/off )
+
+Light
+  ┌──────────────┐  ┌──────────────┐
+  │ terminal 预览 │  │ terminal 预览 │
+  │ 默认浅色      │  │ 暖色浅色      │
+  └──────────────┘  └──────────────┘
+
+Dark
+  ┌──────────────┐  ┌──────────────┐
+  │ terminal 预览 │  │ terminal 预览 │
+  │ Gold Band    │  │ 终端黑        │
+  └──────────────┘  └──────────────┘
 ```
+
+预览卡使用可点击 button，包含小型 terminal-like 配色预览、主题名称和一句说明；当前选中主题以 primary 边框和浅色背景强调。
 
 ---
 
@@ -74,12 +98,13 @@
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
 当前实现规则：
-- 主题字段保存为 `desktopTheme`，支持 `light`、`dark`、`system`。
+- 主题字段保存为 `desktopTheme`，支持 `system`、`light`、`light-warm`、`dark`、`black`。
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
-- 主题使用 segmented control，语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
-- 首次启动默认主题为 `dark`，以匹配当前 desktop dark 原型；用户显式选择 `system` 后再跟随操作系统主题。
+- 主题使用 `Sync with OS` 开关 + Light/Dark 分组主题预览卡，语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
+- 首次启动默认主题为 `system`，系统浅色时解析到白蓝默认浅色，系统深色时解析到 Gold Band 深色。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
 - 2026-05-07 起设置页移除标题副文案、范围提示卡片，以及外观/语言卡片中的辅助说明，页面仅保留主题与语言控件。
+- 2026-05-07 起主题选择器升级为 `Sync with OS` 开关 + 主题预览卡，默认浅色调整为白蓝配色，并新增暖色浅色与终端黑主题。
 
 ---
 

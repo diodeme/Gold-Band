@@ -231,6 +231,16 @@ MVP 范围：
 
 ---
 
+## 16. 2026-05-07 设置页主题选择器记录
+
+本轮将设置页主题选择从 segmented Light / Dark / System 升级为 `Sync with OS` 开关 + Light/Dark 分组主题预览卡：
+- `Sync with OS` 开启时保存 `desktopTheme = system`，并随操作系统浅色/深色变化自动解析主题。
+- Light 分组提供白蓝默认浅色和暖色浅色；白蓝配色成为新的浅色默认。
+- Dark 分组提供 Gold Band 暖金深色和新增终端黑主题。
+- 主题 token 继续沿用 Tailwind CSS v4 + shadcn/ui 的 semantic CSS variables，不引入 command bar、terminal input 或聊天入口。
+
+---
+
 ## 9. 2026-05-04 工作流图视图记录
 
 本轮桌面端工作流展示从卡片列表升级为真实节点-边图：

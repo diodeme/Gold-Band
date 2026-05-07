@@ -46,7 +46,8 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-:root {
+:root,
+:root[data-theme='dark'] {
   color-scheme: dark;
   --background: #080808;
   --foreground: #f3f0e8;
@@ -85,7 +86,83 @@
   --radius: 0.625rem;
 }
 
+:root[data-theme='black'] {
+  color-scheme: dark;
+  --background: #020617;
+  --foreground: #e5edf7;
+  --card: #080d18;
+  --card-foreground: #e5edf7;
+  --popover: #080d18;
+  --popover-foreground: #e5edf7;
+  --primary: #60a5fa;
+  --primary-foreground: #020617;
+  --secondary: #111827;
+  --secondary-foreground: #e5edf7;
+  --muted: #0b1120;
+  --muted-foreground: #94a3b8;
+  --accent: rgba(96, 165, 250, 0.15);
+  --accent-foreground: #bfdbfe;
+  --destructive: #fb7185;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #60a5fa;
+  --sidebar: #020617;
+  --sidebar-foreground: #e5edf7;
+  --sidebar-primary: #60a5fa;
+  --sidebar-primary-foreground: #020617;
+  --sidebar-accent: rgba(96, 165, 250, 0.15);
+  --sidebar-accent-foreground: #bfdbfe;
+  --sidebar-border: #1e293b;
+  --sidebar-ring: #60a5fa;
+  --gold-workspace: #030712;
+  --gold-surface-low: #0b1120;
+  --gold-surface-high: #111827;
+  --gold-line-soft: rgba(148, 163, 184, 0.18);
+  --gold-running: #60a5fa;
+  --gold-success: #22c55e;
+  --gold-warning: #f59e0b;
+  --gold-danger: #fb7185;
+}
+
 :root[data-theme='light'] {
+  color-scheme: light;
+  --background: #f8fbff;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #eaf2ff;
+  --secondary-foreground: #172554;
+  --muted: #f1f5fb;
+  --muted-foreground: #64748b;
+  --accent: rgba(37, 99, 235, 0.1);
+  --accent-foreground: #1d4ed8;
+  --destructive: #dc2626;
+  --border: #dbe7f5;
+  --input: #dbe7f5;
+  --ring: #2563eb;
+  --sidebar: #eef6ff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(37, 99, 235, 0.1);
+  --sidebar-accent-foreground: #1d4ed8;
+  --sidebar-border: #dbe7f5;
+  --sidebar-ring: #2563eb;
+  --gold-workspace: #f3f8ff;
+  --gold-surface-low: #f8fbff;
+  --gold-surface-high: #eaf2ff;
+  --gold-line-soft: rgba(37, 99, 235, 0.12);
+  --gold-running: #2563eb;
+  --gold-success: #15803d;
+  --gold-warning: #c2410c;
+  --gold-danger: #dc2626;
+}
+
+:root[data-theme='light-warm'] {
   color-scheme: light;
   --background: #f5efe3;
   --foreground: #201d18;

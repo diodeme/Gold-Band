@@ -15,7 +15,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { MoreVertical, Pin, PinOff, X } from 'lucide-react';
+import { MoreVertical, Pin, PinOff, RefreshCw, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toneSurfaceClass } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
@@ -24,6 +24,8 @@ interface RoundDetailPageProps {
   vm: RoundDetailVm | null;
   breadcrumbs?: ReactNode;
   selection: RoundSelection;
+  refreshing: boolean;
+  onRefresh: () => void;
   onSelect: (selection: RoundSelection) => void;
 }
 
@@ -31,7 +33,7 @@ type RoundTab = 'artifacts' | 'attachments';
 
 const CONTEXT_MENU_DETAIL_CLOSE_DELAY_MS = 150;
 
-export function RoundDetailPage({ vm, breadcrumbs, selection, onSelect }: RoundDetailPageProps) {
+export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, onRefresh, onSelect }: RoundDetailPageProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<RoundTab>('artifacts');
   const [detailOpen, setDetailOpen] = useState(false);
@@ -64,6 +66,8 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, onSelect }: RoundD
   const roundLogTarget = roundLogSelection(roundLogItem);
   const showNodePanel = availableTabs.length > 0;
   const activeTabItems = tabItems(activeTab, selectedNodeStreamGroups);
+  const roundDisplayStatus = vm.round.outcome ?? vm.round.status;
+  const currentNode = formatCurrentNode(t, vm.graph, vm.round.currentNode ?? vm.run.currentNode);
 
   const closeDetail = () => {
     setDetailOpen(false);
@@ -125,14 +129,12 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, onSelect }: RoundD
             <RequirementTeaser compact className="flex-1" text={requirement} detailLabel={t('common.viewFullRequirement')} onOpenDetail={() => setRequirementOpen(true)} />
           </div>
         )}
-        badges={(
-          <>
-            <StatusBadge value={vm.round.status} label={displayStatus(t, vm.round.status)} />
-            <StatusBadge value={vm.round.outcome} label={displayStatus(t, vm.round.outcome)} />
-          </>
-        )}
         actions={(
           <>
+            <Button variant="outline" disabled={refreshing} onClick={onRefresh}>
+              <RefreshCw className={cn(refreshing && 'animate-spin')} />
+              {t('common.refresh')}
+            </Button>
             <Button variant="outline" disabled={!roundLogTarget} onClick={openRoundLog}>{t('roundDetail.openLog')}</Button>
             <Button variant="outline">{t('roundDetail.exportLog')}</Button>
             <Button>{t('common.continueRun')}</Button>
@@ -147,10 +149,11 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, onSelect }: RoundD
           </>
         )}
         metrics={(
-          <MetricsBar className="lg:grid-cols-3 xl:grid-cols-3">
+          <MetricsBar className="lg:grid-cols-4 xl:grid-cols-4">
             <Metric label={t('roundDetail.trigger')} value={displayStatus(t, vm.round.trigger)} compact />
             <Metric label={t('roundDetail.repairLoopsUsed')} value={vm.round.repairLoopsUsed} compact />
-            <Metric label={t('common.currentNode')} value={formatCurrentNode(t, vm.graph, vm.round.currentNode ?? vm.run.currentNode)} compact />
+            <Metric label={t('common.currentNode')} value={currentNode} tooltip={currentNode} compact />
+            <Metric label={t('common.outcome')} value={<StatusBadge value={roundDisplayStatus} label={displayStatus(t, roundDisplayStatus)} />} compact />
           </MetricsBar>
         )}
       />

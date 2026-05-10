@@ -17,6 +17,7 @@ import {
 import type { GraphNodeVm, GraphVm } from '../types';
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { EmptyState } from '@/components/PageScaffold';
 import { cn } from '@/lib/utils';
 import { normalizeTone } from '@/lib/status';
@@ -291,8 +292,18 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
           </span>
         ) : null}
         <div className="min-w-0">
-          <p className="line-clamp-2 text-sm font-medium leading-5 text-foreground">{node.label}</p>
-          <p className="mt-1 truncate font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{node.nodeId ?? node.id} · {node.nodeType}</p>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <p className="line-clamp-2 text-sm font-medium leading-5 text-foreground">{node.label}</p>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{node.label}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <p className="mt-1 truncate font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{node.nodeId ?? node.id} · {node.nodeType}</p>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{node.nodeId ?? node.id} · {node.nodeType}</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </div>

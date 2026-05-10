@@ -40,7 +40,7 @@ prepare -> plan -> execute -> validate -> finalize
 ---
 
 ## 4. 顶部任务摘要
-顶部区域使用与任务列表页、Round 详情页一致的统一 Page Header：面包屑在 Header 内第一行，主标题直接展示任务标题，不额外展示蓝色 task id eyebrow；requirement 仅作为低强调单行上下文展示，低对比 stats 位于同一 Header 的下一行。新建 Run 不放在全局 Header，而放入运行记录卡片 Header，表达它是对当前 run 列表的主操作。
+顶部区域使用与任务列表页、Round 详情页一致的统一 Page Header：面包屑在 Header 内第一行，主标题直接展示任务标题，不额外展示蓝色 task id eyebrow；requirement 仅作为低强调单行上下文展示，低对比 stats 位于同一 Header 的下一行。Header 右侧保留手动刷新按钮，后台每 10 秒静默刷新一次当前页面数据；新建 Run 不放在全局 Header，而放入运行记录卡片 Header，表达它是对当前 run 列表的主操作。
 
 展示当前 task 的稳定上下文：
 - task id
@@ -53,6 +53,7 @@ prepare -> plan -> execute -> validate -> finalize
 
 视觉规则：
 - 顶部状态只作为当前 task 的上下文 stats，不作为页面级 KPI 看板。
+- 顶部四张 stats 卡片保持等高，label 与 value 使用统一垂直节奏；“工作流”卡片中的状态标签和动作按钮需与其他 stats 卡片对齐。
 - stats item 使用低对比背景与弱边框，不使用重卡片、重阴影或大面积色块。
 
 操作：
@@ -89,6 +90,7 @@ prepare -> plan -> execute -> validate -> finalize
 - 点击工作流动作从右侧打开非模态抽屉；抽屉内展示 control 规则条与只读 workflow 图。
 - 有效状态显示查看；未创建状态显示新建工作流；无效或校验失败状态显示修复。
 - 原始 workflow 图保持只读，节点操作能力留给 Round 详情页的实际工作图。
+- 工作流图节点长文本默认优先展示前部内容，尾部截断；鼠标悬浮节点标题或元信息时展示完整全文。
 
 ---
 

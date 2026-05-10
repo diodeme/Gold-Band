@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   chooseWorkspace,
   continueRun,
@@ -54,6 +54,7 @@ export function App() {
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const { t } = useTranslation();
@@ -115,7 +116,12 @@ export function App() {
 
   const refresh = useCallback(async (mode: RefreshMode = 'manual') => {
     if (!bootstrap) return;
-    if (mode !== 'background') setLoading(mode);
+    if (mode === 'background' && backgroundRefreshInFlightRef.current) return;
+    if (mode === 'background') {
+      backgroundRefreshInFlightRef.current = true;
+    } else {
+      setLoading(mode);
+    }
     setError(null);
     try {
       if (taskPage.kind === 'task-list') {
@@ -128,7 +134,11 @@ export function App() {
     } catch (err) {
       setError(String(err));
     } finally {
-      if (mode !== 'background') setLoading(null);
+      if (mode === 'background') {
+        backgroundRefreshInFlightRef.current = false;
+      } else {
+        setLoading(null);
+      }
     }
   }, [bootstrap, roundSelection, taskPage]);
 
@@ -137,15 +147,10 @@ export function App() {
   }, [hasPageData, refresh]);
 
   useEffect(() => {
-    const active = taskList?.tasks.some((task) => task.latestRun?.status === 'running')
-      || workflow?.runs.some((group) => group.run.status === 'running')
-      || roundDetail?.run.status === 'running'
-      || roundDetail?.round.status === 'running'
-      || roundDetail?.graph.nodes.some((node) => node.status === 'running');
-    if (!active) return undefined;
-    const interval = window.setInterval(() => void refresh('background'), 1000);
+    if (!bootstrap || !hasPageData) return undefined;
+    const interval = window.setInterval(() => void refresh('background'), 10000);
     return () => window.clearInterval(interval);
-  }, [refresh, taskList, workflow, roundDetail]);
+  }, [bootstrap, hasPageData, refresh]);
 
   const navigate = (page: TaskPage) => {
     setPrimaryModule('task-orchestration');
@@ -261,14 +266,16 @@ export function App() {
         <WorkflowPage
           vm={workflow}
           busy={busy}
+          refreshing={loading === 'manual'}
           breadcrumbs={pageBreadcrumbs}
           onNavigate={navigate}
+          onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => void runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(taskId, runId))}
           onKillRun={onKillRun}
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} onSelect={setRoundSelection} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;
   }
 }

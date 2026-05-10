@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import type { GraphVm, RoundSummaryVm, RunGroupVm, TaskPage, TaskRowVm, WorkflowVm } from '../types';
 import { displayPolicy, displayStatus } from '../i18n';
 import { GraphView } from '../components/GraphView';
@@ -22,8 +22,10 @@ import { formatCurrentNode } from '@/lib/nodes';
 interface WorkflowPageProps {
   vm: WorkflowVm | null;
   busy: boolean;
+  refreshing: boolean;
   breadcrumbs?: ReactNode;
   onNavigate: (page: TaskPage) => void;
+  onRefresh: () => void;
   onStartRun: (taskId: string) => void;
   onContinueRun: (taskId: string, runId: string) => void;
   onKillRun: (taskId: string, runId: string) => void;
@@ -47,7 +49,7 @@ function historyBodyMinHeightFor(pageSize: number) {
   return Math.max(320, pageSize * collapsedRunRowMinHeight);
 }
 
-export function WorkflowPage({ vm, busy, breadcrumbs, onNavigate, onStartRun }: WorkflowPageProps) {
+export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun }: WorkflowPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -86,8 +88,14 @@ export function WorkflowPage({ vm, busy, breadcrumbs, onNavigate, onStartRun }: 
             <RequirementTeaser compact className="flex-1" text={requirement} detailLabel={t('common.viewFullRequirement')} onOpenDetail={() => setRequirementOpen(true)} />
           </div>
         )}
+        actions={(
+          <Button variant="outline" disabled={busy || refreshing} onClick={onRefresh}>
+            <RefreshCw className={cn(refreshing && 'animate-spin')} />
+            {t('common.refresh')}
+          </Button>
+        )}
         metrics={(
-          <MetricsBar>
+          <MetricsBar className="lg:grid-cols-4 xl:grid-cols-4">
             <Metric label={t('workflow.taskId')} value={vm.task.id} compact />
             <WorkflowMetricCard lifecycle={workflowLifecycle} onOpen={setWorkflowDrawerMode} t={t} />
             <Metric label={t('taskList.latestRun')} value={latestRun?.id ?? '-'} compact />
@@ -200,8 +208,8 @@ export function WorkflowPage({ vm, busy, breadcrumbs, onNavigate, onStartRun }: 
 
 function WorkflowMetricCard({ lifecycle, onOpen, t }: { lifecycle: WorkflowLifecycle; onOpen: (mode: WorkflowDrawerMode) => void; t: TFunction }) {
   return (
-    <AppCard className="gap-2 border-border/45 bg-card/45 py-3 shadow-none">
-      <CardContent className="space-y-2 px-3">
+    <AppCard className="h-full gap-2 border-border/45 bg-card/45 py-3 shadow-none">
+      <CardContent className="flex h-full flex-col justify-between gap-1 px-3">
         <span className="block text-xs uppercase tracking-[0.16em] text-muted-foreground">{t('common.workflow')}</span>
         <div className="flex min-h-8 items-center justify-between gap-3">
           <StatusBadge value={lifecycle.status} label={displayStatus(t, lifecycle.status)} />

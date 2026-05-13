@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, io::{BufRead, BufReader}};
 
 use gold_band::acp::client;
 use gold_band::acp::events::{append_ui_event, current_timestamp, permission_decision_event};
@@ -17,7 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::i18n::Translator;
 use crate::state::DesktopState;
 use crate::view_models::{
-    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionVm, AppBootstrapVm, ContentVm,
+    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppBootstrapVm, ContentVm,
     LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
     RunSummaryVm, TaskDetailVm, TaskListVm, WorkflowVm, acp_raw_frame_page_vm,
     acp_session_vm, bootstrap_vm, log_page_vm, preferences_vm, round_detail_vm, run_detail_vm,
@@ -207,9 +207,10 @@ pub fn get_acp_session(
     round_id: String,
     node_id: String,
     attempt_id: String,
+    query: Option<AcpSessionQueryInput>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id).map_err(command_error)
+    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id, query).map_err(command_error)
 }
 
 #[tauri::command]
@@ -248,7 +249,7 @@ pub async fn send_acp_prompt(
             continue_ref,
         )
         .map_err(command_error)?;
-        acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id)
+        acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id, None)
             .map_err(command_error)
     })
     .await
@@ -287,22 +288,22 @@ pub fn respond_acp_permission(
         &permission_decision_event(seq, request_id, option_id),
     )
     .map_err(command_error)?;
-    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id).map_err(command_error)
+    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id, None).map_err(command_error)
 }
 
 fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
     if !path.exists() {
         return 1;
     }
-    std::fs::read_to_string(path.as_std_path())
-        .map(|content| {
-            content
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count() as u64
-                + 1
-        })
-        .unwrap_or(1)
+    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+        return 1;
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .filter(|line| !line.trim().is_empty())
+        .count() as u64
+        + 1
 }
 
 #[tauri::command]
@@ -322,7 +323,7 @@ pub fn cancel_acp_session(
     gold_band::storage::ensure_parent_dir(&marker).map_err(command_error)?;
     std::fs::write(marker.as_std_path(), current_timestamp())
         .map_err(|error| command_error(error.into()))?;
-    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id).map_err(command_error)
+    acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id, None).map_err(command_error)
 }
 
 #[tauri::command]

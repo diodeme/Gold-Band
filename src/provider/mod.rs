@@ -1,4 +1,5 @@
 use crate::acp::client;
+use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
 use crate::config::{AcpAdapterConfig, RuntimeConfig};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
@@ -193,15 +194,20 @@ impl ProviderAdapter for AcpProvider {
             })),
             open_command: None,
         });
-        let result_payload =
-            req.primary_artifact
-                .as_ref()
-                .map(|primary_artifact| ProviderResultPayload {
-                    primary_artifact: Some(PrimaryArtifactPayload {
-                        name: primary_artifact.clone(),
-                        content: run.final_text,
-                    }),
-                });
+        let result_payload = req.primary_artifact.as_ref().map(|primary_artifact| {
+            let content = if artifact_uses_json_output(primary_artifact) {
+                json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
+                    .unwrap_or_else(|| run.final_text.clone())
+            } else {
+                run.final_text.clone()
+            };
+            ProviderResultPayload {
+                primary_artifact: Some(PrimaryArtifactPayload {
+                    name: primary_artifact.clone(),
+                    content,
+                }),
+            }
+        });
         Ok(ProviderRunResult {
             status,
             exit_code: None,

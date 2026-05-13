@@ -3,6 +3,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
+import { isRunStoppable } from '@/lib/status';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
@@ -19,6 +20,8 @@ interface RunDetailPageProps {
 
 export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinueRun, onRetryRun, onKillRun }: RunDetailPageProps) {
   if (!vm) return <Page><EmptyState>Loading…</EmptyState></Page>;
+  const canStopRun = isRunStoppable(vm.run.status);
+
   return (
     <Page className="space-y-6 p-8">
       <PageHeader
@@ -29,7 +32,7 @@ export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinue
           <>
             <Button variant="outline" disabled={busy || !vm.run.resumable} onClick={() => onContinueRun(taskId, vm.run.id)}>{labels.continueRun}</Button>
             <Button variant="outline" disabled={busy} onClick={() => onRetryRun(taskId, vm.run.id)}>{labels.retryRun}</Button>
-            <Button variant="destructive" disabled={busy || vm.run.outcome === 'killed'} onClick={() => onKillRun(taskId, vm.run.id)}>{labels.stopRun}</Button>
+            <Button variant="destructive" disabled={busy || !canStopRun} onClick={() => onKillRun(taskId, vm.run.id)}>{labels.stopRun}</Button>
           </>
         )}
       />

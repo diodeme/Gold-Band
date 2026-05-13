@@ -101,6 +101,7 @@ const mockNodeDetail: NodeDetailVm = {
     restored: true,
     stopReason: null,
     diagnostics: { rawFrameCount: 18, eventCount: 7, errorCount: 0, lastError: null },
+    eventPage: { loadedCount: 5, total: 7, oldestSeq: 1, newestSeq: 5, hasOlder: false, hasNewer: false },
     pendingPermissions: [
       {
         requestId: 'perm-001',

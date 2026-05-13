@@ -170,10 +170,26 @@ export interface AcpSessionVm {
   stopReason?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
+  eventPage: AcpEventPageVm;
   pendingPermissions: AcpPermissionRequestVm[];
   availableCommands?: unknown[] | null;
   usage?: unknown | null;
   diagnostics: AcpDiagnosticsVm;
+}
+
+export interface AcpSessionQueryInput {
+  beforeSeq?: number;
+  afterSeq?: number;
+  eventLimit?: number;
+}
+
+export interface AcpEventPageVm {
+  loadedCount: number;
+  total: number;
+  oldestSeq?: number | null;
+  newestSeq?: number | null;
+  hasOlder: boolean;
+  hasNewer: boolean;
 }
 
 export interface AcpSessionConfigVm {

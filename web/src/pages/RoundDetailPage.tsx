@@ -21,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, MoreVertical, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatCurrentNode } from '@/lib/nodes';
+import { normalizeTone } from '@/lib/status';
 
 interface RoundDetailPageProps {
   vm: RoundDetailVm | null;
@@ -63,6 +64,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, onRefr
 
   const requirement = fullRequirementText(vm.requirement, null, t('common.empty'));
   const roundDisplayStatus = vm.round.outcome ?? vm.round.status;
+  const roundTerminal = Boolean(vm.round.outcome) || ['success', 'danger'].includes(normalizeTone(vm.round.status));
   const currentNode = formatCurrentNode(t, vm.graph, vm.round.currentNode ?? vm.run.currentNode);
   const nodeDetail = vm.selectedNodeDetail;
 
@@ -119,7 +121,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, onRefr
           <MetricsBar className="lg:grid-cols-4 xl:grid-cols-4">
             <Metric label={t('roundDetail.trigger')} value={displayStatus(t, vm.round.trigger)} compact />
             <Metric label={t('roundDetail.repairLoopsUsed')} value={vm.round.repairLoopsUsed} compact />
-            <Metric label={t('common.currentNode')} value={currentNode} tooltip={currentNode} compact />
+            <Metric label={roundTerminal ? t('roundDetail.finalNode') : t('common.currentNode')} value={currentNode} tooltip={currentNode} compact />
             <Metric label={t('common.outcome')} value={<StatusBadge value={roundDisplayStatus} label={displayStatus(t, roundDisplayStatus)} />} compact />
           </MetricsBar>
         )}

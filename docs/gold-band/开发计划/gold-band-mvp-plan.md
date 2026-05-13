@@ -93,6 +93,9 @@
 - 2026-05-10：任务编排三页统一为后台每 10 秒静默刷新；Workflow 与 Round 详情补充手动刷新按钮；Workflow 顶部四张 stats 卡片对齐；Round 运行状态从标题旁移动到顶部结果卡；Workflow / Round 工作图节点与 Round 顶部当前节点卡都支持“前部展示 + 尾部截断 + hover 全文”。
 - 2026-05-10：Workflow 运行记录改为单展开 accordion，同一时间最多展开一个 run，降低多条 run 同时展开时的视觉噪音；工作空间选择页主视觉图标改为复用 Gold Band logo；Run 分组行操作列没有操作时不再显示横线占位。
 - 2026-05-11：Workflow 运行中 Run 的操作列提供查看与停止；停止会终止当前 provider 进程树并把 run 终止为 killed；最新 Run 未终止时禁用新建 Run，避免同一任务并发启动多个 workflow。
+- 2026-05-13：Workflow paused Run 仍视为可停止的非终态，运行记录操作列需要展示停止；存在当前 round 时保留查看入口，completed 等终态不展示停止。
+- 2026-05-13：Round 详情工作图节点主视觉改为终态优先展示 outcome，避免 `completed + failure` 显示绿色完成；顶部指标在终态 round 中将“当前节点”改为“结束节点”。
+- 2026-05-13：ACP 会话审批等待卡片收敛为信息行 + 按钮行，按钮较多时不挤压标题；等待用户权限决策时停止当前步骤计时，并将 composer 收为紧凑等待状态。
 - 2026-05-11：Round 详情工作图交互破坏式升级：单击节点打开结构化详情抽屉，节点资源进入二级抽屉，会话按 `progress.events` / `raw.stream` 分离，日志从会话中独立为分页日志抽屉；默认只检索最近约 1000 条热日志，全量日志保留 30 天。
 - 2026-05-12：ACP-first 重构决策：废弃新增自研 `progress.events.jsonl` 精细事件模型，后续通过 ACP 调用 agent/provider，直接使用 ACP 统一后的 session events 在 Round 节点会话详情中展示原始 agent 过程；legacy Claude Code direct / raw stream 仅作为 fallback/debug，不再驱动新的可视化协议。
 - 2026-05-12：Round 详情工作图节点状态视觉收敛：未选中节点保持白底卡片，当前节点仅保留随主题联动的状态徽标，暂停态显示“已暂停”而不是运行中，只有用户明确选中节点才使用卡片级蓝色边框 / 浅蓝底 primary 强调，避免当前态被误解为选中态。
@@ -472,19 +475,78 @@ attempt-001/
 
 ## MVP 验证标准
 
-至少覆盖以下 4 条用例：
+### 测试目标
 
-### 用例 1：`worker -> exec -> verify -> success`
-- run 最终 `completed + success`
+将本节作为 MVP 的主测试计划入口，用于验证 `worker -> exec -> verify` 主链路、repair loop、acceptance loop 与异常恢复机制是否形成可重复执行的闭环。
 
-### 用例 2：`exec failure -> repair -> exec success -> verify success`
-- repair loop 生效
+### 测试范围
 
-### 用例 3：`verify failure -> auto_loop -> new round -> success`
-- acceptance loop 生效
+- task / workflow 读取与运行初始化。
+- `worker` 节点执行与 artifact 落盘。
+- `exec-plan` 产出后的 `exec` 执行。
+- `verify` 执行与 run 最终状态收敛。
+- `continue` / `retry` / `open-session` 等恢复入口。
+- run 状态、artifact、session 等 CLI 检查能力。
 
-### 用例 4：`worker invalid / interrupted`
-- `run continue` / `run retry` 行为符合文档
+### 不在本次范围
+
+- 不验证超出 MVP 边界的高级调度、并发编排或额外 provider 扩展。
+- 不用单一 happy path 代替异常恢复验证。
+- 不用只看日志输出代替 run 状态、artifact 和会话状态检查。
+
+### 测试前置条件
+
+- 准备可运行的最小 task / workflow 示例。
+- provider、运行命令与必要环境变量已就绪。
+- runtime layout 可正常创建 run、round、artifact 和状态文件。
+- 测试执行者可使用 `run start`、`run status`、`continue`、`retry`、`open-session` 等入口。
+
+### 核心测试场景
+
+#### 场景 1：`worker -> exec -> verify -> success`
+
+- 前置条件：`worker` 能生成合法 `exec-plan`，`exec` 与 `verify` 均可成功执行。
+- 操作步骤：启动 run，等待 `worker`、`exec`、`verify` 依次完成。
+- 预期结果：run 最终状态为 `completed + success`。
+- 关键产物或状态：worker artifact、exec 结果、verify 结果、最终 run 状态均已落盘且可查看。
+- 失败判定：任一阶段未产出预期文件、状态未收敛或最终状态不是 `completed + success`。
+
+#### 场景 2：`exec failure -> repair -> exec success -> verify success`
+
+- 前置条件：首次 `exec` 会失败，系统允许进入 repair loop。
+- 操作步骤：启动 run，触发 `exec` 失败，执行修复后重新运行 `exec`，再进入 `verify`。
+- 预期结果：repair loop 生效，后续 `exec` 与 `verify` 成功，run 最终成功结束。
+- 关键产物或状态：失败原因、修复后的新输入、重试记录与最终成功结果均可追踪。
+- 失败判定：`exec` 失败后无法进入修复流程，或修复后状态、产物、轮次记录不一致。
+
+#### 场景 3：`verify failure -> auto_loop -> new round -> success`
+
+- 前置条件：首次 `verify` 返回失败，系统允许进入 acceptance loop。
+- 操作步骤：启动 run，执行到 `verify` 失败，触发自动 loop，进入新 round 后再次完成主链路。
+- 预期结果：acceptance loop 生效，新 round 可以继续推进，最终收敛为成功状态。
+- 关键产物或状态：verify 失败原因、新 round 状态迁移、后续 round 产物与最终结果均清晰可追踪。
+- 失败判定：`verify` 失败后未生成新的可执行 round，或 loop 行为与文档定义不一致。
+
+#### 场景 4：`worker invalid / interrupted`
+
+- 前置条件：`worker` 返回非法结果，或执行过程中被中断。
+- 操作步骤：启动 run，触发 `worker` 非法输出或中断，再执行 `run continue` / `run retry`。
+- 预期结果：恢复入口行为符合文档，能够区分继续执行与重新尝试的边界。
+- 关键产物或状态：中断前状态、恢复后的 run / round 状态、重试结果与会话入口均可检查。
+- 失败判定：恢复命令语义不清、状态被覆盖、产物丢失，或无法继续排查原因。
+
+### 验收通过标准
+
+- 上述 4 个场景全部至少成功验证一次。
+- 每个场景都能同时验证状态流转、artifact 落盘与 CLI 可观测性。
+- 异常场景必须能定位失败阶段，并能通过文档定义的恢复入口继续处理。
+- 不允许出现 run 最终状态与实际产物不一致的情况。
+
+### 结果记录方式
+
+- 记录每个场景的输入、执行步骤、最终状态与关键产物路径。
+- 记录失败场景的触发方式、恢复动作与最终结论。
+- 回归时至少重复执行上述 4 个核心场景。
 
 ---
 

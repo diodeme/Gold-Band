@@ -1,3 +1,5 @@
+use std::io::{BufRead, BufReader};
+
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -127,14 +129,14 @@ pub fn append_ui_event(path: &Utf8Path, event: &AcpUiEvent) -> Result<()> {
 }
 
 pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
-    std::fs::read_to_string(path.as_std_path())
-        .map(|content| {
-            content
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count() as u64
-        })
-        .unwrap_or(0)
+    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+        return 0;
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .filter(|line| !line.trim().is_empty())
+        .count() as u64
 }
 
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {

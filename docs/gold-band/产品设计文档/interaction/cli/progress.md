@@ -142,9 +142,10 @@ ACP 事件不能直接决定：
 
 1. 首选 `acp.events.jsonl` 构建会话详情。
 2. 若需要排障，展示 `acp.raw.jsonl`。
-3. 若 agent/provider 不支持 ACP，显示 fallback / debug 输出，但不新增 provider-specific UI 协议。
-4. `worker-ref.json` 提供打开外部 CLI / 原始 agent 会话的 handoff。
-5. `run.json` / `round.json` / `node.json` 用于确认 canonical 状态。
+3. 会话详情 composer 的状态以用户可感知阶段为准：调起 ACP 到用户消息写入前是发送中且不计时；用户消息写入到首个非用户帧前是处理中并计时；首帧后按思考、工具调用或回复生成继续计时；plan 决策权限若提供继续规划选项，composer 保持可输入但停止处理中计时，并用输入框 placeholder 引导用户自然语言修订计划。
+4. 若 agent/provider 不支持 ACP，显示 fallback / debug 输出，但不新增 provider-specific UI 协议。
+5. `worker-ref.json` 提供打开外部 CLI / 原始 agent 会话的 handoff。
+6. `run.json` / `round.json` / `node.json` 用于确认 canonical 状态。
 
 ## 6. 原 progress.events.jsonl 的废弃说明
 

@@ -1,6 +1,6 @@
 use crate::domain::CommandStatus;
-use anyhow::{Result, bail, ensure};
-use serde::{Deserialize, Serialize};
+use anyhow::{Result, anyhow, bail, ensure};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecPlanArtifact {
@@ -58,6 +58,84 @@ pub struct VerifyResultArtifact {
 pub enum VerifyStatus {
     Success,
     Failure,
+}
+
+const JSON_ARTIFACT_OUTPUT_SEARCH_LIMIT: usize = 5;
+
+pub fn artifact_uses_json_output(name: &str) -> bool {
+    matches!(name, "exec-plan" | "exec-result" | "verify-result")
+}
+
+pub fn json_artifact_text_from_outputs(outputs: &[String], fallback: &str) -> Option<String> {
+    outputs
+        .iter()
+        .rev()
+        .filter(|output| !output.trim().is_empty())
+        .take(JSON_ARTIFACT_OUTPUT_SEARCH_LIMIT)
+        .find_map(|output| json_object_text(output))
+        .or_else(|| json_object_text(fallback))
+}
+
+pub fn parse_json_artifact<T: DeserializeOwned>(content: &str) -> Result<T> {
+    match serde_json::from_str(content) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            let json = json_object_text(content)
+                .ok_or_else(|| anyhow!("failed to parse JSON artifact: {first_error}"))?;
+            serde_json::from_str(&json).map_err(Into::into)
+        }
+    }
+}
+
+fn json_object_text(content: &str) -> Option<String> {
+    if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+        return Some(content.to_string());
+    }
+
+    let mut start = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut spans = Vec::new();
+
+    for (index, ch) in content.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start_index) = start.take() {
+                        spans.push((start_index, index + ch.len_utf8()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    spans.into_iter().rev().find_map(|(start, end)| {
+        let candidate = &content[start..end];
+        serde_json::from_str::<serde_json::Value>(candidate)
+            .ok()
+            .map(|_| candidate.to_string())
+    })
 }
 
 pub fn validate_exec_plan(plan: &ExecPlanArtifact) -> Result<()> {
@@ -185,4 +263,34 @@ pub fn validate_verify_result(result: &VerifyResultArtifact) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VerifyResultArtifact, json_artifact_text_from_outputs, parse_json_artifact};
+
+    #[test]
+    fn parses_json_artifact_from_text_with_preamble() {
+        let artifact: VerifyResultArtifact = parse_json_artifact(
+            r#"checking files...
+{"version":"0.1","status":"failure","summary":"missing","unmet_requirements":["missing class"],"validation_gaps":[]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(artifact.summary, "missing");
+    }
+
+    #[test]
+    fn selects_json_from_recent_output_segments() {
+        let outputs = vec![
+            "I will inspect files.".to_string(),
+            r#"{"version":"0.1","status":"failure","summary":"missing","unmet_requirements":["missing class"],"validation_gaps":[]}"#.to_string(),
+            "Ignored trailing explanation.".to_string(),
+        ];
+
+        let content = json_artifact_text_from_outputs(&outputs, "").unwrap();
+        let artifact: VerifyResultArtifact = parse_json_artifact(&content).unwrap();
+
+        assert_eq!(artifact.unmet_requirements, vec!["missing class"]);
+    }
 }

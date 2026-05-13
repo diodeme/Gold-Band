@@ -28,6 +28,7 @@ pub struct AcpPromptRun {
     pub adapter_display_name: String,
     pub stop_reason: Option<String>,
     pub final_text: String,
+    pub final_outputs: Vec<String>,
     pub restored: bool,
 }
 
@@ -41,6 +42,8 @@ struct AcpRuntime {
     seq: u64,
     session_id: Option<String>,
     final_text: String,
+    final_outputs: Vec<String>,
+    collecting_text_output: bool,
     suppress_session_updates: bool,
     models: Option<Value>,
     modes: Option<Value>,
@@ -78,6 +81,7 @@ pub fn run_prompt(
         adapter_display_name: runtime.adapter.display_name.clone(),
         stop_reason,
         final_text: runtime.final_text.clone(),
+        final_outputs: runtime.final_outputs.clone(),
         restored,
     };
     runtime.shutdown();
@@ -124,7 +128,7 @@ impl AcpRuntime {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("failed to capture ACP adapter stderr"))?;
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(1024);
         let raw_path = paths.raw.clone();
         let diagnostics_path = paths.diagnostics.clone();
         thread::spawn(move || {
@@ -167,7 +171,12 @@ impl AcpRuntime {
                 match line {
                     Ok(line) if line.trim().is_empty() => {}
                     Ok(line) => {
-                        let _ = append_diagnostic(&stderr_diagnostics_path, "info", line, None);
+                        let _ = append_diagnostic(
+                            &stderr_diagnostics_path,
+                            "info",
+                            truncate_text(line, 8_000),
+                            None,
+                        );
                     }
                     Err(err) => {
                         let _ = append_diagnostic(
@@ -192,6 +201,8 @@ impl AcpRuntime {
             seq,
             session_id: None,
             final_text: String::new(),
+            final_outputs: Vec::new(),
+            collecting_text_output: false,
             suppress_session_updates: false,
             models: None,
             modes: None,
@@ -364,9 +375,18 @@ impl AcpRuntime {
         self.seq += 1;
         for event in normalize_session_update(self.seq, session_id, &update) {
             if contributes_to_final_text(&event.kind) {
-                if let Some(content) = &event.content {
-                    self.final_text.push_str(content);
+                if !self.collecting_text_output {
+                    self.final_outputs.push(String::new());
+                    self.collecting_text_output = true;
                 }
+                if let Some(content) = &event.content {
+                    append_bounded(&mut self.final_text, content, 256_000);
+                    if let Some(output) = self.final_outputs.last_mut() {
+                        append_bounded(output, content, 64_000);
+                    }
+                }
+            } else {
+                self.collecting_text_output = false;
             }
             append_ui_event(&self.paths.events, &event)?;
         }
@@ -444,6 +464,28 @@ impl AcpRuntime {
 
 fn contributes_to_final_text(kind: &str) -> bool {
     kind == "textDelta"
+}
+
+fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
+    if target.chars().count() >= max_chars {
+        return;
+    }
+    let remaining = max_chars - target.chars().count();
+    if content.chars().count() <= remaining {
+        target.push_str(content);
+        return;
+    }
+    target.extend(content.chars().take(remaining));
+    target.push('…');
+}
+
+fn truncate_text(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn rpc_id_to_string(id: &Value) -> String {

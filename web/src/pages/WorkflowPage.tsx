@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { normalizeTone } from '@/lib/status';
+import { isRunStoppable, normalizeTone } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
 
 interface WorkflowPageProps {
@@ -268,6 +268,7 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun,
   const currentNode = formatCurrentNode(t, graph, group.run.currentNode);
   const pauseReason = group.run.pauseReason ? displayStatus(t, group.run.pauseReason) : null;
   const running = normalizeTone(group.run.status) === 'running';
+  const stoppable = isRunStoppable(group.run.status);
 
   return (
     <section className={cn('bg-background/20 transition-colors', expanded && 'bg-muted/15', running && 'workflow-run-active')}>
@@ -307,10 +308,14 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun,
         <HistoryCell label={t('workflow.currentRound')} value={group.run.currentRound ?? '-'} />
         <HistoryCell label={pauseReason ? t('workflow.pauseReason') : t('workflow.currentNode')} value={running ? <span className="inline-flex min-w-0 items-center gap-2"><span className="workflow-running-dot bg-gold-running" /> <span className="truncate">{currentNode}</span></span> : pauseReason ?? currentNode} title={pauseReason ?? currentNode} />
         <div className="flex min-w-0 justify-start lg:justify-end">
-          {running && group.run.currentRound ? (
+          {stoppable ? (
             <div className="inline-flex h-8 max-w-full items-center overflow-hidden rounded-lg border bg-background/75 shadow-sm">
-              <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs shadow-none" onClick={(event) => { event.stopPropagation(); onOpenRound(group.run.currentRound!); }}>{t('workflow.openRound')}</Button>
-              <span className="h-4 w-px bg-border" aria-hidden="true" />
+              {group.run.currentRound ? (
+                <>
+                  <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs shadow-none" onClick={(event) => { event.stopPropagation(); onOpenRound(group.run.currentRound!); }}>{t('workflow.openRound')}</Button>
+                  <span className="h-4 w-px bg-border" aria-hidden="true" />
+                </>
+              ) : null}
               <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); onKillRun(); }}>{t('common.stopRun')}</Button>
             </div>
           ) : null}

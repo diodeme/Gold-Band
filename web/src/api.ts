@@ -12,6 +12,7 @@ import {
 import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
+  AcpSessionQueryInput,
   AcpSessionVm,
   AppBootstrapVm,
   ContentVm,
@@ -224,8 +225,8 @@ export function getLogPage(query: LogQueryInput) {
   return command<LogPageVm>('get_log_page', { query }, mockLogPage(query));
 }
 
-export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null) {
-  return command<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId }, fallback ?? null);
+export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null) {
+  return command<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId, query }, fallback ?? null);
 }
 
 export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, fallback?: AcpSessionVm | null) {

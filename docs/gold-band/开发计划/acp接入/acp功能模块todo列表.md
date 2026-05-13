@@ -7,6 +7,7 @@
 - Round 节点详情的会话 Tab 已切换为 ACP Dialog / Chat UI，legacy progress/raw stream 不再作为主会话视图。
 - ACP Dialog / Chat UI 已接入 prompt-kit copy-in 组件：`ChatContainer`、`Message`、`PromptInput`、`Tool`、`ChainOfThought`。
 - 权限请求可落盘为 pending event，并通过 Tauri `respond_acp_permission` 写入 response 文件供 provider loop 恢复。
+- Plan 决策权限保留 composer 输入；用户提交自然语言反馈时自动选择继续规划并在当前 turn 完成后发送反馈。
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
 
@@ -222,7 +223,7 @@
 ### 主要任务
 
 - 使用 prompt-kit `PromptInput` 实现输入、发送、清空和等待态。
-- 点击发送后立即清空输入并乐观追加右侧用户气泡；`session/prompt` 请求中展示“发送中”，请求完成且消息已发出后等待首帧时切换为“处理中”，并保持 composer action 行与发送按钮间距。
+- 点击发送后立即清空输入并乐观追加右侧用户气泡；调起 ACP 到真实 `userTextDelta` 写入前展示“发送中”且不计时，真实用户消息写入后到首个非用户帧前切换为“处理中”并开始计时，首帧后按思考、工具调用或回复生成继续计时。
 - 将自由文本回答映射为下一次 `session/prompt`，继续会话只发送用户文本，不追加固定内部续聊说明；system prompt 仅在新建 ACP session 时通过 `_meta.systemPrompt.append` 注入。
 - 在 ACP client 发送前写入 synthetic `userTextDelta`，确保初始 prompt 与继续输入都可回放。
 - 在 permission pending、adapter disconnected、node not ready 时禁用发送。
@@ -553,7 +554,7 @@
 
 ### 目标
 
-验证 ACP-only provider、事件归一化和 Dialog / Chat UI 能组成完整闭环。
+验证 ACP-only provider、事件归一化和 Dialog / Chat UI 能组成完整闭环，并与主文档中的 MVP 测试计划保持一致。
 
 ### 输入
 
@@ -576,15 +577,31 @@
 - 验证用户通过 composer 继续会话。
 - 验证 raw diagnostics 可用。
 - 验证不需要 legacy CLI fallback。
+- 对齐 `docs/gold-band/开发计划/gold-band-mvp-plan.md` 中的总体验收口径。
 
 ### 不做什么
 
 - 不用只跑单元测试替代 UI 交互验证。
 - 不用 mock-only 结果证明真实 ACP adapter 可用。
+- 不在本模块重复维护一套独立的 MVP 总测试计划。
+
+### 测试计划对齐
+
+- 主测试计划以 `docs/gold-band/开发计划/gold-band-mvp-plan.md` 的 `## MVP 验证标准` 为准。
+- 本模块只补充 ACP 特有验证项，不重复定义通用的 `worker -> exec -> verify` 主链路标准。
+- 记录 ACP 验收结果时，需要同时关联主流程状态、ACP 会话状态与 UI 展示结果。
+
+### ACP 特有检查项
+
+- 能成功启动 ACP adapter，并完成 initialize 与 session 创建。
+- 用户能在 Gold Band 中发起、查看、继续 ACP 会话。
+- ACP 输入输出以 Dialog / Chat UI 呈现，且 text、thought、tool call、plan、permission、error 展示完整。
+- composer 可以继续发送消息并推动会话前进。
+- raw diagnostics 可用，便于排查事件归一化或渲染问题。
+- 全链路不依赖 Claude Code legacy CLI fallback。
 
 ### 验收标准
 
-- 用户能在 Gold Band 中发起、查看、继续 ACP 会话。
-- ACP 输入输出以 Dialog / Chat UI 呈现。
-- 工具调用、权限请求、计划和诊断信息结构化展示。
-- 全链路不依赖 Claude Code legacy CLI fallback。
+- 主文档中的 MVP 测试计划可作为总体验收依据。
+- ACP 特有检查项全部通过后，才视为 ACP 集成验收通过。
+- 若主链路成功但 ACP 会话展示、继续会话或诊断能力缺失，则本模块仍判定为未通过。

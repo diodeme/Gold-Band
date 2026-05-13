@@ -3,7 +3,7 @@ use camino::Utf8Path;
 
 use crate::artifacts::{
     ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, VerifyResultArtifact, VerifyStatus,
-    validate_exec_plan, validate_exec_result, validate_verify_result,
+    parse_json_artifact, validate_exec_plan, validate_exec_result, validate_verify_result,
 };
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{NodeDsl, ValidatedWorkflow};
@@ -232,13 +232,13 @@ pub(crate) fn finalize_ai_attempt(
                     match primary_artifact.name.as_str() {
                         "exec-plan" => {
                             let plan: ExecPlanArtifact =
-                                serde_json::from_str(&primary_artifact.content)?;
+                                parse_json_artifact(&primary_artifact.content)?;
                             validate_exec_plan(&plan)?;
                             write_json(&artifact_path, &plan)?;
                         }
                         "verify-result" => {
                             let verify: VerifyResultArtifact =
-                                serde_json::from_str(&primary_artifact.content)?;
+                                parse_json_artifact(&primary_artifact.content)?;
                             validate_verify_result(&verify)?;
                             write_json(&artifact_path, &verify)?;
                         }

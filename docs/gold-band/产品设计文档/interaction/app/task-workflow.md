@@ -131,8 +131,8 @@ Run 分组行规则：
 
 Run 分组行操作：
 - 点击整行或左侧箭头展开 / 收起
-- 运行中 Run 的操作列展示“查看”和“停止”；查看进入当前 round 详情，停止需要终止 provider 进程并将 run / round / 当前 node 置为 killed
-- 非运行态 Run 没有直接操作时，操作列保持空白
+- running / paused Run 的操作列展示“停止”；存在当前 round 时同时展示“查看”，查看进入当前 round 详情，停止需要终止 provider 进程并将 run / round / 当前 node 置为 killed
+- completed 等终态 Run 没有直接操作时，操作列保持空白
 
 Run 行只作为分组入口，不打开独立 run 详情页；恢复 run 不在该列表内作为常驻按钮展示。
 

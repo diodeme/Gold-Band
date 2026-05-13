@@ -41,6 +41,7 @@ type WorkflowNodeData = {
   mode: GraphMode;
   currentLabel: string;
   runningLabel: string;
+  displayStatusValue: string | null;
   statusLabel: string;
   artifactLabel: string;
   attachmentLabel: string;
@@ -238,6 +239,7 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((node) => {
     const layout = dagreGraph.node(node.id);
+    const displayStatusValue = graphNodeDisplayStatus(node, activeStatus);
     const active = matchesNodeId(node, activeNodeId) || (node.current && normalizeTone(node.status ?? node.outcome) === 'running');
     const running = active && (runningActiveNode || normalizeTone(node.status ?? node.outcome) === 'running');
     return {
@@ -255,7 +257,8 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
         mode,
         currentLabel: t('graph.current'),
         runningLabel: displayStatus(t, 'running'),
-        statusLabel: displayStatus(t, node.status ?? node.outcome ?? activeStatus),
+        displayStatusValue,
+        statusLabel: displayStatus(t, displayStatusValue),
         artifactLabel: t('common.artifacts'),
         attachmentLabel: t('common.attachments'),
       },
@@ -289,10 +292,20 @@ function matchesNodeId(node: GraphNodeVm, id?: string | null) {
   return Boolean(id && (node.id === id || node.nodeId === id));
 }
 
+function graphNodeDisplayStatus(node: GraphNodeVm, activeStatus?: string | null) {
+  const lifecycleStatus = node.status ?? activeStatus ?? null;
+  if (isProcessStatus(lifecycleStatus)) return lifecycleStatus;
+  return node.outcome ?? lifecycleStatus;
+}
+
+function isProcessStatus(status?: string | null) {
+  return ['running', 'in_progress', 'active', 'pending', 'paused', 'resumable'].includes(status?.toLowerCase() ?? '');
+}
+
 function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const { node, selected, active, running, mode, currentLabel, runningLabel, statusLabel, artifactLabel, attachmentLabel } = data;
-  const hasStatus = Boolean(node.status ?? node.outcome);
-  const tone = normalizeTone(node.status ?? node.outcome);
+  const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, statusLabel, artifactLabel, attachmentLabel } = data;
+  const hasStatus = Boolean(displayStatusValue);
+  const tone = normalizeTone(displayStatusValue);
   return (
     <div
       className={cn(
@@ -310,12 +323,12 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}
         </div>
-        {running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', node.status ? statusBadgeClass(node.status) : 'border-primary/35 bg-primary/10 text-primary')}>{node.status ? statusLabel : currentLabel}</Badge> : null}
+        {running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', displayStatusValue ? statusBadgeClass(displayStatusValue) : 'border-primary/35 bg-primary/10 text-primary')}>{displayStatusValue ? statusLabel : currentLabel}</Badge> : null}
       </div>
       <div className="flex min-h-0 flex-1 items-center gap-3 px-4 py-1">
         {hasStatus ? (
           <span aria-label={statusLabel} title={statusLabel} className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm', statusMarkClass(tone), running && 'workflow-running-mark')}>
-            {statusMark(node.status ?? node.outcome, tone)}
+            {statusMark(displayStatusValue, tone)}
           </span>
         ) : null}
         <div className="min-w-0">

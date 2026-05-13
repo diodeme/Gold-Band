@@ -117,39 +117,41 @@ const Tool = ({ toolPart, labels, defaultOpen = false, className, icon, onOpenCh
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="border-border data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down min-w-0 max-w-full overflow-hidden border-t">
-          <div className="min-w-0 max-w-full space-y-2 overflow-hidden bg-background/50 p-2.5">
-            {input && Object.keys(input).length > 0 ? (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">{labels.input}</h4>
-                <div className="grid min-w-0 max-w-full gap-2 sm:grid-cols-2">
-                  {Object.entries(input).map(([key, value]) => (
-                    <div key={key} className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 px-2.5 py-1.5 font-mono text-xs">
-                      <div className="text-muted-foreground mb-1 truncate">{key}</div>
-                      <div className="break-all text-foreground [overflow-wrap:anywhere]">{formatValue(value)}</div>
-                    </div>
-                  ))}
+          {isOpen ? (
+            <div className="min-w-0 max-w-full space-y-2 overflow-hidden bg-background/50 p-2.5">
+              {input && Object.keys(input).length > 0 ? (
+                <div>
+                  <h4 className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">{labels.input}</h4>
+                  <div className="grid min-w-0 max-w-full gap-2 sm:grid-cols-2">
+                    {Object.entries(input).map(([key, value]) => (
+                      <div key={key} className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 px-2.5 py-1.5 font-mono text-xs">
+                        <div className="text-muted-foreground mb-1 truncate">{key}</div>
+                        <div className="break-all text-foreground [overflow-wrap:anywhere]">{formatValue(value)}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
 
-            {output ? (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">{labels.output}</h4>
-                <div className="max-h-60 max-w-full overflow-auto rounded-lg border bg-background/70 p-2.5 font-mono text-xs">
-                  <pre className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{formatValue(output)}</pre>
+              {output ? (
+                <div>
+                  <h4 className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">{labels.output}</h4>
+                  <div className="max-h-60 max-w-full overflow-auto rounded-lg border bg-background/70 p-2.5 font-mono text-xs">
+                    <pre className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{formatValue(output)}</pre>
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
 
-            {state === "output-error" && toolPart.errorText ? (
-              <div>
-                <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-destructive">{labels.error}</h4>
-                <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-sm text-destructive break-words [overflow-wrap:anywhere]">
-                  {toolPart.errorText}
+              {state === "output-error" && toolPart.errorText ? (
+                <div>
+                  <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-destructive">{labels.error}</h4>
+                  <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-sm text-destructive break-words [overflow-wrap:anywhere]">
+                    {toolPart.errorText}
+                  </div>
                 </div>
-              </div>
-            ) : null}
-          </div>
+              ) : null}
+            </div>
+          ) : null}
         </CollapsibleContent>
       </Collapsible>
     </div>

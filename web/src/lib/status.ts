@@ -4,6 +4,11 @@ const runningTones = ['running', 'in_progress', 'active'];
 const successTones = ['completed', 'complete', 'success', 'succeeded', 'valid', 'passed'];
 const warningTones = ['warning', 'pending', 'paused', 'resumable', 'missing', 'missing-workflow', 'skipped'];
 const dangerTones = ['failed', 'failure', 'error', 'invalid', 'killed', 'cancelled', 'canceled'];
+const stoppableRunStatuses = ['running', 'paused'];
+
+export function isRunStoppable(status?: string | null) {
+  return stoppableRunStatuses.includes((status ?? '').toLowerCase());
+}
 
 export function normalizeTone(value?: string | null, explicitTone?: string | null) {
   const tone = (explicitTone ?? value ?? 'neutral').toLowerCase();

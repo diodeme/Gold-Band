@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io::{BufRead, BufReader, Read, Seek, SeekFrom}};
+use std::{collections::{HashMap, VecDeque}, fs, io::{BufRead, BufReader, Read, Seek, SeekFrom}};
 
 use anyhow::Result;
 use gold_band::app::{App, LogSource, TaskSummary};
@@ -213,10 +213,30 @@ pub struct AcpSessionVm {
     pub stop_reason: Option<String>,
     pub config: Option<AcpSessionConfigVm>,
     pub events: Vec<AcpUiEventVm>,
+    pub event_page: AcpEventPageVm,
     pub pending_permissions: Vec<AcpPermissionRequestVm>,
     pub available_commands: Option<Vec<serde_json::Value>>,
     pub usage: Option<serde_json::Value>,
     pub diagnostics: AcpDiagnosticsVm,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSessionQueryInput {
+    pub before_seq: Option<u64>,
+    pub after_seq: Option<u64>,
+    pub event_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpEventPageVm {
+    pub loaded_count: usize,
+    pub total: usize,
+    pub oldest_seq: Option<u64>,
+    pub newest_seq: Option<u64>,
+    pub has_older: bool,
+    pub has_newer: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -906,7 +926,7 @@ fn selected_node_detail_vm(
         has_progress_events: app.attempt_log_exists(task_id, run_id, round_id, node_id, &node.attempt_id, LogSource::ProgressEvents),
         has_raw_stream: app.attempt_log_exists(task_id, run_id, round_id, node_id, &node.attempt_id, LogSource::RawStream),
         has_worker_ref: worker_ref_exists,
-        acp_session: acp_session_vm(app, task_id, run_id, round_id, node_id, &node.attempt_id)?,
+        acp_session: acp_session_vm(app, task_id, run_id, round_id, node_id, &node.attempt_id, None)?,
     }))
 }
 
@@ -917,6 +937,7 @@ pub fn acp_session_vm(
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
+    query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
     let session_path = app.paths.acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
     let events_path = app.paths.acp_events_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -931,29 +952,15 @@ pub fn acp_session_vm(
     } else {
         serde_json::json!({})
     };
-    let events = read_jsonl_values(&events_path)?
-        .into_iter()
-        .filter_map(|value| serde_json::from_value::<AcpUiEventVm>(value).ok())
-        .collect::<Vec<_>>();
+    let event_scan = scan_acp_events(&events_path, query)?;
     let raw_frame_count = count_jsonl_lines(&raw_path)?;
-    let diagnostics_values = read_jsonl_values(&diagnostics_path)?;
-    let error_count = diagnostics_values
-        .iter()
-        .filter(|value| value.get("level").and_then(|item| item.as_str()) == Some("error"))
-        .count();
-    let last_error = diagnostics_values
-        .iter()
-        .rev()
-        .find(|value| value.get("level").and_then(|item| item.as_str()) == Some("error"))
-        .and_then(|value| value.get("message").and_then(|item| item.as_str()))
-        .map(str::to_string);
-    let available_commands = latest_available_commands(&events);
-    let usage = latest_usage(&events);
+    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
     let config = acp_session_config_vm(&session);
-    let pending_permissions = latest_permission_events(&events)
-        .into_iter()
+    let pending_permissions = event_scan
+        .latest_permission_events
+        .into_values()
         .filter(|event| event.status.as_deref() == Some("pending"))
-        .map(permission_vm_from_event)
+        .map(|event| permission_vm_from_event(&event))
         .collect::<Vec<_>>();
 
     Ok(Some(AcpSessionVm {
@@ -966,17 +973,294 @@ pub fn acp_session_vm(
         restored: session.get("restored").and_then(|value| value.as_bool()).unwrap_or(false),
         stop_reason: session.get("stopReason").and_then(|value| value.as_str()).map(str::to_string),
         config,
-        available_commands,
-        usage,
+        available_commands: event_scan.available_commands,
+        usage: event_scan.usage,
         diagnostics: AcpDiagnosticsVm {
             raw_frame_count,
-            event_count: events.len(),
-            error_count,
-            last_error,
+            event_count: event_scan.event_count,
+            error_count: diagnostics.error_count,
+            last_error: diagnostics.last_error,
         },
-        events,
+        events: event_scan.events,
+        event_page: event_scan.event_page,
         pending_permissions,
     }))
+}
+
+struct AcpEventScan {
+    events: Vec<AcpUiEventVm>,
+    event_page: AcpEventPageVm,
+    event_count: usize,
+    latest_permission_events: HashMap<String, AcpUiEventVm>,
+    available_commands: Option<Vec<serde_json::Value>>,
+    usage: Option<serde_json::Value>,
+}
+
+struct AcpDiagnosticsScan {
+    error_count: usize,
+    last_error: Option<String>,
+}
+
+fn scan_acp_events(path: &camino::Utf8Path, query: Option<AcpSessionQueryInput>) -> Result<AcpEventScan> {
+    const DEFAULT_EVENT_LIMIT: usize = 30;
+    const MIN_EVENT_LIMIT: usize = 10;
+    const MAX_EVENT_LIMIT: usize = 100;
+
+    let query = query.unwrap_or(AcpSessionQueryInput {
+        before_seq: None,
+        after_seq: None,
+        event_limit: None,
+    });
+    let limit = query
+        .event_limit
+        .unwrap_or(DEFAULT_EVENT_LIMIT)
+        .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
+    let before_seq = query.before_seq;
+    let after_seq = query.after_seq;
+    let mut window = VecDeque::<AcpUiEventVm>::with_capacity(limit + 1);
+    let mut after_window = Vec::<AcpUiEventVm>::with_capacity(limit);
+    let mut raw_event_count = 0usize;
+    let mut normalized_event_count = 0usize;
+    let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
+    let mut available_commands = None;
+    let mut usage = None;
+    let mut first_seq = None;
+    let mut last_seq = None;
+    let mut pending_delta: Option<AcpUiEventVm> = None;
+
+    if path.exists() {
+        let file = fs::File::open(path.as_std_path())?;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(mut event) = serde_json::from_str::<AcpUiEventVm>(&line) else {
+                continue;
+            };
+            raw_event_count += 1;
+            event.seq = raw_event_count as u64;
+            if event.kind == "permissionRequest" {
+                latest_permission_events.insert(event.id.clone(), event.clone());
+            }
+            if let Some(raw) = event.raw.as_ref() {
+                if is_session_update(&event, "available_commands_update") {
+                    available_commands = raw.get("availableCommands").and_then(|value| value.as_array()).cloned();
+                } else if is_session_update(&event, "usage_update") {
+                    usage = Some(compact_raw_value(raw.clone()));
+                }
+            }
+            if !is_session_timeline_event(&event) {
+                continue;
+            }
+            if merge_pending_delta(&mut pending_delta, &event) {
+                continue;
+            }
+            flush_normalized_event(
+                pending_delta.take(),
+                before_seq,
+                after_seq,
+                limit,
+                &mut window,
+                &mut after_window,
+                &mut normalized_event_count,
+                &mut first_seq,
+                &mut last_seq,
+            );
+            if is_delta_event(&event) {
+                pending_delta = Some(compact_event_for_session(event));
+            } else {
+                flush_normalized_event(
+                    Some(compact_event_for_session(event)),
+                    before_seq,
+                    after_seq,
+                    limit,
+                    &mut window,
+                    &mut after_window,
+                    &mut normalized_event_count,
+                    &mut first_seq,
+                    &mut last_seq,
+                );
+            }
+        }
+    }
+
+    flush_normalized_event(
+        pending_delta.take(),
+        before_seq,
+        after_seq,
+        limit,
+        &mut window,
+        &mut after_window,
+        &mut normalized_event_count,
+        &mut first_seq,
+        &mut last_seq,
+    );
+
+    let events = if after_seq.is_some() {
+        after_window
+    } else {
+        window.into_iter().collect::<Vec<_>>()
+    };
+    let oldest_seq = events.first().map(|event| event.seq);
+    let newest_seq = events.last().map(|event| event.seq);
+    let has_older = oldest_seq.zip(first_seq).is_some_and(|(oldest, first)| oldest > first);
+    let has_newer = newest_seq.zip(last_seq).is_some_and(|(newest, last)| newest < last);
+    let event_page = AcpEventPageVm {
+        loaded_count: events.len(),
+        total: normalized_event_count,
+        oldest_seq,
+        newest_seq,
+        has_older,
+        has_newer,
+    };
+
+    Ok(AcpEventScan {
+        events,
+        event_page,
+        event_count: raw_event_count,
+        latest_permission_events,
+        available_commands,
+        usage,
+    })
+}
+
+fn flush_normalized_event(
+    event: Option<AcpUiEventVm>,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
+    limit: usize,
+    window: &mut VecDeque<AcpUiEventVm>,
+    after_window: &mut Vec<AcpUiEventVm>,
+    normalized_event_count: &mut usize,
+    first_seq: &mut Option<u64>,
+    last_seq: &mut Option<u64>,
+) {
+    let Some(event) = event else {
+        return;
+    };
+    *normalized_event_count += 1;
+    first_seq.get_or_insert(event.seq);
+    *last_seq = Some(event.seq);
+    if let Some(cursor) = after_seq {
+        if event.seq > cursor && after_window.len() < limit {
+            after_window.push(event);
+        }
+        return;
+    }
+    if before_seq.is_some_and(|cursor| event.seq >= cursor) {
+        return;
+    }
+    window.push_back(event);
+    if window.len() > limit {
+        window.pop_front();
+    }
+}
+
+fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm) -> bool {
+    let Some(previous) = pending.as_mut() else {
+        return false;
+    };
+    if !is_delta_event(event) || previous.kind != event.kind {
+        return false;
+    }
+    previous.content = Some(format!("{}{}", previous.content.as_deref().unwrap_or_default(), event.content.as_deref().unwrap_or_default()));
+    previous.seq = event.seq;
+    previous.timestamp = event.timestamp.clone();
+    previous.status = event.status.clone().or_else(|| previous.status.clone());
+    previous.raw = event.raw.clone().or_else(|| previous.raw.clone()).map(compact_raw_value);
+    true
+}
+
+fn is_delta_event(event: &AcpUiEventVm) -> bool {
+    matches!(event.kind.as_str(), "textDelta" | "userTextDelta" | "thoughtDelta")
+}
+
+fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
+    if matches!(
+        event.kind.as_str(),
+        "availableCommands" | "usageUpdate" | "sessionInfo" | "modeUpdate" | "configUpdate" | "permissionRequest" | "rawDiagnostic"
+    ) {
+        return false;
+    }
+    let Some(raw) = event.raw.as_ref() else {
+        return true;
+    };
+    let session_update = raw.get("sessionUpdate").and_then(|value| value.as_str());
+    !matches!(
+        session_update,
+        Some("available_commands_update" | "usage_update" | "session_info_update" | "current_mode_update" | "config_option_update")
+    )
+}
+
+fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
+    let mut error_count = 0usize;
+    let mut last_error = None;
+    if !path.exists() {
+        return Ok(AcpDiagnosticsScan { error_count, last_error });
+    }
+    let file = fs::File::open(path.as_std_path())?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if value.get("level").and_then(|item| item.as_str()) == Some("error") {
+            error_count += 1;
+            if let Some(message) = value.get("message").and_then(|item| item.as_str()) {
+                last_error = Some(message.to_string());
+            }
+        }
+    }
+    Ok(AcpDiagnosticsScan { error_count, last_error })
+}
+
+fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    event.raw = event.raw.map(compact_raw_value);
+    event.content = event.content.map(|content| truncate_string(content, 64_000));
+    event.title = event.title.map(|title| truncate_string(title, 2_000));
+    event
+}
+
+fn compact_raw_value(value: serde_json::Value) -> serde_json::Value {
+    const MAX_RAW_CHARS: usize = 32_000;
+    let compacted = truncate_json_value(value, 8_000);
+    let Ok(serialized) = serde_json::to_string(&compacted) else {
+        return serde_json::json!({ "truncated": true });
+    };
+    if serialized.chars().count() <= MAX_RAW_CHARS {
+        return compacted;
+    }
+    let mut fallback = serde_json::Map::new();
+    for key in ["sessionUpdate", "title", "status", "requestId", "toolCallId", "toolCall", "rawInput", "locations", "entries", "source", "synthetic", "optimistic"] {
+        if let Some(item) = compacted.get(key) {
+            fallback.insert(key.to_string(), item.clone());
+        }
+    }
+    fallback.insert("truncated".to_string(), serde_json::Value::Bool(true));
+    fallback.insert("summary".to_string(), serde_json::Value::String(truncate_string(serialized, MAX_RAW_CHARS)));
+    serde_json::Value::Object(fallback)
+}
+
+fn truncate_json_value(value: serde_json::Value, max_string_chars: usize) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => serde_json::Value::String(truncate_string(value, max_string_chars)),
+        serde_json::Value::Array(values) => serde_json::Value::Array(values.into_iter().take(100).map(|value| truncate_json_value(value, max_string_chars)).collect()),
+        serde_json::Value::Object(values) => serde_json::Value::Object(values.into_iter().map(|(key, value)| (key, truncate_json_value(value, max_string_chars))).collect()),
+        value => value,
+    }
+}
+
+fn truncate_string(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("…");
+    truncated
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
@@ -1067,37 +1351,6 @@ fn mode_display_name(modes: Option<&serde_json::Value>, mode_id: &str) -> Option
         .map(str::to_string)
 }
 
-fn latest_available_commands(events: &[AcpUiEventVm]) -> Option<Vec<serde_json::Value>> {
-    events.iter().rev().find_map(|event| {
-        let raw = event.raw.as_ref()?;
-        if is_session_update(event, "available_commands_update") {
-            raw.get("availableCommands")?.as_array().cloned()
-        } else {
-            None
-        }
-    })
-}
-
-fn latest_usage(events: &[AcpUiEventVm]) -> Option<serde_json::Value> {
-    events.iter().rev().find_map(|event| {
-        event
-            .raw
-            .as_ref()
-            .filter(|_| is_session_update(event, "usage_update"))
-            .cloned()
-    })
-}
-
-fn latest_permission_events(events: &[AcpUiEventVm]) -> Vec<&AcpUiEventVm> {
-    let mut latest_by_request = HashMap::<&str, &AcpUiEventVm>::new();
-    for event in events {
-        if event.kind == "permissionRequest" {
-            latest_by_request.insert(event.id.as_str(), event);
-        }
-    }
-    latest_by_request.into_values().collect()
-}
-
 fn is_session_update(event: &AcpUiEventVm, session_update: &str) -> bool {
     event
         .raw
@@ -1108,7 +1361,7 @@ fn is_session_update(event: &AcpUiEventVm, session_update: &str) -> bool {
 }
 
 fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
-    let raw = event.raw.clone().unwrap_or_else(|| serde_json::json!({}));
+    let raw = event.raw.clone().map(compact_raw_value).unwrap_or_else(|| serde_json::json!({}));
     let options = raw
         .get("options")
         .and_then(|value| value.as_array())
@@ -1127,18 +1380,6 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
         options,
         raw,
     }
-}
-
-fn read_jsonl_values(path: &camino::Utf8Path) -> Result<Vec<serde_json::Value>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = fs::read_to_string(path.as_std_path())?;
-    Ok(content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .collect())
 }
 
 fn count_jsonl_lines(path: &camino::Utf8Path) -> Result<usize> {

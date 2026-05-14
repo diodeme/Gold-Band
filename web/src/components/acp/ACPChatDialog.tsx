@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, User } from 'lucide-react';
+import { Bot, ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, User, UsersRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtItem, ChainOfThoughtStep, ChainOfThoughtTrigger } from '@/components/prompt-kit/chain-of-thought';
+import { Markdown } from '@/components/prompt-kit/markdown';
 import { Message, MessageContent } from '@/components/prompt-kit/message';
 import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
@@ -29,9 +31,29 @@ type AcpProcessingKind = 'sending' | 'launching' | 'processing' | 'thinking' | '
 type AcpTimelineEvent = AcpUiEventVm & {
   startedAt?: string;
   endedAt?: string;
+  startedSeq?: number;
+  endedSeq?: number;
   durationMs?: number;
   optimistic?: boolean;
 };
+
+type AcpChildAgentGroup = {
+  kind: 'childAgentGroup';
+  id: string;
+  seq: number;
+  timestamp?: string;
+  startedSeq: number;
+  endedSeq?: number;
+  startedAt?: string;
+  endedAt?: string;
+  status?: string | null;
+  title?: string | null;
+  toolCallId?: string | null;
+  toolEvent: AcpTimelineEvent;
+  events: AcpTimelineItem[];
+};
+
+type AcpTimelineItem = AcpTimelineEvent | AcpChildAgentGroup;
 
 const EVENT_WINDOW_LIMIT = 360;
 const EVENT_PAGE_SIZE = 60;
@@ -59,7 +81,8 @@ function removedTimelineItemCount(before: AcpUiEventVm[], after: AcpUiEventVm[])
   return Math.max(0, timelineItemCount(before) - timelineItemCount(after));
 }
 
-function timelineEventKey(event: Pick<AcpTimelineEvent, 'kind' | 'id' | 'seq' | 'toolCallId'>) {
+function timelineEventKey(event: AcpTimelineItem) {
+  if (isChildAgentGroup(event)) return event.id;
   if ((event.kind === 'toolCall' || event.kind === 'toolCallUpdate') && event.toolCallId) return `tool-${event.toolCallId}`;
   return `${event.kind}-${event.id}-${event.seq}`;
 }
@@ -706,14 +729,14 @@ export function ACPSessionHeader({ session, rawActive, rawLoading, onToggleRaw }
   );
 }
 
-export function ACPMessageList({ timeline, sessionStatus, sending, onLayoutChange }: { timeline: AcpTimelineEvent[]; sessionStatus: string; sending: boolean; onLayoutChange?: () => void }) {
+export function ACPMessageList({ timeline, sessionStatus, sending, onLayoutChange }: { timeline: AcpTimelineItem[]; sessionStatus: string; sending: boolean; onLayoutChange?: () => void }) {
   const active = isSessionActive(sessionStatus) || sending;
 
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   return (
     <div className="min-w-0 space-y-4">
-      {timeline.map((event) => <ACPEventRenderer key={`${event.kind}-${event.id}-${event.seq}`} event={event} onLayoutChange={onLayoutChange} />)}
+      {timeline.map((event) => <ACPEventRenderer key={timelineEventKey(event)} event={event} onLayoutChange={onLayoutChange} />)}
     </div>
   );
 }
@@ -723,12 +746,90 @@ function EmptyAcpState() {
   return <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">{t('acp.noEvents')}</div>;
 }
 
-export function ACPEventRenderer({ event, onLayoutChange }: { event: AcpTimelineEvent; onLayoutChange?: () => void }) {
+export function ACPEventRenderer({ event, onLayoutChange }: { event: AcpTimelineItem; onLayoutChange?: () => void }) {
+  if (isChildAgentGroup(event)) return <AssistantTimelineRow><ChildAgentGroupCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
   if (event.kind === 'textDelta' || event.kind === 'userTextDelta') return <MessageBubble event={event} />;
   if (event.kind === 'thoughtDelta') return <AssistantTimelineRow><ThoughtBlock event={event} /></AssistantTimelineRow>;
   if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <AssistantTimelineRow><ToolCallCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
   if (event.kind === 'plan') return <AssistantTimelineRow><PlanBlock event={event} /></AssistantTimelineRow>;
   return null;
+}
+
+function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGroup; onLayoutChange?: () => void }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(!isTerminalToolStatus(event.status));
+  const input = agentToolInput(event.toolEvent);
+  const details = toolDetails(event.toolEvent);
+  const description = input.description ?? details.queryBlocks[0]?.value;
+  const statusTone = toolStatusTone(event.status);
+  const statusLabel = event.status ? displayStatus(t, event.status) : t('acp.subAgentRunning');
+  const promptPreview = input.prompt ? truncateText(input.prompt, 240) : null;
+  const output = details.output;
+
+  const statusClass = statusTone === 'danger'
+    ? 'bg-destructive/10 text-destructive'
+    : statusTone === 'success'
+      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+      : statusTone === 'running'
+        ? 'bg-primary/10 text-primary'
+        : 'bg-muted text-muted-foreground';
+
+  return (
+    <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-primary/20 bg-card/75 shadow-sm shadow-background/30">
+      <Collapsible open={open} onOpenChange={(next) => { setOpen(next); onLayoutChange?.(); }}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-none px-3 py-2 font-normal hover:bg-muted/20">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><UsersRound className="size-4" /></span>
+              <span className="min-w-0 flex-1 truncate text-left text-sm">
+                <span className="font-semibold text-foreground">{t('acp.subAgent')}</span>
+                {input.subagentType ? <span className="ml-2 font-mono text-xs text-muted-foreground">{input.subagentType}</span> : null}
+                {description ? <span className="ml-2 text-xs text-muted-foreground">{description}</span> : null}
+              </span>
+            </div>
+            <span className="ml-3 flex shrink-0 items-center gap-2">
+              {event.events.length > 0 ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t('acp.subAgentEvents', { count: event.events.length })}</span> : null}
+              <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', statusClass)}>{statusLabel}</span>
+              <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+            </span>
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="min-w-0 max-w-full overflow-hidden border-t border-border data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+          {open ? (
+            <div className="min-w-0 max-w-full space-y-3 overflow-hidden bg-background/50 p-3">
+              {input.subagentType || description || promptPreview ? (
+                <div className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
+                  {input.subagentType ? <ChildAgentMeta label={t('acp.subAgentType')} value={input.subagentType} /> : null}
+                  {description ? <ChildAgentMeta label={t('acp.subAgentDescription')} value={description} /> : null}
+                  {promptPreview ? <ChildAgentMeta className="sm:col-span-2" label={t('acp.subAgentPrompt')} value={promptPreview} /> : null}
+                </div>
+              ) : null}
+              {event.events.length > 0 ? (
+                <div className="min-w-0 max-w-full space-y-3 overflow-hidden rounded-lg border border-border/60 bg-muted/10 p-3">
+                  {event.events.map((child) => <ACPEventRenderer key={timelineEventKey(child)} event={child} onLayoutChange={onLayoutChange} />)}
+                </div>
+              ) : null}
+              {output ? (
+                <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 p-2.5 text-xs">
+                  <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{t('acp.subAgentResult')}</div>
+                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground [overflow-wrap:anywhere]">{formatToolValue(output)}</pre>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+function ChildAgentMeta({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <div className={cn('min-w-0 overflow-hidden rounded-lg border bg-background/70 px-2.5 py-1.5', className)}>
+      <div className="mb-1 truncate text-muted-foreground">{label}</div>
+      <div className="break-words text-foreground [overflow-wrap:anywhere]">{value}</div>
+    </div>
+  );
 }
 
 function AssistantTimelineRow({ children }: { children: React.ReactNode }) {
@@ -778,11 +879,11 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
       {!isUser ? <MessageAvatar tone="assistant" /> : null}
       <div className={cn('min-w-0 max-w-[82%] space-y-1', isUser && 'items-end')}>
         <MessageContent className={cn(
-          'whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]',
-          isUser ? 'rounded-br-md bg-primary text-primary-foreground' : 'rounded-bl-md border bg-card text-card-foreground',
+          'rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]',
+          isUser ? 'whitespace-pre-wrap rounded-br-md bg-primary text-primary-foreground' : 'rounded-bl-md border bg-card text-card-foreground',
           failed && 'border border-destructive/40 bg-destructive/10 text-destructive',
         )}>
-          {event.content}
+          {isUser ? event.content : <Markdown>{event.content ?? ''}</Markdown>}
         </MessageContent>
         {event.optimistic || failed ? (
           <div className={cn('flex px-1 text-xs text-muted-foreground', isUser && 'justify-end text-right')}>
@@ -1087,6 +1188,41 @@ function isGoldBandUserPrompt(event: AcpUiEventVm) {
   return event.kind === 'userTextDelta' && rawObject(event.raw)?.source === 'goldBandPrompt';
 }
 
+function isChildAgentGroup(event: AcpTimelineItem): event is AcpChildAgentGroup {
+  return event.kind === 'childAgentGroup';
+}
+
+function isAgentToolCall(event: AcpTimelineEvent) {
+  if (event.kind !== 'toolCall' && event.kind !== 'toolCallUpdate') return false;
+  const name = toolDetails(event).name?.trim().toLowerCase();
+  if (name === 'agent') return true;
+  if (name !== 'task') return false;
+  const input = agentToolInput(event);
+  return Boolean(input.prompt || input.description || input.subagentType);
+}
+
+function isTerminalToolStatus(status?: string | null) {
+  return ['completed', 'success', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'].includes(status?.toLowerCase() ?? '');
+}
+
+function agentToolInput(event: AcpTimelineEvent) {
+  const raw = rawObject(event.raw);
+  const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
+  const rawInput = rawObject(toolCall?.rawInput) ?? rawObject(raw?.rawInput);
+  return {
+    subagentType: stringValue(rawInput?.subagent_type) ?? stringValue(rawInput?.subagentType),
+    description: stringValue(rawInput?.description),
+    prompt: stringValue(rawInput?.prompt),
+  };
+}
+
+function parentToolUseId(event: AcpTimelineEvent) {
+  const raw = rawObject(event.raw);
+  const meta = rawObject(raw?._meta);
+  const claudeCode = rawObject(meta?.claudeCode);
+  return stringValue(claudeCode?.parentToolUseId);
+}
+
 function isResponseTimingEvent(event: AcpUiEventVm) {
   return event.kind !== 'userTextDelta';
 }
@@ -1100,9 +1236,10 @@ function isSessionActive(status?: string | null) {
   return ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(status?.toLowerCase() ?? '');
 }
 
-function processingKindFromTimeline(event: AcpTimelineEvent | null, sending: boolean): AcpProcessingKind {
+function processingKindFromTimeline(event: AcpTimelineItem | null, sending: boolean): AcpProcessingKind {
   if (sending) return 'sending';
   if (!event) return 'launching';
+  if (isChildAgentGroup(event)) return processingKindFromTimeline(event.events.at(-1) ?? event.toolEvent, sending);
   if (event.kind === 'thoughtDelta') return 'thinking';
   if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return 'tool';
   if (event.kind === 'textDelta') return 'responding';
@@ -1126,13 +1263,20 @@ function findPlanInterventionOption(request: AcpPermissionRequestVm) {
   }) ?? null;
 }
 
-function buildAcpTimeline(events: AcpUiEventVm[]) {
+function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
+  return groupChildAgentTimeline(buildFlatAcpTimeline(events));
+}
+
+function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
   const timeline: AcpTimelineEvent[] = [];
   const toolIndex = new Map<string, AcpTimelineEvent>();
   for (const event of events) {
     if (!isRenderableEvent(event)) continue;
     const previous = timeline[timeline.length - 1];
     if (event.kind === 'userTextDelta' && previous?.kind === 'userTextDelta' && sameText(previous.content, event.content)) {
+      previous.seq = event.seq;
+      previous.endedSeq = event.seq;
+      previous.endedAt = event.timestamp;
       previous.status = event.status ?? previous.status;
       previous.raw = mergeRaw(previous.raw, event.raw);
       previous.optimistic = previous.optimistic || isOptimisticEvent(event);
@@ -1142,6 +1286,7 @@ function buildAcpTimeline(events: AcpUiEventVm[]) {
       if (isSameDeltaStream(previous, event)) {
         previous.content = event.content ?? previous.content;
         previous.seq = event.seq;
+        previous.endedSeq = event.seq;
         previous.endedAt = event.timestamp;
         previous.status = event.status ?? previous.status;
         previous.raw = mergeRaw(previous.raw, event.raw);
@@ -1150,6 +1295,7 @@ function buildAcpTimeline(events: AcpUiEventVm[]) {
       }
       previous.content = `${previous.content ?? ''}${event.content ?? ''}`;
       previous.seq = event.seq;
+      previous.endedSeq = event.seq;
       previous.endedAt = event.timestamp;
       previous.raw = event.raw;
       continue;
@@ -1159,6 +1305,7 @@ function buildAcpTimeline(events: AcpUiEventVm[]) {
       if (existing) {
         existing.kind = 'toolCall';
         existing.seq = event.seq;
+        existing.endedSeq = event.seq;
         existing.endedAt = event.timestamp;
         existing.title = event.title ?? existing.title;
         existing.status = event.status ?? existing.status;
@@ -1166,13 +1313,13 @@ function buildAcpTimeline(events: AcpUiEventVm[]) {
         existing.raw = mergeRaw(existing.raw, event.raw);
         continue;
       }
-      const copy = { ...event, kind: 'toolCall', startedAt: event.timestamp, endedAt: event.timestamp };
+      const copy: AcpTimelineEvent = { ...event, kind: 'toolCall', startedAt: event.timestamp, endedAt: event.timestamp, startedSeq: event.seq, endedSeq: event.seq };
       toolIndex.set(event.toolCallId, copy);
       timeline.push(copy);
       continue;
     }
     if (event.kind === 'thoughtDelta' && !event.content?.trim()) continue;
-    timeline.push({ ...event, startedAt: event.timestamp, endedAt: event.timestamp, optimistic: isOptimisticEvent(event) });
+    timeline.push({ ...event, startedAt: event.timestamp, endedAt: event.timestamp, startedSeq: event.seq, endedSeq: event.seq, optimistic: isOptimisticEvent(event) });
   }
   let nextTimestamp: number | null = null;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
@@ -1188,6 +1335,72 @@ function buildAcpTimeline(events: AcpUiEventVm[]) {
     if (currentTimestamp != null) nextTimestamp = currentTimestamp;
   }
   return timeline;
+}
+
+function groupChildAgentTimeline(events: AcpTimelineEvent[]): AcpTimelineItem[] {
+  const grouped: AcpTimelineItem[] = [];
+  const agentToolCallIds = new Set(events.filter(isAgentToolCall).map((event) => event.toolCallId).filter(Boolean));
+  const ownedChildKeys = new Set<string>();
+  const childrenByParent = new Map<string, AcpTimelineEvent[]>();
+
+  for (const event of events) {
+    const parentId = parentToolUseId(event);
+    if (!parentId || !agentToolCallIds.has(parentId)) continue;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(event);
+    childrenByParent.set(parentId, children);
+    ownedChildKeys.add(timelineEventKey(event));
+  }
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (ownedChildKeys.has(timelineEventKey(event))) continue;
+    if (!isAgentToolCall(event)) {
+      grouped.push(event);
+      continue;
+    }
+
+    const startSeq = event.startedSeq ?? event.seq;
+    const terminal = isTerminalToolStatus(event.status);
+    const endSeq = terminal ? event.endedSeq ?? event.seq : Number.POSITIVE_INFINITY;
+    const ownedChildren = event.toolCallId ? childrenByParent.get(event.toolCallId) ?? [] : [];
+    const children: AcpTimelineEvent[] = [...ownedChildren];
+    let cursor = index + 1;
+    let usedSequenceFallback = false;
+
+    if (children.length === 0) {
+      usedSequenceFallback = true;
+      while (cursor < events.length) {
+        const candidate = events[cursor];
+        const candidateStartSeq = candidate.startedSeq ?? candidate.seq;
+        if (ownedChildKeys.has(timelineEventKey(candidate))) break;
+        if (isGoldBandUserPrompt(candidate)) break;
+        if (candidateStartSeq <= startSeq) break;
+        if (candidateStartSeq >= endSeq) break;
+        if (isAgentToolCall(candidate)) break;
+        children.push(candidate);
+        cursor += 1;
+      }
+    }
+
+    grouped.push({
+      kind: 'childAgentGroup',
+      id: `child-agent-${event.toolCallId ?? event.id}-${startSeq}`,
+      seq: startSeq,
+      timestamp: event.startedAt ?? event.timestamp,
+      startedSeq: startSeq,
+      endedSeq: terminal ? endSeq : undefined,
+      startedAt: event.startedAt ?? event.timestamp,
+      endedAt: terminal ? event.endedAt : undefined,
+      status: event.status,
+      title: event.title,
+      toolCallId: event.toolCallId,
+      toolEvent: event,
+      events: groupChildAgentTimeline(children),
+    });
+    if (usedSequenceFallback) index = cursor - 1;
+  }
+  return grouped;
 }
 
 function isRenderableEvent(event: AcpUiEventVm) {
@@ -1221,7 +1434,18 @@ function mergeRaw(previous: unknown, next: unknown) {
   const previousObject = rawObject(previous);
   const nextObject = rawObject(next);
   if (!previousObject || !nextObject) return next ?? previous;
-  return { ...previousObject, ...nextObject };
+  const previousMeta = rawObject(previousObject._meta);
+  const nextMeta = rawObject(nextObject._meta);
+  const previousClaudeCode = rawObject(previousMeta?.claudeCode);
+  const nextClaudeCode = rawObject(nextMeta?.claudeCode);
+  const merged = { ...previousObject, ...nextObject };
+  if (previousMeta || nextMeta) {
+    merged._meta = { ...previousMeta, ...nextMeta };
+    if (previousClaudeCode || nextClaudeCode) {
+      (merged._meta as Record<string, unknown>).claudeCode = { ...previousClaudeCode, ...nextClaudeCode };
+    }
+  }
+  return merged;
 }
 
 function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
@@ -1362,6 +1586,18 @@ function cleanToolOutput(value: unknown): unknown {
     if (text) return text;
   }
   return value;
+}
+
+function formatToolValue(value: unknown) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
+function truncateText(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
 }
 
 function displayRawDirection(t: ReturnType<typeof useTranslation>['t'], direction?: string | null) {

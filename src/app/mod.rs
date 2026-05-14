@@ -18,6 +18,7 @@ use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus};
 use crate::dsl::{EdgeOutcome, WorkflowDsl, validate_workflow};
+use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, provider_capabilities,
     provider_from_config,
@@ -32,7 +33,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::process::Command as ProcessCommand;
 
 use self::ids::now_rfc3339_like;
 use self::orchestrator::{
@@ -53,28 +53,6 @@ fn tail_text(text: &str, limit: usize) -> String {
 
 fn logical_artifact_name(name: &str) -> &str {
     name.strip_suffix(".json").unwrap_or(name)
-}
-
-fn kill_process_tree(pid: u32) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let status = ProcessCommand::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status()?;
-        if !status.success() {
-            bail!("failed to kill provider process tree for pid {pid}");
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let status = ProcessCommand::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .status()?;
-        if !status.success() {
-            bail!("failed to kill provider process for pid {pid}");
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -194,8 +172,10 @@ impl App {
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
         let provider =
             provider_from_config(&config).expect("configured default provider must be supported");
+        let paths = GoldBandPaths::new(repo_root);
+        let _ = paths.write_project_manifest();
         Self {
-            paths: GoldBandPaths::new(repo_root),
+            paths,
             config,
             provider,
         }
@@ -210,8 +190,10 @@ impl App {
         config: RuntimeConfig,
         provider: Box<dyn ProviderAdapter>,
     ) -> Self {
+        let paths = GoldBandPaths::new(repo_root);
+        let _ = paths.write_project_manifest();
         Self {
-            paths: GoldBandPaths::new(repo_root),
+            paths,
             config,
             provider,
         }
@@ -706,8 +688,7 @@ impl App {
         };
         let pid_path = self
             .paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
-            .join("provider.pid");
+            .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
         let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) else {
             return;
         };
@@ -935,13 +916,25 @@ mod tests {
     use camino::Utf8PathBuf;
     use tempfile::tempdir;
 
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
     #[test]
     fn runtime_log_tail_reads_only_last_requested_lines() {
+        let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        std::fs::create_dir_all(repo_root.join(".gold-band/logs").as_std_path()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let app = App::new(repo_root);
+        std::fs::create_dir_all(app.paths.logs_dir().as_std_path()).unwrap();
         std::fs::write(
-            repo_root.join(".gold-band/logs/runtime.log").as_std_path(),
+            app.paths.runtime_log_file().as_std_path(),
             (1..=1000)
                 .map(|n| format!("line-{n}"))
                 .collect::<Vec<_>>()
@@ -949,24 +942,18 @@ mod tests {
         )
         .unwrap();
 
-        let app = App::new(repo_root);
         let tail = app.runtime_log_tail_show(3).unwrap().unwrap();
         assert_eq!(tail, "line-998\nline-999\nline-1000");
     }
 
     #[test]
     fn user_console_theme_is_persisted() {
-        static HOME_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-            std::sync::OnceLock::new();
-        let _home_guard = HOME_ENV_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap();
+        let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let home_dir = repo_root.join("fake-home");
-        std::fs::create_dir_all(home_dir.as_std_path()).unwrap();
-        unsafe { std::env::set_var("HOME", home_dir.as_str()) };
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
 
         let app = App::new(repo_root.clone());
         app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();

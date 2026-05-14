@@ -3,13 +3,14 @@
 ## 当前实现状态
 
 - 默认 provider 已切换为 `claude-acp`，新运行路径通过 ACP stdio adapter 发送 `initialize` / `session/new|load` / `session/prompt`。
-- attempt 目录新增 `acp.session.json`、`acp.events.jsonl`、`acp.raw.jsonl`、`acp.diagnostics.jsonl`。
+- user project runtime attempt 目录新增 `worker-ref.json`、`acp.session.json`、`acp.events.jsonl`、`acp.raw.jsonl`、`acp.diagnostics.jsonl`；ACP session id 统一由 `worker-ref.json` 管理，`acp.session.json` 只作为 UI 运行态快照；这些过程文件不写入项目工作树。
 - Round 节点详情的会话 Tab 已切换为 ACP Dialog / Chat UI，legacy progress/raw stream 不再作为主会话视图。
 - ACP Dialog / Chat UI 已接入 prompt-kit copy-in 组件：`ChatContainer`、`Message`、`PromptInput`、`Tool`、`ChainOfThought`。
 - 权限请求可落盘为 pending event，并通过 Tauri `respond_acp_permission` 写入 response 文件供 provider loop 恢复。
 - Plan 决策权限保留 composer 输入；用户提交自然语言反馈时自动选择继续规划并在当前 turn 完成后发送反馈。
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
+- ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。
 
 ## 设计原则
 
@@ -97,8 +98,11 @@
 - 根据 worker-ref 尝试 `session/load`。
 - 不可恢复时创建 `session/new`。
 - 将 PromptBundle 转为 ACP `session/prompt`。
-- 支持 cancel 与 session 结束状态记录。
-- 将 session id 写入 worker-ref。
+- 支持 cancel 与 session 结束状态记录：UI 写入取消标记，运行中的 ACP runtime 观察标记后优先发送 ACP cancel，超时后终止 adapter 进程树。
+- cancel 需要解锁 pending permission request，并写入 `cancelling` / `cancelled` / diagnostics，避免会话无限 running。
+- `session/new` 或 `session/load` 一拿到 session id 就立即写入当前 attempt 的 `worker-ref.json`，后续 `session/prompt` 只从 worker-ref 读取续接身份。
+- `acp.session.json` 只记录 UI 运行态快照，不再保存或承担 session id 权威来源。
+- ACP session、events、raw frames、diagnostics、permission、cancel、artifacts、attachments 和 logs 都属于 user project runtime 过程状态，不写入 `<repo>/.gold-band`。
 
 ### 不做什么
 
@@ -109,7 +113,9 @@
 
 - 新建和恢复 session 都能写入一致的 worker-ref。
 - prompt 完成后能记录 stop reason 与 session metadata。
-- cancel 能生成可诊断的结构化状态。
+- cancel 能生成可诊断的结构化状态，并最终让 session metadata 进入 `cancelled`。
+- Stop 能结束当前 adapter prompt；adapter 不响应 ACP cancel 时，有进程树终止兜底。
+- 取消期间 pending permission 不会继续阻塞 provider loop。
 
 ---
 
@@ -227,7 +233,8 @@
 - 将自由文本回答映射为下一次 `session/prompt`，继续会话只发送用户文本，不追加固定内部续聊说明；system prompt 仅在新建 ACP session 时通过 `_meta.systemPrompt.append` 注入。
 - 在 ACP client 发送前写入 synthetic `userTextDelta`，确保初始 prompt 与继续输入都可回放。
 - 在 permission pending、adapter disconnected、node not ready 时禁用发送。
-- 展示发送失败并允许重试。
+- 在 session active 时禁用普通发送并显示 Stop；关闭抽屉再进入同一节点会话后，仍按持久化 active status 继续轮询和渲染新事件。
+- 展示发送失败并允许重试；用户主动 Stop 不应误报为发送失败。
 
 ### 不做什么
 
@@ -238,6 +245,7 @@
 
 - agent 以消息提问后，用户能在 composer 中回答并继续会话。
 - composer 状态与 node/session 状态一致。
+- active 会话重进抽屉后继续接收并渲染新事件，且不会允许二次发送普通 prompt。
 
 ---
 
@@ -596,6 +604,7 @@
 - 能成功启动 ACP adapter，并完成 initialize 与 session 创建。
 - 用户能在 Gold Band 中发起、查看、继续 ACP 会话。
 - ACP 输入输出以 Dialog / Chat UI 呈现，且 text、thought、tool call、plan、permission、error 展示完整。
+- 实时轮询过程中的 text / thought delta 不重复拼接前缀；关闭会话抽屉后重新进入时，历史重建内容必须与实时流式内容一致。
 - composer 可以继续发送消息并推动会话前进。
 - raw diagnostics 可用，便于排查事件归一化或渲染问题。
 - 全链路不依赖 Claude Code legacy CLI fallback。

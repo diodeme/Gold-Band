@@ -1,11 +1,12 @@
 use std::{collections::{HashMap, VecDeque}, fs, io::{BufRead, BufReader, Read, Seek, SeekFrom}};
 
 use anyhow::Result;
+use gold_band::acp::permission::is_cancel_requested;
 use gold_band::app::{App, LogSource, TaskSummary};
 use gold_band::config::{DesktopFontPreference, DesktopLanguage, DesktopThemePreference};
 use gold_band::domain::{RunOutcome, RunStatus};
 use gold_band::dsl::{NodeDsl, WorkflowDsl};
-use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState};
+use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::i18n::Translator;
 use gold_band::storage::read_json;
@@ -952,24 +953,57 @@ pub fn acp_session_vm(
     } else {
         serde_json::json!({})
     };
+    let worker_ref_path = app.paths.worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
+    let worker_ref = if worker_ref_path.exists() {
+        read_json::<WorkerRefState>(&worker_ref_path).ok()
+    } else {
+        None
+    };
+    let continue_ref = worker_ref.as_ref().and_then(|state| state.continue_ref.as_ref());
     let event_scan = scan_acp_events(&events_path, query)?;
     let raw_frame_count = count_jsonl_lines(&raw_path)?;
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
     let config = acp_session_config_vm(&session);
-    let pending_permissions = event_scan
-        .latest_permission_events
-        .into_values()
-        .filter(|event| event.status.as_deref() == Some("pending"))
-        .map(|event| permission_vm_from_event(&event))
-        .collect::<Vec<_>>();
+    let metadata_status = session.get("status").and_then(|value| value.as_str()).unwrap_or("unknown");
+    let cancelling = is_cancel_requested(&app.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id))
+        && is_acp_session_active_status(metadata_status);
+    let status = if cancelling { "cancelling" } else { metadata_status }.to_string();
+    let pending_permissions = if cancelling {
+        Vec::new()
+    } else {
+        event_scan
+            .latest_permission_events
+            .into_values()
+            .filter(|event| event.status.as_deref() == Some("pending"))
+            .map(|event| permission_vm_from_event(&event))
+            .collect::<Vec<_>>()
+    };
 
     Ok(Some(AcpSessionVm {
-        session_id: session.get("sessionId").and_then(|value| value.as_str()).map(str::to_string),
-        provider: gold_band::domain::DEFAULT_PROVIDER.to_string(),
-        adapter_id: session.get("adapterId").and_then(|value| value.as_str()).map(str::to_string),
-        adapter_display_name: session.get("adapterDisplayName").and_then(|value| value.as_str()).map(str::to_string),
-        cwd: session.get("cwd").and_then(|value| value.as_str()).map(str::to_string),
-        status: session.get("status").and_then(|value| value.as_str()).unwrap_or("unknown").to_string(),
+        session_id: continue_ref
+            .and_then(|value| value.get("acpSessionId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        provider: worker_ref
+            .as_ref()
+            .map(|state| state.provider.clone())
+            .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string()),
+        adapter_id: continue_ref
+            .and_then(|value| value.get("adapterId"))
+            .and_then(|value| value.as_str())
+            .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
+            .map(str::to_string),
+        adapter_display_name: continue_ref
+            .and_then(|value| value.get("adapterDisplayName"))
+            .and_then(|value| value.as_str())
+            .or_else(|| session.get("adapterDisplayName").and_then(|value| value.as_str()))
+            .map(str::to_string),
+        cwd: continue_ref
+            .and_then(|value| value.get("cwd"))
+            .and_then(|value| value.as_str())
+            .or_else(|| session.get("cwd").and_then(|value| value.as_str()))
+            .map(str::to_string),
+        status,
         restored: session.get("restored").and_then(|value| value.as_bool()).unwrap_or(false),
         stop_reason: session.get("stopReason").and_then(|value| value.as_str()).map(str::to_string),
         config,
@@ -1261,6 +1295,13 @@ fn truncate_string(value: String, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars).collect::<String>();
     truncated.push_str("…");
     truncated
+}
+
+fn is_acp_session_active_status(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "pending" | "running" | "in_progress" | "sending" | "cancelling" | "cancel_requested"
+    )
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {

@@ -26,7 +26,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 
 基于这个方向，这轮系统日志设计为：
 
-- 在 repo 下新增系统日志目录：`<repo>/.gold-band/logs/`
+- 在 user project runtime 下新增系统日志目录：`~/.gold-band/projects/{project-id}/logs/`
 - 输出全局 debug 日志文件，例如：
   - `runtime.log`（当前活动日志）
   - `runtime.yyyy-mm-dd.log` 或按小时/日期滚动出来的归档文件
@@ -40,7 +40,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 为了贴近 logback 的体验，这轮建议至少实现：
 - 自动滚动（优先按日，必要时可加按小时）
 - 自动保留清理（例如只保留最近 N 天）
-- 日志目录集中在 `.gold-band/logs/`
+- 日志目录集中在 `~/.gold-band/projects/{project-id}/logs/`
 
 如果 tracing 现成 rolling appender 只能满足“按时间滚动”，而不能直接满足“按大小 + 历史清理”两者同时具备，那么这轮优先：
 1. 先用 tracing 生态落稳定的 rolling file 输出
@@ -205,12 +205,12 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
    - `cargo run -- run start task-001`
 2. 终端应立即看到 stderr 进度，而不是长时间无反馈
 3. 检查系统日志：
-   - `.gold-band/logs/runtime.log`
+   - `~/.gold-band/projects/{project-id}/logs/runtime.log`
 4. 检查 run 级文件：
-   - `.gold-band/tasks/task-001/runs/run-001/run-progress.json`
-   - `.gold-band/tasks/task-001/runs/run-001/events.jsonl`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/run-progress.json`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/events.jsonl`
 5. 检查 attempt 级 raw stream：
-   - `.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl`
 6. 若 run pause/fail：
    - 终端能看到关键状态
    - 文件里能追溯 provider failure / blocked 的上下文

@@ -76,12 +76,12 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+    let provider = RecordingProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
     std::fs::write(
         repo_root
@@ -91,16 +91,12 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/requirement.md")
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/workflow.json")
-            .as_std_path(),
+        app.paths.workflow_file(task_id).as_std_path(),
         r#"{
           "version": "0.1",
           "id": "dev-only",
@@ -125,15 +121,10 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         r#"{"version":"0.1","id":"task-001"}"#,
     )
     .unwrap();
-
-    let provider = RecordingProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
@@ -141,15 +132,22 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     let invocation_count = provider.invocations.lock().unwrap().len();
     assert_eq!(invocation_count, 1);
 
-    let run_state: RunState = gold_band::storage::read_json(
-        &repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json"),
-    )
-    .unwrap();
+    let run_state: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
     assert_eq!(run_state.id, "run-001");
 
-    let artifact_path = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts/exec-plan.json");
+    let artifact_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "dev",
+        "attempt-001",
+        "exec-plan",
+    );
     assert!(artifact_path.exists());
 
-    let worker_ref_path = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/worker-ref.json");
+    let worker_ref_path =
+        app.paths
+            .worker_ref_file(task_id, "run-001", "round-001", "dev", "attempt-001");
     assert!(worker_ref_path.exists());
 }

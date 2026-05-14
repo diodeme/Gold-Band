@@ -1,7 +1,0 @@
-{
-  "version": "0.1",
-  "status": "success",
-  "summary": "The web directory contains hello_world.py defining a Python class HelloWorld that returns and prints the string \"hello-world\".",
-  "unmet_requirements": [],
-  "validation_gaps": []
-}

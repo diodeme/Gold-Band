@@ -10,7 +10,6 @@ use crate::storage::{append_jsonl, write_json};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionMetadata {
-    pub session_id: Option<String>,
     pub adapter_id: String,
     pub adapter_display_name: String,
     pub cwd: String,
@@ -74,6 +73,7 @@ pub struct AcpAttemptPaths {
     pub events: Utf8PathBuf,
     pub raw: Utf8PathBuf,
     pub diagnostics: Utf8PathBuf,
+    pub provider_pid: Utf8PathBuf,
 }
 
 impl AcpAttemptPaths {
@@ -83,6 +83,7 @@ impl AcpAttemptPaths {
             events: attempt_dir.join("acp.events.jsonl"),
             raw: attempt_dir.join("acp.raw.jsonl"),
             diagnostics: attempt_dir.join("acp.diagnostics.jsonl"),
+            provider_pid: attempt_dir.join("provider.pid"),
             attempt_dir,
         }
     }

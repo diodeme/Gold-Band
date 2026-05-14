@@ -1,9 +1,0 @@
-{
-  "version": "0.1",
-  "status": "failure",
-  "summary": "The web directory contains a Python class in web/hello_world.py, but it outputs \"hello_world\" instead of the required exact string \"hello-world\".",
-  "unmet_requirements": [
-    "Python class output must be exactly \"hello-world\"; current implementation returns and prints \"hello_world\"."
-  ],
-  "validation_gaps": []
-}

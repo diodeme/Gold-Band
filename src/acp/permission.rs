@@ -39,6 +39,66 @@ pub fn permission_response_file(attempt_dir: &Utf8Path, request_id: &str) -> Utf
     ))
 }
 
+pub fn cancel_requested_file(attempt_dir: &Utf8Path) -> Utf8PathBuf {
+    attempt_dir.join("acp.cancel-requested")
+}
+
+pub fn request_cancel(attempt_dir: &Utf8Path, requested_at: String) -> Result<()> {
+    let path = cancel_requested_file(attempt_dir);
+    ensure_parent_dir(&path)?;
+    fs::write(path.as_std_path(), requested_at)?;
+    Ok(())
+}
+
+pub fn is_cancel_requested(attempt_dir: &Utf8Path) -> bool {
+    cancel_requested_file(attempt_dir).exists()
+}
+
+pub fn clear_cancel_request(attempt_dir: &Utf8Path) -> Result<()> {
+    let path = cancel_requested_file(attempt_dir);
+    if path.exists() {
+        fs::remove_file(path.as_std_path())?;
+    }
+    Ok(())
+}
+
+pub fn cancel_pending_permission_requests(
+    attempt_dir: &Utf8Path,
+    decided_at: String,
+) -> Result<()> {
+    let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with("acp.permission-request.") || !file_name.ends_with(".json") {
+            continue;
+        }
+        let Ok(path) = Utf8PathBuf::from_path_buf(path) else {
+            continue;
+        };
+        let Ok(pending) = read_json::<PendingPermissionState>(&path) else {
+            continue;
+        };
+        let response_path = permission_response_file(attempt_dir, &pending.request_id);
+        if response_path.exists() {
+            continue;
+        }
+        write_permission_response(
+            attempt_dir,
+            &pending.request_id,
+            None,
+            true,
+            decided_at.clone(),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn write_pending_permission(
     attempt_dir: &Utf8Path,
     request_id: &str,
@@ -86,6 +146,14 @@ pub fn wait_for_permission_response(
             let response = read_json(&path)?;
             let _ = fs::remove_file(path.as_std_path());
             return Ok(response);
+        }
+        if is_cancel_requested(attempt_dir) {
+            return Ok(PermissionResponseState {
+                request_id: request_id.to_string(),
+                option_id: None,
+                cancelled: true,
+                decided_at: crate::acp::events::current_timestamp(),
+            });
         }
         thread::sleep(Duration::from_millis(200));
     }

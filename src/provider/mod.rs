@@ -171,6 +171,7 @@ impl ProviderAdapter for AcpProvider {
             req.workspace_dir.clone(),
             req.attempt_dir.clone(),
             &prompt,
+            req.session_mode,
             req.continue_ref.clone(),
         )?;
         let status = match run.stop_reason.as_deref() {
@@ -178,22 +179,6 @@ impl ProviderAdapter for AcpProvider {
             Some("refusal") => ProviderRunStatus::Failure,
             _ => ProviderRunStatus::Success,
         };
-        let worker_ref_seed = Some(SessionRef {
-            provider: DEFAULT_PROVIDER.to_string(),
-            mode: req.session_mode,
-            supports_open_session: true,
-            supports_continue_session: true,
-            continue_ref: Some(serde_json::json!({
-                "acpSessionId": run.session_id,
-                "adapterId": run.adapter_id,
-                "adapterDisplayName": run.adapter_display_name,
-                "cwd": req.workspace_dir,
-                "sessionFile": req.attempt_dir.join("acp.session.json"),
-                "lastStopReason": run.stop_reason,
-                "restored": run.restored,
-            })),
-            open_command: None,
-        });
         let result_payload = req.primary_artifact.as_ref().map(|primary_artifact| {
             let content = if artifact_uses_json_output(primary_artifact) {
                 json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
@@ -212,7 +197,7 @@ impl ProviderAdapter for AcpProvider {
             status,
             exit_code: None,
             result_payload,
-            worker_ref_seed,
+            worker_ref_seed: None,
             stream_path: None,
         })
     }
@@ -383,19 +368,21 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::GoldBandPaths;
     use tempfile::tempdir;
 
     #[test]
     fn render_prompt_bundle_includes_verify_result_output_contract() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root.clone());
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::VerifyAcceptance,
             profile: Some("verifier".to_string()),
             requirement_path: None,
             requirement_text: Some("Check whether hello-world exists".to_string()),
             workspace_dir: repo_root.clone(),
-            attempt_dir: repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/accept/attempt-001"),
+            attempt_dir: paths.attempt_dir("task-001", "run-001", "round-001", "accept", "attempt-001"),
             primary_artifact: Some("verify-result".to_string()),
             task_instruction: Some("Evaluate whether the requirement is satisfied based only on the provided evidence and produce a verify-result.".to_string()),
             session_mode: SessionMode::New,
@@ -425,14 +412,19 @@ mod tests {
     fn render_prompt_bundle_includes_exec_plan_output_contract() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root.clone());
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             profile: Some("developer".to_string()),
             requirement_path: None,
             requirement_text: Some("Need an execution plan".to_string()),
             workspace_dir: repo_root.clone(),
-            attempt_dir: repo_root.join(
-                ".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
+            attempt_dir: paths.attempt_dir(
+                "task-001",
+                "run-001",
+                "round-001",
+                "dev",
+                "attempt-001",
             ),
             primary_artifact: Some("exec-plan".to_string()),
             task_instruction: Some("Create an exec plan".to_string()),

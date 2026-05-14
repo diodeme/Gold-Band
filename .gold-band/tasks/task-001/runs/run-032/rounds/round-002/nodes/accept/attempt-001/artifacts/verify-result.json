@@ -1,7 +1,0 @@
-{
-  "version": "0.1",
-  "status": "success",
-  "summary": "Requirement satisfied: .claude/hello_world.py contains a Python class HelloWorld with an output method that prints \"hello-world\".",
-  "unmet_requirements": [],
-  "validation_gaps": []
-}

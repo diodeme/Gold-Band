@@ -18,7 +18,7 @@
 - artifact 语义计算
 
 ### 2.2 由 runtime 落盘
-provider adapter 可以返回 `worker-ref` 原材料，但 canonical 的 `worker-ref.json` 应由 runtime 写入 attempt 目录。
+provider adapter 可以返回 `worker-ref` 原材料，但 canonical 的 `worker-ref.json` 应由 runtime 写入 user project runtime store 中的 attempt 目录，不写入项目工作树。
 
 ### 2.3 provider-specific 细节只能暴露在这里
 例如：
@@ -99,12 +99,14 @@ CLI / Console 的最小消费方式：
 6. 对 console：应把 `worker-ref` 作为独立 detail tab 展示，而不是混入 config/workflow snapshot 视图
 
 ## 7. 与 layout 的关系
-建议固定路径：
+固定路径位于 user project runtime store：
 
 ```text
-rounds/<round-id>/nodes/<node-id>/attempt-<n>/worker-ref.json
+~/.gold-band/projects/{project-id}/tasks/<task-id>/runs/<run-id>/rounds/<round-id>/nodes/<node-id>/attempt-<n>/worker-ref.json
 ```
+
+项目工作树中的 `<repo>/.gold-band` 只用于项目级配置覆盖，不存放 `worker-ref.json`。
 
 ## 8. 一句话总结
 
-> `worker-ref.json` 是 Gold Band 保存 ACP / provider-specific 会话引用的统一边界文件；它不参与控制流判断，只负责让应用、CLI 或插件能够在需要时继续或打开原始 worker 会话。
+> `worker-ref.json` 是 Gold Band 在 user project runtime store 中保存 ACP / provider-specific 会话引用的统一边界文件；它不参与控制流判断，只负责让应用、CLI 或插件能够在需要时继续或打开原始 worker 会话。

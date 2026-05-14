@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
-use camino::Utf8PathBuf;
+use anyhow::{Result, anyhow, bail};
+use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -15,11 +16,29 @@ use crate::acp::events::{
     user_prompt_event, write_session_metadata,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, wait_for_permission_response, write_pending_permission,
+    acp_permission_response_result, clear_cancel_request, is_cancel_requested,
+    wait_for_permission_response, write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
+use crate::domain::{DEFAULT_PROVIDER, SessionMode, VERSION};
+use crate::process::kill_process_tree;
 use crate::provider::PromptBundle;
-use crate::storage::ensure_parent_dir;
+use crate::runtime::{WorkerRefState, validate_worker_ref_state};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, write_json};
+
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
+const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+struct AcpCancelled;
+
+impl std::fmt::Display for AcpCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ACP prompt cancelled")
+    }
+}
+
+impl std::error::Error for AcpCancelled {}
 
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
@@ -51,7 +70,8 @@ struct AcpRuntime {
 }
 
 pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<()> {
-    let mut runtime = AcpRuntime::start(config, cwd.clone(), cwd.join(".gold-band/doctor/acp"))?;
+    let paths = GoldBandPaths::new(cwd.clone());
+    let mut runtime = AcpRuntime::start(config, cwd, paths.runtime_root.join("doctor/acp"))?;
     runtime.initialize()?;
     runtime.shutdown();
     Ok(())
@@ -62,8 +82,10 @@ pub fn run_prompt(
     workspace_dir: Utf8PathBuf,
     attempt_dir: Utf8PathBuf,
     prompt: &PromptBundle,
+    session_mode: SessionMode,
     continue_ref: Option<Value>,
 ) -> Result<AcpPromptRun> {
+    clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir)?;
     let capabilities = runtime.initialize()?;
     let restored =
@@ -72,9 +94,37 @@ pub fn run_prompt(
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
+    runtime.write_worker_ref(&workspace_dir, session_mode, restored, None)?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
-    let stop_reason = runtime.prompt(prompt)?;
-    runtime.write_session("completed", restored, stop_reason.clone(), capabilities)?;
+    let prompt_result = runtime.prompt(prompt);
+    let (status, stop_reason) = match prompt_result {
+        Ok(stop_reason) => ("completed", stop_reason),
+        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            ("cancelled", Some("cancelled".to_string()))
+        }
+        Err(error) => {
+            append_diagnostic(
+                &runtime.paths.diagnostics,
+                "error",
+                format!("ACP prompt failed: {error}"),
+                None,
+            )?;
+            runtime.write_worker_ref(
+                &workspace_dir,
+                session_mode,
+                restored,
+                Some("error".to_string()),
+            )?;
+            runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
+            runtime.shutdown();
+            return Err(error);
+        }
+    };
+    runtime.write_worker_ref(&workspace_dir, session_mode, restored, stop_reason.clone())?;
+    runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    if status != "running" {
+        let _ = clear_cancel_request(&runtime.paths.attempt_dir);
+    }
     let run = AcpPromptRun {
         session_id,
         adapter_id: runtime.adapter.adapter_id.clone(),
@@ -113,9 +163,8 @@ impl AcpRuntime {
                 return Err(error);
             }
         };
-        let pid_path = paths.attempt_dir.join("provider.pid");
-        ensure_parent_dir(&pid_path)?;
-        std::fs::write(pid_path.as_std_path(), child.id().to_string())?;
+        ensure_parent_dir(&paths.provider_pid)?;
+        std::fs::write(paths.provider_pid.as_std_path(), child.id().to_string())?;
         let stdin = child
             .stdin
             .take()
@@ -330,18 +379,60 @@ impl AcpRuntime {
             "params": params,
         });
         self.send_frame(&frame)?;
+        let mut cancel_started_at = None;
+        let mut cancel_request_id = None;
         loop {
-            let value = self
-                .rx
-                .recv()
-                .with_context(|| format!("ACP adapter closed before `{method}` response"))?;
-            if value.get("id").and_then(Value::as_u64) == Some(id) {
-                if let Some(error) = value.get("error") {
-                    bail!("ACP `{method}` failed: {error}");
+            match self.rx.recv_timeout(CANCEL_CHECK_INTERVAL) {
+                Ok(value) => {
+                    let response_id = value.get("id").and_then(Value::as_u64);
+                    if response_id == Some(id) {
+                        if let Some(error) = value.get("error") {
+                            if cancel_started_at.is_some() {
+                                return Err(anyhow!(AcpCancelled));
+                            }
+                            bail!("ACP `{method}` failed: {error}");
+                        }
+                        return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
+                    }
+                    if cancel_request_id.is_some() && response_id == cancel_request_id {
+                        continue;
+                    }
+                    self.handle_inbound(value)?;
                 }
-                return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    if cancel_started_at.is_some() || is_cancel_requested(&self.paths.attempt_dir) {
+                        return Err(anyhow!(AcpCancelled));
+                    }
+                    bail!("ACP adapter closed before `{method}` response");
+                }
             }
-            self.handle_inbound(value)?;
+
+            if is_cancel_requested(&self.paths.attempt_dir) {
+                if cancel_started_at.is_none() {
+                    cancel_started_at = Some(Instant::now());
+                    cancel_request_id = self.send_cancel_request()?;
+                    append_diagnostic(
+                        &self.paths.diagnostics,
+                        "info",
+                        "ACP cancellation requested".to_string(),
+                        Some(json!({ "method": method })),
+                    )?;
+                }
+                if cancel_started_at
+                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
+                {
+                    self.kill_adapter_process();
+                    return Err(anyhow!(AcpCancelled));
+                }
+            }
+
+            if let Some(status) = self.child.try_wait()? {
+                if cancel_started_at.is_some() || is_cancel_requested(&self.paths.attempt_dir) {
+                    return Err(anyhow!(AcpCancelled));
+                }
+                bail!("ACP adapter exited before `{method}` response with status {status}");
+            }
         }
     }
 
@@ -418,6 +509,29 @@ impl AcpRuntime {
         }))
     }
 
+    fn send_cancel_request(&mut self) -> Result<Option<u64>> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Ok(None);
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send_frame(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/cancel",
+            "params": {
+                "sessionId": session_id,
+            }
+        }))?;
+        Ok(Some(id))
+    }
+
+    fn kill_adapter_process(&mut self) {
+        let pid = self.child.id();
+        let _ = kill_process_tree(pid);
+        let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
+    }
+
     fn send_frame(&mut self, frame: &Value) -> Result<()> {
         append_raw_frame(&self.paths.raw, "outbound", frame.clone())?;
         let line = serde_json::to_string(frame)?;
@@ -425,6 +539,38 @@ impl AcpRuntime {
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
         Ok(())
+    }
+
+    fn write_worker_ref(
+        &self,
+        workspace_dir: &Utf8Path,
+        session_mode: SessionMode,
+        restored: bool,
+        stop_reason: Option<String>,
+    ) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP worker-ref requires a session id"))?;
+        let worker_ref = WorkerRefState {
+            version: VERSION.to_string(),
+            provider: DEFAULT_PROVIDER.to_string(),
+            mode: session_mode,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(json!({
+                "acpSessionId": session_id,
+                "adapterId": self.adapter.adapter_id.clone(),
+                "adapterDisplayName": self.adapter.display_name.clone(),
+                "cwd": workspace_dir.as_str(),
+                "sessionFile": self.paths.session.as_str(),
+                "lastStopReason": stop_reason,
+                "restored": restored,
+            })),
+            open_command: None,
+        };
+        validate_worker_ref_state(&worker_ref)?;
+        write_json(&self.paths.attempt_dir.join("worker-ref.json"), &worker_ref)
     }
 
     fn write_session(
@@ -437,7 +583,6 @@ impl AcpRuntime {
         write_session_metadata(
             &self.paths.session,
             &AcpSessionMetadata {
-                session_id: self.session_id.clone(),
                 adapter_id: self.adapter.adapter_id.clone(),
                 adapter_display_name: self.adapter.display_name.clone(),
                 cwd: self.paths.attempt_dir.to_string(),
@@ -457,8 +602,7 @@ impl AcpRuntime {
     fn shutdown(mut self) {
         debug!(adapter = %self.adapter.adapter_id, "shutting down ACP adapter");
         let _ = self.stdin.flush();
-        let _ = self.child.kill();
-        let _ = std::fs::remove_file(self.paths.attempt_dir.join("provider.pid").as_std_path());
+        self.kill_adapter_process();
     }
 }
 

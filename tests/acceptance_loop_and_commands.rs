@@ -88,12 +88,11 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
     std::fs::write(
         repo_root
@@ -110,14 +109,12 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/requirement.md")
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+        app.paths.workflow_file(task_id).as_std_path(),
         r#"{
           "version": "0.1",
           "id": "full-flow",
@@ -140,14 +137,10 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         r#"{"version":"0.1","id":"task-001"}"#,
     )
     .unwrap();
-
-    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
@@ -157,8 +150,8 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
         Some(gold_band::domain::RunOutcome::Success)
     );
     assert!(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-002")
+        app.paths
+            .round_dir(task_id, "run-001", "round-002")
             .exists()
     );
 

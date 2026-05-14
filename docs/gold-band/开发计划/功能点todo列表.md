@@ -50,7 +50,7 @@
 | 完成 | run 级 progress 快照 | 已实现 `run-progress.json` 最小快照写入。 | `docs/gold-band/产品设计文档/interaction/progress.md:58-110, 142-156`; `docs/gold-band/开发计划/可观测性plan.md:80-112` |
 | 完成 | run 级 events 时间线 | 已实现 `events.jsonl` 写入与关键生命周期事件记录。 | `docs/gold-band/产品设计文档/interaction/progress.md:112-156`; `docs/gold-band/开发计划/可观测性plan.md:80-112` |
 | 完成 | attempt 级 raw stream 归档 | 已实现 provider stdout/stderr 采集并落盘 `raw.stream.jsonl`。 | `docs/gold-band/产品设计文档/interaction/progress.md:40-57, 142-156`; `docs/gold-band/开发计划/可观测性plan.md:113-145` |
-| 完成 | runtime debug 日志 | 已实现 `.gold-band/logs/runtime.log` 与 observability 初始化。 | `docs/gold-band/开发计划/可观测性plan.md:19-47, 162-176`; `docs/gold-band/产品设计文档/runtime/layout.md:132-144` |
+| 完成 | runtime debug 日志 | 已实现 user project runtime 下的 `logs/runtime.log` 与 observability 初始化。 | `docs/gold-band/开发计划/可观测性plan.md:19-47, 162-176`; `docs/gold-band/产品设计文档/runtime/layout.md` |
 | 待办 | `progress.events.jsonl` 规范化事件流 | 当前仅保留路径与设计占位，尚未完整实现 attempt 级规范化进度事件。 | `docs/gold-band/产品设计文档/interaction/progress.md:47-57, 112-156`; `docs/gold-band/开发计划/可观测性plan.md:113-145, 217-218` |
 | 待办 | DSL loop 参数合法性校验 | 需补齐 `maxRepairLoops`、`maxAcceptanceLoops` 的正整数与边界校验。 | `docs/gold-band/产品设计文档/dsl/control.md:109-117, 137-145` |
 | 待办 | 无 verify 场景的 acceptance 配置校验 | 需校验没有 `verify` 节点时，`onAcceptanceFailure` 不能作为有效控制配置单独存在。 | `docs/gold-band/产品设计文档/dsl/control.md:233-237, 346-348` |

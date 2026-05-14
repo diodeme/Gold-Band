@@ -25,7 +25,7 @@ impl DesktopContext {
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
         let repo_root = resolve_configured_workspace(&user_config)
-            .or_else(|| find_gold_band_workspace(&repo_root))
+            .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
@@ -83,7 +83,7 @@ impl DesktopState {
             .context
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-        let repo_root = find_gold_band_workspace(&repo_root).unwrap_or(repo_root);
+        let repo_root = find_workspace_root(&repo_root).unwrap_or(repo_root);
         let app = App::with_config(repo_root.clone(), guard.config.clone());
         let workspace = repo_root.to_string();
         let user_config = app.set_user_desktop_workspace(&workspace)?;
@@ -95,7 +95,7 @@ impl DesktopState {
 }
 
 fn resolve_initial_workspace(cwd: &Utf8Path) -> Utf8PathBuf {
-    find_gold_band_workspace(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
 fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf> {
@@ -105,13 +105,17 @@ fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(Utf8PathBuf::from)
-        .filter(|path| path.join(".gold-band").is_dir())
+        .filter(|path| path.is_dir())
 }
 
-fn find_gold_band_workspace(start: &Utf8Path) -> Option<Utf8PathBuf> {
+fn find_workspace_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
+    nearest_parent_containing(start, ".git").or_else(|| nearest_parent_containing(start, ".gold-band"))
+}
+
+fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathBuf> {
     let mut current = start;
     loop {
-        if current.join(".gold-band").is_dir() {
+        if current.join(marker).is_dir() {
             return Some(current.to_path_buf());
         }
         current = current.parent()?;
@@ -127,10 +131,7 @@ fn recent_workspaces(user_config: &UserConfig, repo_root: &Utf8Path) -> Vec<Stri
     let mut workspaces = vec![current.clone()];
     for workspace in &user_config.recent_desktop_workspaces {
         let workspace = workspace.trim();
-        if !workspace.is_empty()
-            && workspace != current
-            && Utf8Path::new(workspace).join(".gold-band").is_dir()
-        {
+        if !workspace.is_empty() && workspace != current && Utf8Path::new(workspace).is_dir() {
             workspaces.push(workspace.to_string());
         }
     }

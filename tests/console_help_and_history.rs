@@ -13,10 +13,7 @@ use gold_band::provider::{
     DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
-use std::sync::{Mutex, OnceLock};
 use tempfile::tempdir;
-
-static HOME_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Default)]
 struct StartTaskProvider;
@@ -85,6 +82,40 @@ impl ProviderAdapter for StartTaskProvider {
     }
 }
 
+fn write_developer_profile(repo_root: &Utf8PathBuf) {
+    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
+    std::fs::write(
+        repo_root
+            .join(".gold-band/presets/profiles/developer.md")
+            .as_std_path(),
+        "# developer",
+    )
+    .unwrap();
+}
+
+fn seed_task(app: &App, task_id: &str, task_json: &str, workflow_json: &str) {
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    std::fs::write(app.paths.task_file(task_id).as_std_path(), task_json).unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        workflow_json,
+    )
+    .unwrap();
+}
+
+fn seed_basic_task(app: &App, task_id: &str, description: &str) {
+    std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        format!(r#"{{"version":"0.1","id":"{task_id}","description":"{description}"}}"#),
+    )
+    .unwrap();
+}
+
+fn worker_workflow() -> &'static str {
+    r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#
+}
+
 #[test]
 fn generated_banner_contains_multiple_lines() {
     let banner = render_console_banner();
@@ -122,25 +153,13 @@ fn welcome_does_not_cycle_to_input() {
 fn welcome_select_existing_task_enters_task_picker() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
-        r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
     let app = App::new(repo_root);
+    seed_task(
+        &app,
+        "task-001",
+        r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
+        worker_workflow(),
+    );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -152,15 +171,8 @@ fn welcome_select_existing_task_enters_task_picker() {
 fn slash_task_command_opens_task_picker() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/tasks/task-001").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
-        r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-    )
-    .unwrap();
     let app = App::new(repo_root);
+    seed_basic_task(&app, "task-001", "demo task");
     let mut state = ConsoleState::default();
     state.screen = Screen::TaskPicker;
     start_command_input(&mut state);
@@ -173,60 +185,45 @@ fn slash_task_command_opens_task_picker() {
 fn task_picker_selection_with_active_run_enters_attempt_detail() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+    let app = App::new(repo_root.clone());
+    seed_task(
+        &app,
+        "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
+        worker_workflow(),
+    );
+    write_developer_profile(&repo_root);
+    std::fs::create_dir_all(
+        app.paths
+            .attempt_dir("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
-        "# developer",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json").as_std_path(),
+        app.paths.run_file("task-001", "run-001").as_std_path(),
         r#"{"version":"0.1","id":"run-001","task_id":"task-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","updated_at":"2026-03-30T10:01:00Z","workflow_snapshot":"workflow.snapshot.json","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001","acceptance_loops_used":0,"pause_reason":null}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/round.json").as_std_path(),
+        app.paths.round_file("task-001", "run-001", "round-001").as_std_path(),
         r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"running","outcome":null,"trigger":"initial","repair_loops_used":0,"started_at":"2026-03-30T10:00:00Z"}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json").as_std_path(),
+        app.paths
+            .node_file("task-001", "run-001", "round-001", "dev", "attempt-001")
+            .as_std_path(),
         r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{"primaryArtifact":"exec-plan"}}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/progress.events.jsonl").as_std_path(),
+        app.paths
+            .progress_events_file("task-001", "run-001", "round-001", "dev", "attempt-001")
+            .as_std_path(),
         "provider-input-line",
     )
     .unwrap();
 
-    let app = App::new(repo_root);
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -250,33 +247,14 @@ fn task_picker_selection_with_active_run_enters_attempt_detail() {
 fn task_picker_selection_enters_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+    let app = App::new(repo_root.clone());
+    seed_task(
+        &app,
+        "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "# developer",
-    )
-    .unwrap();
-    let app = App::new(repo_root);
+        worker_workflow(),
+    );
+    write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -291,33 +269,14 @@ fn task_picker_selection_enters_workspace() {
 fn esc_from_workspace_returns_to_task_picker() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+    let app = App::new(repo_root.clone());
+    seed_task(
+        &app,
+        "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "# developer",
-    )
-    .unwrap();
-    let app = App::new(repo_root);
+        worker_workflow(),
+    );
+    write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -387,13 +346,9 @@ fn too_small_layout_hides_command_bar() {
 fn log_command_renders_output_in_task_picker_overlay() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/logs").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/logs/runtime.log").as_std_path(),
-        "line-1\nline-2",
-    )
-    .unwrap();
     let app = App::new(repo_root);
+    std::fs::create_dir_all(app.paths.logs_dir().as_std_path()).unwrap();
+    std::fs::write(app.paths.runtime_log_file().as_std_path(), "line-1\nline-2").unwrap();
     let mut state = ConsoleState::default();
     state.screen = Screen::TaskPicker;
     start_command_input(&mut state);
@@ -410,22 +365,11 @@ fn log_command_renders_output_in_task_picker_overlay() {
 fn start_selected_task_enters_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+    let app = App::with_provider(repo_root.clone(), Box::new(StartTaskProvider));
+    seed_task(
+        &app,
+        "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
         r#"{
           "version": "0.1",
           "id": "full-flow",
@@ -445,16 +389,8 @@ fn start_selected_task_enters_workspace() {
             {"from":"run-tests","to":"accept","on":"success"}
           ]
         }"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "# developer",
-    )
-    .unwrap();
-    let app = App::with_provider(repo_root, Box::new(StartTaskProvider));
+    );
+    write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -478,33 +414,14 @@ fn start_selected_task_enters_workspace() {
 fn start_selected_task_marks_background_start() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+    let app = App::new(repo_root.clone());
+    seed_task(
+        &app,
+        "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "# developer",
-    )
-    .unwrap();
-    let app = App::new(repo_root);
+        worker_workflow(),
+    );
+    write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -521,31 +438,15 @@ fn start_selected_task_marks_background_start() {
 fn enter_submits_task_picker_command_instead_of_opening_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/logs").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
-        r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/logs/runtime.log").as_std_path(),
-        "line-1\nline-2",
-    )
-    .unwrap();
     let app = App::new(repo_root);
+    seed_task(
+        &app,
+        "task-001",
+        r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
+        worker_workflow(),
+    );
+    std::fs::create_dir_all(app.paths.logs_dir().as_std_path()).unwrap();
+    std::fs::write(app.paths.runtime_log_file().as_std_path(), "line-1\nline-2").unwrap();
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -566,25 +467,13 @@ fn enter_submits_task_picker_command_instead_of_opening_workspace() {
 fn invalid_task_shows_reason_and_cannot_enter_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
-        r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#,
-    )
-    .unwrap();
     let app = App::new(repo_root);
+    seed_task(
+        &app,
+        "task-001",
+        r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
+        worker_workflow(),
+    );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -623,22 +512,10 @@ fn invalid_task_shows_reason_and_cannot_enter_workspace() {
 fn move_down_changes_selected_task() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    for id in ["task-001", "task-002"] {
-        std::fs::create_dir_all(
-            repo_root
-                .join(format!(".gold-band/tasks/{id}"))
-                .as_std_path(),
-        )
-        .unwrap();
-        std::fs::write(
-            repo_root
-                .join(format!(".gold-band/tasks/{id}/task.json"))
-                .as_std_path(),
-            format!(r#"{{"version":"0.1","id":"{id}","description":"demo"}}"#),
-        )
-        .unwrap();
-    }
     let app = App::new(repo_root);
+    for id in ["task-001", "task-002"] {
+        seed_basic_task(&app, id, "demo");
+    }
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
     activate_current(&app, &mut state).unwrap();
@@ -648,13 +525,11 @@ fn move_down_changes_selected_task() {
 
 #[test]
 fn theme_command_persists_theme_and_preserves_screen() {
-    let _home_guard = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let home_dir = repo_root.join("fake-home");
-    std::fs::create_dir_all(home_dir.as_std_path()).unwrap();
-    unsafe { std::env::set_var("HOME", home_dir.as_str()) };
-    let app = App::new(repo_root.clone());
+    let mut app = App::new(repo_root.clone());
+    app.paths.user_gold_band_root = home_dir.join(".gold-band");
     let mut state = ConsoleState::default();
     state.screen = Screen::TaskPicker;
     state.console_theme = ConsoleThemeName::GoldBand;
@@ -676,13 +551,11 @@ fn theme_command_persists_theme_and_preserves_screen() {
 
 #[test]
 fn config_overlay_reports_startup_persisted_and_effective_theme() {
-    let _home_guard = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let home_dir = repo_root.join("fake-home");
-    std::fs::create_dir_all(home_dir.as_std_path()).unwrap();
-    unsafe { std::env::set_var("HOME", home_dir.as_str()) };
-    let app = App::new(repo_root.clone());
+    let mut app = App::new(repo_root.clone());
+    app.paths.user_gold_band_root = home_dir.join(".gold-band");
     app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
     let mut state = ConsoleState::default();
     state.screen = Screen::TaskPicker;

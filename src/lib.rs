@@ -11,6 +11,7 @@ pub mod dsl;
 pub mod exec;
 pub mod inspect;
 pub mod observability;
+pub mod process;
 pub mod provider;
 pub mod runtime;
 pub mod storage;

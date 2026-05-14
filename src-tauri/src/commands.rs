@@ -2,7 +2,10 @@ use std::{collections::BTreeSet, io::{BufRead, BufReader}};
 
 use gold_band::acp::client;
 use gold_band::acp::events::{append_ui_event, current_timestamp, permission_decision_event};
-use gold_band::acp::permission::write_permission_response;
+use gold_band::acp::permission::{
+    cancel_pending_permission_requests, request_cancel, write_permission_response,
+};
+use gold_band::domain::SessionMode;
 use gold_band::provider::PromptBundle;
 use gold_band::runtime::WorkerRefState;
 use gold_band::storage::read_json;
@@ -231,12 +234,11 @@ pub async fn send_acp_prompt(
         let worker_ref_path =
             app.paths
                 .worker_ref_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        let continue_ref = if worker_ref_path.exists() {
-            read_json::<WorkerRefState>(&worker_ref_path)
-                .map_err(command_error)?
-                .continue_ref
+        let (session_mode, continue_ref) = if worker_ref_path.exists() {
+            let worker_ref = read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
+            (worker_ref.mode, worker_ref.continue_ref)
         } else {
-            None
+            (SessionMode::New, None)
         };
         client::run_prompt(
             &app.config.acp_adapter,
@@ -246,6 +248,7 @@ pub async fn send_acp_prompt(
                 system_prompt: String::new(),
                 user_prompt: prompt,
             },
+            session_mode,
             continue_ref,
         )
         .map_err(command_error)?;
@@ -316,13 +319,12 @@ pub fn cancel_acp_session(
     attempt_id: String,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    let marker = app
+    let attempt_dir = app
         .paths
-        .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
-        .join("acp.cancel-requested");
-    gold_band::storage::ensure_parent_dir(&marker).map_err(command_error)?;
-    std::fs::write(marker.as_std_path(), current_timestamp())
-        .map_err(|error| command_error(error.into()))?;
+        .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+    let requested_at = current_timestamp();
+    request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
+    cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
     acp_session_vm(&app, &task_id, &run_id, &round_id, &node_id, &attempt_id, None).map_err(command_error)
 }
 

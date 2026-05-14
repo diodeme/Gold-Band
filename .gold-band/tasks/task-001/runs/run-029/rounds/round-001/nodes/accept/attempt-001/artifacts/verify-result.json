@@ -1,7 +1,0 @@
-{
-  "version": "0.1",
-  "status": "success",
-  "summary": "Requirement satisfied: web/hello_world.py defines a Python class that returns and prints the string \"hello-world\".",
-  "unmet_requirements": [],
-  "validation_gaps": []
-}

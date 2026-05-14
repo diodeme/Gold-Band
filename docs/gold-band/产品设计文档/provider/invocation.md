@@ -120,7 +120,7 @@ AI agent 可以返回自由格式的附件内容，但这些内容：
   "profile": "developer",
   "requirementPath": "authoring/requirement.md",
   "workspaceDir": "/repo",
-  "attemptDir": "/repo/.gold-band/tasks/.../attempt-001",
+  "attemptDir": "~/.gold-band/projects/{project-id}/tasks/.../attempt-001",
   "primaryArtifact": null,
   "taskInstruction": null,
   "sessionMode": "new",

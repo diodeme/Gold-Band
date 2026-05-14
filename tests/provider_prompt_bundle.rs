@@ -8,12 +8,12 @@ fn worker_invocation_can_be_serialized_with_context_indexes() {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile: Some("developer".to_string()),
         requirement_path: Some(Utf8PathBuf::from(
-            "/repo/.gold-band/tasks/task-001/authoring/requirement.md",
+            "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/authoring/requirement.md",
         )),
         requirement_text: None,
         workspace_dir: Utf8PathBuf::from("/repo"),
         attempt_dir: Utf8PathBuf::from(
-            "/repo/.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
+            "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
         ),
         primary_artifact: Some("exec-plan".to_string()),
         task_instruction: Some("Create an exec plan".to_string()),
@@ -24,14 +24,20 @@ fn worker_invocation_can_be_serialized_with_context_indexes() {
         log_provider_command: false,
         feedback_summary: None,
         verify_result_path: None,
-        attachments_dir: Some(Utf8PathBuf::from("/repo/.gold-band/.../attachments")),
+        attachments_dir: Some(Utf8PathBuf::from(
+            "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../attachments",
+        )),
         cold_artifacts: vec![ColdFileRef {
             name: Some("exec-result".to_string()),
-            path: Utf8PathBuf::from("/repo/.gold-band/.../exec-result.json"),
+            path: Utf8PathBuf::from(
+                "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../exec-result.json",
+            ),
         }],
         cold_attachments: vec![ColdFileRef {
             name: None,
-            path: Utf8PathBuf::from("/repo/.gold-band/.../report.md"),
+            path: Utf8PathBuf::from(
+                "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../report.md",
+            ),
         }],
     };
 

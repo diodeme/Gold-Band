@@ -89,13 +89,8 @@ impl ProviderAdapter for SequencedProvider {
     }
 }
 
-fn write_happy_path_fixture(repo_root: &Utf8PathBuf, task_id: &str) {
-    std::fs::create_dir_all(
-        repo_root
-            .join(format!(".gold-band/tasks/{task_id}/authoring"))
-            .as_std_path(),
-    )
-    .unwrap();
+fn write_happy_path_fixture(app: &App, repo_root: &Utf8PathBuf, task_id: &str) {
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
     std::fs::write(
         repo_root
@@ -112,16 +107,12 @@ fn write_happy_path_fixture(repo_root: &Utf8PathBuf, task_id: &str) {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(format!(
-                ".gold-band/tasks/{task_id}/authoring/requirement.md"
-            ))
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(format!(".gold-band/tasks/{task_id}/authoring/workflow.json")).as_std_path(),
+        app.paths.workflow_file(task_id).as_std_path(),
         r#"{
           "version": "0.1",
           "id": "full-flow",
@@ -144,9 +135,7 @@ fn write_happy_path_fixture(repo_root: &Utf8PathBuf, task_id: &str) {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(format!(".gold-band/tasks/{task_id}/task.json"))
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         format!(r#"{{"version":"0.1","id":"{task_id}"}}"#),
     )
     .unwrap();
@@ -157,24 +146,34 @@ fn run_start_completes_worker_exec_verify_happy_path() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
-    write_happy_path_fixture(&repo_root, task_id);
-
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let provider = SequencedProvider::default();
     let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    write_happy_path_fixture(&app, &repo_root, task_id);
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
-    let run_state: RunState = gold_band::storage::read_json(
-        &repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json"),
-    )
-    .unwrap();
+    let run_state: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
     assert_eq!(run_state.status, gold_band::domain::RunStatus::Completed);
     assert_eq!(
         run_state.outcome,
         Some(gold_band::domain::RunOutcome::Success)
     );
 
-    assert!(repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/accept/attempt-001/artifacts/verify-result.json").exists());
+    assert!(
+        app.paths
+            .artifact_file(
+                task_id,
+                "run-001",
+                "round-001",
+                "accept",
+                "attempt-001",
+                "verify-result"
+            )
+            .exists()
+    );
 
     let invocations = provider.invocations.lock().unwrap();
     let verify_call = invocations

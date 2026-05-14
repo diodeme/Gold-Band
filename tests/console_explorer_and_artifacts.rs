@@ -11,10 +11,12 @@ use gold_band::console::state::{
 use gold_band::console::view_models::build_view_model;
 use tempfile::tempdir;
 
-fn seed_branching_repo(repo_root: &Utf8PathBuf) {
+fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
+    let app = App::new(repo_root.clone());
     std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
+        app.paths
+            .task_dir("task-001")
+            .join("authoring")
             .as_std_path(),
     )
     .unwrap();
@@ -27,78 +29,91 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) {
     )
     .unwrap();
     std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts")
+        app.paths
+            .artifacts_dir("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
     )
     .unwrap();
     std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/attachments")
+        app.paths
+            .attachments_dir("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/task.json").as_std_path(),
+        app.paths.task_file("task-001").as_std_path(),
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"branching workflow"}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
+        app.paths.workflow_file("task-001").as_std_path(),
         r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer","primary_artifact":"exec-plan"},{"type":"exec","id":"run-cmd","plan_from":"dev"},{"type":"verify","id":"accept","provider":"claude-code","profile":"developer"}],"edges":[{"from":"dev","to":"run-cmd","on":"success"},{"from":"dev","to":"accept","on":"failure"},{"from":"run-cmd","to":"accept","on":"invalid"}]}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json").as_std_path(),
+        app.paths.run_file("task-001", "run-001").as_std_path(),
         r#"{"version":"0.1","id":"run-001","task_id":"task-001","status":"paused","outcome":null,"started_at":"2026-03-30T10:00:00Z","updated_at":"2026-03-30T10:01:00Z","workflow_snapshot":"workflow.snapshot.json","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001","acceptance_loops_used":0,"pause_reason":"process-interrupted"}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run-progress.json").as_std_path(),
+        app.paths.run_progress_file("task-001", "run-001").as_std_path(),
         r#"{"status":"running","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001"}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/events.jsonl")
+        app.paths
+            .run_events_file("task-001", "run-001")
             .as_std_path(),
         "node-started\nprovider-streaming",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/round.json").as_std_path(),
+        app.paths.round_file("task-001", "run-001", "round-001").as_std_path(),
         r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"paused","outcome":null,"trigger":"initial","repair_loops_used":0,"started_at":"2026-03-30T10:00:00Z"}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json").as_std_path(),
+        app.paths.node_file("task-001", "run-001", "round-001", "dev", "attempt-001").as_std_path(),
         r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"paused","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{}}"#,
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/progress.events.jsonl").as_std_path(),
+        app.paths
+            .progress_events_file("task-001", "run-001", "round-001", "dev", "attempt-001")
+            .as_std_path(),
         "progress-line",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl").as_std_path(),
+        app.paths
+            .raw_stream_file("task-001", "run-001", "round-001", "dev", "attempt-001")
+            .as_std_path(),
         "raw-line",
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts/exec-result.json")
+        app.paths
+            .artifact_file(
+                "task-001",
+                "run-001",
+                "round-001",
+                "dev",
+                "attempt-001",
+                "exec-result",
+            )
             .as_std_path(),
         "result-body",
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/attachments/stdout.txt")
+        app.paths
+            .attachments_dir("task-001", "run-001", "round-001", "dev", "attempt-001")
+            .join("stdout.txt")
             .as_std_path(),
         "stdout-body",
     )
     .unwrap();
+    app
 }
 
 fn open_workspace(app: &App) -> ConsoleState {
@@ -113,8 +128,7 @@ fn open_workspace(app: &App) -> ConsoleState {
 fn workspace_renders_dag_with_edge_markers() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let state = open_workspace(&app);
     let vm = build_view_model(&app, &state).unwrap();
     let dag = vm.body_lines.join("\n");
@@ -127,8 +141,7 @@ fn workspace_renders_dag_with_edge_markers() {
 fn entering_node_moves_focus_to_detail_and_shows_attempts() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let state = open_workspace(&app);
     assert_eq!(state.focus, FocusPane::Detail);
     let workspace = state.workspace.as_ref().unwrap();
@@ -146,8 +159,7 @@ fn entering_node_moves_focus_to_detail_and_shows_attempts() {
 fn entering_attempt_then_artifact_supports_escape_backtracking() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     {
         let workspace = state.workspace.as_ref().unwrap();
@@ -180,8 +192,7 @@ fn entering_attempt_then_artifact_supports_escape_backtracking() {
 fn workspace_header_and_detail_surface_run_progress() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let state = open_workspace(&app);
     let vm = build_view_model(&app, &state).unwrap();
     assert!(vm.header.contains("status=running"));
@@ -196,8 +207,7 @@ fn workspace_header_and_detail_surface_run_progress() {
 fn toggle_log_source_switches_attempt_detail_view() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     state.focus = FocusPane::Detail;
 
@@ -215,14 +225,13 @@ fn toggle_log_source_switches_attempt_detail_view() {
 fn attempt_detail_tolerates_missing_attempt_state_during_startup() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
+    let app = seed_branching_repo(&repo_root);
     std::fs::remove_file(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/node.json")
+        app.paths
+            .node_file("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
     )
     .unwrap();
-    let app = App::new(repo_root);
     let state = open_workspace(&app);
     let vm = build_view_model(&app, &state).unwrap();
     assert!(vm.detail_body.contains("pending-persist"));
@@ -233,8 +242,7 @@ fn attempt_detail_tolerates_missing_attempt_state_during_startup() {
 fn refresh_tick_preserves_live_attempt_detail_mode() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root.clone());
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     state.focus = FocusPane::Detail;
     {
@@ -261,11 +269,10 @@ fn refresh_tick_preserves_live_attempt_detail_mode() {
 fn refresh_tick_updates_workspace_progress() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root.clone());
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/runs/run-001/run-progress.json").as_std_path(),
+        app.paths.run_progress_file("task-001", "run-001").as_std_path(),
         r#"{"status":"paused","current_round":"round-001","current_node":"dev","current_attempt":"attempt-001"}"#,
     )
     .unwrap();
@@ -280,8 +287,7 @@ fn refresh_tick_updates_workspace_progress() {
 fn overlay_focus_and_compact_layout_work_in_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     show_help_overlay(&app, &mut state).unwrap();
     assert_eq!(state.focus, FocusPane::Overlay);
@@ -302,8 +308,7 @@ fn overlay_focus_and_compact_layout_work_in_workspace() {
 fn dag_navigation_moves_between_columns() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    seed_branching_repo(&repo_root);
-    let app = App::new(repo_root);
+    let app = seed_branching_repo(&repo_root);
     let mut state = open_workspace(&app);
     move_right(&mut state);
     let workspace = state.workspace.as_ref().unwrap();

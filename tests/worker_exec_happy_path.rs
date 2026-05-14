@@ -71,12 +71,11 @@ fn run_start_executes_worker_then_exec() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+    let app = App::with_provider(repo_root.clone(), Box::new(FakeProvider));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
     std::fs::write(
         repo_root
@@ -86,16 +85,12 @@ fn run_start_executes_worker_then_exec() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/requirement.md")
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/workflow.json")
-            .as_std_path(),
+        app.paths.workflow_file(task_id).as_std_path(),
         r#"{
           "version": "0.1",
           "id": "dev-exec",
@@ -127,20 +122,26 @@ fn run_start_executes_worker_then_exec() {
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         r#"{"version":"0.1","id":"task-001"}"#,
     )
     .unwrap();
-
-    let app = App::with_provider(repo_root.clone(), Box::new(FakeProvider));
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
-    let exec_result_path = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/run-tests/attempt-001/artifacts/exec-result.json");
+    let exec_result_path = app.paths.artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "run-tests",
+        "attempt-001",
+        "exec-result",
+    );
     assert!(exec_result_path.exists());
 
-    let stdout_log = repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/run-tests/attempt-001/commands/01-write-ok/stdout.log");
+    let stdout_log = app
+        .paths
+        .attempt_dir(task_id, "run-001", "round-001", "run-tests", "attempt-001")
+        .join("commands/01-write-ok/stdout.log");
     assert!(stdout_log.exists());
 }

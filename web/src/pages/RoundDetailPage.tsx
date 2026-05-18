@@ -294,6 +294,8 @@ function NodeDetailContent({ detail, runPauseReason, onOpenAsset }: { detail: No
       <InfoGrid items={[
         [t('roundDetail.nodeId'), detail.nodeId],
         [t('roundDetail.sequence'), detail.sequence ?? '-'],
+        [t('agentManagement.agentType'), detail.provider ?? '-'],
+        [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
         [t('roundDetail.attemptId'), detail.attemptId],
         [t('roundDetail.startedAt'), detail.startedAt || '-'],
         [t('roundDetail.finishedAt'), detail.finishedAt || '-'],

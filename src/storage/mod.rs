@@ -90,12 +90,36 @@ impl GoldBandPaths {
         self.user_profiles_dir().join(format!("{profile_name}.md"))
     }
 
+    pub fn user_context_dir(&self) -> Utf8PathBuf {
+        self.user_gold_band_dir().join("context")
+    }
+
+    pub fn user_context_profiles_dir(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("profiles")
+    }
+
+    pub fn project_context_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("context")
+    }
+
+    pub fn project_context_profiles_dir(&self) -> Utf8PathBuf {
+        self.project_context_dir().join("profiles")
+    }
+
     pub fn logs_dir(&self) -> Utf8PathBuf {
         self.runtime_root.join("logs")
     }
 
     pub fn runtime_log_file(&self) -> Utf8PathBuf {
         self.logs_dir().join("runtime.log")
+    }
+
+    pub fn authoring_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("authoring")
+    }
+
+    pub fn workflow_templates_file(&self) -> Utf8PathBuf {
+        self.authoring_dir().join("workflows.json")
     }
 
     pub fn tasks_dir(&self) -> Utf8PathBuf {

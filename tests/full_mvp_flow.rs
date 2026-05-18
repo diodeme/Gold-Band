@@ -89,23 +89,23 @@ impl ProviderAdapter for SequencedProvider {
     }
 }
 
-fn write_happy_path_fixture(app: &App, repo_root: &Utf8PathBuf, task_id: &str) {
+fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) {
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "developer profile",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/verifier.md")
-            .as_std_path(),
-        "verifier profile",
-    )
-    .unwrap();
+    let profiles = app.profiles().unwrap();
+    let dev_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    let accept_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
     std::fs::write(
         app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
@@ -113,25 +113,28 @@ fn write_happy_path_fixture(app: &App, repo_root: &Utf8PathBuf, task_id: &str) {
     .unwrap();
     std::fs::write(
         app.paths.workflow_file(task_id).as_std_path(),
-        r#"{
+        format!(
+            r#"{{
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {
+          "control": {{
             "max_repair_loops": 1,
             "max_acceptance_loops": 1,
             "on_acceptance_failure": "auto-loop"
-          },
+          }},
           "nodes": [
-            {"id":"dev","type":"worker","provider":"claude-code","profile":"developer","goal":"Create an exec plan","primary_artifact":"exec-plan"},
-            {"id":"run-tests","type":"exec","plan_from":"dev"},
-            {"id":"accept","type":"verify","provider":"claude-code","profile":"verifier"}
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
+            {{"id":"run-tests","type":"exec","plan_from":"dev"}},
+            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
           ],
           "edges": [
-            {"from":"dev","to":"run-tests","on":"success"},
-            {"from":"run-tests","to":"accept","on":"success"}
+            {{"from":"dev","to":"run-tests","on":"success"}},
+            {{"from":"run-tests","to":"accept","on":"success"}}
           ]
-        }"#,
+        }}"#,
+            dev_profile, accept_profile
+        ),
     )
     .unwrap();
     std::fs::write(

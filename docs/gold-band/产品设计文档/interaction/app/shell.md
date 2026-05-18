@@ -15,7 +15,7 @@
 │               │                                              │
 │ 一级菜单       │ 页面标题 / 面包屑 / 页面操作                    │
 │ - 任务编排     │                                              │
-│ - 知识库       │ 页面主体                                      │
+│ - 上下文管理       │ 页面主体                                      │
 │ - 模型管理     │                                              │
 │               │                                              │
 │ Settings      │                                              │
@@ -35,7 +35,7 @@
 
 行为：
 - 点击 logo 返回当前 workspace 的默认入口。
-- 当前 MVP 中默认返回“任务编排 / 任务列表”。
+- 当前 MVP 中默认返回“任务编排 / 任务列表”，并重置任务编排内部的深层页面状态。
 
 ### 3.2 Workspace 选择与记忆
 左侧 Logo 下方显示当前 workspace 路径，并作为“切换工作空间”入口。
@@ -51,14 +51,17 @@
 
 ```text
 任务编排
-知识库（占位）
+Agent 管理
+上下文管理（占位）
 模型管理（占位）
 ```
 
 规则：
 - 一级菜单只控制右侧功能区的根模块。
-- 当前只实现任务编排。
-- 占位功能可显示 disabled 或 coming soon 状态。
+- 点击“任务编排”应回到任务列表根页面，而不是保留任务工作流或 Round 详情等深层页面。
+- 当前实现任务编排、Agent 管理、上下文管理和设置。
+- 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile。
+- 模型管理保持占位，可显示 disabled 或 coming soon 状态。
 - 不在一级菜单中放 run、round、node 等任务内部对象。
 
 ### 3.4 Settings 入口
@@ -149,8 +152,8 @@ round 详情
 ## 7. Tauri 2.x MVP 对应实现
 
 MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
-- 左侧固定展示 Gold Band、workspace 路径/切换入口、任务编排、知识库占位、模型管理占位、设置。
-- 右侧由 React 状态维护任务编排页面栈，面包屑只在右侧显示。
+- 左侧固定展示 Gold Band、workspace 路径/切换入口、任务编排、Agent 管理、上下文管理、模型管理占位、设置。
+- 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
 - 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置。
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。

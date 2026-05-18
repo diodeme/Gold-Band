@@ -54,9 +54,9 @@
 ### 桌面端 MVP 增量
 - 使用 Tauri 2.x + Vite + React + TypeScript 生成桌面端应用。
 - `src-tauri/` 作为桌面后端，通过 path dependency 复用 Rust core 的 `App`、runtime、storage 与 config。
-- `web/` 作为桌面前端，实现左侧一级功能导航 + 右侧递进式任务编排页面栈。
+- `web/` 作为桌面前端，实现左侧一级功能导航 + 右侧递进式任务编排页面栈；点击“任务编排”一级入口会重置到任务列表根页面。
 - 前端通过 Tauri commands 读取 task/run/round/node/artifact view model，所有终局状态仍来自 canonical state。
-- MVP 实现任务列表、任务工作流、Round 详情和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组；知识库、模型管理仅作为一级导航占位。
+- MVP 实现任务列表、任务工作流、Round 详情、上下文管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组；模型管理仅作为一级导航占位。
 - 2026-05-02：前端已按 `docs/gold-band/产品设计文档/interaction/app/原型` 对齐应用壳、任务列表 Task Preview、工作流 execution history、Round 三块工作台和设置页本地偏好控件。
 - 2026-05-02：补充浏览器调试 mock view model fallback；非 Tauri 浏览器环境使用 mock 数据，Tauri 环境继续使用真实 commands，方便后续用 Vite/浏览器验证布局。
 - 2026-05-03：桌面端新增 workspace 选择、最近 workspace 记忆与默认项目根解析；Tauri dev 即使从 `src-tauri/` 启动，也会向上识别包含 `.gold-band/` 的项目根。
@@ -105,6 +105,8 @@
 - 2026-05-14：ACP 会话 agent 输出接入紧凑 Markdown 渲染，用户 prompt 保持纯文本；标题不使用文章页大字号层级，只用加粗和轻量标识表达层级；本次不引入 Pretext，后续仅在纯文本日志/Raw frame 虚拟化行高预估等测量场景再评估。
 - 2026-05-15：Round 当前节点处于 `error_blocked` 时不再显示成普通已暂停，而是用错误阻塞状态和危险色展示；该状态仍暴露“继续运行”入口，ACP 最新 error diagnostic 或 Raw frame JSON-RPC error 显示为会话顶部横幅，错误后的正常 agent 输出会自动清除横幅；恢复 prompt `继续/Continue` 按独立用户气泡展示，不拼到上一条需求气泡；ACP stop 超过 15 秒未收敛时自动熔断为 `paused + process_interrupted`。
 - 2026-05-17：创建任务流程升级为“创建任务 -> 导入 txt/md requirement -> 创建 workflow -> 保存任务”；任务列表移除独立导入入口，工作流编辑器基于 `@xyflow/react` 支持拖拽节点、连接边、选择 Agent、配置 JSON 输出验证和 `$new-round` 边目标。任务级 workflow 写入 `authoring/workflow.json`，run 启动时冻结 `workflow.snapshot.json`，Round 详情继续展示运行态快照。人工 check 仅保留 UI 占位，后端 `exec` 兼容保留但新建默认模板不再生成。
+- 2026-05-18：侧边栏“知识库”升级为“上下文管理”，首版提供角色管理；用户级 profile 存储在 `~/.gold-band/context/profiles/<name>-<id>.md`，项目级 profile 存储在 `~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md`。工作流节点通过分布式唯一 profile `id` 引用，编辑器使用可搜索选择器，创建/更新时间使用本地 `YYYY-MM-DD HH:MM:SS`，运行时把 profile Markdown 正文注入 prompt bundle。
+- 2026-05-18：默认角色扩展为方案、开发、审查、测试、验收、清理六类；默认 workflow 初始化时先同步默认角色，再将可见 profile `id` 绑定到 `plan/dev/review/test/accept/cleanup` 节点。默认路径更新为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，cleanup 为普通 worker 节点且不启用 AI 输出验证；保存 workflow 时集中校验必填字段、角色绑定和角色可见性，错误弹窗关闭后在字段处红色标注。
 - 启动：`npm run dev`；构建：`npm run build`。
 
 ---

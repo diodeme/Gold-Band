@@ -204,7 +204,7 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
   "id": "test",
   "type": "worker",
   "provider": "claude-code",
-  "profile": "tester",
+  "profile": "pf-example-tester",
   "goal": "编写测试并给出执行计划",
   "primaryArtifact": "exec-plan"
 }
@@ -380,7 +380,7 @@ runtime 至少应给出 warning 或 error：
       "id": "dev",
       "type": "worker",
       "provider": "claude-code",
-      "profile": "developer",
+      "profile": "pf-example-developer",
       "goal": "实现需求并给出执行计划",
       "primaryArtifact": "exec-plan"
     },

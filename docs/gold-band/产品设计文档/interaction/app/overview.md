@@ -26,7 +26,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 ├───────────────┬──────────────────────────────────────────────┤
 │ 左侧一级功能区 │ 右侧当前功能区                                │
 │               │                                              │
-│ Logo          │ 任务编排 / 知识库 / 模型管理 / 设置             │
+│ Logo          │ 任务编排 / Agent 管理 / 知识库 / 模型管理 / 设置 │
 │ 一级菜单       │                                              │
 │ Settings      │                                              │
 └───────────────┴──────────────────────────────────────────────┘
@@ -36,6 +36,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 
 当前 MVP 只实现：
 - 任务编排
+- Agent 管理
 - 设置中的主题切换
 - 设置中的字体选择
 - 设置中的语言选择
@@ -75,6 +76,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [任务详情页（已并入任务工作流页）](task-detail.md)
 - [任务工作流页](task-workflow.md)
 - [Round 详情页](round-detail.md)
+- [Agent 管理页](agent-management.md)
 - [设置页](settings.md)
 
 ---
@@ -141,7 +143,9 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 启动命令为 `npm run dev`，构建命令为 `npm run build`。
 
 MVP 范围：
-- 实现任务列表、任务工作流、Round 详情和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
+- 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
+- Agent 管理负责维护已配置 agent type、执行命令、环境变量与诊断状态。
+- Worker / Verify 节点必须显式声明 `provider`，当前语义为 managed agent type；运行时不提供默认 Claude 兜底。
 - 知识库、模型管理保持一级导航占位。
 - 不提供 command bar、slash command、terminal input 或 chat input。
 

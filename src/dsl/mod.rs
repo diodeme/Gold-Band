@@ -9,6 +9,149 @@ pub const END_NODE: &str = "$end";
 pub const NEW_ROUND_NODE: &str = "$new-round";
 const RESERVED_NODE_IDS: &[&str] = &["worker", "exec", "verify", END_NODE, NEW_ROUND_NODE];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonPathSegment {
+    Key(String),
+    Index(usize),
+}
+
+pub fn parse_json_path(path: &str) -> Result<Vec<JsonPathSegment>> {
+    let mut value = path.trim();
+    if let Some(rest) = value.strip_prefix("$.") {
+        value = rest;
+    } else if value == "$" {
+        bail!("json path cannot be root only");
+    } else if let Some(rest) = value.strip_prefix('$') {
+        value = rest;
+    }
+    ensure!(!value.is_empty(), "json path cannot be empty");
+
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut segments = Vec::new();
+    let mut key = String::new();
+    let mut index = 0;
+
+    while index < chars.len() {
+        match chars[index] {
+            '.' => {
+                if key.is_empty() {
+                    ensure!(
+                        matches!(segments.last(), Some(JsonPathSegment::Index(_))),
+                        "json path contains an empty segment: {path}"
+                    );
+                } else {
+                    segments.push(JsonPathSegment::Key(std::mem::take(&mut key)));
+                }
+                index += 1;
+            }
+            '[' => {
+                if !key.is_empty() {
+                    segments.push(JsonPathSegment::Key(std::mem::take(&mut key)));
+                }
+                index += 1;
+                let start = index;
+                while index < chars.len() && chars[index] != ']' {
+                    ensure!(
+                        chars[index].is_ascii_digit(),
+                        "json path array index must be numeric: {path}"
+                    );
+                    index += 1;
+                }
+                ensure!(
+                    index < chars.len() && chars[index] == ']',
+                    "json path array index is not closed: {path}"
+                );
+                ensure!(
+                    index > start,
+                    "json path array index cannot be empty: {path}"
+                );
+                let array_index = chars[start..index]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<usize>()?;
+                segments.push(JsonPathSegment::Index(array_index));
+                index += 1;
+                if index < chars.len() && chars[index] != '.' && chars[index] != '[' {
+                    bail!("json path segment must be separated by `.` or array index: {path}");
+                }
+            }
+            character => {
+                key.push(character);
+                index += 1;
+            }
+        }
+    }
+
+    ensure!(
+        !key.is_empty() || matches!(segments.last(), Some(JsonPathSegment::Index(_))),
+        "json path cannot end with an empty segment: {path}"
+    );
+    if !key.is_empty() {
+        segments.push(JsonPathSegment::Key(key));
+    }
+    ensure!(!segments.is_empty(), "json path cannot be empty");
+    Ok(segments)
+}
+
+pub fn parse_success_expression_path(expression: &str) -> Result<Vec<JsonPathSegment>> {
+    const OPERATORS: [&str; 6] = [">=", "<=", "!=", "==", ">", "<"];
+    let trimmed = expression.trim();
+    let (_, left, _) = OPERATORS
+        .iter()
+        .find_map(|operator| {
+            trimmed
+                .split_once(operator)
+                .map(|(left, right)| (*operator, left.trim(), right.trim()))
+        })
+        .ok_or_else(|| anyhow!("unsupported success expression: {expression}"))?;
+    ensure!(
+        left.starts_with('$'),
+        "success expression left side must start with `$`: {expression}"
+    );
+    parse_json_path(left)
+}
+
+pub fn simple_schema_contains_path(schema: &serde_json::Value, path: &[JsonPathSegment]) -> bool {
+    let mut cursor = schema;
+    for segment in path {
+        match segment {
+            JsonPathSegment::Key(key) => {
+                let Some(object) = cursor.as_object() else {
+                    return false;
+                };
+                let Some(next) = object.get(key) else {
+                    return false;
+                };
+                cursor = next;
+            }
+            JsonPathSegment::Index(index) => {
+                let Some(array) = cursor.as_array() else {
+                    return false;
+                };
+                let Some(next) = array.get(*index).or_else(|| array.first()) else {
+                    return false;
+                };
+                cursor = next;
+            }
+        }
+    }
+    true
+}
+
+pub fn looks_like_json_schema(schema: &serde_json::Value) -> bool {
+    schema.as_object().is_some_and(|object| {
+        [
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "items",
+        ]
+        .iter()
+        .any(|key| object.contains_key(*key))
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDsl {
     pub version: String,
@@ -75,6 +218,8 @@ pub struct WorkerNode {
 pub struct OutputContractDsl {
     pub kind: OutputKind,
     pub artifact: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,9 +229,15 @@ pub enum OutputKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonConditionDsl {
-    pub path: String,
-    pub equals: serde_json::Value,
+#[serde(untagged)]
+pub enum JsonConditionDsl {
+    Expression {
+        expression: String,
+    },
+    PathEquals {
+        path: String,
+        equals: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,7 +330,10 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| anyhow!("worker node `{id}` provider cannot be blank"))?;
-                ensure!(!provider.is_empty(), "worker node `{id}` provider cannot be blank");
+                ensure!(
+                    !provider.is_empty(),
+                    "worker node `{id}` provider cannot be blank"
+                );
                 if let Some(profile) = &worker.profile {
                     ensure!(
                         !profile.trim().is_empty(),
@@ -195,16 +349,47 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                         worker.primary_artifact.as_deref() == Some(output.artifact.as_str()),
                         "worker node `{id}` output artifact must match primary_artifact"
                     );
+                    if let Some(schema) = &output.schema {
+                        ensure!(
+                            !looks_like_json_schema(schema),
+                            "worker node `{id}` output schema must use simplified output shape instead of JSON Schema"
+                        );
+                    }
                 }
                 if let Some(condition) = &worker.success_condition {
                     ensure!(
-                        worker.output.as_ref().is_some_and(|output| output.kind == OutputKind::Json),
+                        worker
+                            .output
+                            .as_ref()
+                            .is_some_and(|output| output.kind == OutputKind::Json),
                         "worker node `{id}` success_condition requires json output"
                     );
-                    ensure!(
-                        !condition.path.trim().is_empty(),
-                        "worker node `{id}` success_condition path cannot be blank"
-                    );
+                    let path = match condition {
+                        JsonConditionDsl::Expression { expression } => {
+                            ensure!(
+                                !expression.trim().is_empty(),
+                                "worker node `{id}` success_condition expression cannot be blank"
+                            );
+                            parse_success_expression_path(expression)?
+                        }
+                        JsonConditionDsl::PathEquals { path, .. } => {
+                            ensure!(
+                                !path.trim().is_empty(),
+                                "worker node `{id}` success_condition path cannot be blank"
+                            );
+                            parse_json_path(path)?
+                        }
+                    };
+                    if let Some(schema) = worker
+                        .output
+                        .as_ref()
+                        .and_then(|output| output.schema.as_ref())
+                    {
+                        ensure!(
+                            simple_schema_contains_path(schema, &path),
+                            "worker node `{id}` success_condition path is not declared in output schema"
+                        );
+                    }
                 }
             }
             NodeDsl::Verify(verify) => {
@@ -214,7 +399,10 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| anyhow!("verify node `{id}` provider cannot be blank"))?;
-                ensure!(!provider.is_empty(), "verify node `{id}` provider cannot be blank");
+                ensure!(
+                    !provider.is_empty(),
+                    "verify node `{id}` provider cannot be blank"
+                );
                 if let Some(profile) = &verify.profile {
                     ensure!(
                         !profile.trim().is_empty(),

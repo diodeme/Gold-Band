@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8Path;
 
 use crate::artifacts::{
@@ -6,7 +6,9 @@ use crate::artifacts::{
     parse_json_artifact, validate_exec_plan, validate_exec_result, validate_verify_result,
 };
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
-use crate::dsl::{NodeDsl, ValidatedWorkflow, WorkerNode};
+use crate::dsl::{
+    JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
+};
 use crate::exec::run_exec_plan;
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
@@ -24,18 +26,29 @@ use super::transition_context::{
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
     let mut sections = Vec::new();
-    if let Some(goal) = worker.goal.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(goal) = worker
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         sections.push(goal.to_string());
     }
-    if let (Some(output), Some(condition)) = (&worker.output, &worker.success_condition) {
-        sections.push(format!(
-            "Return valid JSON for `{}`. The runtime treats this node as successful only when JSON field `{}` equals `{}`.",
-            output.artifact,
-            condition.path,
-            condition.equals
-        ));
-    } else if let Some(output) = &worker.output {
-        sections.push(format!("Return valid JSON for `{}`.", output.artifact));
+    if let Some(output) = &worker.output {
+        let mut instruction = format!("Return valid JSON for `{}`.", output.artifact);
+        if let Some(schema) = &output.schema {
+            instruction.push_str(&format!(
+                "\nJSON output constraint:\n{}",
+                serde_json::to_string_pretty(schema).expect("serialize output schema")
+            ));
+        }
+        if let Some(condition) = &worker.success_condition {
+            match condition {
+                JsonConditionDsl::Expression { expression } => instruction.push_str(&format!("\nThe runtime treats this node as successful only when `{}` evaluates to true.", expression)),
+                JsonConditionDsl::PathEquals { path, equals } => instruction.push_str(&format!("\nThe runtime treats this node as successful only when JSON field `{}` equals `{}`.", path, equals)),
+            }
+        }
+        sections.push(instruction);
     }
     (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
@@ -117,9 +130,15 @@ pub(crate) fn execute_ai_node(
         NodeDsl::Exec(_) => bail!("execute_ai_node cannot run exec nodes"),
     };
 
+    let profile_content = profile
+        .as_deref()
+        .map(|id| app.profile_show(id).map(|profile| profile.content))
+        .transpose()?;
+
     let invocation = WorkerInvocation {
         invocation_kind,
         profile,
+        profile_content,
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
         workspace_dir: app.paths.repo_root.clone(),
@@ -233,17 +252,14 @@ pub(crate) fn execute_exec_node(
     Ok(node)
 }
 
-fn evaluate_json_success_condition(app: &App, task_id: &str, run_id: &str, round_id: &str, node: &NodeState, artifact_name: &str) -> Result<Option<NodeOutcome>> {
-    let Some(path) = node
-        .resolved_config
-        .get("successConditionPath")
-        .and_then(|value| value.as_str())
-    else {
-        return Ok(None);
-    };
-    let Some(expected) = node.resolved_config.get("successConditionEquals") else {
-        return Ok(Some(NodeOutcome::Invalid));
-    };
+fn evaluate_json_success_condition(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node: &NodeState,
+    artifact_name: &str,
+) -> Result<Option<NodeOutcome>> {
     let artifact_path = app.paths.artifact_file(
         task_id,
         run_id,
@@ -254,22 +270,179 @@ fn evaluate_json_success_condition(app: &App, task_id: &str, run_id: &str, round
     );
     let content = std::fs::read_to_string(artifact_path.as_std_path())?;
     let value: serde_json::Value = parse_json_artifact(&content)?;
-    let mut cursor = &value;
-    for segment in path.split('.') {
-        let key = segment.trim();
-        if key.is_empty() {
+
+    if let Some(schema) = node.resolved_config.get("outputSchema") {
+        if !matches_simple_schema(&value, schema)? {
             return Ok(Some(NodeOutcome::Invalid));
         }
-        let Some(next) = cursor.get(key) else {
-            return Ok(Some(NodeOutcome::Invalid));
-        };
-        cursor = next;
     }
-    Ok(Some(if cursor == expected {
+
+    if let Some(expression) = node
+        .resolved_config
+        .get("successConditionExpression")
+        .and_then(|value| value.as_str())
+    {
+        return evaluate_json_expression(&value, expression).map(|success| {
+            Some(if success {
+                NodeOutcome::Success
+            } else {
+                NodeOutcome::Failure
+            })
+        });
+    }
+
+    let Some(path) = node
+        .resolved_config
+        .get("successConditionPath")
+        .and_then(|value| value.as_str())
+    else {
+        return Ok(None);
+    };
+    let Some(expected) = node.resolved_config.get("successConditionEquals") else {
+        return Ok(Some(NodeOutcome::Invalid));
+    };
+    let Some(cursor) = select_json_path(&value, path) else {
+        return Ok(Some(NodeOutcome::Invalid));
+    };
+    Ok(Some(if json_values_equal(cursor, expected) {
         NodeOutcome::Success
     } else {
         NodeOutcome::Failure
     }))
+}
+
+fn select_json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let segments = parse_json_path(path).ok()?;
+    let mut cursor = value;
+    for segment in segments {
+        cursor = match segment {
+            JsonPathSegment::Key(key) => cursor.get(key)?,
+            JsonPathSegment::Index(index) => cursor.as_array()?.get(index)?,
+        };
+    }
+    Some(cursor)
+}
+
+fn evaluate_json_expression(value: &serde_json::Value, expression: &str) -> Result<bool> {
+    const OPERATORS: [&str; 6] = [">=", "<=", "!=", "==", ">", "<"];
+    let trimmed = expression.trim();
+    let (operator, left, right) = OPERATORS
+        .iter()
+        .find_map(|operator| {
+            trimmed
+                .split_once(operator)
+                .map(|(left, right)| (*operator, left.trim(), right.trim()))
+        })
+        .ok_or_else(|| anyhow!("unsupported success expression: {expression}"))?;
+    ensure!(
+        left.starts_with('$'),
+        "success expression left side must start with `$`: {expression}"
+    );
+    let Some(actual) = select_json_path(value, left) else {
+        return Ok(false);
+    };
+    let expected = parse_expression_value(right)?;
+    compare_json_values(actual, &expected, operator)
+}
+
+fn parse_expression_value(value: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(value)
+        .or_else(|_| serde_json::from_str(&format!("\"{}\"", value.trim_matches('"'))))
+        .map_err(|error| anyhow!("invalid success expression value `{value}`: {error}"))
+}
+
+fn compare_json_values(
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+    operator: &str,
+) -> Result<bool> {
+    Ok(match operator {
+        "==" => json_values_equal(actual, expected),
+        "!=" => !json_values_equal(actual, expected),
+        ">" => json_number(actual)? > json_number(expected)?,
+        ">=" => json_number(actual)? >= json_number(expected)?,
+        "<" => json_number(actual)? < json_number(expected)?,
+        "<=" => json_number(actual)? <= json_number(expected)?,
+        _ => bail!("unsupported success expression operator: {operator}"),
+    })
+}
+
+fn json_values_equal(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    if actual == expected {
+        return true;
+    }
+    match (actual, expected) {
+        (serde_json::Value::Bool(left), serde_json::Value::String(right))
+        | (serde_json::Value::String(right), serde_json::Value::Bool(left)) => {
+            right.eq_ignore_ascii_case(&left.to_string())
+        }
+        (serde_json::Value::Number(_), serde_json::Value::String(_))
+        | (serde_json::Value::String(_), serde_json::Value::Number(_)) => json_number(actual)
+            .and_then(|left| json_number(expected).map(|right| left == right))
+            .unwrap_or(false),
+        (serde_json::Value::Null, serde_json::Value::String(right))
+        | (serde_json::Value::String(right), serde_json::Value::Null) => {
+            right.eq_ignore_ascii_case("null")
+        }
+        _ => false,
+    }
+}
+
+fn json_number(value: &serde_json::Value) -> Result<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+        .ok_or_else(|| anyhow!("success expression comparison requires numbers"))
+}
+
+fn matches_simple_schema(value: &serde_json::Value, schema: &serde_json::Value) -> Result<bool> {
+    match schema {
+        serde_json::Value::String(type_name) => Ok(matches_simple_type(value, type_name)),
+        serde_json::Value::Object(schema_object) => {
+            let Some(value_object) = value.as_object() else {
+                return Ok(false);
+            };
+            for (key, field_schema) in schema_object {
+                let Some(field_value) = value_object.get(key) else {
+                    return Ok(false);
+                };
+                if !matches_simple_schema(field_value, field_schema)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        serde_json::Value::Array(items) => {
+            let Some(value_array) = value.as_array() else {
+                return Ok(false);
+            };
+            let Some(item_schema) = items.first() else {
+                return Ok(true);
+            };
+            for item in value_array {
+                if !matches_simple_schema(item, item_schema)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        serde_json::Value::Null => Ok(true),
+        _ => Ok(true),
+    }
+}
+
+fn matches_simple_type(value: &serde_json::Value, type_name: &str) -> bool {
+    match type_name.trim().to_ascii_lowercase().as_str() {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        "bool" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "null" => value.is_null(),
+        _ => true,
+    }
 }
 
 pub(crate) fn finalize_ai_attempt(
@@ -368,7 +541,11 @@ pub(crate) fn finalize_ai_attempt(
             } else if matches!(node.node_type, crate::domain::NodeType::Worker) {
                 expected_artifact
                     .as_deref()
-                    .map(|artifact| evaluate_json_success_condition(app, task_id, run_id, round_id, &node, artifact))
+                    .map(|artifact| {
+                        evaluate_json_success_condition(
+                            app, task_id, run_id, round_id, &node, artifact,
+                        )
+                    })
                     .transpose()?
                     .flatten()
                     .unwrap_or(NodeOutcome::Success)
@@ -453,8 +630,15 @@ pub(crate) fn re_evaluate_attempt(
             }
             _ => {
                 node.outcome = Some(
-                    evaluate_json_success_condition(app, task_id, run_id, round_id, &node, &artifact_name)?
-                        .unwrap_or(NodeOutcome::Success),
+                    evaluate_json_success_condition(
+                        app,
+                        task_id,
+                        run_id,
+                        round_id,
+                        &node,
+                        &artifact_name,
+                    )?
+                    .unwrap_or(NodeOutcome::Success),
                 );
             }
         }
@@ -469,4 +653,44 @@ pub(crate) fn re_evaluate_attempt(
         &node,
     )?;
     Ok(node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_nested_array_json_path() {
+        let value = serde_json::json!({ "xx": { "yy": [{ "zz": true }] } });
+        assert_eq!(
+            select_json_path(&value, "$.xx.yy[0].zz"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn evaluates_no_space_and_quoted_boolean_expressions() {
+        let value = serde_json::json!({ "result": true });
+        assert!(
+            evaluate_json_expression(&value, "$.result==true").expect("expression should evaluate")
+        );
+        assert!(
+            evaluate_json_expression(&value, "$.result == \"true\"")
+                .expect("expression should evaluate")
+        );
+    }
+
+    #[test]
+    fn matches_simplified_schema() {
+        let value = serde_json::json!({ "reason": "ok", "result": true, "extra": 1 });
+        let schema = serde_json::json!({ "reason": "String", "result": "boolean" });
+        assert!(matches_simple_schema(&value, &schema).expect("schema should match"));
+    }
+
+    #[test]
+    fn rejects_missing_simplified_schema_field() {
+        let value = serde_json::json!({ "reason": "ok" });
+        let schema = serde_json::json!({ "reason": "String", "result": "boolean" });
+        assert!(!matches_simple_schema(&value, &schema).expect("schema should not match"));
+    }
 }

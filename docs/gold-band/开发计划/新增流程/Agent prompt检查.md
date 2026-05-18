@@ -1,0 +1,5 @@
+profile需要作为追加的systemprompt携带给agent
+AI输出验证的dsl需要作为追加的systemprompt携带给agent
+AI输出验证节点的结果需要在最后一步提取json（这里应该现有accept已经有逻辑了），然后根据success expression判断DSL是否成功，然后根据边关系确定下一步走向
+如果AI 输出验证节点 agent没有返回json，或者json格式不合法（比如json语法错误，没包含要求的字段等），则继续该节点的agent对话，要求agent 修改，直到返回合法的json。
+以上的prompt和对话等都要做i18n

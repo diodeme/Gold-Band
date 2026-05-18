@@ -1,9 +1,12 @@
-use std::sync::Mutex;
+use std::{collections::BTreeMap, sync::Mutex};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{RuntimeConfig, UserConfig};
+use gold_band::config::{ManagedAgentType, RuntimeConfig, UserConfig};
+use gold_band::process::kill_process_tree;
+use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, read_json};
 
 #[derive(Debug, Clone)]
@@ -43,14 +46,23 @@ impl DesktopContext {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentDiagnosticState {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
+    agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
 }
 
 impl DesktopState {
     pub fn new(context: DesktopContext) -> Self {
         Self {
             context: Mutex::new(context),
+            agent_diagnostics: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -75,6 +87,74 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .config = config;
+        self.clear_agent_diagnostics()?;
+        Ok(())
+    }
+
+    pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentType, AgentDiagnosticState>> {
+        Ok(self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clone())
+    }
+
+    pub fn clear_agent_diagnostics(&self) -> Result<()> {
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clear();
+        Ok(())
+    }
+
+    pub fn clear_agent_diagnostic(&self, agent_type: ManagedAgentType) -> Result<()> {
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .remove(&agent_type);
+        Ok(())
+    }
+
+    pub fn cleanup_agent_diagnostic_processes(&self) -> Result<()> {
+        let repo_root = self.context()?.repo_root;
+        let pid_path = GoldBandPaths::new(repo_root).runtime_root.join("doctor/acp/provider.pid");
+        let Some(pid) = std::fs::read_to_string(pid_path.as_std_path())
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+        else {
+            return Ok(());
+        };
+        let _ = kill_process_tree(pid);
+        let _ = std::fs::remove_file(pid_path.as_std_path());
+        Ok(())
+    }
+
+    pub fn refresh_agent_diagnostic(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> Result<AgentDiagnosticState> {
+        let app = self.app()?;
+        let doctor = app.provider_doctor(agent_type.as_str())?;
+        let diagnostic = diagnostic_state_from_result(doctor);
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .insert(agent_type, diagnostic.clone());
+        Ok(diagnostic)
+    }
+
+    pub fn refresh_all_agent_diagnostics(&self) -> Result<()> {
+        let app = self.app()?;
+        let agent_types = app.managed_agents().keys().copied().collect::<Vec<_>>();
+        let mut diagnostics = BTreeMap::new();
+        for agent_type in agent_types {
+            let doctor = app.provider_doctor(agent_type.as_str())?;
+            diagnostics.insert(agent_type, diagnostic_state_from_result(doctor));
+        }
+        *self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = diagnostics;
         Ok(())
     }
 
@@ -90,7 +170,17 @@ impl DesktopState {
         guard.repo_root = repo_root;
         guard.config = RuntimeConfig::default().apply_user_config(&user_config);
         guard.recent_workspaces = recent_workspaces(&user_config, &guard.repo_root);
-        Ok(guard.clone())
+        drop(guard);
+        self.clear_agent_diagnostics()?;
+        self.context()
+    }
+}
+
+fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
+    AgentDiagnosticState {
+        available: result.available,
+        reason: result.reason,
+        checked_at: current_timestamp(),
     }
 }
 

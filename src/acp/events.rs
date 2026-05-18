@@ -348,12 +348,6 @@ mod tests {
     #[test]
     fn user_prompt_event_omits_prompt_id_when_absent() {
         let event = user_prompt_event(7, "session-123".to_string(), "继续".to_string(), None);
-        assert_eq!(
-            event
-                .raw
-                .as_ref()
-                .and_then(|raw| raw.get("promptId")),
-            None
-        );
+        assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
 }

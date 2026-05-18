@@ -47,7 +47,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
       "id": "dev",
       "type": "worker",
       "provider": "claude-code",
-      "profile": "developer",
+      "profile": "pf-example-developer",
       "goal": "实现需求并给出执行计划",
       "primaryArtifact": "exec-plan"
     },
@@ -96,7 +96,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 - DSL 当前使用 `worker` 作为默认 AI worker 节点名
 - 执行层必须是 provider-first，而不是 Claude-only
 - `worker` 节点必须显式声明 `provider`，桌面作者态 UI 从 Agent 管理页已配置 agent 中选择
-- `profile` 通过节点声明的 profile 名解析，优先级为项目目录 > 用户目录
+- `profile` 保存 profile `id`，运行前按当前项目级 profile、用户级 profile 的优先级解析为可见角色正文；保存/运行前必须可见
 - `worker` 一次只允许一个 `primaryArtifact`
 - `worker.output.kind=json` + `successCondition` 可把 AI 输出字段转换为 `success / failure / invalid` 路由结果
 - `failure` 与 `invalid` 同时保留，但边界不同：`failure` 表示目标未达成或执行失败，`invalid` 表示结果不满足最小 contract

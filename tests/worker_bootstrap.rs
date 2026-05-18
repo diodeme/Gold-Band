@@ -137,20 +137,18 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    let gold_band_home = repo_root.join("gold-band-home");
-    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let provider = RecordingProvider::default();
     let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "developer profile",
-    )
-    .unwrap();
+    let dev_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id;
     std::fs::write(
         app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
@@ -158,27 +156,30 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     .unwrap();
     std::fs::write(
         app.paths.workflow_file(task_id).as_std_path(),
-        r#"{
+        format!(
+            r#"{{
           "version": "0.1",
           "id": "dev-only",
           "entry": "dev",
-          "control": {
+          "control": {{
             "max_repair_loops": 1,
             "max_acceptance_loops": 1,
             "on_acceptance_failure": "stop"
-          },
+          }},
           "nodes": [
-            {
+            {{
               "id": "dev",
               "type": "worker",
               "provider": "claude-code",
-              "profile": "developer",
+              "profile": "{}",
               "goal": "Create an exec plan",
               "primary_artifact": "exec-plan"
-            }
+            }}
           ],
           "edges": []
-        }"#,
+        }}"#,
+            dev_profile
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -219,20 +220,18 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue";
 
-    let gold_band_home = repo_root.join("gold-band-home");
-    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let provider = InterruptThenSuccessProvider::default();
     let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/verifier.md")
-            .as_std_path(),
-        "verifier profile",
-    )
-    .unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
     std::fs::write(
         app.paths.requirement_file(task_id).as_std_path(),
         "Verify feature",
@@ -240,20 +239,23 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     .unwrap();
     std::fs::write(
         app.paths.workflow_file(task_id).as_std_path(),
-        r#"{
+        format!(
+            r#"{{
           "version": "0.1",
           "id": "continue-flow",
           "entry": "accept",
-          "control": {
+          "control": {{
             "max_repair_loops": 1,
             "max_acceptance_loops": 1,
             "on_acceptance_failure": "stop"
-          },
+          }},
           "nodes": [
-            {"id":"accept","type":"verify","provider":"claude-code","profile":"verifier"}
+            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
           ],
           "edges": []
-        }"#,
+        }}"#,
+            accept_profile
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -281,14 +283,19 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     )
     .unwrap();
 
-    let completed = app.run_continue(task_id, "run-001", Some("prompt-continue-001".to_string())).unwrap();
+    let completed = app
+        .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()))
+        .unwrap();
     assert_eq!(completed.outcome, Some(RunOutcome::Success));
 
     let invocations = provider.invocations.lock().unwrap();
     assert_eq!(invocations.len(), 2);
     assert_eq!(invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(invocations[1].resume_prompt.as_deref(), Some("继续"));
-    assert_eq!(invocations[1].resume_prompt_id.as_deref(), Some("prompt-continue-001"));
+    assert_eq!(
+        invocations[1].resume_prompt_id.as_deref(),
+        Some("prompt-continue-001")
+    );
     assert_eq!(
         invocations[1]
             .continue_ref

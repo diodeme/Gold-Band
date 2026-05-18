@@ -2,6 +2,7 @@ mod ids;
 mod node_executor;
 mod orchestrator;
 mod profile_resolver;
+mod profiles;
 mod state_access;
 mod state_factory;
 mod transition_context;
@@ -17,9 +18,12 @@ use crate::config::{
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig, UserConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
-use crate::domain::{NodeOutcome, RunOutcome};
-use crate::domain::{PauseReason, RunStatus, VERSION};
-use crate::dsl::{EdgeOutcome, ValidatedWorkflow, WorkflowDsl, validate_workflow};
+use crate::domain::{AcceptanceFailurePolicy, NodeOutcome, RunOutcome};
+use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
+use crate::dsl::{
+    END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
+    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl, validate_workflow,
+};
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, provider_capabilities,
@@ -46,6 +50,11 @@ use self::orchestrator::{
     run_start_background as orchestrator_run_start_background,
 };
 use self::profile_resolver::resolve_workflow_profiles;
+use self::profiles::{
+    DefaultProfileIds, create_profile, ensure_default_user_profiles, list_profiles, show_profile,
+    update_profile,
+};
+pub use self::profiles::{ProfileEntry, ProfileInput, ProfileList, ProfileScope};
 
 fn tail_text(text: &str, limit: usize) -> String {
     if limit == 0 {
@@ -61,6 +70,203 @@ fn logical_artifact_name(name: &str) -> &str {
     name.strip_suffix(".json").unwrap_or(name)
 }
 
+fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
+    let now = now_rfc3339_like();
+    WorkflowTemplate {
+        id: "default".to_string(),
+        name: "默认工作流".to_string(),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeCode.as_str(), profiles),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> WorkflowDsl {
+    fn worker(
+        provider: &str,
+        profiles: &DefaultProfileIds,
+        id: &str,
+        role_key: &str,
+        goal: &str,
+        validation: bool,
+    ) -> NodeDsl {
+        let artifact = validation.then(|| format!("{id}-result"));
+        NodeDsl::Worker(WorkerNode {
+            id: id.to_string(),
+            provider: Some(provider.to_string()),
+            profile: Some(
+                profiles
+                    .get(role_key)
+                    .expect("default role id exists")
+                    .to_string(),
+            ),
+            goal: Some(goal.to_string()),
+            primary_artifact: artifact.clone(),
+            output: artifact.clone().map(|artifact| OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact,
+                schema: Some(serde_json::json!({
+                    "reason": "String",
+                    "result": "boolean",
+                })),
+            }),
+            success_condition: validation.then(|| JsonConditionDsl::Expression {
+                expression: "$.result == true".to_string(),
+            }),
+        })
+    }
+
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "task-workflow".to_string(),
+        entry: "plan".to_string(),
+        control: WorkflowControl {
+            max_repair_loops: 3,
+            max_acceptance_loops: 1,
+            on_acceptance_failure: AcceptanceFailurePolicy::Stop,
+        },
+        nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "plan",
+                "plan",
+                "Analyze the imported requirement and produce an implementation plan.",
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "dev",
+                "dev",
+                "Implement the requirement in the workspace.",
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "review",
+                "review",
+                "Review the implementation and return JSON with result and reason fields.",
+                true,
+            ),
+            worker(
+                provider,
+                profiles,
+                "test",
+                "test",
+                "Run or describe verification and return JSON with result and reason fields.",
+                true,
+            ),
+            worker(
+                provider,
+                profiles,
+                "accept",
+                "accept",
+                "Validate acceptance and return JSON with result and reason fields.",
+                true,
+            ),
+            worker(
+                provider,
+                profiles,
+                "cleanup",
+                "cleanup",
+                "Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.",
+                false,
+            ),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "plan".to_string(),
+                to: "dev".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "dev".to_string(),
+                to: "review".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "review".to_string(),
+                to: "test".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "review".to_string(),
+                to: "dev".to_string(),
+                on: EdgeOutcome::Failure,
+                session: Some(SessionMode::Continue),
+            },
+            EdgeDsl {
+                from: "test".to_string(),
+                to: "accept".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "test".to_string(),
+                to: "dev".to_string(),
+                on: EdgeOutcome::Failure,
+                session: Some(SessionMode::Continue),
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: "cleanup".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "cleanup".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: NEW_ROUND_NODE.to_string(),
+                on: EdgeOutcome::Failure,
+                session: None,
+            },
+        ],
+    }
+}
+
+fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
+    let slug = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if slug.is_empty() {
+        "workflow".to_string()
+    } else {
+        slug
+    };
+    let mut candidate = base.clone();
+    let mut index = 1;
+    while store
+        .templates
+        .iter()
+        .any(|template| template.id == candidate)
+    {
+        index += 1;
+        candidate = format!("{base}-{index}");
+    }
+    candidate
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateTaskInput {
     pub title: Option<String>,
@@ -68,6 +274,30 @@ pub struct CreateTaskInput {
     pub requirement_file_name: String,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
+    pub workflow_template_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTemplateStore {
+    pub version: String,
+    #[serde(alias = "last_used_template_id")]
+    pub last_used_template_id: Option<String>,
+    #[serde(alias = "last_created_workflow")]
+    pub last_created_workflow: Option<WorkflowDsl>,
+    pub templates: Vec<WorkflowTemplate>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTemplate {
+    pub id: String,
+    pub name: String,
+    pub workflow: WorkflowDsl,
+    #[serde(alias = "created_at")]
+    pub created_at: String,
+    #[serde(alias = "updated_at")]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -198,7 +428,9 @@ impl App {
         Ok(config)
     }
 
-    pub fn managed_agents(&self) -> &std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig> {
+    pub fn managed_agents(
+        &self,
+    ) -> &std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig> {
         &self.config.agents
     }
 
@@ -219,6 +451,102 @@ impl App {
         let mut agents = self.config.agents.clone();
         agents.remove(&agent_type);
         self.set_user_agents(agents)
+    }
+
+    pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        self.load_workflow_template_store()
+    }
+
+    pub fn profiles(&self) -> Result<ProfileList> {
+        list_profiles(&self.paths)
+    }
+
+    pub fn profile_show(&self, id: &str) -> Result<ProfileEntry> {
+        show_profile(&self.paths, id)
+    }
+
+    pub fn create_profile(&self, input: ProfileInput) -> Result<ProfileEntry> {
+        create_profile(&self.paths, input)
+    }
+
+    pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
+        update_profile(&self.paths, id, input)
+    }
+
+    pub fn save_workflow_template(
+        &self,
+        name: String,
+        workflow: WorkflowDsl,
+    ) -> Result<WorkflowTemplateStore> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("workflow template name cannot be empty");
+        }
+        let validated = validate_workflow(workflow)?;
+        self.validate_workflow_agents(&validated)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+
+        let mut store = self.load_workflow_template_store()?;
+        let now = now_rfc3339_like();
+        let id = unique_workflow_template_id(&store, name);
+        store.templates.push(WorkflowTemplate {
+            id: id.clone(),
+            name: name.to_string(),
+            workflow: validated.raw,
+            created_at: now.clone(),
+            updated_at: now,
+        });
+        store.last_used_template_id = Some(id);
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
+        let default_profiles = ensure_default_user_profiles(&self.paths)?;
+        let default_template = default_workflow_template(&default_profiles);
+        let path = self.paths.workflow_templates_file();
+        if path.exists() {
+            let mut store: WorkflowTemplateStore = read_json(&path)?;
+            if store.templates.is_empty() {
+                store.templates.push(default_template);
+            } else if let Some(template) = store
+                .templates
+                .iter_mut()
+                .find(|template| template.id == "default")
+            {
+                *template = default_template;
+            } else {
+                store.templates.insert(0, default_template);
+            }
+            self.save_workflow_template_store(&store)?;
+            return Ok(store);
+        }
+        let store = WorkflowTemplateStore {
+            version: VERSION.to_string(),
+            last_used_template_id: Some("default".to_string()),
+            last_created_workflow: None,
+            templates: vec![default_template],
+        };
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
+        fs::create_dir_all(self.paths.authoring_dir().as_std_path())?;
+        write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    fn record_created_task_workflow(
+        &self,
+        workflow: WorkflowDsl,
+        template_id: Option<String>,
+    ) -> Result<()> {
+        let mut store = self.load_workflow_template_store()?;
+        store.last_created_workflow = Some(workflow);
+        if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
+            store.last_used_template_id = Some(template_id);
+        }
+        self.save_workflow_template_store(&store)
     }
 
     pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentType, &ManagedAgentConfig)> {
@@ -246,16 +574,18 @@ impl App {
     pub fn provider_doctor(&self, provider: &str) -> Result<DoctorResult> {
         let (agent_type, config) = self.managed_agent(provider)?;
         match agent_type {
-            ManagedAgentType::ClaudeCode => match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
-                Ok(()) => Ok(DoctorResult {
-                    available: true,
-                    reason: None,
-                }),
-                Err(err) => Ok(DoctorResult {
-                    available: false,
-                    reason: Some(err.to_string()),
-                }),
-            },
+            ManagedAgentType::ClaudeCode => {
+                match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
+                    Ok(()) => Ok(DoctorResult {
+                        available: true,
+                        reason: None,
+                    }),
+                    Err(err) => Ok(DoctorResult {
+                        available: false,
+                        reason: Some(err.to_string()),
+                    }),
+                }
+            }
             _ => bail!("agent `{provider}` is not supported yet"),
         }
     }
@@ -267,6 +597,7 @@ impl App {
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
         let paths = GoldBandPaths::new(repo_root);
         let _ = paths.write_project_manifest();
+        let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
             config,
@@ -285,6 +616,7 @@ impl App {
     ) -> Self {
         let paths = GoldBandPaths::new(repo_root);
         let _ = paths.write_project_manifest();
+        let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
             config,
@@ -332,13 +664,19 @@ impl App {
             description: input.description.filter(|value| !value.trim().is_empty()),
         };
         validate_task_state(&task)?;
-        fs::create_dir_all(self.paths.task_dir(&task_id).join("authoring").as_std_path())?;
+        fs::create_dir_all(
+            self.paths
+                .task_dir(&task_id)
+                .join("authoring")
+                .as_std_path(),
+        )?;
         write_json(&self.paths.task_file(&task_id), &task)?;
         fs::write(
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
         write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
+        self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         self.task_summary(&task_id)
     }
 
@@ -956,14 +1294,19 @@ impl App {
         }
         for edge in &workflow.raw.edges {
             if matches!(edge.session, Some(crate::domain::SessionMode::Continue)) {
-                let target = workflow
-                    .get_node(&edge.to)
-                    .ok_or_else(|| anyhow!("session=continue requires a real node target: {}", edge.to))?;
+                let target = workflow.get_node(&edge.to).ok_or_else(|| {
+                    anyhow!("session=continue requires a real node target: {}", edge.to)
+                })?;
                 let provider = target
                     .provider()
                     .ok_or_else(|| anyhow!("target node `{}` is missing provider", edge.to))?;
-                if !self.provider_capabilities(provider)?.supports_continue_session {
-                    bail!("session=continue currently only supports agents with continue-session capability: {provider}");
+                if !self
+                    .provider_capabilities(provider)?
+                    .supports_continue_session
+                {
+                    bail!(
+                        "session=continue currently only supports agents with continue-session capability: {provider}"
+                    );
                 }
             }
         }

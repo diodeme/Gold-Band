@@ -20,14 +20,14 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
             .as_std_path(),
     )
     .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "# developer",
-    )
-    .unwrap();
+    let dev_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id;
     std::fs::create_dir_all(
         app.paths
             .artifacts_dir("task-001", "run-001", "round-001", "dev", "attempt-001")
@@ -47,7 +47,10 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
     .unwrap();
     std::fs::write(
         app.paths.workflow_file("task-001").as_std_path(),
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer","primary_artifact":"exec-plan"},{"type":"exec","id":"run-cmd","plan_from":"dev"},{"type":"verify","id":"accept","provider":"claude-code","profile":"developer"}],"edges":[{"from":"dev","to":"run-cmd","on":"success"},{"from":"dev","to":"accept","on":"failure"},{"from":"run-cmd","to":"accept","on":"invalid"}]}"#,
+        format!(
+            r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}","primary_artifact":"exec-plan"}},{{"type":"exec","id":"run-cmd","plan_from":"dev"}},{{"type":"verify","id":"accept","provider":"claude-code","profile":"{}"}}],"edges":[{{"from":"dev","to":"run-cmd","on":"success"}},{{"from":"dev","to":"accept","on":"failure"}},{{"from":"run-cmd","to":"accept","on":"invalid"}}]}}"#,
+            dev_profile, dev_profile
+        ),
     )
     .unwrap();
     std::fs::write(

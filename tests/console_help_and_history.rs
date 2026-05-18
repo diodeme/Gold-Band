@@ -112,8 +112,21 @@ fn seed_basic_task(app: &App, task_id: &str, description: &str) {
     .unwrap();
 }
 
-fn worker_workflow() -> &'static str {
-    r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"developer"}],"edges":[]}"#
+fn developer_profile_id(app: &App) -> String {
+    app.profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+}
+
+fn worker_workflow(app: &App) -> String {
+    format!(
+        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}"}}],"edges":[]}}"#,
+        developer_profile_id(app)
+    )
 }
 
 #[test]
@@ -158,7 +171,7 @@ fn welcome_select_existing_task_enters_task_picker() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;
@@ -190,7 +203,7 @@ fn task_picker_selection_with_active_run_enters_attempt_detail() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     write_developer_profile(&repo_root);
     std::fs::create_dir_all(
@@ -252,7 +265,7 @@ fn task_picker_selection_enters_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
@@ -274,7 +287,7 @@ fn esc_from_workspace_returns_to_task_picker() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
@@ -366,29 +379,33 @@ fn start_selected_task_enters_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::with_provider(repo_root.clone(), Box::new(StartTaskProvider));
+    let dev_profile = developer_profile_id(&app);
     seed_task(
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-        r#"{
+        &format!(
+            r#"{{
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {
+          "control": {{
             "max_repair_loops": 1,
             "max_acceptance_loops": 1,
             "on_acceptance_failure": "auto-loop"
-          },
+          }},
           "nodes": [
-            {"id":"dev","type":"worker","provider":"claude-code","profile":"developer","goal":"Create an exec plan","primary_artifact":"exec-plan"},
-            {"id":"run-tests","type":"exec","plan_from":"dev"},
-            {"id":"accept","type":"verify","provider":"claude-code","profile":"developer"}
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
+            {{"id":"run-tests","type":"exec","plan_from":"dev"}},
+            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
           ],
           "edges": [
-            {"from":"dev","to":"run-tests","on":"success"},
-            {"from":"run-tests","to":"accept","on":"success"}
+            {{"from":"dev","to":"run-tests","on":"success"}},
+            {{"from":"run-tests","to":"accept","on":"success"}}
           ]
-        }"#,
+        }}"#,
+            dev_profile, dev_profile
+        ),
     );
     write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
@@ -419,7 +436,7 @@ fn start_selected_task_marks_background_start() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     write_developer_profile(&repo_root);
     let mut state = ConsoleState::default();
@@ -443,7 +460,7 @@ fn enter_submits_task_picker_command_instead_of_opening_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","title":"Task One","description":"demo task"}"#,
-        worker_workflow(),
+        &worker_workflow(&app),
     );
     std::fs::create_dir_all(app.paths.logs_dir().as_std_path()).unwrap();
     std::fs::write(app.paths.runtime_log_file().as_std_path(), "line-1\nline-2").unwrap();
@@ -472,7 +489,7 @@ fn invalid_task_shows_reason_and_cannot_enter_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        worker_workflow(),
+        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"missing-profile"}],"edges":[]}"#,
     );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;

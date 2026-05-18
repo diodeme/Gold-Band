@@ -20,12 +20,13 @@ import { Shell } from './components/Shell';
 import i18n, { i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
+import { ContextManagementPage } from './pages/ContextManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskListPage } from './pages/TaskListPage';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
-import { pushRoute, replaceRoute, routeFromPath } from './routes';
+import { pushRoute, replaceRoute, routeFromPath, taskListPage } from './routes';
 import { applyFont, applyTheme } from './theme';
 import type {
   AgentRegistryVm,
@@ -119,7 +120,9 @@ export function App() {
 
   const hasPageData = primaryModule === 'agent-management'
     ? agentRegistry !== null
-    : taskPage.kind === 'task-list'
+    : primaryModule === 'knowledge-base'
+      ? true
+      : taskPage.kind === 'task-list'
       ? taskList !== null
       : taskPage.kind === 'workflow'
         ? workflow !== null
@@ -137,6 +140,8 @@ export function App() {
     try {
       if (primaryModule === 'agent-management') {
         setAgentRegistry(await getAgentRegistry());
+      } else if (primaryModule === 'knowledge-base') {
+        return;
       } else if (taskPage.kind === 'task-list') {
         setTaskList(await getTaskList());
       } else if (taskPage.kind === 'workflow') {
@@ -164,6 +169,12 @@ export function App() {
     const interval = window.setInterval(() => void refresh('background'), 10000);
     return () => window.clearInterval(interval);
   }, [bootstrap, hasPageData, refresh]);
+
+  const openProfileManagement = () => {
+    setWorkspacePickerOpen(false);
+    setPrimaryModule('knowledge-base');
+    pushRoute('knowledge-base', taskPage);
+  };
 
   const navigate = (page: TaskPage) => {
     setPrimaryModule('task-orchestration');
@@ -267,16 +278,20 @@ export function App() {
       ? <SettingsPage preferences={preferences} onSave={onSavePreferences} />
       : primaryModule === 'agent-management'
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
-        : renderTaskContent();
+        : primaryModule === 'knowledge-base'
+          ? <ContextManagementPage />
+          : renderTaskContent();
 
   return (
     <Shell
       active={primaryModule}
       repoRoot={bootstrap?.repoRoot}
       onSelect={(module) => {
+        const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);
         setPrimaryModule(module);
-        pushRoute(module, taskPage);
+        setTaskPage(nextTaskPage);
+        pushRoute(module, nextTaskPage);
       }}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
     >
@@ -288,7 +303,7 @@ export function App() {
   function renderTaskContent() {
     const pageBreadcrumbs = <Breadcrumbs page={taskPage} onNavigate={navigate} />;
     if (taskPage.kind === 'task-list') {
-      return <TaskListPage vm={taskList} loading={loading} breadcrumbs={pageBreadcrumbs} onNavigate={navigate} onRefresh={() => void refresh('manual')} onCreateTask={onCreateTask} />;
+      return <TaskListPage vm={taskList} loading={loading} breadcrumbs={pageBreadcrumbs} onNavigate={navigate} onRefresh={() => void refresh('manual')} onCreateTask={onCreateTask} onOpenProfileManagement={openProfileManagement} />;
     }
     if (taskPage.kind === 'workflow') {
       return (
@@ -303,6 +318,7 @@ export function App() {
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(taskId, runId))}
           onKillRun={onKillRun}
           onSaveWorkflow={onSaveTaskWorkflow}
+          onOpenProfileManagement={openProfileManagement}
         />
       );
     }

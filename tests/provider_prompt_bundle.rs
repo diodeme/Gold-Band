@@ -7,6 +7,7 @@ fn worker_invocation_can_be_serialized_with_context_indexes() {
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile: Some("developer".to_string()),
+        profile_content: None,
         requirement_path: Some(Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/authoring/requirement.md",
         )),

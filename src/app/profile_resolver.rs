@@ -5,6 +5,8 @@ use crate::config::{ProfileSource, ResolvedProfileRef};
 use crate::dsl::{NodeDsl, WorkflowDsl};
 use crate::storage::GoldBandPaths;
 
+use super::profiles::find_profile_by_id;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedWorkflowMetadata {
@@ -22,17 +24,21 @@ pub(crate) fn resolve_workflow_profiles(
             NodeDsl::Verify(verify) => verify.profile.as_deref(),
             NodeDsl::Exec(_) => None,
         };
-        if let Some(profile) = profile {
-            let trimmed = profile.trim();
-            if trimmed.is_empty() {
-                bail!("node `{}` has empty profile", node.id());
+        let Some(profile) = profile else {
+            if matches!(node, NodeDsl::Worker(_) | NodeDsl::Verify(_)) {
+                bail!("node `{}` is not associated with role", node.id());
             }
-            let resolved = resolve_profile(paths, trimmed)?;
-            if profiles.iter().all(|existing: &ResolvedProfileRef| {
-                existing.name != resolved.name || existing.path != resolved.path
-            }) {
-                profiles.push(resolved);
-            }
+            continue;
+        };
+        let trimmed = profile.trim();
+        if trimmed.is_empty() {
+            bail!("node `{}` is not associated with role", node.id());
+        }
+        let resolved = resolve_profile(paths, node.id(), trimmed)?;
+        if profiles.iter().all(|existing: &ResolvedProfileRef| {
+            existing.name != resolved.name || existing.path != resolved.path
+        }) {
+            profiles.push(resolved);
         }
     }
     Ok(ResolvedWorkflowMetadata { profiles })
@@ -40,31 +46,22 @@ pub(crate) fn resolve_workflow_profiles(
 
 pub(crate) fn resolve_profile(
     paths: &GoldBandPaths,
-    profile_name: &str,
+    node_id: &str,
+    profile_id: &str,
 ) -> Result<ResolvedProfileRef> {
-    let project_path = paths.repo_profile_file(profile_name);
-    if project_path.exists() {
-        return Ok(ResolvedProfileRef {
-            name: profile_name.to_string(),
-            source: ProfileSource::Project,
-            path: project_path.to_string(),
-        });
-    }
-
-    let user_path = paths.user_profile_file(profile_name);
-    if user_path.exists() {
-        return Ok(ResolvedProfileRef {
-            name: profile_name.to_string(),
-            source: ProfileSource::User,
-            path: user_path.to_string(),
-        });
-    }
-
-    Err(anyhow!(
-        "profile `{profile_name}` not found in {} or {}",
-        project_path,
-        user_path
-    ))
+    let Some(profile) = find_profile_by_id(paths, profile_id)? else {
+        return Err(anyhow!(
+            "node `{node_id}` associated role visibility changed; reset it"
+        ));
+    };
+    Ok(ResolvedProfileRef {
+        name: profile.id,
+        source: match profile.scope {
+            super::profiles::ProfileScope::Project => ProfileSource::Project,
+            super::profiles::ProfileScope::User => ProfileSource::User,
+        },
+        path: profile.path,
+    })
 }
 
 pub(crate) fn resolve_profile_for_node(

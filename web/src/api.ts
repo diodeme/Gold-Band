@@ -4,11 +4,13 @@ import {
   mockBootstrap,
   mockContent,
   mockLogPage,
+  mockProfileList,
   mockRoundDetail,
   mockRunDetail,
   mockTaskDetail,
   mockTaskList,
   mockWorkflow,
+  mockWorkflowTemplates,
 } from './mockData';
 import type {
   AcpRawFramePageVm,
@@ -26,6 +28,9 @@ import type {
   LogQueryInput,
   ManagedAgentInput,
   PreferencesVm,
+  ProfileInput,
+  ProfileListVm,
+  ProfileVm,
   RoundDetailVm,
   RoundSelection,
   RunDetailVm,
@@ -33,10 +38,12 @@ import type {
   TaskDetailVm,
   TaskListVm,
   WorkflowDsl,
+  WorkflowTemplateStore,
   WorkflowVm,
 } from './types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+let browserProfileList = { ...mockProfileList, profiles: [...mockProfileList.profiles] };
 const browserFontCandidates = [
   'MiSans',
   'Maple Mono NF CN',
@@ -101,6 +108,15 @@ function command<T>(name: string, args?: Record<string, unknown>, fallback?: T):
     return Promise.resolve(fallback);
   }
   return invoke<T>(name, args);
+}
+
+function localTimestamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function browserProfileId() {
+  return `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function getAppBootstrap() {
@@ -197,6 +213,29 @@ export function getTaskList() {
   return command<TaskListVm>('get_task_list', undefined, mockTaskList);
 }
 
+export function getProfiles() {
+  return command<ProfileListVm>('get_profiles', undefined, browserProfileList);
+}
+
+export function getProfile(id: string) {
+  return command<ProfileVm>('get_profile', { id }, browserProfileList.profiles.find((profile) => profile.id === id) ?? browserProfileList.profiles[0]);
+}
+
+export function createProfile(input: ProfileInput) {
+  const now = localTimestamp();
+  const profile = { ...input, id: browserProfileId(), createdAt: now, updatedAt: now, path: '' };
+  browserProfileList = { profiles: [...browserProfileList.profiles, profile] };
+  return command<ProfileVm>('create_profile', { input }, profile);
+}
+
+export function updateProfile(id: string, input: ProfileInput) {
+  const existing = browserProfileList.profiles.find((profile) => profile.id === id);
+  const now = localTimestamp();
+  const profile = { ...existing, ...input, id, updatedAt: now, createdAt: existing?.createdAt ?? now, path: existing?.path ?? '' };
+  browserProfileList = { profiles: browserProfileList.profiles.map((item) => item.id === id ? profile : item) };
+  return command<ProfileVm>('update_profile', { id, input }, profile);
+}
+
 export function chooseWorkspace() {
   return command<AppBootstrapVm | null>('choose_workspace', undefined, mockBootstrap);
 }
@@ -238,6 +277,26 @@ export function saveTaskWorkflow(taskId: string, workflow: WorkflowDsl) {
     task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task,
     workflowJson: JSON.stringify(workflow, null, 2),
   });
+}
+
+export function getWorkflowTemplates() {
+  return command<WorkflowTemplateStore>('get_workflow_templates', undefined, mockWorkflowTemplates);
+}
+
+export function saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
+  const template = {
+    id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${mockWorkflowTemplates.templates.length + 1}`,
+    name,
+    workflow,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const fallback = {
+    ...mockWorkflowTemplates,
+    lastUsedTemplateId: template.id,
+    templates: [...mockWorkflowTemplates.templates, template],
+  };
+  return command<WorkflowTemplateStore>('save_workflow_template', { input: { name, workflow } }, fallback);
 }
 
 export function getRunDetail(taskId: string, runId: string) {

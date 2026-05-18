@@ -1,14 +1,13 @@
 use crate::acp::client;
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, RuntimeConfig};
+use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use tracing::debug;
-
-const LEGACY_PROVIDER_ALIAS: &str = "claude-code";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -35,6 +34,7 @@ pub struct DoctorResult {
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
     pub profile: Option<String>,
+    pub profile_content: Option<String>,
     pub requirement_path: Option<Utf8PathBuf>,
     pub requirement_text: Option<String>,
     pub workspace_dir: Utf8PathBuf,
@@ -256,6 +256,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             },
             if primary_artifact == "verify-result" {
                 " For `verify-result`, output valid JSON with shape `{\"version\":\"0.1\",\"status\":\"success|failure\",\"summary\":string,\"unmet_requirements\":string[],\"validation_gaps\":string[]}`. `summary` must be non-empty. If `status` is `success`, both arrays must be empty. If `status` is `failure`, at least one of the arrays must be non-empty. A malformed `verify-result` blocks the run; a valid `verify-result` with `status=\"failure\"` allows the runtime acceptance policy to continue."
+            } else if artifact_uses_json_output(primary_artifact) {
+                " Output a single valid JSON object. The workflow may evaluate specific JSON fields to decide the next edge."
             } else {
                 ""
             }
@@ -283,6 +285,15 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     );
 
     let mut user_sections = vec![format!("# Requirement\n{}", requirement_text.trim())];
+
+    if let Some(profile_content) = req
+        .profile_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        user_sections.push(format!("# Profile\n{}", profile_content));
+    }
 
     if let Some(feedback_summary) = &req.feedback_summary {
         user_sections.push(format!("# Current Feedback\n{}", feedback_summary.trim()));
@@ -349,13 +360,18 @@ fn log_prompt_bundle(
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
-    match provider_id {
-        DEFAULT_PROVIDER | LEGACY_PROVIDER_ALIAS => {
-            Ok(AcpProvider::new(AcpAdapterConfig::default())
-                .describe_provider()
-                .capabilities)
-        }
-        _ => bail!("unsupported provider: {provider_id}"),
+    let agent_type = ManagedAgentType::from_str(provider_id)?;
+    provider_capabilities_for_type(agent_type)
+}
+
+pub fn provider_capabilities_for_type(
+    agent_type: ManagedAgentType,
+) -> Result<ProviderCapabilities> {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => Ok(AcpProvider::new(AcpAdapterConfig::default())
+            .describe_provider()
+            .capabilities),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
     }
 }
 
@@ -363,22 +379,23 @@ pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
     Ok(provider_capabilities(provider_id)?.supports_continue_session)
 }
 
-pub fn provider_from_config(config: &RuntimeConfig) -> Result<Box<dyn ProviderAdapter>> {
-    match config.default_provider.as_str() {
-        DEFAULT_PROVIDER | LEGACY_PROVIDER_ALIAS => {
-            Ok(Box::new(AcpProvider::new(config.acp_adapter.clone())))
-        }
-        _ => bail!("unsupported provider: {}", config.default_provider),
+pub fn provider_from_agent(
+    agent_type: ManagedAgentType,
+    config: &ManagedAgentConfig,
+) -> Result<Box<dyn ProviderAdapter>> {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => Ok(Box::new(AcpProvider::new(config.adapter.clone()))),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
     }
 }
 
 pub fn provider_from_id(provider_id: &str) -> Result<Box<dyn ProviderAdapter>> {
-    match provider_id {
-        DEFAULT_PROVIDER | LEGACY_PROVIDER_ALIAS => {
-            Ok(Box::new(AcpProvider::new(AcpAdapterConfig::default())))
-        }
-        _ => bail!("unsupported provider: {provider_id}"),
-    }
+    let agent_type = ManagedAgentType::from_str(provider_id)?;
+    let config = match agent_type {
+        ManagedAgentType::ClaudeCode => ManagedAgentConfig::new(AcpAdapterConfig::default()),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
+    };
+    provider_from_agent(agent_type, &config)
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
@@ -399,6 +416,7 @@ mod tests {
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::VerifyAcceptance,
             profile: Some("verifier".to_string()),
+            profile_content: None,
             requirement_path: None,
             requirement_text: Some("Check whether hello-world exists".to_string()),
             workspace_dir: repo_root.clone(),
@@ -438,6 +456,7 @@ mod tests {
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             profile: Some("developer".to_string()),
+            profile_content: None,
             requirement_path: None,
             requirement_text: Some("Need an execution plan".to_string()),
             workspace_dir: repo_root.clone(),
@@ -478,7 +497,7 @@ mod tests {
     #[test]
     fn default_provider_is_acp_only() {
         let info = default_provider().describe_provider();
-        assert_eq!(info.provider_id, "claude-acp");
+        assert_eq!(info.provider_id, "claude-code");
         assert!(info.capabilities.supports_continue_session);
         assert!(!info.capabilities.supports_raw_stream);
     }

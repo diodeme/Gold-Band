@@ -44,21 +44,19 @@ pub fn decide_next_step(
                     ControlDecision::CompleteRun(RunOutcome::Failure)
                 }
             },
-            crate::domain::NodeType::Worker => match_edge_or_default(
-                workflow,
-                &node.node_id,
-                EdgeOutcome::Failure,
-                || ControlDecision::PauseRun(PauseReason::ErrorBlocked),
-            ),
+            crate::domain::NodeType::Worker => {
+                match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
+                    ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                })
+            }
         },
         Some(crate::domain::NodeOutcome::Invalid) => match node.node_type {
             crate::domain::NodeType::Exec => decide_exec_invalid(workflow, round, &node.node_id),
-            crate::domain::NodeType::Worker => match_edge_or_default(
-                workflow,
-                &node.node_id,
-                EdgeOutcome::Invalid,
-                || ControlDecision::PauseRun(PauseReason::ErrorBlocked),
-            ),
+            crate::domain::NodeType::Worker => {
+                match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Invalid, || {
+                    ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                })
+            }
             _ => ControlDecision::PauseRun(PauseReason::ErrorBlocked),
         },
         Some(crate::domain::NodeOutcome::Killed) => {

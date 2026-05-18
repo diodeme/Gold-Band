@@ -145,12 +145,12 @@ export interface WorkflowVerifyNodeDsl {
 export interface WorkflowOutputContractDsl {
   kind: 'json' | string;
   artifact: string;
+  schema?: unknown | null;
 }
 
-export interface WorkflowJsonConditionDsl {
-  path: string;
-  equals: unknown;
-}
+export type WorkflowJsonConditionDsl =
+  | { expression: string; path?: never; equals?: never }
+  | { path: string; equals: unknown; expression?: never };
 
 export interface WorkflowEdgeDsl {
   from: string;
@@ -165,6 +165,46 @@ export interface CreateTaskInput {
   requirementFileName: string;
   requirementContent: string;
   workflow: WorkflowDsl;
+  workflowTemplateId?: string | null;
+}
+
+export interface WorkflowTemplateStore {
+  version: string;
+  lastUsedTemplateId?: string | null;
+  lastCreatedWorkflow?: WorkflowDsl | null;
+  templates: WorkflowTemplate[];
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  workflow: WorkflowDsl;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProfileScope = 'user' | 'project';
+
+export interface ProfileVm {
+  id: string;
+  name: string;
+  summary: string;
+  content: string;
+  scope: ProfileScope;
+  createdAt: string;
+  updatedAt: string;
+  path: string;
+}
+
+export interface ProfileListVm {
+  profiles: ProfileVm[];
+}
+
+export interface ProfileInput {
+  scope: ProfileScope;
+  name: string;
+  summary: string;
+  content: string;
 }
 
 export interface SaveWorkflowInput {

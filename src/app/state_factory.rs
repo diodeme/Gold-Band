@@ -1,6 +1,6 @@
 use crate::config::ResolvedProfileRef;
 use crate::domain::{ResolvedConfig, RunStatus, VERSION};
-use crate::dsl::NodeDsl;
+use crate::dsl::{JsonConditionDsl, NodeDsl};
 use crate::runtime::NodeState;
 
 use super::ids::now_rfc3339_like;
@@ -75,16 +75,26 @@ pub(crate) fn resolved_config_for_node(
                     "outputArtifact".to_string(),
                     serde_json::Value::String(output.artifact.clone()),
                 );
+                if let Some(schema) = &output.schema {
+                    config.insert("outputSchema".to_string(), schema.clone());
+                }
             }
             if let Some(condition) = &worker.success_condition {
-                config.insert(
-                    "successConditionPath".to_string(),
-                    serde_json::Value::String(condition.path.clone()),
-                );
-                config.insert(
-                    "successConditionEquals".to_string(),
-                    condition.equals.clone(),
-                );
+                match condition {
+                    JsonConditionDsl::Expression { expression } => {
+                        config.insert(
+                            "successConditionExpression".to_string(),
+                            serde_json::Value::String(expression.clone()),
+                        );
+                    }
+                    JsonConditionDsl::PathEquals { path, equals } => {
+                        config.insert(
+                            "successConditionPath".to_string(),
+                            serde_json::Value::String(path.clone()),
+                        );
+                        config.insert("successConditionEquals".to_string(), equals.clone());
+                    }
+                }
             }
             config.insert(
                 "sessionMode".to_string(),

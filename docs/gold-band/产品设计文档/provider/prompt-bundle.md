@@ -69,7 +69,7 @@
 它应承载：
 - Gold Band runtime 的最小运行语义
 - 当前节点角色与职责边界
-- 当前节点 `profile`
+- 当前节点 `profile` 的引用 ID 与运行时元信息
 - 当前输出契约
 - 冷数据访问规则
 
@@ -80,6 +80,7 @@
 
 它应承载：
 - 原始 `requirement`
+- 当前 profile Markdown 正文
 - 当前 feedback 摘要
 - 本次任务指令
 - 冷数据索引
@@ -173,6 +174,11 @@ Cold context access rule:
 # Requirement
 {{requirement_text}}
 
+{{#if profile_content}}
+# Profile
+{{profile_content}}
+{{/if}}
+
 {{#if feedback_summary}}
 # Current Feedback
 {{feedback_summary}}
@@ -204,6 +210,7 @@ The following attachments are available for optional inspection:
 
 说明：
 - `requirement_text` 属于稳定任务目标，应直接进入 `userPrompt`
+- `profile_content` 来自 workflow 节点 `profile` id 解析到的 Markdown 文件正文；用户级路径为 `~/.gold-band/context/profiles/<name>-<id>.md`，项目级路径为 `~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md`；workflow 只保存 profile `id`，运行时在 provider invocation 前解析为当前可见的角色正文。
 - `feedback_summary` 用于表达当前修复背景或上一轮验收/执行失败摘要
 - `task_instruction` 对 `worker` 默认由 `worker.goal` 映射得到，并进入 `userPrompt` 的 `# Task`
 - 对特殊场景，runtime 也可在此基础上注入额外任务说明

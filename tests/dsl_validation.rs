@@ -233,6 +233,175 @@ fn accepts_worker_json_output_validation() {
 }
 
 #[test]
+fn accepts_simplified_output_schema_with_matching_expression() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "primary_artifact": "review-result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "review-result",
+                        "schema": { "reason": "String", "result": "boolean" }
+                    },
+                    "success_condition": { "expression": "$.result == true" }
+                }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    validate_workflow(workflow).expect("workflow should validate");
+}
+
+#[test]
+fn rejects_success_expression_missing_from_simplified_schema() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "primary_artifact": "review-result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "review-result",
+                        "schema": { "reason": "String" }
+                    },
+                    "success_condition": { "expression": "$.result == true" }
+                }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    assert!(validate_workflow(workflow).is_err());
+}
+
+#[test]
+fn accepts_nested_simplified_schema_path() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "primary_artifact": "review-result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "review-result",
+                        "schema": { "xx": { "yy": [{ "zz": "boolean" }] } }
+                    },
+                    "success_condition": { "expression": "$.xx.yy[0].zz == true" }
+                }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    validate_workflow(workflow).expect("workflow should validate");
+}
+
+#[test]
+fn rejects_malformed_success_expression_path() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "primary_artifact": "review-result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "review-result",
+                        "schema": { "xx": { "yy": "boolean" } }
+                    },
+                    "success_condition": { "expression": "$.xx..yy == true" }
+                }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    assert!(validate_workflow(workflow).is_err());
+}
+
+#[test]
+fn rejects_legacy_json_schema_output_constraint() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "primary_artifact": "review-result",
+                    "output": {
+                        "kind": "json",
+                        "artifact": "review-result",
+                        "schema": {
+                            "type": "object",
+                            "properties": { "result": { "type": "boolean" } },
+                            "required": ["result"]
+                        }
+                    },
+                    "success_condition": { "expression": "$.result == true" }
+                }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    assert!(validate_workflow(workflow).is_err());
+}
+
+#[test]
 fn rejects_worker_output_mismatch() {
     let workflow = parse_workflow(
         r#"{

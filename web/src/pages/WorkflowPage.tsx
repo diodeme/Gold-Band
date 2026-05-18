@@ -2,9 +2,9 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { AgentRegistryVm, GraphVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowVm } from '../types';
+import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayPolicy, displayStatus } from '../i18n';
-import { getAgentRegistry } from '../api';
+import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, createDefaultWorkflow, parseWorkflowJson } from '../components/WorkflowEditor';
 import { StatusBadge } from '../components/StatusBadge';
@@ -32,6 +32,7 @@ interface WorkflowPageProps {
   onContinueRun: (taskId: string, runId: string) => void;
   onKillRun: (taskId: string, runId: string) => void;
   onSaveWorkflow: (taskId: string, workflow: WorkflowDsl) => Promise<WorkflowVm | undefined>;
+  onOpenProfileManagement: () => void;
 }
 
 type StatusFilter = 'all' | 'running' | 'paused' | 'completed' | 'failed' | 'resumable';
@@ -52,7 +53,7 @@ function historyBodyMinHeightFor(pageSize: number) {
   return Math.max(320, pageSize * collapsedRunRowMinHeight);
 }
 
-export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onKillRun, onSaveWorkflow }: WorkflowPageProps) {
+export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onKillRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -62,6 +63,8 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [workflowDrawerMode, setWorkflowDrawerMode] = useState<WorkflowDrawerMode | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
+  const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
 
   const toggleRun = (runId: string, expanded: boolean) => {
@@ -70,8 +73,10 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
 
   const openWorkflowDrawer = (mode: WorkflowDrawerMode) => {
     setWorkflowDrawerMode(mode);
-    if (mode !== 'view' && !agentRegistry) {
-      getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], supportedTypes: [] }));
+    if (mode !== 'view') {
+      if (!agentRegistry) getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], supportedTypes: [] }));
+      if (!profileList) getProfiles().then(setProfileList).catch(() => setProfileList({ profiles: [] }));
+      if (!templateStore) getWorkflowTemplates().then(setTemplateStore).catch(() => setTemplateStore({ version: '0.1', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] }));
     }
   };
 
@@ -101,7 +106,8 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const workflowLifecycle = workflowLifecycleFor(vm.task);
   const workflowDrawerOpen = workflowDrawerMode !== null;
   const editingWorkflow = workflowDrawerMode === 'create' || workflowDrawerMode === 'edit' || workflowDrawerMode === 'repair';
-  const editableWorkflow = parseWorkflowJson(vm.workflowJson) ?? createDefaultWorkflow(agentRegistry?.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code');
+  const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
+  const editableWorkflow = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? createDefaultWorkflow(agentRegistry?.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code', profileList?.profiles ?? []);
   const historyBodyMinHeight = historyBodyMinHeightFor(pageSize);
 
   const saveWorkflow = async (workflow: WorkflowDsl) => {
@@ -237,7 +243,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 </div>
               ) : null}
               {editingWorkflow ? (
-                <WorkflowEditor value={editableWorkflow} agentRegistry={agentRegistry} saving={savingWorkflow || busy} onSave={saveWorkflow} />
+                <WorkflowEditor value={editableWorkflow} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} />
               ) : vm.task.workflowExists ? (
                 <>
                   <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} activeStatus={activeRun?.status} />

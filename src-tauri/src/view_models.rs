@@ -7,12 +7,16 @@ use std::{
 use anyhow::Result;
 use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
-use gold_band::config::{DesktopFontPreference, DesktopLanguage, DesktopThemePreference};
+use gold_band::config::{
+    DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentConfig,
+    ManagedAgentType,
+};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus};
 use gold_band::dsl::{NodeDsl, WorkflowDsl};
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::i18n::Translator;
+use crate::state::AgentDiagnosticState;
 use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -33,6 +37,52 @@ pub struct AppBootstrapVm {
     pub repo_root: String,
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRegistryVm {
+    pub agents: Vec<ManagedAgentVm>,
+    pub supported_types: Vec<SupportedAgentTypeVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedAgentVm {
+    pub agent_type: String,
+    pub display_name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<AgentEnvEntryVm>,
+    pub icon_key: String,
+    pub supported: bool,
+    pub diagnostic: Option<ManagedAgentDiagnosticVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEnvEntryVm {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedAgentDiagnosticVm {
+    pub status: String,
+    pub available: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportedAgentTypeVm {
+    pub agent_type: String,
+    pub label: String,
+    pub icon_key: String,
+    pub supported: bool,
+    pub configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -192,6 +242,8 @@ pub struct NodeDetailVm {
     pub sequence: Option<u32>,
     pub label: String,
     pub node_type: String,
+    pub provider: Option<String>,
+    pub provider_display_name: Option<String>,
     pub status: String,
     pub outcome: Option<String>,
     pub attempt_id: String,
@@ -464,6 +516,84 @@ pub fn bootstrap_vm(app: &App, recent_workspaces: Vec<String>) -> AppBootstrapVm
             app.config.desktop_language,
             app.config.desktop_font.clone(),
         ),
+    }
+}
+
+pub fn agent_registry_vm(
+    app: &App,
+    diagnostics: &std::collections::BTreeMap<ManagedAgentType, AgentDiagnosticState>,
+) -> AgentRegistryVm {
+    let agents = app
+        .managed_agents()
+        .iter()
+        .map(|(agent_type, config)| managed_agent_vm(*agent_type, config, diagnostics.get(agent_type)))
+        .collect::<Vec<_>>();
+    let supported_types = [
+        ManagedAgentType::ClaudeCode,
+        ManagedAgentType::CodexCli,
+        ManagedAgentType::OpenCode,
+        ManagedAgentType::GeminiCli,
+    ]
+    .into_iter()
+    .map(|agent_type| SupportedAgentTypeVm {
+        agent_type: agent_type.as_str().to_string(),
+        label: supported_agent_label(agent_type).to_string(),
+        icon_key: agent_icon_key(agent_type).to_string(),
+        supported: agent_type.is_supported(),
+        configured: app.managed_agents().contains_key(&agent_type),
+    })
+    .collect();
+    AgentRegistryVm {
+        agents,
+        supported_types,
+    }
+}
+
+fn managed_agent_vm(
+    agent_type: ManagedAgentType,
+    config: &ManagedAgentConfig,
+    diagnostic: Option<&AgentDiagnosticState>,
+) -> ManagedAgentVm {
+    ManagedAgentVm {
+        agent_type: agent_type.as_str().to_string(),
+        display_name: config.adapter.display_name.clone(),
+        command: config.adapter.command.clone(),
+        args: config.adapter.args.clone(),
+        env: config
+            .adapter
+            .env
+            .iter()
+            .map(|(key, value)| AgentEnvEntryVm {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect(),
+        icon_key: agent_icon_key(agent_type).to_string(),
+        supported: agent_type.is_supported(),
+        diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
+            status: if diagnostic.available { "healthy" } else { "unhealthy" }.to_string(),
+            available: diagnostic.available,
+            reason: diagnostic.reason.clone(),
+            checked_at: diagnostic.checked_at.clone(),
+        }),
+    }
+}
+
+fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => "claude",
+        ManagedAgentType::CodexCli => "codex",
+        ManagedAgentType::OpenCode => "opencode",
+        ManagedAgentType::GeminiCli => "gemini",
+    }
+}
+
+fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => "Claude Code",
+        ManagedAgentType::CodexCli => "Codex CLI",
+        ManagedAgentType::OpenCode => "OpenCode",
+        ManagedAgentType::GeminiCli => "Gemini CLI",
     }
 }
 
@@ -933,6 +1063,15 @@ fn selected_node_detail_vm(
         .nodes
         .iter()
         .find(|item| item.node_id.as_deref() == Some(node_id) || item.id == node_id);
+    let provider = node
+        .resolved_config
+        .get("provider")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let provider_display_name = provider
+        .as_deref()
+        .and_then(|provider| app.managed_agent(provider).ok())
+        .map(|(_, agent)| agent.adapter.display_name.clone());
     let artifacts = app
         .artifact_list(task_id, run_id, round_id, node_id, &node.attempt_id)?
         .into_iter()
@@ -958,6 +1097,8 @@ fn selected_node_detail_vm(
             .map(|node| node.label.clone())
             .unwrap_or_else(|| node_id.to_string()),
         node_type: enum_label(&node.node_type),
+        provider,
+        provider_display_name,
         status: enum_label(&node.status),
         outcome: node.outcome.map(|outcome| enum_label(&outcome)),
         attempt_id: node.attempt_id.clone(),

@@ -294,8 +294,58 @@
   font-family: var(--font-sans);
 }
 
+.workflow-graph .workflow-node-selected {
+  border-color: var(--gold-running) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold-running) 72%, transparent), 0 0 0 5px color-mix(in srgb, var(--gold-running) 16%, transparent), 0 18px 42px color-mix(in srgb, var(--gold-running) 14%, transparent);
+}
+
+.workflow-graph .workflow-node-selected::after {
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--gold-running) 16%, transparent), transparent 42%);
+}
+
+.workflow-graph .react-flow__edge-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.workflow-graph .react-flow__edge-text {
+  paint-order: stroke;
+  stroke: var(--background);
+  stroke-width: 3px;
+}
+
 .workflow-graph .react-flow__edge-textbg {
-  stroke: var(--border);
+  stroke: transparent;
+}
+
+.workflow-edge-branch .react-flow__edge-path {
+  opacity: 0.86;
+}
+
+.workflow-edge-flow .react-flow__edge-path,
+.workflow-edge-flow.react-flow__edge-path {
+  stroke-dasharray: 3 17;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-path,
+.workflow-graph .workflow-edge-selected.react-flow__edge-path {
+  stroke: var(--gold-running) !important;
+  stroke-width: 4.5px;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--gold-running) 92%, transparent)) drop-shadow(0 0 14px color-mix(in srgb, var(--gold-running) 42%, transparent));
+  opacity: 1;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-interaction {
+  stroke-width: 22px;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-text {
+  fill: var(--gold-running) !important;
 }
 
 .workflow-graph .react-flow__controls {
@@ -370,8 +420,10 @@
     animation: workflow-running-pulse 1.35s ease-in-out infinite;
   }
 
-  .workflow-edge-running .react-flow__edge-path {
-    animation: workflow-edge-flow 1.1s linear infinite;
+  .workflow-edge-running .react-flow__edge-path,
+  .workflow-edge-flow .react-flow__edge-path,
+  .workflow-edge-flow.react-flow__edge-path {
+    animation: workflow-edge-flow 2.4s linear infinite;
   }
 
   .workflow-run-active {
@@ -406,7 +458,8 @@
 }
 
 @keyframes workflow-edge-flow {
-  to { stroke-dashoffset: -16; }
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -20; }
 }
 
 @keyframes workflow-row-enter {

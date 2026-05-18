@@ -21,7 +21,7 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
         adapter_id: config.command.clone(),
         display_name: config.display_name.clone(),
         command: config.command.clone(),
-        args: config.args.clone(),
+        args: normalize_args(&config.args),
     })
 }
 
@@ -45,6 +45,12 @@ pub fn spawn_adapter(
         .spawn()
         .with_context(|| format!("failed to start ACP adapter `{}`", executable))?;
     Ok((adapter, child))
+}
+
+fn normalize_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .flat_map(|arg| arg.split_whitespace().map(str::to_string))
+        .collect()
 }
 
 #[cfg(windows)]

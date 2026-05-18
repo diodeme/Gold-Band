@@ -645,6 +645,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "camino",
+ "chrono",
  "clap",
  "crossterm",
  "figlet-rs",

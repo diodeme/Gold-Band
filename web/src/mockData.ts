@@ -1,20 +1,30 @@
 import type {
+  AgentRegistryVm,
   AppBootstrapVm,
   ContentVm,
   LogPageVm,
   LogQueryInput,
   NodeDetailVm,
   PreferencesVm,
+  ProfileListVm,
   RoundDetailVm,
   RoundSelection,
   RunDetailVm,
   RunSummaryVm,
   TaskDetailVm,
   TaskListVm,
+  WorkflowDsl,
+  WorkflowTemplateStore,
   WorkflowVm,
 } from './types';
 
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+const profileTimestamp = localTimestamp();
+
+function localTimestamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
 const latestRun: RunSummaryVm = {
   id: 'run-003',
@@ -31,6 +41,50 @@ const latestRun: RunSummaryVm = {
 };
 
 const requirement = '重写 Tauri 桌面端的核心窗口管理逻辑，确保 Windows 和 macOS 下的窗口阴影表现一致，并修复多显示器下的 DPI 缩放偏移问题。\n\n目标：重写桌面端窗口与任务编排主界面。\n约束：不引入命令输入或聊天入口；终局状态只来自 canonical state。\n验收：任务列表、工作流、round 详情与设置页均匹配 app 原型。';
+
+const defaultWorkflow: WorkflowDsl = {
+  version: '0.1',
+  id: 'task-workflow',
+  entry: 'plan',
+  control: { max_repair_loops: 3, max_acceptance_loops: 1, on_acceptance_failure: 'stop' },
+  nodes: [
+    { type: 'worker', id: 'plan', provider: 'claude-code', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.', primary_artifact: null },
+    { type: 'worker', id: 'dev', provider: 'claude-code', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.', primary_artifact: null },
+    { type: 'worker', id: 'review', provider: 'claude-code', profile: 'pf-m9jw0wq3-r2x9p7m5', goal: 'Review the implementation and return JSON with result and reason fields.', primary_artifact: 'review-result', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'test', provider: 'claude-code', profile: 'pf-m9jw0wq4-t3y8r1c6', goal: 'Run or describe verification and return JSON with result and reason fields.', primary_artifact: 'test-result', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'accept', provider: 'claude-code', profile: 'pf-m9jw0wq5-u4z7s2d7', goal: 'Validate acceptance and return JSON with result and reason fields.', primary_artifact: 'accept-result', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'cleanup', provider: 'claude-code', profile: 'pf-m9jw0wq6-v5a8t3e8', goal: 'Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.', primary_artifact: null },
+  ],
+  edges: [
+    { from: 'plan', to: 'dev', on: 'success' },
+    { from: 'dev', to: 'review', on: 'success' },
+    { from: 'review', to: 'test', on: 'success' },
+    { from: 'review', to: 'dev', on: 'failure', session: 'continue' },
+    { from: 'test', to: 'accept', on: 'success' },
+    { from: 'test', to: 'dev', on: 'failure', session: 'continue' },
+    { from: 'accept', to: 'cleanup', on: 'success' },
+    { from: 'cleanup', to: '$end', on: 'success' },
+    { from: 'accept', to: '$new-round', on: 'failure' },
+  ],
+};
+
+export const mockWorkflowTemplates: WorkflowTemplateStore = {
+  version: '0.1',
+  lastUsedTemplateId: 'default',
+  lastCreatedWorkflow: null,
+  templates: [{ id: 'default', name: '默认工作流', workflow: defaultWorkflow, createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' }],
+};
+
+export const mockProfileList: ProfileListVm = {
+  profiles: [
+    { id: 'pf-m9jw0wq1-a7k3d2s1', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/方案-pf-m9jw0wq1-a7k3d2s1.md' },
+    { id: 'pf-m9jw0wq2-q8s6k4n0', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/开发-pf-m9jw0wq2-q8s6k4n0.md' },
+    { id: 'pf-m9jw0wq3-r2x9p7m5', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/审查-pf-m9jw0wq3-r2x9p7m5.md' },
+    { id: 'pf-m9jw0wq4-t3y8r1c6', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/测试-pf-m9jw0wq4-t3y8r1c6.md' },
+    { id: 'pf-m9jw0wq5-u4z7s2d7', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/验收-pf-m9jw0wq5-u4z7s2d7.md' },
+    { id: 'pf-m9jw0wq6-v5a8t3e8', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/清理-pf-m9jw0wq6-v5a8t3e8.md' },
+  ],
+};
 
 const task = {
   id: 'task-001',
@@ -90,6 +144,8 @@ const mockNodeDetail: NodeDetailVm = {
   sequence: 3,
   label: 'Processing code logic...',
   nodeType: 'exec',
+  provider: 'claude-code',
+  providerDisplayName: 'Claude Code ACP',
   status: 'running',
   outcome: null,
   attemptId: 'att-2-node03-rev1',
@@ -103,7 +159,7 @@ const mockNodeDetail: NodeDetailVm = {
   hasWorkerRef: true,
   acpSession: {
     sessionId: 'acp-session-7f3',
-    provider: 'claude-acp',
+    provider: 'claude-code',
     adapterId: 'claude-agent-acp',
     adapterDisplayName: 'Claude ACP',
     cwd: 'D:\\Projects\\code\\ai\\Gold-Band',
@@ -207,6 +263,32 @@ export const mockBootstrap: AppBootstrapVm = {
   preferences,
 };
 
+export const mockAgentRegistry: AgentRegistryVm = {
+  agents: [
+    {
+      agentType: 'claude-code',
+      displayName: 'Claude Code ACP',
+      command: 'npx',
+      args: ['-y', '@agentclientprotocol/claude-agent-acp@latest'],
+      env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
+      iconKey: 'claude',
+      supported: true,
+      diagnostic: {
+        status: 'healthy',
+        available: true,
+        reason: null,
+        checkedAt: '2026-05-16 10:42:00',
+      },
+    },
+  ],
+  supportedTypes: [
+    { agentType: 'claude-code', label: 'Claude Code', iconKey: 'claude', supported: true, configured: true },
+    { agentType: 'codex-cli', label: 'Codex CLI', iconKey: 'codex', supported: false, configured: false },
+    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', supported: false, configured: false },
+    { agentType: 'gemini-cli', label: 'Gemini CLI', iconKey: 'gemini', supported: false, configured: false },
+  ],
+};
+
 export const mockTaskList: TaskListVm = {
   cards: [
     { key: 'all', label: '全部任务', value: 14, tone: 'accent' },
@@ -252,7 +334,7 @@ export const mockWorkflow: WorkflowVm = {
     { run: { ...latestRun, id: 'run-002', status: 'completed', outcome: 'failure', resumable: false, currentNode: 'validate' }, rounds: [rounds[1]] },
     ...Array.from({ length: 8 }, (_, index) => ({ run: { ...latestRun, id: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure', resumable: false, currentNode: null }, rounds: rounds.map((round) => ({ ...round, id: `${round.id}-${index}`, runId: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure' })) })),
   ],
-  workflowJson: JSON.stringify(graph, null, 2),
+  workflowJson: JSON.stringify(defaultWorkflow, null, 2),
 };
 
 export const mockRunDetail: RunDetailVm = {

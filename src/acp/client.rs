@@ -28,6 +28,7 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -72,9 +73,11 @@ struct AcpRuntime {
 pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<()> {
     let paths = GoldBandPaths::new(cwd.clone());
     let mut runtime = AcpRuntime::start(config, cwd, paths.runtime_root.join("doctor/acp"))?;
-    runtime.initialize()?;
+    let result = runtime
+        .initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))
+        .map(|_| ());
     runtime.shutdown();
-    Ok(())
+    result
 }
 
 pub fn run_prompt(
@@ -265,7 +268,11 @@ impl AcpRuntime {
     }
 
     fn initialize(&mut self) -> Result<Value> {
-        let result = self.request(
+        self.initialize_with_timeout(None)
+    }
+
+    fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
+        let result = self.request_with_timeout(
             "initialize",
             json!({
                 "protocolVersion": 1,
@@ -276,6 +283,7 @@ impl AcpRuntime {
                     "version": crate::domain::VERSION,
                 }
             }),
+            timeout,
         )?;
         Ok(result
             .get("agentCapabilities")
@@ -388,6 +396,15 @@ impl AcpRuntime {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(method, params, None)
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({
@@ -397,9 +414,23 @@ impl AcpRuntime {
             "params": params,
         });
         self.send_frame(&frame)?;
+        let started_at = Instant::now();
         let mut cancel_started_at = None;
         loop {
-            match self.rx.recv_timeout(CANCEL_CHECK_INTERVAL) {
+            let wait_for = match timeout {
+                Some(timeout) => match timeout.checked_sub(started_at.elapsed()) {
+                    Some(remaining) => remaining.min(CANCEL_CHECK_INTERVAL),
+                    None => {
+                        self.kill_adapter_process();
+                        bail!(
+                            "ACP `{method}` timed out after {} seconds",
+                            timeout.as_secs()
+                        );
+                    }
+                },
+                None => CANCEL_CHECK_INTERVAL,
+            };
+            match self.rx.recv_timeout(wait_for) {
                 Ok(value) => {
                     let response_id = value.get("id").and_then(Value::as_u64);
                     if response_id == Some(id) {
@@ -533,6 +564,8 @@ impl AcpRuntime {
     fn kill_adapter_process(&mut self) {
         let pid = self.child.id();
         let _ = kill_process_tree(pid);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
         let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
     }
 
@@ -615,6 +648,14 @@ impl AcpRuntime {
         debug!(adapter = %self.adapter.adapter_id, "shutting down ACP adapter");
         let _ = self.stdin.flush();
         self.kill_adapter_process();
+    }
+}
+
+impl Drop for AcpRuntime {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            self.kill_adapter_process();
+        }
     }
 }
 

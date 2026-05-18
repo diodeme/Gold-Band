@@ -8,7 +8,7 @@ use gold_band::acp::events::{append_ui_event, current_timestamp, permission_deci
 use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
-use gold_band::app::CreateTaskInput;
+use gold_band::app::{CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore};
 use gold_band::domain::SessionMode;
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::PromptBundle;
@@ -56,11 +56,19 @@ pub struct CreateTaskInputVm {
     pub requirement_file_name: String,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
+    pub workflow_template_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowInputVm {
+    pub workflow: WorkflowDsl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkflowTemplateInputVm {
+    pub name: String,
     pub workflow: WorkflowDsl,
 }
 
@@ -165,7 +173,7 @@ pub fn delete_agent(
 }
 
 #[tauri::command]
-pub fn doctor_agent(
+pub async fn doctor_agent(
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
@@ -180,6 +188,37 @@ pub fn doctor_agent(
 pub fn get_task_list(state: State<'_, DesktopState>) -> CommandResult<TaskListVm> {
     let app = state.app().map_err(command_error)?;
     task_list_vm(&app).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_profiles(state: State<'_, DesktopState>) -> CommandResult<ProfileList> {
+    let app = state.app().map_err(command_error)?;
+    app.profiles().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_profile(state: State<'_, DesktopState>, id: String) -> CommandResult<ProfileEntry> {
+    let app = state.app().map_err(command_error)?;
+    app.profile_show(&id).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn create_profile(
+    state: State<'_, DesktopState>,
+    input: ProfileInput,
+) -> CommandResult<ProfileEntry> {
+    let app = state.app().map_err(command_error)?;
+    app.create_profile(input).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn update_profile(
+    state: State<'_, DesktopState>,
+    id: String,
+    input: ProfileInput,
+) -> CommandResult<ProfileEntry> {
+    let app = state.app().map_err(command_error)?;
+    app.update_profile(&id, input).map_err(command_error)
 }
 
 #[tauri::command]
@@ -240,6 +279,7 @@ pub fn create_task(
             requirement_file_name: input.requirement_file_name,
             requirement_content: input.requirement_content,
             workflow: input.workflow,
+            workflow_template_id: input.workflow_template_id,
         })
         .map_err(command_error)?;
     workflow_vm(&app, &summary.task.id).map_err(command_error)
@@ -261,6 +301,22 @@ pub fn save_task_workflow(
 pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandResult<WorkflowVm> {
     let app = state.app().map_err(command_error)?;
     workflow_vm(&app, &task_id).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_workflow_templates(state: State<'_, DesktopState>) -> CommandResult<WorkflowTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.workflow_templates().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn save_workflow_template(
+    state: State<'_, DesktopState>,
+    input: SaveWorkflowTemplateInputVm,
+) -> CommandResult<WorkflowTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.save_workflow_template(input.name, input.workflow)
+        .map_err(command_error)
 }
 
 #[tauri::command]

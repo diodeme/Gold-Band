@@ -2,9 +2,9 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { Check, Copy, RefreshCw, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, CreateTaskInput, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowVm } from '../types';
+import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayStatus } from '../i18n';
-import { getAgentRegistry } from '../api';
+import { getAgentRegistry, getProfiles, getWorkflowTemplates, saveWorkflowTemplate } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
 import { WorkflowEditor, createDefaultWorkflow } from '../components/WorkflowEditor';
 import { AppCard } from '@/components/AppCard';
@@ -13,6 +13,9 @@ import { fullRequirementText } from '@/components/RequirementDisclosure';
 import { TaskTableSkeleton } from '@/components/LoadingState';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Pagination, PaginationContent, PaginationItem, PaginationLink } from '@/components/ui/pagination';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -31,6 +34,7 @@ interface TaskListPageProps {
   onNavigate: (page: TaskPage) => void;
   onRefresh: () => void;
   onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>;
+  onOpenProfileManagement: () => void;
 }
 
 type TaskFilter = 'all' | 'running' | 'completed' | 'resumable' | 'failed' | 'invalid';
@@ -39,7 +43,7 @@ type SortDir = 'asc' | 'desc';
 
 const pageSizes = [10, 20, 50];
 
-export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, onCreateTask }: TaskListPageProps) {
+export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, onCreateTask, onOpenProfileManagement }: TaskListPageProps) {
   const { t } = useTranslation();
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -162,15 +166,14 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
                         <SelectItem value="invalid">{t('taskList.configIssues')}</SelectItem>
                       </SelectContent>
                     </Select>
-                    <label className="min-w-[220px] flex-1 lg:max-w-sm">
+                    <Label className="min-w-[220px] flex-1 lg:max-w-sm">
                       <span className="sr-only">{t('taskList.search')}</span>
-                      <input
-                        className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                      <Input
                         value={searchTerm}
                         onChange={(event) => updateSearchTerm(event.target.value)}
                         placeholder={t('taskList.searchPlaceholder')}
                       />
-                    </label>
+                    </Label>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
@@ -227,8 +230,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
                       <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
                       <SelectContent>{pageSizes.map((value) => <SelectItem value={String(value)} key={value}>{value}</SelectItem>)}</SelectContent>
                     </Select>
-                    <Button variant="outline" size="sm" disabled={safePageIndex === 0} onClick={() => setPageIndex((value) => Math.max(0, value - 1))}>{t('common.previousPage')}</Button>
-                    <Button variant="outline" size="sm" disabled={safePageIndex >= pageCount - 1} onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}>{t('common.nextPage')}</Button>
+                    <TaskPagination pageIndex={safePageIndex} pageCount={pageCount} onPageChange={setPageIndex} />
                   </div>
                 </div>
               </AppCard>
@@ -240,6 +242,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
       <CreateTaskSheet
         open={createOpen}
         onOpenChange={setCreateOpen}
+        onOpenProfileManagement={onOpenProfileManagement}
         onCreateTask={async (input) => {
           const created = await onCreateTask(input);
           if (created) {
@@ -253,9 +256,14 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
   );
 }
 
-function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; onOpenChange: (open: boolean) => void; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined> }) {
+function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManagement }: { open: boolean; onOpenChange: (open: boolean) => void; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>; onOpenProfileManagement: () => void }) {
   const { t } = useTranslation();
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
+  const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [baseWorkflow, setBaseWorkflow] = useState<WorkflowDsl | null>(null);
+  const [saveTemplateName, setSaveTemplateName] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [requirementFileName, setRequirementFileName] = useState('');
@@ -263,15 +271,25 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; 
   const [workflow, setWorkflow] = useState<WorkflowDsl | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
 
   useEffect(() => {
     if (!open) return;
     setError(null);
-    getAgentRegistry()
-      .then((registry) => {
+    Promise.all([getAgentRegistry(), getWorkflowTemplates(), getProfiles()])
+      .then(([registry, templates, profiles]) => {
         setAgentRegistry(registry);
+        setTemplateStore(templates);
+        setProfileList(profiles);
         const provider = registry.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code';
-        setWorkflow(createDefaultWorkflow(provider));
+        const fallback = createDefaultWorkflow(provider, profiles.profiles);
+        const selectedTemplate = templates.templates.find((template) => template.id === templates.lastUsedTemplateId) ?? templates.templates[0] ?? null;
+        const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? fallback;
+        const templateId = selectedTemplate?.id ?? null;
+        setSelectedTemplateId(templateId);
+        setBaseWorkflow(initialWorkflow);
+        setWorkflow(initialWorkflow);
+        setSaveTemplateName('');
       })
       .catch((err) => setError(String(err)));
   }, [open]);
@@ -289,6 +307,52 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; 
     setError(null);
   };
 
+  const selectWorkflowTemplate = (templateId: string) => {
+    if (!templateStore) return;
+    if (templateId === '__last_created__') {
+      const lastWorkflow = templateStore.lastCreatedWorkflow;
+      if (!lastWorkflow) return;
+      setSelectedTemplateId(null);
+      setBaseWorkflow(lastWorkflow);
+      setWorkflow(lastWorkflow);
+      setSaveTemplateName('');
+      return;
+    }
+    const template = templateStore.templates.find((item) => item.id === templateId);
+    if (!template) return;
+    setSelectedTemplateId(template.id);
+    setBaseWorkflow(template.workflow);
+    setWorkflow(template.workflow);
+    setSaveTemplateName('');
+  };
+
+  const applyDefaultWorkflow = (next: WorkflowDsl) => {
+    const matchedTemplate = templateStore?.templates.find((template) => canonicalWorkflow(template.workflow) === canonicalWorkflow(next)) ?? null;
+    setSelectedTemplateId(matchedTemplate?.id ?? null);
+    setBaseWorkflow(next);
+    setWorkflow(next);
+    setSaveTemplateName('');
+  };
+
+  const saveCurrentAsTemplate = async () => {
+    if (!workflow || !saveTemplateName.trim()) return;
+    setSaving(true);
+    try {
+      const nextStore = await saveWorkflowTemplate(saveTemplateName.trim(), workflow);
+      const selected = nextStore.templates.at(-1) ?? null;
+      setTemplateStore(nextStore);
+      setSelectedTemplateId(selected?.id ?? nextStore.lastUsedTemplateId ?? null);
+      setBaseWorkflow(selected?.workflow ?? workflow);
+      setSaveTemplateName('');
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
+
   const submit = async (workflowDraft: WorkflowDsl) => {
     if (!requirementFileName || !requirementContent.trim()) {
       setError(t('taskList.create.requirementRequired'));
@@ -302,6 +366,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; 
         requirementFileName,
         requirementContent,
         workflow: workflowDraft,
+        workflowTemplateId: selectedTemplateId,
       });
       if (created) {
         setTitle('');
@@ -329,16 +394,16 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; 
                 <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/30">
                   <Upload className="size-5" />
                   <span>{requirementFileName || t('taskList.create.pickFile')}</span>
-                  <input className="sr-only" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => void readRequirementFile(event.target.files?.[0])} />
+                  <Input className="sr-only" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => void readRequirementFile(event.target.files?.[0])} />
                 </label>
-                <label className="block space-y-1.5 text-sm">
-                  <span className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskTitle')}</span>
-                  <input className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50" value={title} onChange={(event) => setTitle(event.target.value)} />
-                </label>
-                <label className="block space-y-1.5 text-sm">
-                  <span className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskDescription')}</span>
+                <div className="grid gap-1.5 text-sm">
+                  <Label className="text-xs text-muted-foreground">{t('taskList.create.taskTitle')}</Label>
+                  <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+                </div>
+                <div className="grid gap-1.5 text-sm">
+                  <Label className="text-xs text-muted-foreground">{t('taskList.create.taskDescription')}</Label>
                   <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-                </label>
+                </div>
               </div>
               <div className="min-w-0 rounded-xl border bg-muted/10 p-3">
                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -351,12 +416,78 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask }: { open: boolean; 
               </div>
             </AppCard>
             {error ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
-            {workflow ? <WorkflowEditor value={workflow} agentRegistry={agentRegistry} saving={saving} onSave={submit} /> : <EmptyState>{t('common.loading')}</EmptyState>}
+            {workflow ? (
+              <div className="space-y-3">
+                <AppCard className="flex flex-col gap-3 p-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+                    <span className="text-xs font-medium text-muted-foreground">{t('taskList.create.workflowTemplate')}</span>
+                    <Select value={selectedTemplateId ?? (templateStore?.lastCreatedWorkflow ? '__last_created__' : '')} onValueChange={selectWorkflowTemplate}>
+                      <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder={t('taskList.create.workflowTemplatePlaceholder')} /></SelectTrigger>
+                      <SelectContent>
+                        {templateStore?.templates.map((template) => <SelectItem value={template.id} key={template.id}>{template.name}</SelectItem>)}
+                        {templateStore?.lastCreatedWorkflow ? <SelectItem value="__last_created__">{t('taskList.create.lastCreatedWorkflow')}</SelectItem> : null}
+                      </SelectContent>
+                    </Select>
+                    {workflowDirty ? <Badge variant="outline">{t('taskList.create.workflowDirty')}</Badge> : null}
+                  </div>
+                  {workflowDirty ? (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => setSaveTemplateName(event.target.value)} />
+                      <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                    </div>
+                  ) : null}
+                </AppCard>
+                <WorkflowEditor value={workflow} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={saving} onChange={setWorkflow} onApplyDefaultTemplate={applyDefaultWorkflow} onSave={submit} />
+              </div>
+            ) : <EmptyState>{t('common.loading')}</EmptyState>}
           </div>
         </ScrollArea>
       </SheetContent>
     </Sheet>
   );
+}
+
+function TaskPagination({ pageIndex, pageCount, onPageChange }: { pageIndex: number; pageCount: number; onPageChange: (value: number) => void }) {
+  const { t } = useTranslation();
+  const previousDisabled = pageIndex === 0;
+  const nextDisabled = pageIndex >= pageCount - 1;
+  return (
+    <Pagination className="w-auto">
+      <PaginationContent>
+        <PaginationItem>
+          <PaginationLink
+            href="#"
+            size="default"
+            aria-disabled={previousDisabled}
+            className={cn('px-3', previousDisabled && 'pointer-events-none opacity-50')}
+            onClick={(event) => { event.preventDefault(); if (!previousDisabled) onPageChange(Math.max(0, pageIndex - 1)); }}
+          >
+            {t('common.previousPage')}
+          </PaginationLink>
+        </PaginationItem>
+        <PaginationItem>
+          <PaginationLink href="#" isActive aria-label={`Page ${pageIndex + 1}`}>
+            {pageIndex + 1}
+          </PaginationLink>
+        </PaginationItem>
+        <PaginationItem>
+          <PaginationLink
+            href="#"
+            size="default"
+            aria-disabled={nextDisabled}
+            className={cn('px-3', nextDisabled && 'pointer-events-none opacity-50')}
+            onClick={(event) => { event.preventDefault(); if (!nextDisabled) onPageChange(Math.min(pageCount - 1, pageIndex + 1)); }}
+          >
+            {t('common.nextPage')}
+          </PaginationLink>
+        </PaginationItem>
+      </PaginationContent>
+    </Pagination>
+  );
+}
+
+function canonicalWorkflow(workflow: WorkflowDsl) {
+  return JSON.stringify(workflow);
 }
 
 function compareTasks(left: TaskRowVm, right: TaskRowVm, key: TaskSortKey, dir: SortDir) {

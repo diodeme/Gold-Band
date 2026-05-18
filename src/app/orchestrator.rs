@@ -4,8 +4,8 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 
-use crate::config::DesktopLanguage;
 use crate::acp::permission::cancel_pending_permission_requests;
+use crate::config::DesktopLanguage;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{
     NodeOutcome, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode, VERSION,
@@ -299,7 +299,12 @@ pub(crate) fn run_continue(
         ),
     );
 
-    let (initial_session_mode, initial_continue_ref, initial_resume_prompt, initial_resume_prompt_id) = match node.status {
+    let (
+        initial_session_mode,
+        initial_continue_ref,
+        initial_resume_prompt,
+        initial_resume_prompt_id,
+    ) = match node.status {
         RunStatus::Paused => {
             if !is_run_continuable(&run) {
                 bail!("current attempt is paused but not resumable by continue");
@@ -485,25 +490,61 @@ fn run_is_killed(app: &App, task_id: &str, run_id: &str) -> Result<bool> {
     Ok(run.status == RunStatus::Completed && run.outcome == Some(RunOutcome::Killed))
 }
 
-fn setup_node_environment(app: &App, task_id: &str, run_id: &str, round_id: &str, node: &NodeState, ctx: &ExecutionContext) -> Result<()> {
-    std::fs::create_dir_all(app.paths.attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id).as_std_path())?;
-    std::fs::create_dir_all(app.paths.artifacts_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id).as_std_path())?;
-    std::fs::create_dir_all(app.paths.attachments_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id).as_std_path())?;
+fn setup_node_environment(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node: &NodeState,
+    ctx: &ExecutionContext,
+) -> Result<()> {
+    std::fs::create_dir_all(
+        app.paths
+            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id)
+            .as_std_path(),
+    )?;
+    std::fs::create_dir_all(
+        app.paths
+            .artifacts_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id)
+            .as_std_path(),
+    )?;
+    std::fs::create_dir_all(
+        app.paths
+            .attachments_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id)
+            .as_std_path(),
+    )?;
     append_run_event_best_effort(
         &app.paths,
         task_id,
         run_id,
         "node_environment_setup",
         now_rfc3339_like(),
-        run_event_data(ctx, Some(ProgressStage::Starting), Some(node.status), Some("node environment prepared".to_string()), None),
+        run_event_data(
+            ctx,
+            Some(ProgressStage::Starting),
+            Some(node.status),
+            Some("node environment prepared".to_string()),
+            None,
+        ),
     );
     Ok(())
 }
 
-fn teardown_node_environment_best_effort(app: &App, task_id: &str, run_id: &str, round_id: &str, node: &NodeState, ctx: &ExecutionContext) {
-    let attempt_dir = app.paths.attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
+fn teardown_node_environment_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node: &NodeState,
+    ctx: &ExecutionContext,
+) {
+    let attempt_dir =
+        app.paths
+            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
     let _ = cancel_pending_permission_requests(&attempt_dir, now_rfc3339_like());
-    let pid_path = app.paths.provider_pid_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
+    let pid_path =
+        app.paths
+            .provider_pid_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
     if pid_path.exists() {
         let _ = std::fs::remove_file(pid_path.as_std_path());
     }
@@ -513,7 +554,13 @@ fn teardown_node_environment_best_effort(app: &App, task_id: &str, run_id: &str,
         run_id,
         "node_environment_teardown",
         now_rfc3339_like(),
-        run_event_data(ctx, Some(ProgressStage::NormalizingArtifact), Some(node.status), Some("node environment released".to_string()), None),
+        run_event_data(
+            ctx,
+            Some(ProgressStage::NormalizingArtifact),
+            Some(node.status),
+            Some("node environment released".to_string()),
+            None,
+        ),
     );
 }
 
@@ -674,7 +721,14 @@ fn drive_from_node_with_initial_session(
                                 run.pause_reason,
                             ),
                         );
-                        teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &failed_node, &ctx);
+                        teardown_node_environment_best_effort(
+                            app,
+                            task_id,
+                            &run.id,
+                            &round.id,
+                            &failed_node,
+                            &ctx,
+                        );
                         persist_runtime_state(app, task_id, run, round, &failed_node)?;
                         return Ok(());
                     }
@@ -722,7 +776,14 @@ fn drive_from_node_with_initial_session(
                                 run.pause_reason,
                             ),
                         );
-                        teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &failed_node, &ctx);
+                        teardown_node_environment_best_effort(
+                            app,
+                            task_id,
+                            &run.id,
+                            &round.id,
+                            &failed_node,
+                            &ctx,
+                        );
                         persist_runtime_state(app, task_id, run, round, &failed_node)?;
                         return Ok(());
                     }

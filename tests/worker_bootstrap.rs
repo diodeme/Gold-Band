@@ -110,8 +110,8 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
                 primary_artifact: Some(PrimaryArtifactPayload {
-                    name: "verify-result".to_string(),
-                    content: r#"{"version":"0.1","status":"success","summary":"accepted","unmet_requirements":[],"validation_gaps":[]}"#.to_string(),
+                    name: "accept-result".to_string(),
+                    content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
                 }),
             }),
             worker_ref_seed: None,
@@ -244,15 +244,13 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
           "version": "0.1",
           "id": "continue-flow",
           "entry": "accept",
-          "control": {{
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 1,
-            "on_acceptance_failure": "stop"
-          }},
+          "control": {{ "max_repair_loops": 1 }},
           "nodes": [
-            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
+            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
-          "edges": []
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
         }}"#,
             accept_profile
         ),
@@ -320,7 +318,7 @@ fn error_blocked_run_is_continuable() {
         current_round: Some("round-001".to_string()),
         current_node: Some("dev".to_string()),
         current_attempt: Some("attempt-001".to_string()),
-        acceptance_loops_used: 0,
+        new_rounds_opened: 0,
         pause_reason: Some(PauseReason::ErrorBlocked),
     };
 

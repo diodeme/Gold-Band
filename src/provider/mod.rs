@@ -40,6 +40,9 @@ pub struct WorkerInvocation {
     pub workspace_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub primary_artifact: Option<String>,
+    pub output_contract: Option<PromptOutputContract>,
+    pub runtime_context: PromptRuntimeContext,
+    pub predecessors: Vec<PromptPredecessorContext>,
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
     pub continue_ref: Option<serde_json::Value>,
@@ -51,10 +54,52 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub log_provider_command: bool,
     pub feedback_summary: Option<String>,
-    pub verify_result_path: Option<Utf8PathBuf>,
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRuntimeContext {
+    pub project_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub run_dir: Utf8PathBuf,
+    pub round_dir: Utf8PathBuf,
+    pub node_dir: Utf8PathBuf,
+    pub attempt_dir: Utf8PathBuf,
+    pub attachments_dir: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptPredecessorContext {
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub node_type: String,
+    pub branch_kind: String,
+    pub outcome: Option<String>,
+    pub branch_direction: Option<String>,
+    pub output_artifact: Option<PromptArtifactRef>,
+    pub branch_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptArtifactRef {
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptOutputContract {
+    pub artifact: String,
+    pub kind: String,
+    pub schema: Option<serde_json::Value>,
+    pub success_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,7 +234,12 @@ impl ProviderAdapter for AcpProvider {
             _ => ProviderRunStatus::Success,
         };
         let result_payload = req.primary_artifact.as_ref().map(|primary_artifact| {
-            let content = if artifact_uses_json_output(primary_artifact) {
+            let uses_json_output = req
+                .output_contract
+                .as_ref()
+                .is_some_and(|contract| contract.kind == "json")
+                || artifact_uses_json_output(primary_artifact);
+            let content = if uses_json_output {
                 json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
                     .unwrap_or_else(|| run.final_text.clone())
             } else {
@@ -245,55 +295,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         (None, None) => unreachable!(),
     };
 
-    let output_contract = req.primary_artifact.as_ref().map(|primary_artifact| {
-        format!(
-            "- Output contract: return exactly one valid `{}` artifact as the final answer content with no extra prose.{}{}\n",
-            primary_artifact,
-            if primary_artifact == "exec-plan" {
-                " For `exec-plan`, output valid JSON with shape `{\"version\":\"0.1\",\"commands\":[{\"id\":string,\"run\":string,\"purpose\":string,\"cwd\"?:string,\"timeoutSec\"?:number}]}` and ensure `commands` is non-empty."
-            } else {
-                ""
-            },
-            if primary_artifact == "verify-result" {
-                " For `verify-result`, output valid JSON with shape `{\"version\":\"0.1\",\"status\":\"success|failure\",\"summary\":string,\"unmet_requirements\":string[],\"validation_gaps\":string[]}`. `summary` must be non-empty. If `status` is `success`, both arrays must be empty. If `status` is `failure`, at least one of the arrays must be non-empty. A malformed `verify-result` blocks the run; a valid `verify-result` with `status=\"failure\"` allows the runtime acceptance policy to continue."
-            } else if artifact_uses_json_output(primary_artifact) {
-                " Output a single valid JSON object. The workflow may evaluate specific JSON fields to decide the next edge."
-            } else {
-                ""
-            }
-        )
-    }).unwrap_or_default();
-
-    let system_prompt = format!(
-        "You are running inside Gold Band runtime.\n\nCurrent location:\n- Invocation kind: {:?}\n- Attempt directory: {}\n- Workspace directory: {}\n{}{}{}{}",
-        req.invocation_kind,
-        req.attempt_dir,
-        req.workspace_dir,
-        req.profile
-            .as_ref()
-            .map(|profile| format!("- Profile: {profile}\n"))
-            .unwrap_or_default(),
-        req.primary_artifact
-            .as_ref()
-            .map(|artifact| format!("- Required primary artifact: {artifact}\n"))
-            .unwrap_or_default(),
-        req.attachments_dir
-            .as_ref()
-            .map(|path| format!("- Free-form attachments may only be written under: {path}\n"))
-            .unwrap_or_default(),
-        output_contract,
-    );
-
+    let system_prompt = render_system_prompt(req);
     let mut user_sections = vec![format!("# Requirement\n{}", requirement_text.trim())];
-
-    if let Some(profile_content) = req
-        .profile_content
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        user_sections.push(format!("# Profile\n{}", profile_content));
-    }
 
     if let Some(feedback_summary) = &req.feedback_summary {
         user_sections.push(format!("# Current Feedback\n{}", feedback_summary.trim()));
@@ -331,6 +334,134 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         user_prompt: user_sections.join("\n\n"),
         prompt_id: None,
     })
+}
+
+fn render_system_prompt(req: &WorkerInvocation) -> String {
+    [
+        render_current_location(&req.runtime_context),
+        render_predecessor_chain(&req.predecessors),
+        render_predecessor_reasons(&req.predecessors),
+        render_directory_rules(&req.runtime_context),
+        render_role_section(req.profile.as_deref(), req.profile_content.as_deref()),
+        render_output_constraints(req.output_contract.as_ref()),
+    ]
+    .into_iter()
+    .filter(|section| !section.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn render_current_location(ctx: &PromptRuntimeContext) -> String {
+    format!(
+        "你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: {}\n- Task: {}\n- Run: {}\n- Round: {}\n- Node: {}\n- Attempt: {}",
+        ctx.project_id, ctx.task_id, ctx.run_id, ctx.round_id, ctx.node_id, ctx.attempt_id
+    )
+}
+
+fn render_predecessor_chain(predecessors: &[PromptPredecessorContext]) -> String {
+    if predecessors.is_empty() {
+        return "当前节点的前序运行节点：无，当前节点是本轮入口节点。".to_string();
+    }
+
+    let mut chain = String::from("当前节点的前序运行节点：\n");
+    for predecessor in predecessors {
+        chain.push_str(&format!("{}/{} ", predecessor.node_id, predecessor.attempt_id));
+        if let Some(direction) = predecessor.branch_direction.as_deref() {
+            chain.push_str(&format!("-{direction}-> "));
+        } else {
+            chain.push_str("-> ");
+        }
+    }
+    chain.push_str("当前节点");
+    chain
+}
+
+fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> String {
+    if predecessors.is_empty() {
+        return "当前节点前序节点的分支执行原因：无。".to_string();
+    }
+
+    let lines = predecessors
+        .iter()
+        .filter_map(|predecessor| {
+            let is_ordinary = predecessor.branch_kind == "普通"
+                && predecessor.branch_reason.is_none()
+                && predecessor.output_artifact.is_none();
+            if is_ordinary {
+                return None;
+            }
+
+            let mut parts = vec![format!(
+                "{}；节点类型={}；结果={}；分支方向={}",
+                predecessor.branch_kind,
+                predecessor.node_type,
+                predecessor.outcome.as_deref().unwrap_or("unknown"),
+                predecessor.branch_direction.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = predecessor.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &predecessor.output_artifact {
+                parts.push(format!("输出 artifact={}: {}", artifact.name, artifact.path));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!("输出预览={}{}", preview.trim(), if preview.ends_with('\n') { "" } else { "" }));
+                }
+            }
+            Some(format!(
+                "- {}/{}：{}。",
+                predecessor.node_id,
+                predecessor.attempt_id,
+                parts.join("；")
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        "当前节点前序节点的分支执行原因：前序节点均为普通节点，按节点结果进入当前分支。".to_string()
+    } else {
+        format!("当前节点前序节点的分支执行原因：\n{}", lines.join("\n"))
+    }
+}
+
+fn render_directory_rules(ctx: &PromptRuntimeContext) -> String {
+    format!(
+        "Gold Band 文件规则：\n- 所有节点运行产物都位于：{}\n- 本次节点运行中，你创建的自由文件必须写入：{}\n- 不要把自由文件写到 attachments 之外。\n- 当前 run 目录可读取：{}\n- 当前 node 目录可写入：{}\n- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。",
+        ctx.attempt_dir, ctx.attachments_dir, ctx.run_dir, ctx.node_dir
+    )
+}
+
+fn render_role_section(profile: Option<&str>, profile_content: Option<&str>) -> String {
+    let Some(profile) = profile else {
+        return "当前节点角色：\n- 未配置 profile。".to_string();
+    };
+    let content = profile_content.map(str::trim).filter(|value| !value.is_empty());
+    match content {
+        Some(content) => format!("当前节点角色：\n- Profile ID: {profile}\n\n{content}"),
+        None => format!("当前节点角色：\n- Profile ID: {profile}\n- 未找到 profile 正文。"),
+    }
+}
+
+fn render_output_constraints(contract: Option<&PromptOutputContract>) -> String {
+    let Some(contract) = contract else {
+        return String::new();
+    };
+
+    let mut section = format!(
+        "当前节点输出约束：\n- 输出 artifact: {}\n- 输出类型: {}\n\n你必须在最后一步按照以下格式输出你的结果：",
+        contract.artifact, contract.kind
+    );
+    if let Some(schema) = &contract.schema {
+        section.push_str(&format!(
+            "\n{}",
+            serde_json::to_string_pretty(schema).expect("serialize output schema")
+        ));
+    } else {
+        section.push_str("\n当前节点未声明结构化 schema。");
+    }
+    if let Some(condition) = contract.success_condition.as_deref() {
+        section.push_str(&format!("\n\nruntime 将使用以下条件判断节点结果：\n{condition}"));
+    }
+    section
 }
 
 fn log_prompt_bundle(
@@ -405,69 +536,34 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::GoldBandPaths;
-    use tempfile::tempdir;
 
     #[test]
-    fn render_prompt_bundle_includes_verify_result_output_contract() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let paths = GoldBandPaths::new(repo_root.clone());
-        let req = WorkerInvocation {
-            invocation_kind: InvocationKind::VerifyAcceptance,
-            profile: Some("verifier".to_string()),
-            profile_content: None,
-            requirement_path: None,
-            requirement_text: Some("Check whether hello-world exists".to_string()),
-            workspace_dir: repo_root.clone(),
-            attempt_dir: paths.attempt_dir("task-001", "run-001", "round-001", "accept", "attempt-001"),
-            primary_artifact: Some("verify-result".to_string()),
-            task_instruction: Some("Evaluate whether the requirement is satisfied based only on the provided evidence and produce a verify-result.".to_string()),
-            session_mode: SessionMode::New,
-            continue_ref: None,
-            resume_prompt: None,
-            resume_prompt_id: None,
-            stream_mode: StreamMode::StreamJson,
-            log_prompts: false,
-            log_provider_command: false,
-            feedback_summary: None,
-            verify_result_path: None,
-            attachments_dir: None,
-            cold_artifacts: Vec::new(),
-            cold_attachments: Vec::new(),
+    fn render_prompt_bundle_does_not_add_builtin_verify_or_exec_contracts() {
+        let runtime_context = PromptRuntimeContext {
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            run_dir: Utf8PathBuf::from("/run"),
+            round_dir: Utf8PathBuf::from("/run/rounds/round-001"),
+            node_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev"),
+            attempt_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev/attempt-001"),
+            attachments_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev/attempt-001/attachments"),
         };
-
-        let prompt = render_prompt_bundle(&req).unwrap();
-        assert!(
-            prompt
-                .system_prompt
-                .contains("Required primary artifact: verify-result")
-        );
-        assert!(prompt.system_prompt.contains("unmet_requirements"));
-        assert!(prompt.system_prompt.contains("validation_gaps"));
-        assert!(prompt.system_prompt.contains("status=\"failure\""));
-    }
-
-    #[test]
-    fn render_prompt_bundle_includes_exec_plan_output_contract() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let paths = GoldBandPaths::new(repo_root.clone());
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
-            profile: Some("developer".to_string()),
+            profile: None,
             profile_content: None,
             requirement_path: None,
             requirement_text: Some("Need an execution plan".to_string()),
-            workspace_dir: repo_root.clone(),
-            attempt_dir: paths.attempt_dir(
-                "task-001",
-                "run-001",
-                "round-001",
-                "dev",
-                "attempt-001",
-            ),
+            workspace_dir: Utf8PathBuf::from("/repo"),
+            attempt_dir: runtime_context.attempt_dir.clone(),
             primary_artifact: Some("exec-plan".to_string()),
+            output_contract: None,
+            runtime_context,
+            predecessors: Vec::new(),
             task_instruction: Some("Create an exec plan".to_string()),
             session_mode: SessionMode::New,
             continue_ref: None,
@@ -477,21 +573,15 @@ mod tests {
             log_prompts: false,
             log_provider_command: false,
             feedback_summary: None,
-            verify_result_path: None,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();
-        assert!(prompt.system_prompt.contains("Output contract"));
-        assert!(
-            prompt
-                .system_prompt
-                .contains("return exactly one valid `exec-plan` artifact")
-        );
-        assert!(prompt.system_prompt.contains("\"commands\""));
-        assert!(prompt.system_prompt.contains("non-empty"));
+        assert!(!prompt.system_prompt.contains("Output contract"));
+        assert!(!prompt.system_prompt.contains("verify-result"));
+        assert!(!prompt.system_prompt.contains("exec-plan"));
     }
 
     #[test]

@@ -1,9 +1,9 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { displayPolicy, displayStatus } from '../i18n';
+import { displayStatus } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, createDefaultWorkflow, parseWorkflowJson } from '../components/WorkflowEditor';
@@ -66,10 +66,16 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
+  const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
 
   const toggleRun = (runId: string, expanded: boolean) => {
     setExpandedRunId(expanded ? null : runId);
   };
+
+  const closeWorkflowDrawer = useCallback(() => {
+    setWorkflowDrawerMode(null);
+    setWorkflowDraft(null);
+  }, []);
 
   const openWorkflowDrawer = (mode: WorkflowDrawerMode) => {
     setWorkflowDrawerMode(mode);
@@ -107,14 +113,22 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const workflowDrawerOpen = workflowDrawerMode !== null;
   const editingWorkflow = workflowDrawerMode === 'create' || workflowDrawerMode === 'edit' || workflowDrawerMode === 'repair';
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
-  const editableWorkflow = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? createDefaultWorkflow(agentRegistry?.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code', profileList?.profiles ?? []);
   const historyBodyMinHeight = historyBodyMinHeightFor(pageSize);
+
+  // Seed draft once when entering an editing mode; never recompute from vm during editing.
+  if (editingWorkflow && !workflowDraft) {
+    const seed = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? createDefaultWorkflow(agentRegistry?.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code', profileList?.profiles ?? []);
+    setWorkflowDraft(seed);
+  }
 
   const saveWorkflow = async (workflow: WorkflowDsl) => {
     setSavingWorkflow(true);
     try {
       const saved = await onSaveWorkflow(vm.task.id, workflow);
-      if (saved) setWorkflowDrawerMode('view');
+      if (saved) {
+        setWorkflowDraft(null);
+        setWorkflowDrawerMode(null);
+      }
     } finally {
       setSavingWorkflow(false);
     }
@@ -223,7 +237,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
         closeLabel={t('common.close')}
         onOpenChange={setRequirementOpen}
       />
-      <Sheet modal={false} open={workflowDrawerOpen} onOpenChange={(open) => !open && setWorkflowDrawerMode(null)}>
+      <Sheet modal={false} open={workflowDrawerOpen} onOpenChange={(open) => !open && closeWorkflowDrawer()}>
         <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')} showOverlay={false}>
           <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
             <SheetDescription className="sr-only">{t('workflow.drawerDescription')}</SheetDescription>
@@ -238,12 +252,10 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               {vm.control && vm.task.workflowExists ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
                   <ControlPill label={t('workflow.maxRepairLoops')} value={vm.control.maxRepairLoops} />
-                  <ControlPill label={t('workflow.maxAcceptanceLoops')} value={vm.control.maxAcceptanceLoops} />
-                  <ControlPill label={t('workflow.onAcceptanceFailure')} value={displayPolicy(t, vm.control.onAcceptanceFailure)} />
                 </div>
               ) : null}
-              {editingWorkflow ? (
-                <WorkflowEditor value={editableWorkflow} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} />
+              {editingWorkflow && workflowDraft ? (
+                <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} onChange={setWorkflowDraft} />
               ) : vm.task.workflowExists ? (
                 <>
                   <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} activeStatus={activeRun?.status} />
@@ -282,7 +294,7 @@ function workflowLifecycleFor(task: TaskRowVm): WorkflowLifecycle {
   if (!task.workflowValid) {
     return { status: 'invalid', primaryMode: 'repair', primaryLabelKey: 'workflow.repairWorkflow' };
   }
-  return { status: 'valid', primaryMode: 'view', primaryLabelKey: 'workflow.viewWorkflow' };
+  return { status: 'valid', primaryMode: 'edit', primaryLabelKey: 'workflow.editWorkflow' };
 }
 
 function ControlPill({ label, value }: { label: string; value: ReactNode }) {

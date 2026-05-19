@@ -1,9 +1,9 @@
 use anyhow::{Result, anyhow, bail, ensure};
-use camino::Utf8Path;
+use camino::Utf8PathBuf;
 
 use crate::artifacts::{
-    ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, VerifyResultArtifact, VerifyStatus,
-    parse_json_artifact, validate_exec_plan, validate_exec_result, validate_verify_result,
+    ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, parse_json_artifact, validate_exec_plan,
+    validate_exec_result,
 };
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
@@ -12,52 +12,277 @@ use crate::dsl::{
 use crate::exec::run_exec_plan;
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
-    ColdFileRef, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
+    PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
+    ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
 };
-use crate::runtime::{NodeState, WorkerRefState, validate_node_state, validate_worker_ref_state};
+use crate::runtime::{
+    NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
+    validate_worker_ref_state,
+};
 use crate::storage::{read_json, write_json};
 
 use super::App;
 use super::ids::now_rfc3339_like;
-use super::transition_context::{
-    find_latest_artifact_path, find_verify_attachment_paths, find_verify_exec_result_path,
-    find_verify_worker_primary_artifact,
-};
+use super::transition_context::find_latest_artifact_path;
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
-    let mut sections = Vec::new();
-    if let Some(goal) = worker
+    worker
         .goal
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        sections.push(goal.to_string());
+        .map(str::to_string)
+}
+
+fn success_condition_text(condition: &JsonConditionDsl) -> String {
+    match condition {
+        JsonConditionDsl::Expression { expression } => expression.clone(),
+        JsonConditionDsl::PathEquals { path, equals } => format!("JSON field `{}` equals `{}`", path, equals),
     }
+}
+
+fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
+    worker.output.as_ref().map(|output| PromptOutputContract {
+        artifact: output.artifact.clone(),
+        kind: format!("{:?}", output.kind).to_ascii_lowercase(),
+        schema: output.schema.clone(),
+        success_condition: worker.success_condition.as_ref().map(success_condition_text),
+    })
+}
+
+fn runtime_prompt_context(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> PromptRuntimeContext {
+    PromptRuntimeContext {
+        project_id: app.paths.project_id.clone(),
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        run_dir: app.paths.run_dir(task_id, run_id),
+        round_dir: app.paths.round_dir(task_id, run_id, round_id),
+        node_dir: app.paths.node_dir(task_id, run_id, round_id, node_id),
+        attempt_dir: app
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        attachments_dir: app
+            .paths
+            .attachments_dir(task_id, run_id, round_id, node_id, attempt_id),
+    }
+}
+
+#[derive(Clone)]
+struct TraceRef {
+    round_id: String,
+    step: RoundTraceStep,
+}
+
+fn load_rounds_through_current(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    current_round: &RoundState,
+) -> Vec<RoundState> {
+    let rounds_dir = app.paths.run_dir(task_id, run_id).join("rounds");
+    let mut rounds = std::fs::read_dir(rounds_dir.as_std_path())
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
+        .filter_map(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
+        .map(|path| path.join("round.json"))
+        .filter(|path| path.exists())
+        .filter_map(|path| read_json::<RoundState>(&path).ok())
+        .filter(|round| round.id != current_round.id)
+        .collect::<Vec<_>>();
+    rounds.push(current_round.clone());
+    rounds.sort_by_key(|round| round.index);
+    rounds
+}
+
+fn flatten_trace_until_current(
+    rounds: &[RoundState],
+    current_round_id: &str,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> Vec<TraceRef> {
+    let mut refs = Vec::new();
+    for round in rounds {
+        let mut trace = round.trace.clone();
+        trace.sort_by_key(|step| step.sequence);
+        for step in trace {
+            if round.id == current_round_id
+                && step.node_id == current_node_id
+                && step.attempt_id == current_attempt_id
+            {
+                return refs;
+            }
+            refs.push(TraceRef {
+                round_id: round.id.clone(),
+                step,
+            });
+        }
+    }
+    refs
+}
+
+fn branch_kind_for_node(node: &NodeDsl) -> String {
+    if node.manual_check_enabled() {
+        return "人工check".to_string();
+    }
+    match node {
+        NodeDsl::Worker(worker) if worker.output.is_some() || worker.success_condition.is_some() => {
+            "节点输出检查".to_string()
+        }
+        _ => "普通".to_string(),
+    }
+}
+
+fn output_contract_reason(worker: &WorkerNode) -> Option<String> {
+    let mut parts = Vec::new();
     if let Some(output) = &worker.output {
-        let mut instruction = format!("Return valid JSON for `{}`.", output.artifact);
+        parts.push(format!(
+            "输出 DSL artifact={} kind={:?}",
+            output.artifact, output.kind
+        ));
         if let Some(schema) = &output.schema {
-            instruction.push_str(&format!(
-                "\nJSON output constraint:\n{}",
-                serde_json::to_string_pretty(schema).expect("serialize output schema")
+            parts.push(format!(
+                "schema={}",
+                serde_json::to_string(schema).expect("serialize output schema")
             ));
         }
-        if let Some(condition) = &worker.success_condition {
-            match condition {
-                JsonConditionDsl::Expression { expression } => instruction.push_str(&format!("\nThe runtime treats this node as successful only when `{}` evaluates to true.", expression)),
-                JsonConditionDsl::PathEquals { path, equals } => instruction.push_str(&format!("\nThe runtime treats this node as successful only when JSON field `{}` equals `{}`.", path, equals)),
-            }
-        }
-        sections.push(instruction);
     }
-    (!sections.is_empty()).then(|| sections.join("\n\n"))
+    if let Some(condition) = &worker.success_condition {
+        parts.push(format!("success_condition={}", success_condition_text(condition)));
+    }
+    (!parts.is_empty()).then(|| parts.join("；"))
+}
+
+fn artifact_preview(path: &Utf8PathBuf) -> Option<String> {
+    let content = std::fs::read_to_string(path.as_std_path()).ok()?;
+    const LIMIT: usize = 2048;
+    if content.len() > LIMIT {
+        let preview = content.chars().take(LIMIT).collect::<String>();
+        Some(format!("{}\n... preview omitted; read the file if needed", preview))
+    } else {
+        Some(content)
+    }
+}
+
+fn output_artifact_for_predecessor(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    trace: &RoundTraceStep,
+    node_dsl: &NodeDsl,
+) -> Option<PromptArtifactRef> {
+    let artifact = match node_dsl {
+        NodeDsl::Worker(worker) => worker.output.as_ref().map(|output| output.artifact.as_str()),
+        _ => None,
+    }?;
+    let path = app.paths.artifact_file(
+        task_id,
+        run_id,
+        round_id,
+        &trace.node_id,
+        &trace.attempt_id,
+        artifact,
+    );
+    Some(PromptArtifactRef {
+        name: artifact.to_string(),
+        preview: path.exists().then(|| artifact_preview(&path)).flatten(),
+        path,
+    })
+}
+
+fn build_predecessor_contexts(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    current_round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+    workflow: &ValidatedWorkflow,
+) -> Vec<PromptPredecessorContext> {
+    let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
+    let traces = flatten_trace_until_current(
+        &rounds,
+        &current_round.id,
+        current_node_id,
+        current_attempt_id,
+    );
+
+    traces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, trace_ref)| {
+            let node_dsl = workflow.get_node(&trace_ref.step.node_id)?;
+            let node = read_json::<NodeState>(&app.paths.node_file(
+                task_id,
+                run_id,
+                &trace_ref.round_id,
+                &trace_ref.step.node_id,
+                &trace_ref.step.attempt_id,
+            ))
+            .ok();
+            let next = traces.get(index + 1);
+            let branch_direction = next
+                .and_then(|next| next.step.edge_outcome.clone())
+                .or_else(|| {
+                    if trace_ref.round_id == current_round.id {
+                        current_round
+                            .trace
+                            .iter()
+                            .find(|step| {
+                                step.node_id == current_node_id
+                                    && step.attempt_id == current_attempt_id
+                                    && step.from_node_id.as_deref()
+                                        == Some(trace_ref.step.node_id.as_str())
+                            })
+                            .and_then(|step| step.edge_outcome.clone())
+                    } else {
+                        None
+                    }
+                });
+            let branch_reason = match node_dsl {
+                NodeDsl::Worker(worker) => output_contract_reason(worker),
+                _ => None,
+            };
+            Some(PromptPredecessorContext {
+                round_id: trace_ref.round_id.clone(),
+                node_id: trace_ref.step.node_id.clone(),
+                attempt_id: trace_ref.step.attempt_id.clone(),
+                node_type: format!("{:?}", node_dsl.node_type()).to_ascii_lowercase(),
+                branch_kind: branch_kind_for_node(node_dsl),
+                outcome: node
+                    .and_then(|node| node.outcome)
+                    .map(|outcome| format!("{:?}", outcome).to_ascii_lowercase()),
+                branch_direction,
+                output_artifact: output_artifact_for_predecessor(
+                    app,
+                    task_id,
+                    run_id,
+                    &trace_ref.round_id,
+                    &trace_ref.step,
+                    node_dsl,
+                ),
+                branch_reason,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn execute_ai_node(
     app: &App,
     task_id: &str,
     run_id: &str,
-    round_id: &str,
+    round: &RoundState,
     attempt_id: &str,
     workflow: &ValidatedWorkflow,
     node_id: &str,
@@ -67,21 +292,20 @@ pub(crate) fn execute_ai_node(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     feedback_summary: Option<String>,
-    verify_result_path: Option<&Utf8Path>,
 ) -> Result<NodeState> {
+    let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
         profile,
         primary_artifact,
+        output_contract,
         task_instruction,
         invocation_kind,
         cold_artifacts,
         cold_attachments,
     ) = match node_dsl {
         NodeDsl::Worker(worker) => {
-            let kind = if verify_result_path.is_some() {
-                InvocationKind::WorkerRepairVerify
-            } else if feedback_summary.is_some() {
+            let kind = if feedback_summary.is_some() {
                 InvocationKind::WorkerRepairExec
             } else {
                 InvocationKind::WorkerGeneric
@@ -89,42 +313,11 @@ pub(crate) fn execute_ai_node(
             (
                 worker.profile.clone(),
                 worker.primary_artifact.clone(),
+                worker_output_contract(worker),
                 worker_task_instruction(worker),
                 kind,
                 Vec::new(),
                 Vec::new(),
-            )
-        }
-        NodeDsl::Verify(verify) => {
-            let mut artifacts = Vec::new();
-            if let Some(path) =
-                find_verify_exec_result_path(app, task_id, run_id, round_id, workflow, node_id)?
-            {
-                artifacts.push(ColdFileRef {
-                    name: Some("exec-result".to_string()),
-                    path,
-                });
-            }
-            if let Some(path) = find_verify_worker_primary_artifact(
-                app, task_id, run_id, round_id, workflow, node_id,
-            )? {
-                artifacts.push(ColdFileRef {
-                    name: Some("worker-primary-artifact".to_string()),
-                    path,
-                });
-            }
-            let cold_attachments =
-                find_verify_attachment_paths(app, task_id, run_id, round_id, workflow, node_id)?
-                    .into_iter()
-                    .map(|path| ColdFileRef { name: None, path })
-                    .collect::<Vec<_>>();
-            (
-                verify.profile.clone(),
-                Some("verify-result".to_string()),
-                Some("Evaluate whether the requirement is satisfied based only on the provided evidence and produce a verify-result.".to_string()),
-                InvocationKind::VerifyAcceptance,
-                artifacts,
-                cold_attachments,
             )
         }
         NodeDsl::Exec(_) => bail!("execute_ai_node cannot run exec nodes"),
@@ -135,6 +328,18 @@ pub(crate) fn execute_ai_node(
         .map(|id| app.profile_show(id).map(|profile| profile.content))
         .transpose()?;
 
+    let runtime_context =
+        runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
+    let predecessors = build_predecessor_contexts(
+        app,
+        task_id,
+        run_id,
+        round,
+        node_id,
+        attempt_id,
+        workflow,
+    );
+
     let invocation = WorkerInvocation {
         invocation_kind,
         profile,
@@ -142,10 +347,11 @@ pub(crate) fn execute_ai_node(
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
         workspace_dir: app.paths.repo_root.clone(),
-        attempt_dir: app
-            .paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        attempt_dir: runtime_context.attempt_dir.clone(),
         primary_artifact,
+        output_contract,
+        runtime_context,
+        predecessors,
         task_instruction,
         session_mode,
         continue_ref,
@@ -155,7 +361,6 @@ pub(crate) fn execute_ai_node(
         log_prompts: app.config.log_prompts,
         log_provider_command: app.config.log_provider_command,
         feedback_summary,
-        verify_result_path: verify_result_path.map(ToOwned::to_owned),
         attachments_dir: matches!(node_dsl, NodeDsl::Worker(_)).then(|| {
             app.paths
                 .attachments_dir(task_id, run_id, round_id, node_id, attempt_id)
@@ -475,12 +680,6 @@ pub(crate) fn finalize_ai_attempt(
                             validate_exec_plan(&plan)?;
                             write_json(&artifact_path, &plan)?;
                         }
-                        "verify-result" => {
-                            let verify: VerifyResultArtifact =
-                                parse_json_artifact(&primary_artifact.content)?;
-                            validate_verify_result(&verify)?;
-                            write_json(&artifact_path, &verify)?;
-                        }
                         _ => {
                             std::fs::create_dir_all(
                                 app.paths
@@ -525,19 +724,6 @@ pub(crate) fn finalize_ai_attempt(
             node.status = RunStatus::Completed;
             node.outcome = Some(if needs_primary_artifact && !has_artifact {
                 NodeOutcome::Invalid
-            } else if matches!(node.node_type, crate::domain::NodeType::Verify) {
-                let verify: VerifyResultArtifact = read_json(&app.paths.artifact_file(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    "verify-result",
-                ))?;
-                match verify.status {
-                    VerifyStatus::Success => NodeOutcome::Success,
-                    VerifyStatus::Failure => NodeOutcome::Failure,
-                }
             } else if matches!(node.node_type, crate::domain::NodeType::Worker) {
                 expected_artifact
                     .as_deref()
@@ -582,7 +768,6 @@ pub(crate) fn re_evaluate_attempt(
             .and_then(|value| value.as_str())
             .map(str::to_string),
         crate::domain::NodeType::Exec => Some("exec-result".to_string()),
-        crate::domain::NodeType::Verify => Some("verify-result".to_string()),
     };
 
     if let Some(artifact_name) = artifact_name {
@@ -618,14 +803,6 @@ pub(crate) fn re_evaluate_attempt(
                 node.outcome = Some(match value.status {
                     ExecResultStatus::Success => NodeOutcome::Success,
                     ExecResultStatus::Failure => NodeOutcome::Failure,
-                });
-            }
-            "verify-result" => {
-                let value: VerifyResultArtifact = read_json(&path)?;
-                validate_verify_result(&value)?;
-                node.outcome = Some(match value.status {
-                    VerifyStatus::Success => NodeOutcome::Success,
-                    VerifyStatus::Failure => NodeOutcome::Failure,
                 });
             }
             _ => {

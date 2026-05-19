@@ -91,10 +91,12 @@
 - 有效状态显示查看；未创建状态显示新建工作流；无效或校验失败状态显示修复。
 - 新建 / 修改 / 修复模式进入作者态画布编辑器，基于 `@xyflow/react` 支持新增节点、连接边、选择节点/边并在右侧 Inspector 配置；节点坐标不写入 workflow DSL，由系统根据节点和边自动排布为规整的从左到右结构。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
-- 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、AI 输出验证；agent 来源于 Agent 管理页已配置 agent 卡片。
+- 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、节点结果判定方式；agent 来源于 Agent 管理页已配置 agent 卡片。
 - profile 配置使用可搜索选择器，默认加载用户级 `~/.gold-band/context/profiles/` 与当前项目级 `~/.gold-band/projects/{project-id}/context/profiles/` 下的所有 profile；workflow DSL 保存 profile `id`，选项展示名称、ID、摘要、创建时间和更新时间，并提供入口跳转到“上下文管理 / 角色管理”。
 - 所有 worker/verify 节点保存前必须绑定可见角色；如果模板中的角色 ID 已删除或因项目可见性变化不可访问，选择器打开时可显示为空，点击保存时一次性弹窗报告问题，关闭弹窗后清空该节点角色并在字段处红色高亮标注原因。
-- 人工 check 作为预留能力在节点配置中展示占位说明，本期不实现运行时阻塞逻辑。
+- worker 节点结果判定方式支持 AI 输出验证与人工 check 二选一；开启其中一种会自动关闭另一种，避免同一节点同时存在机器判定和人工判定。
+- worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
+- 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。
 - 默认模板来自后端持久化的内置 workflow JSON，前端“默认模板”按钮只应用该模板，不维护独立业务默认 schema/expression；默认模板生成顺序为先同步默认角色，再把生成出的角色 ID 写入默认节点 profile。
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `exec` 节点或 `exec-plan` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。

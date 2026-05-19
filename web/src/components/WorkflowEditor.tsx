@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronsUpDown, Info } from 'lucide-react';
-import dagre from 'dagre';
 import {
   Background,
   BaseEdge,
   Controls,
   EdgeLabelRenderer,
+  Handle,
   MarkerType,
   Position,
   ReactFlow,
@@ -18,6 +18,22 @@ import {
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 import type { AgentRegistryVm, ManagedAgentVm, ProfileVm, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowWorkerNodeDsl } from '../types';
+import {
+  END_NODE,
+  NEW_ROUND_NODE,
+  NODE_WIDTH,
+  NODE_HEIGHT,
+  TERMINAL_NODE_WIDTH,
+  TERMINAL_NODE_HEIGHT,
+  collectAuthoringNodes,
+  workflowNodeOrder,
+  computeBackwardLanes,
+  authoringEdgeColor,
+  layoutSuccessPath,
+  topLeft,
+  SOURCE_POS,
+  TARGET_POS,
+} from './workflowGraph';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
@@ -35,12 +51,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-const END_NODE = '$end';
-const NEW_ROUND_NODE = '$new-round';
-const NODE_WIDTH = 220;
-const NODE_HEIGHT = 66;
-const TERMINAL_NODE_WIDTH = 140;
-const TERMINAL_NODE_HEIGHT = 44;
+function providerToIconKey(provider: string): string | undefined {
+  const mapping: Record<string, string> = { 'claude-code': 'claude', 'codex-cli': 'codex', opencode: 'opencode', 'gemini-cli': 'gemini' };
+  return mapping[provider];
+}
+
 const DEFAULT_ROLE_NAMES = {
   plan: '方案',
   dev: '开发',
@@ -53,7 +68,7 @@ const DEFAULT_ROLE_NAMES = {
 type EditorTab = 'canvas' | 'json';
 type EdgeOutcome = 'success' | 'failure' | 'invalid';
 type SessionMode = 'new' | 'continue';
-type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean };
+type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string };
 type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; lane?: number };
 type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; edgeIndex?: number };
 type WorkflowValidationResult = {
@@ -63,6 +78,30 @@ type WorkflowValidationResult = {
   sanitizedWorkflow: WorkflowDsl;
 };
 const edgeTypes = { workflowRouted: WorkflowRoutedEdge };
+const editorNodeTypes = { editorCanvas: EditorCanvasNode };
+
+function EditorCanvasNode({ data }: { data: EditorNodeData }) {
+  if (data.terminal) {
+    return (
+      <div className="flex size-full items-center justify-center rounded-full text-xs tracking-wide text-muted-foreground" style={{ background: 'color-mix(in srgb, var(--muted) 32%, transparent)' }}>
+        <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+        <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+        {data.label}
+      </div>
+    );
+  }
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+      <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+      <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+      <div className="flex items-center gap-1.5">
+        {data.iconKey ? <img src={`/agent-icons/${data.iconKey}.svg`} alt="" className="size-3.5 shrink-0 rounded-sm" /> : null}
+        <span className="text-[13px] font-medium text-foreground">{data.label}</span>
+      </div>
+      <span className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{data.kind}</span>
+    </div>
+  );
+}
 
 interface WorkflowEditorProps {
   value?: WorkflowDsl | null;
@@ -308,6 +347,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
                 fitView
                 proOptions={{ hideAttribution: true }}
                 edgeTypes={edgeTypes}
+                nodeTypes={editorNodeTypes}
                 className="workflow-graph bg-muted/10"
               >
                 <Background color="var(--border)" gap={28} size={1} />
@@ -359,11 +399,15 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
     return <EmptyState>{t('workflowEditor.legacyNodeReadonly')}</EmptyState>;
   }
   const validationEnabled = Boolean(node.output || node.success_condition || node.primary_artifact);
+  const manualCheckEnabled = Boolean(node.manual_check);
+  const resultMode = validationEnabled ? 'ai' : manualCheckEnabled ? 'manual' : 'none';
   const expression = conditionExpression(node.success_condition);
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
+  const clearValidationPatch = { output: null, success_condition: null, primary_artifact: null };
   const updateOutput = (patch: Partial<WorkflowOutputContractDsl>) => {
     const artifact = patch.artifact ?? node.output?.artifact ?? `${node.id}-result`;
     onUpdate(node.id, {
+      manual_check: null,
       primary_artifact: artifact,
       output: { kind: 'json', artifact, schema: node.output?.schema ?? null, ...patch },
     });
@@ -389,22 +433,32 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
       <Field label={t('workflowEditor.goal')} errors={errorsFor('goal')}>
         <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} onChange={(event) => onUpdate(node.id, { goal: event.target.value })} />
       </Field>
-      <div className="rounded-lg border border-dashed bg-muted/20 p-3 text-xs text-muted-foreground">
-        {t('workflowEditor.manualCheckPlaceholder')}
-      </div>
       <div className="space-y-3 rounded-lg border bg-muted/10 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-medium">{t('workflowEditor.outputValidation')}</span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onUpdate(node.id, validationEnabled ? { output: null, success_condition: null, primary_artifact: null } : defaultValidationPatch(node.id))}
-          >
-            {validationEnabled ? t('workflowEditor.disable') : t('workflowEditor.enable')}
-          </Button>
+        <div className="space-y-1">
+          <span className="text-sm font-medium">{t('workflowEditor.resultMode')}</span>
+          <p className="text-xs text-muted-foreground">{t('workflowEditor.resultModeDescription')}</p>
         </div>
+        <Select
+          value={resultMode}
+          onValueChange={(mode) => {
+            if (mode === 'ai') onUpdate(node.id, { ...defaultValidationPatch(node.id), manual_check: null });
+            if (mode === 'manual') onUpdate(node.id, { ...clearValidationPatch, manual_check: true });
+            if (mode === 'none') onUpdate(node.id, { ...clearValidationPatch, manual_check: null });
+          }}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">{t('workflowEditor.resultModeNone')}</SelectItem>
+            <SelectItem value="ai">{t('workflowEditor.outputValidation')}</SelectItem>
+            <SelectItem value="manual">{t('workflowEditor.manualCheck')}</SelectItem>
+          </SelectContent>
+        </Select>
+        {validationEnabled ? <p className="text-xs leading-5 text-muted-foreground">{t('workflowEditor.outputValidationDescription')}</p> : null}
+        {manualCheckEnabled ? <p className="text-xs leading-5 text-muted-foreground">{t('workflowEditor.manualCheckDescription')}</p> : null}
         {validationEnabled ? (
-          <>
+          <div className="space-y-3 rounded-lg border bg-background/55 p-3">
             <Field label={t('workflowEditor.outputArtifact')} errors={errorsFor('output.artifact')}>
               <Input className={errorClass(errorsFor('output.artifact'))} value={node.output?.artifact ?? ''} onChange={(event) => updateOutput({ artifact: event.target.value })} />
             </Field>
@@ -432,9 +486,9 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
               {schemaError ? <span className="text-xs text-destructive">{schemaError}</span> : null}
             </Field>
             <Field label={<HelpLabel label={t('workflowEditor.successExpression')} help={t('workflowEditor.successExpressionHelp')} />} errors={errorsFor('success_condition')}>
-              <Input className={cn('font-mono', errorClass(errorsFor('success_condition')))} value={expression} placeholder="$.result == true" onChange={(event) => onUpdate(node.id, { success_condition: { expression: event.target.value } })} />
+              <Input className={cn('font-mono', errorClass(errorsFor('success_condition')))} value={expression} placeholder="$.result == true" onChange={(event) => onUpdate(node.id, { manual_check: null, success_condition: { expression: event.target.value } })} />
             </Field>
-          </>
+          </div>
         ) : null}
       </div>
     </div>
@@ -649,65 +703,45 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
 }
 
 function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
-  const terminalIds = [END_NODE, NEW_ROUND_NODE].filter((terminalId) => workflow.edges.some((edge) => edge.to === terminalId));
-  const allNodes = [...workflow.nodes.map((node) => ({ id: node.id, terminal: false, node })), ...terminalIds.map((id) => ({ id, terminal: true, node: null }))];
-  const nodeIds = new Set(allNodes.map((node) => node.id));
-  const nodeOrder = new Map(workflow.nodes.map((node, index) => [node.id, index]));
-  const retryLaneByEdgeIndex = new Map<number, number>();
-  workflow.edges
-    .map((edge, index) => ({ edge, index }))
-    .filter(({ edge }) => isBackwardRetryEdge(edge, nodeOrder))
-    .forEach(({ index }, lane) => retryLaneByEdgeIndex.set(index, lane));
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ rankdir: 'LR', nodesep: 72, ranksep: 116, marginx: 56, marginy: 120 });
-  allNodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: node.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: node.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT });
-  });
-  workflow.edges.forEach((edge) => {
-    if (edge.on !== 'success') return;
-    if (nodeIds.has(edge.from) && nodeIds.has(edge.to)) {
-      dagreGraph.setEdge(edge.from, edge.to);
-    }
-  });
-  dagre.layout(dagreGraph);
+  const allNodes = collectAuthoringNodes(workflow);
+  const nodeIds = new Set(allNodes.map((n) => n.id));
+  const nodeOrder = workflowNodeOrder(workflow);
+  const retryLaneByEdgeIndex = computeBackwardLanes(workflow.edges as Array<{ from: string; to: string; on: string }>, nodeOrder);
+  const layoutPositions = layoutSuccessPath(
+    allNodes.map((n) => ({ id: n.id, width: n.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: n.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT })),
+    workflow.edges.map((e) => ({ from: e.from, to: e.to, on: e.on })),
+    nodeIds,
+  );
 
   const nodes: Node<EditorNodeData>[] = allNodes.map((item) => {
-    const layout = dagreGraph.node(item.id) ?? { x: 0, y: 0 };
+    const pos = layoutPositions.get(item.id) ?? { x: 0, y: 0 };
     const width = item.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH;
     const height = item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT;
-    const detail = item.node?.type === 'worker' ? item.node.goal ?? '' : item.node?.type ?? item.id;
+    const node = workflow.nodes.find((n) => n.id === item.id);
+    const detail = node?.type === 'worker' ? (node as WorkflowWorkerNodeDsl).goal ?? '' : node?.type ?? item.id;
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
+    const provider = node?.type === 'worker' ? (node as WorkflowWorkerNodeDsl).provider : undefined;
+    const iconKey = provider ? providerToIconKey(provider) : undefined;
     return {
       id: item.id,
-      position: { x: layout.x - width / 2, y: layout.y - height / 2 },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      data: { label: workflowNodeLabel(item.id, item.terminal, t), kind: item.terminal ? 'terminal' : item.node?.type ?? 'node', detail, terminal: item.terminal },
-      className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected'),
+      type: 'editorCanvas',
+      position: topLeft(pos.x, pos.y, width, height),
+      sourcePosition: SOURCE_POS,
+      targetPosition: TARGET_POS,
+      data: { label: workflowNodeLabel(item.id, item.terminal, t), kind: item.terminal ? 'terminal' : node?.type ?? 'node', detail, terminal: item.terminal, iconKey },
+      className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected', invalid && 'ring-1 ring-destructive'),
       selected: !item.terminal && item.id === selectedNodeId,
       draggable: false,
       selectable: true,
       connectable: !item.terminal,
-      style: {
-        width,
-        minHeight: height,
-        borderRadius: item.terminal ? 999 : 14,
-        border: invalid ? '1px solid var(--destructive)' : '1px solid var(--border)',
-        background: item.terminal ? 'color-mix(in srgb, var(--muted) 32%, transparent)' : 'var(--card)',
-        color: 'var(--card-foreground)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-        fontSize: item.terminal ? 12 : 13,
-      },
+      style: { width, minHeight: height },
     };
   });
 
   const edges: Edge<WorkflowEdgeData>[] = workflow.edges.map((edge, index) => {
     const id = edgeId(edge, index);
     const retryLane = retryLaneByEdgeIndex.get(index);
+    const color = authoringEdgeColor(edge.on);
     return {
       id,
       source: edge.from,
@@ -715,11 +749,11 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       label: edge.on === 'success' ? undefined : workflowEdgeLabel(edge.on, t),
       type: edge.on === 'success' ? 'smoothstep' : 'workflowRouted',
       animated: false,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: edgeColor(edge) },
-      style: { stroke: edgeColor(edge), strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
+      style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
       className: cn('workflow-edge-flow', edge.on !== 'success' && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
-      labelStyle: { fill: edgeColor(edge), fontSize: 11, fontWeight: 600 },
+      labelStyle: { fill: color, fontSize: 11, fontWeight: 600 },
       labelBgStyle: { fill: 'var(--background)', fillOpacity: 0.86 },
       labelShowBg: false,
       data: { outcome: edge.on, lane: retryLane },
@@ -730,17 +764,8 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
   return { nodes, edges };
 }
 
-function isBackwardRetryEdge(edge: WorkflowEdgeDsl, nodeOrder: Map<string, number>) {
-  if (edge.on === 'success') return false;
-  const sourceOrder = nodeOrder.get(edge.from);
-  const targetOrder = nodeOrder.get(edge.to);
-  return sourceOrder !== undefined && targetOrder !== undefined && targetOrder < sourceOrder;
-}
-
 function edgeColor(edge: WorkflowEdgeDsl) {
-  if (edge.on === 'failure') return 'var(--destructive)';
-  if (edge.on === 'invalid') return 'var(--muted-foreground)';
-  return 'var(--muted-foreground)';
+  return authoringEdgeColor(edge.on);
 }
 
 function workflowNodeLabel(id: string, terminal: boolean, t: (key: string) => string) {
@@ -791,7 +816,7 @@ export function createDefaultWorkflow(provider: string, profiles: ProfileVm[] = 
     version: '0.1',
     id: 'task-workflow',
     entry: 'plan',
-    control: { max_repair_loops: 3, max_acceptance_loops: 1, on_acceptance_failure: 'stop' },
+    control: { max_repair_loops: 3 },
     nodes: [
       worker('plan', 'Analyze the imported requirement and produce an implementation plan.'),
       worker('dev', 'Implement the requirement in the workspace.'),
@@ -939,7 +964,6 @@ function validateWorkflowForSave(
   else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
   if (workflow.control.max_repair_loops <= 0) addIssue(t('workflowEditor.validationMaxRepairLoopsRequired'));
-  if (workflow.control.max_acceptance_loops <= 0) addIssue(t('workflowEditor.validationMaxAcceptanceLoopsRequired'));
 
   workflow.nodes.forEach((node, nodeIndex) => {
     const nodeLabel = node.id || t('workflowEditor.unnamedNode');
@@ -960,6 +984,9 @@ function validateWorkflowForSave(
       if (!node.goal?.trim()) addIssue(t('workflowEditor.validationNodeGoalRequired', { node: nodeLabel }), nodeField(node, 'goal'), node.id);
 
       const validationEnabled = Boolean(node.output || node.success_condition || node.primary_artifact);
+      if (validationEnabled && node.manual_check) {
+        addIssue(t('workflowEditor.validationResultModeExclusive', { node: nodeLabel }), nodeField(node, 'success_condition'), node.id);
+      }
       if (validationEnabled) {
         if (!node.output?.artifact?.trim()) addIssue(t('workflowEditor.validationOutputArtifactRequired', { node: nodeLabel }), nodeField(node, 'output.artifact'), node.id);
         if (node.output?.artifact && node.primary_artifact && node.output.artifact !== node.primary_artifact) {
@@ -981,15 +1008,6 @@ function validateWorkflowForSave(
         if (schema && path && !looksLikeJsonSchema(schema) && !schemaContainsPath(schema, path)) {
           addIssue(t('workflowEditor.saveErrorMissingPath', { node: nodeLabel }), nodeField(node, 'output.schema'), node.id);
         }
-      }
-    } else if (node.type === 'verify') {
-      if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-      if (!node.profile?.trim()) {
-        addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
-      } else if (!profileIds.has(node.profile)) {
-        addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
-        const sanitized = sanitizedWorkflow.nodes[nodeIndex];
-        if (sanitized?.type === 'verify') sanitized.profile = null;
       }
     } else if (node.type === 'exec' && !node.plan_from.trim()) {
       addIssue(t('workflowEditor.validationExecPlanFromRequired', { node: nodeLabel }), nodeField(node, 'plan_from'), node.id);

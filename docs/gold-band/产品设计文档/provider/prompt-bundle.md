@@ -1,183 +1,126 @@
 # Prompt Bundle 规范
 
 ## 1. 一句话定义
+
 `prompt bundle` 是 runtime 在调用 provider 前组装出的标准输入包。
 
-它不是原始目录的直接暴露，而是 runtime 经过选择、归纳、分层后的调用材料。
-
-它至少由两部分组成：
+它由两部分组成：
 
 - `systemPrompt`
 - `userPrompt`
 
-其中上下文还应遵循：
-- 热数据直接内联
-- 冷数据只暴露文件索引
+其中热数据直接进入 prompt 正文，冷数据只暴露文件索引。
 
 ---
 
 ## 2. 设计目标
-`prompt bundle` 的设计目标是：
 
-1. 让模型一开始就拿到必须知道的任务目标与约束
-2. 避免把大体积上下文直接塞进窗口
-3. 保证 provider 不需要自行猜测目录语义
-4. 保证 runtime 对可见上下文有明确控制权
+1. 让模型明确当前工作流节点的位置、角色和边界。
+2. 让模型遵守 Gold Band / ACP 的文件读写规则。
+3. 让节点输出约束来自工作流 DSL，而不是 provider 自行猜测。
+4. 避免把大体积上下文直接塞进窗口。
+5. 保证 provider 只消费已经渲染好的 prompt bundle。
 
 ---
 
-## 3. 热数据与冷数据
+## 3. system prompt 与 user prompt 的职责边界
 
-### 3.1 热数据
-热数据指本次调用中**必须直接告诉模型**的信息。
+### 3.1 `systemPrompt`
 
-典型包括：
+`systemPrompt` 负责不可协商的运行约束，回答：
+
+> 当前是谁、处在哪个节点、前面怎么走到这里、必须遵守什么规则、最后输出必须是什么格式。
+
+它承载：
+
+- 当前 project / task / run / round / node / attempt 基础信息
+- 当前节点的前序运行链
+- 前序节点分支执行原因
+- Gold Band / ACP 文件夹规则
+- 当前节点 profile id 解析出的完整角色说明
+- 当前节点 `output` DSL 派生出的输出约束
+
+`systemPrompt` 不再承载旧的 `InvocationKind` 语义，也不根据 artifact 名称内置 `exec-plan` / `verify-result` 之类特殊输出规则。
+
+### 3.2 `userPrompt`
+
+`userPrompt` 负责本次任务输入，回答：
+
+> 这次要做什么、当前反馈是什么、可以参考哪些冷数据。
+
+它承载：
+
 - 原始 `requirement`
-- 当前节点 `profile`
-- 当前 `invocationKind`
 - 当前 feedback 摘要
-- 当前输出契约
-- 最小 runtime 上下文摘要
+- 由 `worker.goal` 映射得到的 `taskInstruction`
+- 冷 artifact 索引
+- 冷 attachment 索引
 
-这些内容应直接进入 `systemPrompt` 或 `userPrompt` 正文。
-
-### 3.2 冷数据
-冷数据指本次调用中**可以暴露给模型，但不应直接占用上下文窗口**的信息。
-
-典型包括：
-- 上游节点的 `artifacts`
-- `attachments`
-- 较长的执行结果
-- 报告、日志、补充说明等材料
-
-这些内容不直接展开正文，而是以**文件索引**的方式暴露给模型，供其按需读取。
-
-补充：
-- 冷数据被暴露，不等于必须被读取
-- 模型只有在需要时才应主动读取冷数据
-- 未读取的冷数据，不应被假设其内容
+profile 正文和 output DSL 不放在 `userPrompt` 中。
 
 ---
 
-## 4. system prompt 与 user prompt 的职责边界
-
-### 4.1 `systemPrompt`
-`systemPrompt` 负责表达**不可协商的运行约束**，回答的是：
-
-> 你是谁、你当前在什么位置、你必须遵守什么规则。
-
-它应承载：
-- Gold Band runtime 的最小运行语义
-- 当前节点角色与职责边界
-- 当前节点 `profile` 的引用 ID 与运行时元信息
-- 当前输出契约
-- 冷数据访问规则
-
-### 4.2 `userPrompt`
-`userPrompt` 负责表达**本次任务内容**，回答的是：
-
-> 这次要做什么、当前反馈是什么、你可参考什么材料。
-
-它应承载：
-- 原始 `requirement`
-- 当前 profile Markdown 正文
-- 当前 feedback 摘要
-- 本次任务指令
-- 冷数据索引
-
----
-
-## 5. Prompt Placement Rule
-- stable runtime rules and output contracts belong to `systemPrompt`
-- task-specific goal and feedback belong to `userPrompt`
-- hot data may appear in either prompt depending on whether it is a runtime rule or a task input
-- cold data must not be expanded by default; it should be exposed as file index only
-
----
-
-## 6. System Prompt 模板
-首版建议 runtime 使用模板方式动态组装 `systemPrompt`。
-
-占位符建议兼容 Rust 常见模板风格：
-- `{{field_name}}`
-- `{{#if field}} ... {{/if}}`
-- `{{#each items}} ... {{/each}}`
-
-建议模板如下：
+## 4. System Prompt 模板
 
 ```md
-You are running inside Gold Band runtime.
+你正在 Gold Band runtime 中执行一个工作流节点。
 
-Gold Band runtime model:
-- A run is the full execution of one task.
-- A round is one closed-loop iteration inside the run.
-- A node is one workflow step inside a round, such as worker / exec / verify.
-- An attempt is one concrete execution of a node.
-
-Current location:
+当前是：
+- Project: {{project_id}}
+- Task: {{task_id}}
 - Run: {{run_id}}
 - Round: {{round_id}}
 - Node: {{node_id}}
-- Node type: {{node_type}}
 - Attempt: {{attempt_id}}
-- Invocation kind: {{invocation_kind}}
 
-Current path context:
-- Attempt directory: {{attempt_dir}}
-- This directory identifies the current node attempt only.
-- Do not assume you should scan the whole run history unless specific files are exposed below.
+当前节点的前序运行节点：
+{{predecessor_chain}}
 
-Profile:
-{{profile_prompt}}
+当前节点前序节点的分支执行原因：
+{{predecessor_branch_reasons}}
 
-Role contract:
-{{role_contract_prompt}}
+Gold Band 文件规则：
+- 所有节点运行产物都位于：{{attempt_dir}}
+- 本次节点运行中，你创建的自由文件必须写入：{{attachments_dir}}
+- 不要把自由文件写到 attachments 之外。
+- 当前 run 目录可读取：{{run_dir}}
+- 当前 node 目录可写入：{{node_dir}}
+- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。
 
-Output contract:
-{{#if primary_artifact_name}}
-- Return exactly one primary artifact: {{primary_artifact_name}}
-- The primary artifact must follow this DSL/schema:
-{{primary_artifact_schema_prompt}}
-- The primary artifact content must be a string.
-{{else}}
-- No primary artifact is required unless the user prompt states otherwise.
+当前节点角色：
+- Profile ID: {{profile_id}}
+
+{{profile_content}}
+
+{{#if output_contract}}
+当前节点输出约束：
+- 输出 artifact: {{output_contract.artifact}}
+- 输出类型: {{output_contract.kind}}
+
+你必须在最后一步按照以下格式输出你的结果：
+{{output_contract.schema}}
+
+{{#if output_contract.success_condition}}
+runtime 将使用以下条件判断节点结果：
+{{output_contract.success_condition}}
 {{/if}}
-- Do not invent undeclared artifacts.
-
-Attachment side-effect rule:
-- If you create free-form supporting files, write them only under: {{attachments_dir}}
-- Do not write attachments outside this directory.
-- Do not treat attachments as canonical artifacts.
-
-Cold context access rule:
-- Supporting artifacts and attachments may be exposed as cold context.
-- Cold context is optional: read it only when needed.
-- Do not assume the contents of a cold file unless you have read it.
-- Only use files explicitly exposed in this invocation.
+{{/if}}
 ```
 
 说明：
-- Gold Band runtime model 这几行用于解释 `run / round / node / attempt` 的最小语义
-- 这里不要求模型自己遍历整个目录层级，只提供必要定位信息
-- `primary_artifact_schema_prompt` 不应只写 artifact 名字，必须携带其 DSL / schema 摘要
-- `attachments_dir` 属于 runtime 渲染 prompt 时注入的运行约束，用于明确附件副作用允许写入的位置
-- 若当前节点未声明 `primaryArtifact`，则输出契约必须退化为“无强制主产物”
+
+- `predecessor_chain` 以执行路径形式展示，例如 `A/attempt-001 -success-> B/attempt-001 -failure-> 当前节点`。
+- `predecessor_branch_reasons` 对普通节点可省略详细原因；人工 check 展示人工检查结果；节点输出检查展示 output DSL、节点输出和分支方向。
+- 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。
+- 冷数据正文不默认展开，只提供索引。
 
 ---
 
-## 7. User Prompt 模板
-首版建议 runtime 使用模板方式动态组装 `userPrompt`。
-
-建议模板如下：
+## 5. User Prompt 模板
 
 ```md
 # Requirement
 {{requirement_text}}
-
-{{#if profile_content}}
-# Profile
-{{profile_content}}
-{{/if}}
 
 {{#if feedback_summary}}
 # Current Feedback
@@ -191,8 +134,6 @@ Cold context access rule:
 
 {{#if cold_artifacts.length}}
 # Cold Artifact Index
-The following artifacts are available for optional inspection:
-
 {{#each cold_artifacts}}
 - {{name}}: {{path}}
 {{/each}}
@@ -200,8 +141,6 @@ The following artifacts are available for optional inspection:
 
 {{#if cold_attachments.length}}
 # Cold Attachment Index
-The following attachments are available for optional inspection:
-
 {{#each cold_attachments}}
 - {{path}}
 {{/each}}
@@ -209,135 +148,70 @@ The following attachments are available for optional inspection:
 ```
 
 说明：
-- `requirement_text` 属于稳定任务目标，应直接进入 `userPrompt`
-- `profile_content` 来自 workflow 节点 `profile` id 解析到的 Markdown 文件正文；用户级路径为 `~/.gold-band/context/profiles/<name>-<id>.md`，项目级路径为 `~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md`；workflow 只保存 profile `id`，运行时在 provider invocation 前解析为当前可见的角色正文。
-- `feedback_summary` 用于表达当前修复背景或上一轮验收/执行失败摘要
-- `task_instruction` 对 `worker` 默认由 `worker.goal` 映射得到，并进入 `userPrompt` 的 `# Task`
-- 对特殊场景，runtime 也可在此基础上注入额外任务说明
-- 冷数据索引只给文件路径清单，不默认展开正文
+
+- `requirement_text` 是稳定任务目标。
+- `taskInstruction` 对 `worker` 默认由 `worker.goal` 映射得到。
+- `feedback_summary` 表达当前修复背景或上一节点失败摘要。
+- 冷数据索引只给路径清单，不默认展开正文。
 
 ---
 
-## 8. 运行时占位符建议
-首版建议至少支持以下模板字段。
+## 6. 运行时字段
 
-### 8.1 基础标识
-- `{{run_id}}`
-- `{{round_id}}`
-- `{{node_id}}`
-- `{{node_type}}`
-- `{{attempt_id}}`
-- `{{attempt_dir}}`
-- `{{invocation_kind}}`
+### 6.1 基础信息
 
-### 8.2 配置与约束
-- `{{profile_prompt}}`
-- `{{role_contract_prompt}}`
-- `{{primary_artifact_name}}`
-- `{{primary_artifact_schema_prompt}}`
-- `{{attachments_dir}}`
+- `project_id`
+- `task_id`
+- `run_id`
+- `round_id`
+- `node_id`
+- `attempt_id`
 
-### 8.3 任务内容
-- `{{requirement_text}}`
-- `{{feedback_summary}}`
-- `{{task_instruction}}`
+### 6.2 文件规则
 
-### 8.4 冷数据集合
-- `{{#each cold_artifacts}}`
-  - `{{name}}`
-  - `{{path}}`
-- `{{#each cold_attachments}}`
-  - `{{path}}`
+- `run_dir`
+- `round_dir`
+- `node_dir`
+- `attempt_dir`
+- `attachments_dir`
 
----
+### 6.3 前序链
 
-## 9. 场景化 task instruction 规则
-普通 `worker` 不应默认被视为 planning worker。
+- `predecessors[].round_id`
+- `predecessors[].node_id`
+- `predecessors[].attempt_id`
+- `predecessors[].node_type`
+- `predecessors[].branch_kind`
+- `predecessors[].outcome`
+- `predecessors[].branch_direction`
+- `predecessors[].output_artifact`
+- `predecessors[].branch_reason`
 
-因此：
-- `worker_generic` 的默认 `taskInstruction` 来自 `worker.goal`
-- 若 runtime 还有额外任务说明，可在 `worker.goal` 映射结果基础上补充
-- 若 DSL 未提供 `goal`，runtime 不应为了形式完整而硬造一句“Produce a new ...”
+### 6.4 节点配置
 
-### 9.1 `worker_generic`
-表示普通 worker 调用。
-
-它不预设：
-- 一定存在 `primaryArtifact`
-- 一定在做 planning
-- 一定要返回结构化主产物
-
-其本次具体任务由以下信息共同决定：
-- 原始 `requirement`
-- 当前节点 `profile`
-- 由 `worker.goal` 映射得到的 `taskInstruction`
-- 可选的 `primaryArtifact` 约束
-- runtime 显式暴露的冷数据索引
-
-### 9.2 `worker_repair_exec`
-建议在 `worker.goal` 映射得到的默认 `taskInstruction` 基础上，追加 repair 场景补充指令，例如：
-
-```md
-Update the worker output based on the original requirement and the latest execution failure.
-{{#if primary_artifact_name}}
-Produce a new {{primary_artifact_name}}.
-{{/if}}
-```
-
-说明：
-- repair-specific 指令是补充，不替换 `worker.goal`
-- 若 DSL 未提供 `goal`，则只注入 repair-specific 指令，不额外硬造通用 goal
-
-### 9.3 `worker_repair_verify`
-建议在 `worker.goal` 映射得到的默认 `taskInstruction` 基础上，追加 repair 场景补充指令，例如：
-
-```md
-Revise the worker output based on the original requirement and the latest acceptance feedback.
-{{#if primary_artifact_name}}
-Produce a new {{primary_artifact_name}}.
-{{/if}}
-```
-
-说明：
-- repair-specific 指令是补充，不替换 `worker.goal`
-- 若 DSL 未提供 `goal`，则只注入 repair-specific 指令，不额外硬造通用 goal
-
-### 9.4 `verify_acceptance`
-建议注入明确任务指令，例如：
-
-```md
-Evaluate whether the requirement is satisfied based only on the provided evidence.
-Produce a {{primary_artifact_name}}.
-```
+- `profile`
+- `profile_content`
+- `output_contract.artifact`
+- `output_contract.kind`
+- `output_contract.schema`
+- `output_contract.success_condition`
 
 ---
 
-## 10. 最小 prompt bundle 结构示意
-在 provider implementation 内部，A() 应把外层调用请求进一步整理成最小 `prompt bundle`，再交给 B() 执行。
+## 7. Continue session 规则
 
-建议最小结构示意：
+ACP 的 `systemPrompt` 只在 `session/new` 时通过 `_meta.systemPrompt.append` 注入。
 
-```json
-{
-  "systemPrompt": "<rendered system prompt>",
-  "userPrompt": "<rendered user prompt>",
-  "metadata": {
-    "invocationKind": "worker_generic",
-    "profile": "developer",
-    "nodeType": "worker",
-    "primaryArtifact": null
-  }
-}
-```
+当 `sessionMode = continue` 且存在 resume prompt 时：
 
-说明：
-- `metadata` 只作为辅助信息
-- prompt bundle 层不应继续依赖路径解引用
-- requirement 文本、runtime 上下文摘要、artifact DSL 摘要、冷数据索引组装，应由 A() 在更上层完成
-- B() 只负责消费已经准备好的 `prompt bundle`，并映射到 provider-specific 调用
+- `systemPrompt` 为空
+- `userPrompt` 为 `Continue` / `继续`
+- 复用已有 ACP session 的上下文
+
+如果跨节点需要新的角色、文件规则或输出 DSL 约束，应使用新 session。
 
 ---
 
-## 11. 一句话总结
+## 8. 一句话总结
 
-> `prompt bundle` 是 provider 调用前的最终模型输入层：它通过 system/user 分工，以及热数据内联、冷数据索引暴露的方式，把 runtime 已选上下文稳定地交给模型。
+> `prompt bundle` 是 provider 调用前的最终模型输入层：system prompt 承载工作流运行约束和输出 DSL，user prompt 承载任务目标、反馈和冷数据索引。

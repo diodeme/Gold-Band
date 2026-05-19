@@ -41,13 +41,13 @@ impl ProviderAdapter for LoopingProvider {
                 name: "exec-plan".to_string(),
                 content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
             },
-            Some("verify-result") if *count < 3 => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"failure","summary":"not yet","unmet_requirements":["missing requirement"],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") if *count < 4 => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":false,"reason":"not yet"}"#.to_string(),
             },
-            Some("verify-result") => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"success","summary":"accepted","unmet_requirements":[],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
             _ => unreachable!(),
         };
@@ -120,19 +120,17 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {{
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 2,
-            "on_acceptance_failure": "auto-loop"
-          }},
+          "control": {{ "max_repair_loops": 1 }},
           "nodes": [
             {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
             {{"id":"run-tests","type":"exec","plan_from":"dev"}},
-            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
+            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"run-tests","on":"success"}},
-            {{"from":"run-tests","to":"accept","on":"success"}}
+            {{"from":"run-tests","to":"accept","on":"success"}},
+            {{"from":"accept","to":"$end","on":"success"}},
+            {{"from":"accept","to":"$new-round","on":"failure"}}
           ]
         }}"#,
             dev_profile, accept_profile
@@ -166,7 +164,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     let artifacts = app
         .artifact_list(task_id, "run-001", "round-002", "accept", "attempt-001")
         .unwrap();
-    assert!(artifacts.iter().any(|name| name == "verify-result"));
+    assert!(artifacts.iter().any(|name| name == "accept-result"));
     assert!(
         app.artifact_show(
             task_id,
@@ -174,7 +172,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
             "round-002",
             "accept",
             "attempt-001",
-            "verify-result"
+            "accept-result"
         )
         .unwrap()
         .contains("accepted")
@@ -186,7 +184,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
             "round-002",
             "accept",
             "attempt-001",
-            "verify-result.json"
+            "accept-result.json"
         )
         .unwrap()
         .contains("accepted")

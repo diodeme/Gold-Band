@@ -391,7 +391,7 @@ function TerminalPreview({ palette, compact = false }: { palette: ThemePreviewPa
       <div className={cn('space-y-2', compact ? 'px-2 py-1.5' : 'px-3 py-2')}>
         <div style={{ color: palette.muted }}>$ gold-band run</div>
         <div><span style={{ color: palette.primary }}>workflow</span> ready</div>
-        {!compact ? <div style={{ color: palette.success }}>verify passed</div> : null}
+        {!compact ? <div style={{ color: palette.success }}>validation passed</div> : null}
         <div className={cn('h-3 w-0.5 animate-pulse', compact ? 'mt-1' : 'mt-3')} style={{ backgroundColor: palette.primary }} />
       </div>
     </div>

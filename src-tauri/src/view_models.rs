@@ -141,8 +141,6 @@ pub struct WorkflowVm {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowControlVm {
     pub max_repair_loops: u32,
-    pub max_acceptance_loops: u32,
-    pub on_acceptance_failure: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +222,7 @@ pub struct GraphNodeVm {
     pub artifact_count: usize,
     pub attachment_count: usize,
     pub current: bool,
+    pub icon_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +256,8 @@ pub struct NodeDetailVm {
     pub has_progress_events: bool,
     pub has_raw_stream: bool,
     pub has_worker_ref: bool,
+    pub manual_check_enabled: bool,
+    pub manual_check_pending: bool,
     pub acp_session: Option<AcpSessionVm>,
 }
 
@@ -588,6 +589,16 @@ fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
     }
 }
 
+fn provider_icon_key(provider: &str) -> Option<String> {
+    match provider {
+        "claude-code" => Some("claude".to_string()),
+        "codex-cli" => Some("codex".to_string()),
+        "opencode" => Some("opencode".to_string()),
+        "gemini-cli" => Some("gemini".to_string()),
+        _ => None,
+    }
+}
+
 fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
     match agent_type {
         ManagedAgentType::ClaudeCode => "Claude Code",
@@ -828,8 +839,6 @@ fn round_summary_vm(
 fn workflow_control_vm(workflow: &WorkflowDsl) -> WorkflowControlVm {
     WorkflowControlVm {
         max_repair_loops: workflow.control.max_repair_loops,
-        max_acceptance_loops: workflow.control.max_acceptance_loops,
-        on_acceptance_failure: enum_label(&workflow.control.on_acceptance_failure),
     }
 }
 
@@ -850,6 +859,7 @@ fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 artifact_count: 0,
                 attachment_count: 0,
                 current: false,
+                icon_key: node.provider().and_then(provider_icon_key),
             })
             .collect(),
         edges: workflow
@@ -980,6 +990,7 @@ fn trace_step_graph_vm(
         current: run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&step.node_id)
             && run.current_attempt.as_deref() == Some(&step.attempt_id),
+        icon_key: node.and_then(|n| n.resolved_config.get("provider").and_then(|v| v.as_str()).and_then(provider_icon_key)),
     })
 }
 
@@ -1014,6 +1025,7 @@ fn round_node_graph_vm(
         attachment_count: attachments,
         current: run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&node.node_id),
+        icon_key: node.resolved_config.get("provider").and_then(|v| v.as_str()).and_then(provider_icon_key),
     })
 }
 
@@ -1086,6 +1098,11 @@ fn selected_node_detail_vm(
         .paths
         .worker_ref_file(task_id, run_id, round_id, node_id, &node.attempt_id)
         .exists();
+    let manual_check_enabled = node
+        .resolved_config
+        .get("manualCheck")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
 
     Ok(Some(NodeDetailVm {
         id: graph_node
@@ -1128,6 +1145,8 @@ fn selected_node_detail_vm(
             LogSource::RawStream,
         ),
         has_worker_ref: worker_ref_exists,
+        manual_check_enabled,
+        manual_check_pending: node.manual_check_pending,
         acp_session: acp_session_vm(
             app,
             task_id,
@@ -2510,7 +2529,6 @@ fn node_label(node: &NodeDsl) -> String {
     match node {
         NodeDsl::Worker(node) => node.goal.clone().unwrap_or_else(|| node.id.clone()),
         NodeDsl::Exec(node) => format!("exec from {}", node.plan_from),
-        NodeDsl::Verify(node) => node.id.clone(),
     }
 }
 

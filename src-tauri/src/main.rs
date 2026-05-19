@@ -11,7 +11,8 @@ use commands::{
     get_system_fonts, get_task_detail, get_task_list, get_workflow, get_workflow_templates,
     kill_run, respond_acp_permission, retry_run, save_desktop_preferences, save_task_workflow,
     save_workflow_template, select_recent_workspace, send_acp_prompt, show_artifact,
-    show_attachment, show_worker_ref, start_run, update_agent, update_profile,
+    show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
+    update_profile,
 };
 use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
@@ -80,6 +81,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_raw_frames,
             start_run,
             continue_run,
+            submit_manual_check,
             retry_run,
             kill_run,
             show_artifact,

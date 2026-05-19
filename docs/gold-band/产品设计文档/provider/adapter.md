@@ -52,16 +52,18 @@ provider adapter 是 provider-specific 差异的隔离层。
 其正式调用契约见 [Worker Invocation Contract](invocation.md)。
 
 最小输入语义：
-- `profile`
+- `profile` / `profileContent`
 - `requirementPath` 或 `requirementText`
 - `workspaceDir`
 - `attemptDir`
 - `primaryArtifact`
+- `outputContract`（来自当前节点 `output` DSL）
+- `runtimeContext`
+- `predecessors[]`
 - `taskInstruction`
 - `sessionMode`（可选，缺省为 `new`）
 - `continueRefPath`
 - `streamMode`
-- `verifyResultPath` 或 `verifyResultText`
 
 说明：
 - `sessionMode` / `continueRefPath` 只影响 provider 如何启动本次 attempt

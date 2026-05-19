@@ -9,7 +9,7 @@ use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
 use gold_band::app::{CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore};
-use gold_band::domain::SessionMode;
+use gold_band::domain::{NodeOutcome, SessionMode};
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::PromptBundle;
 use gold_band::runtime::{NodeState, WorkerRefState};
@@ -358,6 +358,27 @@ pub fn continue_run(
 ) -> CommandResult<RunSummaryVm> {
     let app = state.app().map_err(command_error)?;
     app.run_continue_background(&task_id, &run_id, prompt_id)
+        .map(run_summary_vm)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn submit_manual_check(
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outcome: String,
+) -> CommandResult<RunSummaryVm> {
+    let app = state.app().map_err(command_error)?;
+    let outcome = match outcome.as_str() {
+        "success" => NodeOutcome::Success,
+        "failure" => NodeOutcome::Failure,
+        _ => return Err("manual check outcome must be success or failure".to_string()),
+    };
+    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
         .map(run_summary_vm)
         .map_err(command_error)
 }

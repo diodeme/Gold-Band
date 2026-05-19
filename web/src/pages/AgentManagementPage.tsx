@@ -4,6 +4,7 @@ import { createAgent, deleteAgent, doctorAgent, updateAgent } from '../api';
 import type { AgentRegistryVm, ManagedAgentInput, ManagedAgentVm, SupportedAgentTypeVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -167,14 +168,19 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       />
 
       {notice ? (
-        <div className={cn(
-          'rounded-xl border px-4 py-3 text-sm',
-          notice.tone === 'success'
-            ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
-            : 'border-destructive/45 bg-destructive/10 text-destructive',
-        )}>
-          {notice.message}
-        </div>
+        <Alert
+          className={cn(
+            'rounded-xl px-4 py-3',
+            notice.tone === 'success'
+              ? 'border-gold-success/35 bg-gold-success/10 text-gold-success'
+              : 'border-destructive/45 bg-destructive/10 text-destructive',
+          )}
+        >
+          {notice.tone === 'success' ? <CheckCircle2 /> : <AlertTriangle />}
+          <AlertDescription className="text-sm font-medium text-current">
+            {notice.message}
+          </AlertDescription>
+        </Alert>
       ) : null}
       {error ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
@@ -362,7 +368,7 @@ function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnost
   const { t } = useTranslation();
   const status = diagnostic?.status ?? 'unknown';
   const icon = status === 'healthy'
-    ? <CheckCircle2 className="size-4 text-emerald-500" />
+    ? <CheckCircle2 className="size-4 text-gold-success" />
     : status === 'unhealthy'
       ? <AlertTriangle className="size-4 text-destructive" />
       : <CircleHelp className="size-4 text-muted-foreground" />;

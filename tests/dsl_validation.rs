@@ -9,13 +9,9 @@ fn validates_basic_workflow() {
     let workflow: WorkflowDsl = serde_json::from_str(
         r#"{
             "version": "0.1",
-            "id": "dev-test-verify",
+            "id": "dev-test-accept",
             "entry": "dev",
-            "control": {
-                "max_repair_loops": 3,
-                "max_acceptance_loops": 2,
-                "on_acceptance_failure": "auto-loop"
-            },
+            "control": { "max_repair_loops": 3 },
             "nodes": [
                 {
                     "id": "dev",
@@ -32,14 +28,19 @@ fn validates_basic_workflow() {
                 },
                 {
                     "id": "accept",
-                    "type": "verify",
-                    "provider": "claude-code"
+                    "type": "worker",
+                    "provider": "claude-code",
+                    "profile": "acceptance",
+                    "primary_artifact": "accept-result",
+                    "output": { "kind": "json", "artifact": "accept-result" },
+                    "success_condition": { "path": "result", "equals": true }
                 }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },
                 { "from": "run-tests", "to": "accept", "on": "success" },
-                { "from": "run-tests", "to": "dev", "on": "failure", "session": "continue" }
+                { "from": "run-tests", "to": "dev", "on": "failure", "session": "continue" },
+                { "from": "accept", "to": "$new-round", "on": "failure" }
             ]
         }"#,
     )
@@ -47,7 +48,7 @@ fn validates_basic_workflow() {
 
     let validated = validate_workflow(workflow).expect("workflow should validate");
     assert_eq!(validated.raw.entry, "dev");
-    assert_eq!(validated.verify_node_id.as_deref(), Some("accept"));
+    assert!(validated.get_node("accept").is_some());
 }
 
 #[test]
@@ -57,14 +58,10 @@ fn rejects_exec_plan_from_non_worker() {
             "version": "0.1",
             "id": "invalid",
             "entry": "run-tests",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "control": { "max_repair_loops": 1 },
             "nodes": [
                 { "id": "run-tests", "type": "exec", "plan_from": "accept" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": []
         }"#,
@@ -118,25 +115,21 @@ fn rejects_zero_loop_limits() {
 }
 
 #[test]
-fn rejects_acceptance_policy_without_verify_node() {
-    let workflow = parse_workflow(
+fn rejects_legacy_verify_node_type() {
+    let workflow = serde_json::from_str::<WorkflowDsl>(
         r#"{
             "version": "0.1",
-            "id": "missing-verify",
-            "entry": "dev",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "auto-loop"
-            },
+            "id": "legacy-verify",
+            "entry": "accept",
+            "control": { "max_repair_loops": 1 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" }
+                { "id": "accept", "type": "verify", "provider": "claude-code" }
             ],
             "edges": []
         }"#,
     );
 
-    assert!(validate_workflow(workflow).is_err());
+    assert!(workflow.is_err());
 }
 
 #[test]
@@ -153,8 +146,7 @@ fn rejects_invalid_edges_to_end() {
             },
             "nodes": [
                 { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
-                { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "run-tests", "type": "exec", "plan_from": "dev" }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },

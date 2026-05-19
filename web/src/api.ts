@@ -324,6 +324,10 @@ export function continueRun(taskId: string, runId: string, promptId?: string | n
   return command<RunSummaryVm>('continue_run', { taskId, runId, promptId }, { ...mockRunDetail.run, taskId, id: runId });
 }
 
+export function submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
+  return command<RunSummaryVm>('submit_manual_check', { taskId, runId, roundId, nodeId, attemptId, outcome }, { ...mockRunDetail.run, taskId, id: runId });
+}
+
 export function retryRun(taskId: string, runId: string) {
   return command<RunSummaryVm>('retry_run', { taskId, runId }, { ...mockRunDetail.run, taskId, id: runId });
 }

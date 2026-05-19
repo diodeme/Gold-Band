@@ -1,8 +1,7 @@
 use std::thread;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use camino::Utf8Path;
-use camino::Utf8PathBuf;
 
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::DesktopLanguage;
@@ -27,8 +26,7 @@ use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profile
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
 use super::state_factory::create_node_state;
 use super::transition_context::{
-    feedback_summary_from_previous_node, find_latest_artifact_path,
-    find_latest_worker_ref_for_transition,
+    feedback_summary_from_previous_node, find_latest_worker_ref_for_transition,
 };
 use super::{App, is_run_continuable};
 
@@ -38,6 +36,13 @@ struct PreparedRun {
     run: RunState,
     round: RoundState,
     node: NodeState,
+}
+
+struct NextExecution {
+    node: NodeState,
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+    feedback_summary: Option<String>,
 }
 
 fn localized_continue_prompt(language: DesktopLanguage) -> String {
@@ -149,7 +154,7 @@ fn prepare_run(
         current_round: Some(round_id.clone()),
         current_node: Some(validated.raw.entry.clone()),
         current_attempt: Some(attempt_id.clone()),
-        acceptance_loops_used: 0,
+        new_rounds_opened: 0,
         pause_reason: None,
     };
     validate_run_state(&run)?;
@@ -186,10 +191,6 @@ fn prepare_run(
         .expect("validated entry exists");
     let entry_profile = match entry_node {
         crate::dsl::NodeDsl::Worker(worker) => worker
-            .profile
-            .as_deref()
-            .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
-        crate::dsl::NodeDsl::Verify(verify) => verify
             .profile
             .as_deref()
             .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
@@ -309,6 +310,9 @@ pub(crate) fn run_continue(
             if !is_run_continuable(&run) {
                 bail!("current attempt is paused but not resumable by continue");
             }
+            if node.manual_check_pending {
+                bail!("current attempt is waiting for manual check");
+            }
             let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                 task_id,
                 run_id,
@@ -344,6 +348,7 @@ pub(crate) fn run_continue(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
+        None,
     )?;
     Ok(run)
 }
@@ -357,6 +362,10 @@ pub(crate) fn run_continue_background(
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
         bail!("current run is not resumable by continue");
+    }
+    let (_, node) = current_attempt_state(app, task_id, &initial_run)?;
+    if node.manual_check_pending {
+        bail!("current attempt is waiting for manual check");
     }
     let repo_root = app.paths.repo_root.clone();
     let config = app.config.clone();
@@ -381,6 +390,167 @@ pub(crate) fn run_continue_background(
     Ok(initial_run)
 }
 
+pub(crate) fn submit_manual_check(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outcome: NodeOutcome,
+) -> Result<RunState> {
+    ensure!(
+        matches!(outcome, NodeOutcome::Success | NodeOutcome::Failure),
+        "manual check outcome must be success or failure"
+    );
+    let workflow = load_run_workflow(app, task_id, run_id)?;
+    let validated = validate_workflow(workflow)?;
+    app.validate_workflow_agents(&validated)?;
+    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw)?;
+    let mut run = app.run_status(task_id, run_id)?;
+    ensure!(run.status == RunStatus::Paused, "run is not paused");
+    ensure!(
+        run.current_round.as_deref() == Some(round_id)
+            && run.current_node.as_deref() == Some(node_id)
+            && run.current_attempt.as_deref() == Some(attempt_id),
+        "manual check can only be submitted for the current paused attempt"
+    );
+    let (mut round, mut node) = current_attempt_state(app, task_id, &run)?;
+    ensure!(round.id == round_id, "round mismatch for manual check");
+    ensure!(node.node_id == node_id, "node mismatch for manual check");
+    ensure!(node.attempt_id == attempt_id, "attempt mismatch for manual check");
+    ensure!(node.status == RunStatus::Paused, "node is not paused");
+    ensure!(node.manual_check_pending, "node is not waiting for manual check");
+
+    node.status = RunStatus::Completed;
+    node.outcome = Some(outcome);
+    node.manual_check_pending = false;
+    node.finished_at = Some(now_rfc3339_like());
+
+    let ctx = ExecutionContext::for_run(task_id, &run.id)
+        .with_round(round.id.clone())
+        .with_node(node.node_id.clone())
+        .with_attempt(node.attempt_id.clone());
+    let decision_summary = format!(
+        "manual check decided {} for {}/{}/{}",
+        edge_outcome_label(outcome),
+        round.id,
+        node.node_id,
+        node.attempt_id
+    );
+    append_run_event_best_effort(
+        &app.paths,
+        task_id,
+        &run.id,
+        "manual_check_submitted",
+        now_rfc3339_like(),
+        run_event_data(
+            &ctx,
+            Some(ProgressStage::NormalizingArtifact),
+            Some(node.status),
+            Some(decision_summary),
+            None,
+        ),
+    );
+    let completion_summary = format!(
+        "completed {}/{}/{} via manual check",
+        round.id, node.node_id, node.attempt_id
+    );
+    write_run_progress_best_effort(
+        &app.paths,
+        task_id,
+        &run,
+        Some(node.node_type),
+        ProgressStage::NormalizingArtifact,
+        completion_summary.clone(),
+    );
+    append_run_event_best_effort(
+        &app.paths,
+        task_id,
+        &run.id,
+        "node_completed",
+        now_rfc3339_like(),
+        run_event_data(
+            &ctx,
+            Some(ProgressStage::NormalizingArtifact),
+            Some(node.status),
+            Some(completion_summary),
+            None,
+        ),
+    );
+    persist_runtime_state(app, task_id, &run, &round, &node)?;
+    let decision = decide_next_step(&validated, &run, &round, &node);
+    if let Some(next) = apply_control_decision(
+        app,
+        task_id,
+        &validated,
+        &resolved_profiles,
+        &mut run,
+        &mut round,
+        &node,
+        decision,
+    )? {
+        drive_from_node_with_initial_session(
+            app,
+            task_id,
+            &validated,
+            &resolved_profiles,
+            &mut run,
+            &mut round,
+            next.node,
+            next.session_mode,
+            next.continue_ref,
+            None,
+            None,
+            next.feedback_summary,
+        )?;
+    }
+    Ok(run)
+}
+
+pub(crate) fn submit_manual_check_background(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outcome: NodeOutcome,
+) -> Result<RunState> {
+    let initial_run = app.run_status(task_id, run_id)?;
+    let repo_root = app.paths.repo_root.clone();
+    let config = app.config.clone();
+    let task_id = task_id.to_string();
+    let run_id = run_id.to_string();
+    let round_id = round_id.to_string();
+    let node_id = node_id.to_string();
+    let attempt_id = attempt_id.to_string();
+
+    thread::spawn(move || {
+        let app = App::with_config(repo_root, config);
+        if let Err(err) = submit_manual_check(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outcome,
+        ) {
+            let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
+            let _ = std::fs::write(
+                app.paths
+                    .runs_dir(&task_id)
+                    .join("desktop-manual-check-error.txt")
+                    .as_std_path(),
+                err.to_string(),
+            );
+        }
+    });
+
+    Ok(initial_run)
+}
+
 pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -393,10 +563,6 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
     let fresh_node = validated.get_node(&node_id).expect("validated node exists");
     let fresh_profile = match fresh_node {
         crate::dsl::NodeDsl::Worker(worker) => worker
-            .profile
-            .as_deref()
-            .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
-        crate::dsl::NodeDsl::Verify(verify) => verify
             .profile
             .as_deref()
             .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
@@ -564,6 +730,306 @@ fn teardown_node_environment_best_effort(
     );
 }
 
+fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState) -> bool {
+    let Some(node_dsl) = workflow.get_node(&node.node_id) else {
+        return false;
+    };
+    node_dsl.manual_check_enabled()
+        && matches!(node.node_type, crate::domain::NodeType::Worker)
+        && node.status == RunStatus::Completed
+        && matches!(
+            node.outcome,
+            Some(NodeOutcome::Success | NodeOutcome::Failure | NodeOutcome::Invalid)
+        )
+}
+
+fn apply_control_decision(
+    app: &App,
+    task_id: &str,
+    workflow: &ValidatedWorkflow,
+    resolved_profiles: &super::profile_resolver::ResolvedWorkflowMetadata,
+    run: &mut RunState,
+    round: &mut RoundState,
+    node: &NodeState,
+    decision: ControlDecision,
+) -> Result<Option<NextExecution>> {
+    match decision {
+        ControlDecision::TransitionToNode { node_id, session } => {
+            if matches!(node.node_type, crate::domain::NodeType::Exec)
+                && matches!(node.outcome, Some(NodeOutcome::Failure | NodeOutcome::Invalid))
+            {
+                round.repair_loops_used += 1;
+            }
+
+            let next_node_dsl = workflow
+                .get_node(&node_id)
+                .expect("validated transition target exists");
+            let next_attempt_id =
+                next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
+            let previous_node_id = node.node_id.clone();
+            let edge_outcome = node.outcome.map(edge_outcome_label);
+            let continue_ref = find_latest_worker_ref_for_transition(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                node,
+                &node_id,
+                session,
+            )?
+            .map(|path| read_json::<WorkerRefState>(&path))
+            .transpose()?
+            .and_then(|worker_ref| worker_ref.continue_ref);
+            let feedback_summary =
+                feedback_summary_from_previous_node(app, task_id, &run.id, &round.id, node)?;
+            let next_profile = match next_node_dsl {
+                crate::dsl::NodeDsl::Worker(worker) => worker
+                    .profile
+                    .as_deref()
+                    .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
+                crate::dsl::NodeDsl::Exec(_) => None,
+            };
+            let next_node = create_node_state(
+                &run.id,
+                &round.id,
+                &node_id,
+                &next_attempt_id,
+                next_node_dsl,
+                next_profile,
+            );
+            run.current_node = Some(node_id.clone());
+            run.current_attempt = Some(next_attempt_id.clone());
+            round.trace.push(round_trace_step(
+                next_trace_sequence(round),
+                &node_id,
+                &next_attempt_id,
+                Some(previous_node_id),
+                edge_outcome,
+                now_rfc3339_like(),
+            ));
+            run.status = RunStatus::Running;
+            run.pause_reason = None;
+            run.updated_at = now_rfc3339_like();
+            let transition_summary =
+                format!("transitioned to {}/{}/{}", round.id, node_id, next_attempt_id);
+            progress(&transition_summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(next_node.node_type),
+                ProgressStage::Starting,
+                transition_summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "transitioned",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(node_id)
+                        .with_attempt(next_attempt_id),
+                    Some(ProgressStage::Starting),
+                    Some(run.status),
+                    Some(transition_summary),
+                    None,
+                ),
+            );
+            validate_round_state(round)?;
+            validate_run_state(run)?;
+            Ok(Some(NextExecution {
+                node: next_node,
+                session_mode: session,
+                continue_ref,
+                feedback_summary,
+            }))
+        }
+        ControlDecision::OpenNewRound => {
+            round.status = RunStatus::Completed;
+            round.outcome = Some(RunOutcome::Failure);
+            validate_round_state(round)?;
+            write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+
+            run.new_rounds_opened += 1;
+            let previous_round_id = round.id.clone();
+            let next_round_index = round.index + 1;
+            let next_round_id = format!("round-{next_round_index:03}");
+            *round = RoundState {
+                version: VERSION.to_string(),
+                id: next_round_id.clone(),
+                run_id: run.id.clone(),
+                index: next_round_index,
+                status: RunStatus::Running,
+                outcome: None,
+                trigger: RoundTrigger::NewRound,
+                repair_loops_used: 0,
+                started_at: now_rfc3339_like(),
+                trace: Vec::new(),
+            };
+            validate_round_state(round)?;
+            write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+
+            let next_node_dsl = workflow
+                .get_node(&workflow.raw.entry)
+                .expect("validated entry exists");
+            let next_attempt_id = "attempt-001".to_string();
+            let feedback_summary =
+                feedback_summary_from_previous_node(app, task_id, &run.id, &previous_round_id, node)?;
+            let next_profile = match next_node_dsl {
+                crate::dsl::NodeDsl::Worker(worker) => worker
+                    .profile
+                    .as_deref()
+                    .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
+                crate::dsl::NodeDsl::Exec(_) => None,
+            };
+            let next_node = create_node_state(
+                &run.id,
+                &round.id,
+                &workflow.raw.entry,
+                &next_attempt_id,
+                next_node_dsl,
+                next_profile,
+            );
+            round.trace.push(round_trace_step(
+                1,
+                &next_node.node_id,
+                &next_attempt_id,
+                None,
+                None,
+                now_rfc3339_like(),
+            ));
+            run.current_round = Some(round.id.clone());
+            run.current_node = Some(next_node.node_id.clone());
+            run.current_attempt = Some(next_attempt_id.clone());
+            run.status = RunStatus::Running;
+            run.pause_reason = None;
+            run.updated_at = now_rfc3339_like();
+            let round_summary = format!(
+                "opened {} and restarted at {}/{}",
+                round.id, next_node.node_id, next_attempt_id
+            );
+            progress(&round_summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(next_node.node_type),
+                ProgressStage::Starting,
+                round_summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "round_opened",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(next_node.node_id.clone())
+                        .with_attempt(next_attempt_id),
+                    Some(ProgressStage::Starting),
+                    Some(run.status),
+                    Some(round_summary),
+                    None,
+                ),
+            );
+            validate_run_state(run)?;
+            Ok(Some(NextExecution {
+                node: next_node,
+                session_mode: SessionMode::New,
+                continue_ref: None,
+                feedback_summary,
+            }))
+        }
+        ControlDecision::PauseRun(reason) => {
+            run.status = RunStatus::Paused;
+            run.pause_reason = Some(reason);
+            run.updated_at = now_rfc3339_like();
+            round.status = RunStatus::Paused;
+            let pause_stage = if reason == PauseReason::ErrorBlocked {
+                ProgressStage::Blocked
+            } else {
+                ProgressStage::Paused
+            };
+            let pause_summary = format!(
+                "run {} paused at {}/{}/{}",
+                run.id, round.id, node.node_id, node.attempt_id
+            );
+            progress(&pause_summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(node.node_type),
+                pause_stage,
+                pause_summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "run_paused",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(node.node_id.clone())
+                        .with_attempt(node.attempt_id.clone()),
+                    Some(pause_stage),
+                    Some(run.status),
+                    Some(pause_summary),
+                    Some(reason),
+                ),
+            );
+            persist_runtime_state(app, task_id, run, round, node)?;
+            Ok(None)
+        }
+        ControlDecision::CompleteRun(outcome) => {
+            run.status = RunStatus::Completed;
+            run.outcome = Some(outcome);
+            run.pause_reason = None;
+            run.updated_at = now_rfc3339_like();
+            round.status = RunStatus::Completed;
+            round.outcome = Some(outcome);
+            let complete_summary = format!("run {} completed with {:?}", run.id, outcome);
+            progress(&complete_summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(node.node_type),
+                ProgressStage::Completed,
+                complete_summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "run_completed",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(node.node_id.clone())
+                        .with_attempt(node.attempt_id.clone()),
+                    Some(ProgressStage::Completed),
+                    Some(run.status),
+                    Some(complete_summary),
+                    None,
+                ),
+            );
+            validate_round_state(round)?;
+            validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, node)?;
+            Ok(None)
+        }
+    }
+}
+
 pub(crate) fn drive_from_node(
     app: &App,
     task_id: &str,
@@ -585,6 +1051,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -600,13 +1067,13 @@ fn drive_from_node_with_initial_session(
     initial_continue_ref: Option<serde_json::Value>,
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
+    initial_feedback_summary: Option<String>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
     let mut continue_ref = initial_continue_ref;
     let mut resume_prompt = initial_resume_prompt;
     let mut resume_prompt_id = initial_resume_prompt_id;
-    let mut feedback_summary: Option<String> = None;
-    let mut verify_result_path: Option<Utf8PathBuf> = None;
+    let mut feedback_summary: Option<String> = initial_feedback_summary;
 
     loop {
         if run_is_killed(app, task_id, &run.id)? {
@@ -628,7 +1095,6 @@ fn drive_from_node_with_initial_session(
         }
         let node_stage = match node.node_type {
             crate::domain::NodeType::Exec => ProgressStage::RunningCommand,
-            crate::domain::NodeType::Verify => ProgressStage::Verifying,
             crate::domain::NodeType::Worker => ProgressStage::CallingProvider,
         };
         let summary = format!(
@@ -664,12 +1130,12 @@ fn drive_from_node_with_initial_session(
             .get_node(&current_node_id)
             .expect("validated node exists")
         {
-            crate::dsl::NodeDsl::Worker(_) | crate::dsl::NodeDsl::Verify(_) => {
+            crate::dsl::NodeDsl::Worker(_) => {
                 match execute_ai_node(
                     app,
                     task_id,
                     &run.id,
-                    &round.id,
+                    round,
                     &current_attempt_id,
                     workflow,
                     &current_node_id,
@@ -679,7 +1145,6 @@ fn drive_from_node_with_initial_session(
                     resume_prompt.take(),
                     resume_prompt_id.take(),
                     feedback_summary.clone(),
-                    verify_result_path.as_deref(),
                 ) {
                     Ok(node) => node,
                     Err(err) => {
@@ -795,6 +1260,49 @@ fn drive_from_node_with_initial_session(
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
         }
 
+        if should_pause_for_manual_check(workflow, &node) {
+            node.status = RunStatus::Paused;
+            node.outcome = None;
+            node.manual_check_pending = true;
+            node.finished_at = Some(now_rfc3339_like());
+            run.status = RunStatus::Paused;
+            run.pause_reason = Some(PauseReason::WaitingForUserInput);
+            run.updated_at = now_rfc3339_like();
+            round.status = RunStatus::Paused;
+            let summary = format!(
+                "manual check required at {}/{}/{}",
+                round.id, node.node_id, node.attempt_id
+            );
+            progress(&summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(node.node_type),
+                ProgressStage::Paused,
+                summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "manual_check_pending",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(node.node_id.clone())
+                        .with_attempt(node.attempt_id.clone()),
+                    Some(ProgressStage::Paused),
+                    Some(run.status),
+                    Some(summary),
+                    run.pause_reason,
+                ),
+            );
+            persist_runtime_state(app, task_id, run, round, &node)?;
+            return Ok(());
+        }
+
         let completion_summary = format!(
             "completed {}/{}/{}",
             round.id, node.node_id, node.attempt_id
@@ -827,297 +1335,24 @@ fn drive_from_node_with_initial_session(
         persist_runtime_state(app, task_id, run, round, &node)?;
         let decision = decide_next_step(workflow, run, round, &node);
 
-        match decision {
-            ControlDecision::TransitionToNode { node_id, session } => {
-                if matches!(node.node_type, crate::domain::NodeType::Exec)
-                    && matches!(
-                        node.outcome,
-                        Some(NodeOutcome::Failure | NodeOutcome::Invalid)
-                    )
-                {
-                    round.repair_loops_used += 1;
-                }
-
-                let next_node_dsl = workflow
-                    .get_node(&node_id)
-                    .expect("validated transition target exists");
-                let next_attempt_id =
-                    next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
-                let previous_node_id = node.node_id.clone();
-                let edge_outcome = node.outcome.map(edge_outcome_label);
-                session_mode = session;
-                resume_prompt = None;
-                resume_prompt_id = None;
-                continue_ref = find_latest_worker_ref_for_transition(
-                    app, task_id, &run.id, &round.id, &node, &node_id, session,
-                )?
-                .map(|path| read_json::<WorkerRefState>(&path))
-                .transpose()?
-                .and_then(|worker_ref| worker_ref.continue_ref);
-                feedback_summary =
-                    feedback_summary_from_previous_node(app, task_id, &run.id, &round.id, &node)?;
-                verify_result_path = None;
-                let next_profile = match next_node_dsl {
-                    crate::dsl::NodeDsl::Worker(worker) => worker
-                        .profile
-                        .as_deref()
-                        .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                    crate::dsl::NodeDsl::Verify(verify) => verify
-                        .profile
-                        .as_deref()
-                        .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                    crate::dsl::NodeDsl::Exec(_) => None,
-                };
-                node = create_node_state(
-                    &run.id,
-                    &round.id,
-                    &node_id,
-                    &next_attempt_id,
-                    next_node_dsl,
-                    next_profile,
-                );
-                run.current_node = Some(node_id.clone());
-                run.current_attempt = Some(next_attempt_id.clone());
-                round.trace.push(round_trace_step(
-                    next_trace_sequence(round),
-                    &node_id,
-                    &next_attempt_id,
-                    Some(previous_node_id),
-                    edge_outcome,
-                    now_rfc3339_like(),
-                ));
-                run.status = RunStatus::Running;
-                run.pause_reason = None;
-                run.updated_at = now_rfc3339_like();
-                let transition_summary = format!(
-                    "transitioned to {}/{}/{}",
-                    round.id, node_id, next_attempt_id
-                );
-                progress(&transition_summary);
-                write_run_progress_best_effort(
-                    &app.paths,
-                    task_id,
-                    run,
-                    Some(node.node_type),
-                    ProgressStage::Starting,
-                    transition_summary.clone(),
-                );
-                append_run_event_best_effort(
-                    &app.paths,
-                    task_id,
-                    &run.id,
-                    "transitioned",
-                    run.updated_at.clone(),
-                    run_event_data(
-                        &ExecutionContext::for_run(task_id, &run.id)
-                            .with_round(round.id.clone())
-                            .with_node(node_id)
-                            .with_attempt(next_attempt_id),
-                        Some(ProgressStage::Starting),
-                        Some(run.status),
-                        Some(transition_summary),
-                        None,
-                    ),
-                );
-                validate_round_state(round)?;
-                validate_run_state(run)?;
-                continue;
-            }
-            ControlDecision::OpenNewRound => {
-                round.status = RunStatus::Completed;
-                round.outcome = Some(RunOutcome::Failure);
-                validate_round_state(round)?;
-                write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
-
-                run.acceptance_loops_used += 1;
-                let next_round_index = round.index + 1;
-                let next_round_id = format!("round-{next_round_index:03}");
-                *round = RoundState {
-                    version: VERSION.to_string(),
-                    id: next_round_id.clone(),
-                    run_id: run.id.clone(),
-                    index: next_round_index,
-                    status: RunStatus::Running,
-                    outcome: None,
-                    trigger: RoundTrigger::AcceptanceLoop,
-                    repair_loops_used: 0,
-                    started_at: now_rfc3339_like(),
-                    trace: Vec::new(),
-                };
-                validate_round_state(round)?;
-                write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
-
-                let next_node_dsl = workflow
-                    .get_node(&workflow.raw.entry)
-                    .expect("validated entry exists");
-                let next_attempt_id = "attempt-001".to_string();
-                verify_result_path = find_latest_artifact_path(
-                    app,
-                    task_id,
-                    &run.id,
-                    &format!("round-{:03}", next_round_index - 1),
-                    &node.node_id,
-                    "verify-result",
-                )?;
-                feedback_summary = feedback_summary_from_previous_node(
-                    app,
-                    task_id,
-                    &run.id,
-                    &format!("round-{:03}", next_round_index - 1),
-                    &node,
-                )?;
-                continue_ref = None;
-                resume_prompt = None;
-                resume_prompt_id = None;
-                session_mode = SessionMode::New;
-                let next_profile = match next_node_dsl {
-                    crate::dsl::NodeDsl::Worker(worker) => worker
-                        .profile
-                        .as_deref()
-                        .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                    crate::dsl::NodeDsl::Verify(verify) => verify
-                        .profile
-                        .as_deref()
-                        .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                    crate::dsl::NodeDsl::Exec(_) => None,
-                };
-                node = create_node_state(
-                    &run.id,
-                    &round.id,
-                    &workflow.raw.entry,
-                    &next_attempt_id,
-                    next_node_dsl,
-                    next_profile,
-                );
-                round.trace.push(round_trace_step(
-                    1,
-                    &node.node_id,
-                    &next_attempt_id,
-                    None,
-                    None,
-                    now_rfc3339_like(),
-                ));
-                run.current_round = Some(round.id.clone());
-                run.current_node = Some(node.node_id.clone());
-                run.current_attempt = Some(next_attempt_id.clone());
-                run.status = RunStatus::Running;
-                run.pause_reason = None;
-                run.updated_at = now_rfc3339_like();
-                let round_summary = format!(
-                    "opened {} and restarted at {}/{}",
-                    round.id, node.node_id, next_attempt_id
-                );
-                progress(&round_summary);
-                write_run_progress_best_effort(
-                    &app.paths,
-                    task_id,
-                    run,
-                    Some(node.node_type),
-                    ProgressStage::Starting,
-                    round_summary.clone(),
-                );
-                append_run_event_best_effort(
-                    &app.paths,
-                    task_id,
-                    &run.id,
-                    "round_opened",
-                    run.updated_at.clone(),
-                    run_event_data(
-                        &ExecutionContext::for_run(task_id, &run.id)
-                            .with_round(round.id.clone())
-                            .with_node(node.node_id.clone())
-                            .with_attempt(next_attempt_id),
-                        Some(ProgressStage::Starting),
-                        Some(run.status),
-                        Some(round_summary),
-                        None,
-                    ),
-                );
-                validate_run_state(run)?;
-                continue;
-            }
-            ControlDecision::PauseRun(reason) => {
-                run.status = RunStatus::Paused;
-                run.pause_reason = Some(reason);
-                run.updated_at = now_rfc3339_like();
-                round.status = RunStatus::Paused;
-                let pause_stage = if reason == PauseReason::ErrorBlocked {
-                    ProgressStage::Blocked
-                } else {
-                    ProgressStage::Paused
-                };
-                let pause_summary = format!(
-                    "run {} paused at {}/{}/{}",
-                    run.id, round.id, node.node_id, node.attempt_id
-                );
-                progress(&pause_summary);
-                write_run_progress_best_effort(
-                    &app.paths,
-                    task_id,
-                    run,
-                    Some(node.node_type),
-                    pause_stage,
-                    pause_summary.clone(),
-                );
-                append_run_event_best_effort(
-                    &app.paths,
-                    task_id,
-                    &run.id,
-                    "run_paused",
-                    run.updated_at.clone(),
-                    run_event_data(
-                        &ExecutionContext::for_run(task_id, &run.id)
-                            .with_round(round.id.clone())
-                            .with_node(node.node_id.clone())
-                            .with_attempt(node.attempt_id.clone()),
-                        Some(pause_stage),
-                        Some(run.status),
-                        Some(pause_summary),
-                        Some(reason),
-                    ),
-                );
-                persist_runtime_state(app, task_id, run, round, &node)?;
-                return Ok(());
-            }
-            ControlDecision::CompleteRun(outcome) => {
-                run.status = RunStatus::Completed;
-                run.outcome = Some(outcome);
-                run.pause_reason = None;
-                run.updated_at = now_rfc3339_like();
-                round.status = RunStatus::Completed;
-                round.outcome = Some(outcome);
-                let complete_summary = format!("run {} completed with {:?}", run.id, outcome);
-                progress(&complete_summary);
-                write_run_progress_best_effort(
-                    &app.paths,
-                    task_id,
-                    run,
-                    Some(node.node_type),
-                    ProgressStage::Completed,
-                    complete_summary.clone(),
-                );
-                append_run_event_best_effort(
-                    &app.paths,
-                    task_id,
-                    &run.id,
-                    "run_completed",
-                    run.updated_at.clone(),
-                    run_event_data(
-                        &ExecutionContext::for_run(task_id, &run.id)
-                            .with_round(round.id.clone())
-                            .with_node(node.node_id.clone())
-                            .with_attempt(node.attempt_id.clone()),
-                        Some(ProgressStage::Completed),
-                        Some(run.status),
-                        Some(complete_summary),
-                        None,
-                    ),
-                );
-                validate_round_state(round)?;
-                validate_run_state(run)?;
-                persist_runtime_state(app, task_id, run, round, &node)?;
-                return Ok(());
-            }
+        if let Some(next) = apply_control_decision(
+            app,
+            task_id,
+            workflow,
+            resolved_profiles,
+            run,
+            round,
+            &node,
+            decision,
+        )? {
+            node = next.node;
+            session_mode = next.session_mode;
+            continue_ref = next.continue_ref;
+            feedback_summary = next.feedback_summary;
+            resume_prompt = None;
+            resume_prompt_id = None;
+            continue;
         }
+        return Ok(());
     }
 }

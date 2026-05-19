@@ -6,7 +6,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 ## 2. 当前主结构
 - 节点：`worker / exec / verify`，其中新建工作流默认只生成 `worker`
 - 边：顺序、分支、循环，可指向节点、`$end` 或 `$new-round`
-- 默认策略：例如 `control.onAcceptanceFailure`、边级 `session` 与节点级 AI 输出验证
+- 默认策略：例如 `control.onAcceptanceFailure`、边级 `session`、节点级 AI 输出验证，以及 worker/verify 可选的 `manual_check`
 
 ## 3. 当前设计原则
 - provider-first
@@ -49,7 +49,8 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
       "provider": "claude-code",
       "profile": "pf-example-developer",
       "goal": "实现需求并给出执行计划",
-      "primaryArtifact": "exec-plan"
+      "primaryArtifact": "exec-plan",
+      "manual_check": true
     },
     {
       "id": "run-tests",
@@ -99,6 +100,9 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
 - `profile` 保存 profile `id`，运行前按当前项目级 profile、用户级 profile 的优先级解析为可见角色正文；保存/运行前必须可见
 - `worker` 一次只允许一个 `primaryArtifact`
 - `worker.output.kind=json` + `successCondition` 可把 AI 输出字段转换为 `success / failure / invalid` 路由结果
+- `worker` 节点的 AI 输出验证与 `manual_check=true` 是互斥的结果判定方式；开启人工 check 时，不再同时要求 AI 返回可验证 JSON
+- `manual_check=true` 仅适用于会话型 `worker/verify` 节点；ACP 会话自然结束后，runtime 先暂停到 `WaitingForUserInput`，再由用户在会话面板点击“成功”或“失败”决定最终 `NodeOutcome`
+- 人工 check 提交后仍复用现有 `success / failure` edge 语义继续流转，不新增额外分支类型
 - `failure` 与 `invalid` 同时保留，但边界不同：`failure` 表示目标未达成或执行失败，`invalid` 表示结果不满足最小 contract
 
 ## 7. 后续优先事项

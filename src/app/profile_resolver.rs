@@ -21,11 +21,10 @@ pub(crate) fn resolve_workflow_profiles(
     for node in &workflow.nodes {
         let profile = match node {
             NodeDsl::Worker(worker) => worker.profile.as_deref(),
-            NodeDsl::Verify(verify) => verify.profile.as_deref(),
             NodeDsl::Exec(_) => None,
         };
         let Some(profile) = profile else {
-            if matches!(node, NodeDsl::Worker(_) | NodeDsl::Verify(_)) {
+            if matches!(node, NodeDsl::Worker(_)) {
                 bail!("node `{}` is not associated with role", node.id());
             }
             continue;

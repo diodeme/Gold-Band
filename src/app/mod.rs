@@ -10,15 +10,14 @@ mod transition_context;
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
 use crate::artifacts::{
-    ExecPlanArtifact, ExecResultArtifact, VerifyResultArtifact, validate_exec_plan,
-    validate_exec_result, validate_verify_result,
+    ExecPlanArtifact, ExecResultArtifact, validate_exec_plan, validate_exec_result,
 };
 use crate::config::{
     ConsoleThemeName, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig, UserConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
-use crate::domain::{AcceptanceFailurePolicy, NodeOutcome, RunOutcome};
+use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
@@ -48,6 +47,8 @@ use self::orchestrator::{
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
+    submit_manual_check as orchestrator_submit_manual_check,
+    submit_manual_check_background as orchestrator_submit_manual_check_background,
 };
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
@@ -113,6 +114,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
+            manual_check: None,
         })
     }
 
@@ -122,8 +124,6 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         entry: "plan".to_string(),
         control: WorkflowControl {
             max_repair_loops: 3,
-            max_acceptance_loops: 1,
-            on_acceptance_failure: AcceptanceFailurePolicy::Stop,
         },
         nodes: vec![
             worker(
@@ -635,7 +635,7 @@ impl App {
         for task in &tasks {
             validate_task_state(task)?;
         }
-        tasks.sort_by(|left, right| left.id.cmp(&right.id));
+        tasks.sort_by(|left, right| right.id.cmp(&left.id));
         Ok(tasks)
     }
 
@@ -696,7 +696,7 @@ impl App {
             .into_iter()
             .map(|task| self.task_summary(&task.id))
             .collect::<Result<Vec<_>>>()?;
-        summaries.sort_by(|left, right| left.task.id.cmp(&right.task.id));
+        summaries.sort_by(|left, right| right.task.id.cmp(&left.task.id));
         Ok(summaries)
     }
 
@@ -1263,6 +1263,34 @@ impl App {
         orchestrator_run_continue_background(self, task_id, run_id, prompt_id)
     }
 
+    pub fn submit_manual_check(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        outcome: NodeOutcome,
+    ) -> Result<RunState> {
+        orchestrator_submit_manual_check(
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+        )
+    }
+
+    pub fn submit_manual_check_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        outcome: NodeOutcome,
+    ) -> Result<RunState> {
+        orchestrator_submit_manual_check_background(
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+        )
+    }
+
     pub fn run_retry(&self, task_id: &str, run_id: &str) -> Result<RunState> {
         orchestrator_run_retry(self, task_id, run_id)
     }
@@ -1328,11 +1356,9 @@ impl App {
         &self,
         exec_plan: &ExecPlanArtifact,
         exec_result: &ExecResultArtifact,
-        verify_result: &VerifyResultArtifact,
     ) -> Result<()> {
         validate_exec_plan(exec_plan)?;
         validate_exec_result(exec_result)?;
-        validate_verify_result(verify_result)?;
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-use crate::domain::{AcceptanceFailurePolicy, NodeType, SessionMode};
+use crate::domain::{NodeType, SessionMode};
 use crate::provider::supports_continue_session;
 use anyhow::{Result, anyhow, bail, ensure};
 use indexmap::IndexMap;
@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 pub const END_NODE: &str = "$end";
 pub const NEW_ROUND_NODE: &str = "$new-round";
-const RESERVED_NODE_IDS: &[&str] = &["worker", "exec", "verify", END_NODE, NEW_ROUND_NODE];
+const RESERVED_NODE_IDS: &[&str] = &["worker", "exec", END_NODE, NEW_ROUND_NODE];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsonPathSegment {
@@ -165,8 +165,6 @@ pub struct WorkflowDsl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowControl {
     pub max_repair_loops: u32,
-    pub max_acceptance_loops: u32,
-    pub on_acceptance_failure: AcceptanceFailurePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,7 +172,6 @@ pub struct WorkflowControl {
 pub enum NodeDsl {
     Worker(WorkerNode),
     Exec(ExecNode),
-    Verify(VerifyNode),
 }
 
 impl NodeDsl {
@@ -182,7 +179,6 @@ impl NodeDsl {
         match self {
             Self::Worker(node) => &node.id,
             Self::Exec(node) => &node.id,
-            Self::Verify(node) => &node.id,
         }
     }
 
@@ -190,15 +186,20 @@ impl NodeDsl {
         match self {
             Self::Worker(_) => NodeType::Worker,
             Self::Exec(_) => NodeType::Exec,
-            Self::Verify(_) => NodeType::Verify,
         }
     }
 
     pub fn provider(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.provider.as_deref(),
-            Self::Verify(node) => node.provider.as_deref(),
             Self::Exec(_) => None,
+        }
+    }
+
+    pub fn manual_check_enabled(&self) -> bool {
+        match self {
+            Self::Worker(node) => node.manual_check.unwrap_or(false),
+            Self::Exec(_) => false,
         }
     }
 }
@@ -212,6 +213,8 @@ pub struct WorkerNode {
     pub primary_artifact: Option<String>,
     pub output: Option<OutputContractDsl>,
     pub success_condition: Option<JsonConditionDsl>,
+    #[serde(default)]
+    pub manual_check: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,13 +250,6 @@ pub struct ExecNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifyNode {
-    pub id: String,
-    pub provider: Option<String>,
-    pub profile: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeDsl {
     pub from: String,
     pub to: String,
@@ -273,7 +269,6 @@ pub enum EdgeOutcome {
 pub struct ValidatedWorkflow {
     pub raw: WorkflowDsl,
     pub nodes_by_id: IndexMap<String, NodeDsl>,
-    pub verify_node_id: Option<String>,
 }
 
 impl ValidatedWorkflow {
@@ -304,14 +299,9 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         workflow.control.max_repair_loops > 0,
         "max_repair_loops must be a positive integer"
     );
-    ensure!(
-        workflow.control.max_acceptance_loops > 0,
-        "max_acceptance_loops must be a positive integer"
-    );
 
     let mut nodes_by_id = IndexMap::new();
     let mut seen_ids = HashSet::new();
-    let mut verify_node_id = None;
 
     for node in &workflow.nodes {
         let id = node.id();
@@ -340,6 +330,11 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                         "worker node `{id}` profile cannot be blank"
                     );
                 }
+                ensure!(
+                    !worker.manual_check.unwrap_or(false)
+                        || (worker.output.is_none() && worker.success_condition.is_none()),
+                    "worker node `{id}` cannot enable manual_check together with output validation"
+                );
                 if let Some(output) = &worker.output {
                     ensure!(
                         !output.artifact.trim().is_empty(),
@@ -392,33 +387,7 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                     }
                 }
             }
-            NodeDsl::Verify(verify) => {
-                let provider = verify
-                    .provider
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| anyhow!("verify node `{id}` provider cannot be blank"))?;
-                ensure!(
-                    !provider.is_empty(),
-                    "verify node `{id}` provider cannot be blank"
-                );
-                if let Some(profile) = &verify.profile {
-                    ensure!(
-                        !profile.trim().is_empty(),
-                        "verify node `{id}` profile cannot be blank"
-                    );
-                }
-            }
             NodeDsl::Exec(_) => {}
-        }
-
-        if let NodeDsl::Verify(_) = node {
-            ensure!(
-                verify_node_id.is_none(),
-                "workflow can contain at most one verify node"
-            );
-            verify_node_id = Some(id.to_string());
         }
 
         nodes_by_id.insert(id.to_string(), node.clone());
@@ -429,15 +398,6 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         "entry node not found: {}",
         workflow.entry
     );
-    ensure!(
-        verify_node_id.is_some()
-            || matches!(
-                workflow.control.on_acceptance_failure,
-                AcceptanceFailurePolicy::Stop
-            ),
-        "acceptance failure policy requires a verify node"
-    );
-
     for edge in &workflow.edges {
         ensure!(
             nodes_by_id.contains_key(&edge.from),
@@ -503,6 +463,5 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
     Ok(ValidatedWorkflow {
         raw: workflow,
         nodes_by_id,
-        verify_node_id,
     })
 }

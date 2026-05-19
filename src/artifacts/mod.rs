@@ -1,5 +1,5 @@
 use crate::domain::CommandStatus;
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, anyhow, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,26 +44,10 @@ pub struct ExecCommandResult {
     pub stderr_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifyResultArtifact {
-    pub version: String,
-    pub status: VerifyStatus,
-    pub summary: String,
-    pub unmet_requirements: Vec<String>,
-    pub validation_gaps: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum VerifyStatus {
-    Success,
-    Failure,
-}
-
 const JSON_ARTIFACT_OUTPUT_SEARCH_LIMIT: usize = 5;
 
 pub fn artifact_uses_json_output(name: &str) -> bool {
-    matches!(name, "exec-plan" | "exec-result" | "verify-result") || name.ends_with("-result")
+    matches!(name, "exec-plan" | "exec-result") || name.ends_with("-result")
 }
 
 pub fn json_artifact_text_from_outputs(outputs: &[String], fallback: &str) -> Option<String> {
@@ -233,64 +217,39 @@ pub fn validate_exec_result(result: &ExecResultArtifact) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_verify_result(result: &VerifyResultArtifact) -> Result<()> {
-    ensure!(
-        result.version == "0.1",
-        "unsupported verify-result version: {}",
-        result.version
-    );
-    ensure!(
-        !result.summary.trim().is_empty(),
-        "verify-result summary cannot be empty"
-    );
-
-    match result.status {
-        VerifyStatus::Success => {
-            ensure!(
-                result.unmet_requirements.is_empty(),
-                "success verify-result must not contain unmetRequirements"
-            );
-            ensure!(
-                result.validation_gaps.is_empty(),
-                "success verify-result must not contain validationGaps"
-            );
-        }
-        VerifyStatus::Failure => {
-            if result.unmet_requirements.is_empty() && result.validation_gaps.is_empty() {
-                bail!("failure verify-result must contain unmetRequirements or validationGaps");
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{VerifyResultArtifact, json_artifact_text_from_outputs, parse_json_artifact};
+    use super::{json_artifact_text_from_outputs, parse_json_artifact};
+
+    #[derive(Debug, serde::Deserialize)]
+    struct WorkerResultArtifact {
+        result: bool,
+        reason: String,
+    }
 
     #[test]
     fn parses_json_artifact_from_text_with_preamble() {
-        let artifact: VerifyResultArtifact = parse_json_artifact(
+        let artifact: WorkerResultArtifact = parse_json_artifact(
             r#"checking files...
-{"version":"0.1","status":"failure","summary":"missing","unmet_requirements":["missing class"],"validation_gaps":[]}"#,
+{"result":false,"reason":"missing class"}"#,
         )
         .unwrap();
 
-        assert_eq!(artifact.summary, "missing");
+        assert!(!artifact.result);
+        assert_eq!(artifact.reason, "missing class");
     }
 
     #[test]
     fn selects_json_from_recent_output_segments() {
         let outputs = vec![
             "I will inspect files.".to_string(),
-            r#"{"version":"0.1","status":"failure","summary":"missing","unmet_requirements":["missing class"],"validation_gaps":[]}"#.to_string(),
+            r#"{"result":false,"reason":"missing class"}"#.to_string(),
             "Ignored trailing explanation.".to_string(),
         ];
 
         let content = json_artifact_text_from_outputs(&outputs, "").unwrap();
-        let artifact: VerifyResultArtifact = parse_json_artifact(&content).unwrap();
+        let artifact: WorkerResultArtifact = parse_json_artifact(&content).unwrap();
 
-        assert_eq!(artifact.unmet_requirements, vec!["missing class"]);
+        assert_eq!(artifact.reason, "missing class");
     }
 }

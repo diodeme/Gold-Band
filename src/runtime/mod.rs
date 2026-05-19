@@ -26,7 +26,8 @@ pub struct RunState {
     pub current_round: Option<String>,
     pub current_node: Option<String>,
     pub current_attempt: Option<String>,
-    pub acceptance_loops_used: u32,
+    #[serde(default, alias = "acceptance_loops_used")]
+    pub new_rounds_opened: u32,
     pub pause_reason: Option<PauseReason>,
 }
 
@@ -67,6 +68,8 @@ pub struct NodeState {
     pub outcome: Option<NodeOutcome>,
     pub started_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub manual_check_pending: bool,
     pub resolved_config: ResolvedConfig,
 }
 

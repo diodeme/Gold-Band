@@ -3,7 +3,6 @@ use camino::Utf8PathBuf;
 use std::fs;
 
 use crate::domain::{NodeType, SessionMode};
-use crate::dsl::{EdgeOutcome, NodeDsl, ValidatedWorkflow};
 use crate::runtime::NodeState;
 
 use super::App;
@@ -26,109 +25,6 @@ pub(crate) fn find_latest_artifact_path(
         app.paths
             .artifact_file(task_id, run_id, round_id, node_id, &attempt_id, name)
     }))
-}
-
-pub(crate) fn find_verify_exec_result_path(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    workflow: &ValidatedWorkflow,
-    verify_node_id: &str,
-) -> Result<Option<Utf8PathBuf>> {
-    let Some(upstream_node_id) = find_upstream_success_source_node_id(workflow, verify_node_id)
-    else {
-        return Ok(None);
-    };
-    match workflow.get_node(&upstream_node_id) {
-        Some(NodeDsl::Exec(_)) => find_latest_artifact_path(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            &upstream_node_id,
-            "exec-result",
-        ),
-        _ => Ok(None),
-    }
-}
-
-pub(crate) fn find_verify_worker_primary_artifact(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    workflow: &ValidatedWorkflow,
-    verify_node_id: &str,
-) -> Result<Option<Utf8PathBuf>> {
-    let Some(upstream_node_id) = find_upstream_success_source_node_id(workflow, verify_node_id)
-    else {
-        return Ok(None);
-    };
-    let worker_id = match workflow.get_node(&upstream_node_id) {
-        Some(NodeDsl::Exec(exec)) => exec.plan_from.clone(),
-        Some(NodeDsl::Worker(worker)) => worker.id.clone(),
-        _ => return Ok(None),
-    };
-    let Some(NodeDsl::Worker(worker)) = workflow.get_node(&worker_id) else {
-        return Ok(None);
-    };
-    let Some(primary_artifact) = worker.primary_artifact.as_deref() else {
-        return Ok(None);
-    };
-    find_latest_artifact_path(app, task_id, run_id, round_id, &worker_id, primary_artifact)
-}
-
-pub(crate) fn find_verify_attachment_paths(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    workflow: &ValidatedWorkflow,
-    verify_node_id: &str,
-) -> Result<Vec<Utf8PathBuf>> {
-    let Some(upstream_node_id) = find_upstream_success_source_node_id(workflow, verify_node_id)
-    else {
-        return Ok(Vec::new());
-    };
-    let attachment_node_id = match workflow.get_node(&upstream_node_id) {
-        Some(NodeDsl::Exec(exec)) => exec.plan_from.clone(),
-        _ => upstream_node_id,
-    };
-    let node_dir = app
-        .paths
-        .node_dir(task_id, run_id, round_id, &attachment_node_id);
-    if !node_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let Some(attempt_id) = latest_attempt_id(&node_dir)? else {
-        return Ok(Vec::new());
-    };
-    let attachments_dir =
-        app.paths
-            .attachments_dir(task_id, run_id, round_id, &attachment_node_id, &attempt_id);
-    if !attachments_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut attachments = fs::read_dir(attachments_dir.as_std_path())?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    attachments.sort();
-    Ok(attachments)
-}
-
-fn find_upstream_success_source_node_id(
-    workflow: &ValidatedWorkflow,
-    node_id: &str,
-) -> Option<String> {
-    workflow
-        .raw
-        .edges
-        .iter()
-        .find(|edge| edge.to == node_id && edge.on == EdgeOutcome::Success)
-        .map(|edge| edge.from.clone())
 }
 
 pub(crate) fn find_latest_worker_ref_for_transition(
@@ -179,14 +75,26 @@ pub(crate) fn feedback_summary_from_previous_node(
                 Ok(None)
             }
         }
-        NodeType::Verify => {
+        NodeType::Worker => {
+            let node_state_path = app
+                .paths
+                .node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
+            let node_state: NodeState = crate::storage::read_json(&node_state_path)?;
+            let Some(artifact) = node_state
+                .resolved_config
+                .get("primaryArtifact")
+                .or_else(|| node_state.resolved_config.get("outputArtifact"))
+                .and_then(|value| value.as_str())
+            else {
+                return Ok(None);
+            };
             let path = app.paths.artifact_file(
                 task_id,
                 run_id,
                 round_id,
                 &node.node_id,
                 &node.attempt_id,
-                "verify-result",
+                artifact,
             );
             if path.exists() {
                 Ok(Some(fs::read_to_string(path)?))
@@ -194,6 +102,5 @@ pub(crate) fn feedback_summary_from_previous_node(
                 Ok(None)
             }
         }
-        _ => Ok(None),
     }
 }

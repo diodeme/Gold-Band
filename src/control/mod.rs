@@ -1,7 +1,7 @@
 use crate::domain::{PauseReason, RunOutcome, SessionMode};
 use crate::dsl::{END_NODE, EdgeOutcome, NEW_ROUND_NODE, NodeDsl, ValidatedWorkflow};
 use crate::provider::supports_continue_session;
-use crate::runtime::{NodeState, RoundState, RunState};
+use crate::runtime::{NodeState, RoundState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlDecision {
@@ -16,34 +16,18 @@ pub enum ControlDecision {
 
 pub fn decide_next_step(
     workflow: &ValidatedWorkflow,
-    run: &RunState,
+    _run: &crate::runtime::RunState,
     round: &RoundState,
     node: &NodeState,
 ) -> ControlDecision {
     match node.outcome {
         Some(crate::domain::NodeOutcome::Success) => {
             match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Success, || {
-                if matches!(node.node_type, crate::domain::NodeType::Verify) {
-                    ControlDecision::CompleteRun(RunOutcome::Success)
-                } else {
-                    ControlDecision::PauseRun(PauseReason::ErrorBlocked)
-                }
+                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
             })
         }
         Some(crate::domain::NodeOutcome::Failure) => match node.node_type {
             crate::domain::NodeType::Exec => decide_exec_failure(workflow, round, &node.node_id),
-            crate::domain::NodeType::Verify => match workflow.raw.control.on_acceptance_failure {
-                crate::domain::AcceptanceFailurePolicy::AutoLoop => {
-                    if run.acceptance_loops_used >= workflow.raw.control.max_acceptance_loops {
-                        ControlDecision::CompleteRun(RunOutcome::Failure)
-                    } else {
-                        ControlDecision::OpenNewRound
-                    }
-                }
-                crate::domain::AcceptanceFailurePolicy::Stop => {
-                    ControlDecision::CompleteRun(RunOutcome::Failure)
-                }
-            },
             crate::domain::NodeType::Worker => {
                 match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
                     ControlDecision::PauseRun(PauseReason::ErrorBlocked)
@@ -57,7 +41,6 @@ pub fn decide_next_step(
                     ControlDecision::PauseRun(PauseReason::ErrorBlocked)
                 })
             }
-            _ => ControlDecision::PauseRun(PauseReason::ErrorBlocked),
         },
         Some(crate::domain::NodeOutcome::Killed) => {
             ControlDecision::CompleteRun(RunOutcome::Killed)

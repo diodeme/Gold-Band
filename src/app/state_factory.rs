@@ -24,6 +24,7 @@ pub(crate) fn create_node_state(
         outcome: None,
         started_at: now_rfc3339_like(),
         finished_at: None,
+        manual_check_pending: false,
         resolved_config: resolved_config_for_node(node_dsl, resolved_profile),
     }
 }
@@ -97,6 +98,10 @@ pub(crate) fn resolved_config_for_node(
                 }
             }
             config.insert(
+                "manualCheck".to_string(),
+                serde_json::Value::Bool(worker.manual_check.unwrap_or(false)),
+            );
+            config.insert(
                 "sessionMode".to_string(),
                 serde_json::Value::String("new".to_string()),
             );
@@ -105,41 +110,6 @@ pub(crate) fn resolved_config_for_node(
             config.insert(
                 "planFrom".to_string(),
                 serde_json::Value::String(exec.plan_from.clone()),
-            );
-        }
-        NodeDsl::Verify(verify) => {
-            config.insert(
-                "provider".to_string(),
-                serde_json::Value::String(
-                    verify
-                        .provider
-                        .clone()
-                        .expect("validated verify provider must exist"),
-                ),
-            );
-            if let Some(profile) = &verify.profile {
-                config.insert(
-                    "profile".to_string(),
-                    serde_json::Value::String(profile.clone()),
-                );
-            }
-            if let Some(profile) = resolved_profile.as_ref() {
-                config.insert(
-                    "profileSource".to_string(),
-                    serde_json::to_value(&profile.source).expect("serialize profile source"),
-                );
-                config.insert(
-                    "profilePath".to_string(),
-                    serde_json::Value::String(profile.path.clone()),
-                );
-            }
-            config.insert(
-                "primaryArtifact".to_string(),
-                serde_json::Value::String("verify-result".to_string()),
-            );
-            config.insert(
-                "evidenceScope".to_string(),
-                serde_json::Value::String("current-round".to_string()),
             );
         }
     }

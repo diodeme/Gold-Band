@@ -192,6 +192,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
         activeTab={nodeDrawerTab}
         onOpenChange={setNodeDrawerOpen}
         onTabChange={setNodeDrawerTab}
+        onRefresh={onRefresh}
         optimisticAcpEventsByKey={optimisticAcpEventsByKey}
         onOptimisticAcpEventsChange={(key, events) => setOptimisticAcpEventsByKey((current) => {
           const next = { ...current };
@@ -242,7 +243,7 @@ function isRoundContinuable(vm: RoundDetailVm) {
   );
 }
 
-function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsByKey, onOpenChange, onTabChange, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
+function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
@@ -273,7 +274,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
             </ScrollArea>
           </TabsContent>
           <TabsContent value="session" className="min-h-0 flex-1 overflow-hidden">
-            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
+            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
           </TabsContent>
         </Tabs>
       </SheetContent>
@@ -299,6 +300,7 @@ function NodeDetailContent({ detail, runPauseReason, onOpenAsset }: { detail: No
         [t('roundDetail.attemptId'), detail.attemptId],
         [t('roundDetail.startedAt'), detail.startedAt || '-'],
         [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
+        [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
         [t('common.artifacts'), detail.artifactCount],
         [t('common.attachments'), detail.attachmentCount],
       ]} />
@@ -374,7 +376,7 @@ function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId
   return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
 }
 
-function SessionContent({ vm, detail, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
+function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
   const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, detail.attemptId);
   return (
     <ACPChatDialog
@@ -385,8 +387,10 @@ function SessionContent({ vm, detail, optimisticAcpEventsByKey, onOptimisticAcpE
       nodeId={detail.nodeId}
       attemptId={detail.attemptId}
       runtimeStatus={detail.status}
+      manualCheckPending={detail.manualCheckPending}
       optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
       onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
+      onManualCheckSubmitted={onRefresh}
     />
   );
 }

@@ -25,7 +25,6 @@ pub enum RunOutcome {
 pub enum NodeType {
     Worker,
     Exec,
-    Verify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,16 +54,9 @@ pub enum PauseReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AcceptanceFailurePolicy {
-    AutoLoop,
-    Stop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum RoundTrigger {
     Initial,
-    AcceptanceLoop,
+    NewRound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,8 +72,6 @@ pub enum CommandStatus {
 pub enum InvocationKind {
     WorkerGeneric,
     WorkerRepairExec,
-    WorkerRepairVerify,
-    VerifyAcceptance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

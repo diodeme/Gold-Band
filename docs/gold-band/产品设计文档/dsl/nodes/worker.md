@@ -25,6 +25,7 @@
 - provider 执行失败或异常结束应归为 `failure`
 - 新建工作流中，`worker` 不再默认产出 `exec-plan`；review/test/accept 等验证型 worker 可产出 `*-result` JSON artifact
 - 当声明 `output.kind=json` 与 `successCondition` 时，runtime 按 JSON 字段值把节点归纳为 `success / failure / invalid`
+- AI 输出验证与 `manual_check=true` 是互斥的结果判定方式，同一 worker 不应同时声明两者
 
 ## 3. 当前关注点
 - 如何绑定 `provider`
@@ -56,7 +57,10 @@
 ```
 
 规则：
+- JSON 输出验证与人工 check 二选一；声明 `output` / `success_condition` 时不应同时声明 `manual_check=true`。
 - `output.artifact` 必须与 `primary_artifact` 一致。
+- `output` DSL 会进入当前节点追加的 `systemPrompt`，提示 agent 最后一步按 schema 输出结果。
+- 没有 `output` DSL 时，runtime 不因为 artifact 名称自动向 `systemPrompt` 注入结构化输出格式。
 - `success_condition.path` 当前是简单 dot path，例如 `passed` 或 `result.passed`。
 - 字段值等于 `equals` 时节点 outcome 为 `success`；不等于时为 `failure`；缺失、JSON 非法或 path 非法时为 `invalid`。
 

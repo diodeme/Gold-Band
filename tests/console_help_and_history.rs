@@ -45,9 +45,9 @@ impl ProviderAdapter for StartTaskProvider {
                 name: "exec-plan".to_string(),
                 content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
             },
-            Some("verify-result") => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"success","summary":"accepted","unmet_requirements":[],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
             _ => unreachable!(),
         };
@@ -389,19 +389,16 @@ fn start_selected_task_enters_workspace() {
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {{
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 1,
-            "on_acceptance_failure": "auto-loop"
-          }},
+          "control": {{ "max_repair_loops": 1 }},
           "nodes": [
             {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
             {{"id":"run-tests","type":"exec","plan_from":"dev"}},
-            {{"id":"accept","type":"verify","provider":"claude-code","profile":"{}"}}
+            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"run-tests","on":"success"}},
-            {{"from":"run-tests","to":"accept","on":"success"}}
+            {{"from":"run-tests","to":"accept","on":"success"}},
+            {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
             dev_profile, dev_profile

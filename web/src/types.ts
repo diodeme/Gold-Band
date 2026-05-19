@@ -112,11 +112,9 @@ export interface WorkflowDsl {
 
 export interface WorkflowControlDsl {
   max_repair_loops: number;
-  max_acceptance_loops: number;
-  on_acceptance_failure: 'auto-loop' | 'stop' | string;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowExecNodeDsl | WorkflowVerifyNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowExecNodeDsl;
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -127,19 +125,13 @@ export interface WorkflowWorkerNodeDsl {
   primary_artifact?: string | null;
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
+  manual_check?: boolean | null;
 }
 
 export interface WorkflowExecNodeDsl {
   type: 'exec';
   id: string;
   plan_from: string;
-}
-
-export interface WorkflowVerifyNodeDsl {
-  type: 'verify';
-  id: string;
-  provider?: string | null;
-  profile?: string | null;
 }
 
 export interface WorkflowOutputContractDsl {
@@ -213,8 +205,6 @@ export interface SaveWorkflowInput {
 
 export interface WorkflowControlVm {
   maxRepairLoops: number;
-  maxAcceptanceLoops: number;
-  onAcceptanceFailure: string;
 }
 
 export interface RunDetailVm {
@@ -282,6 +272,7 @@ export interface GraphNodeVm {
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
+  iconKey?: string | null;
 }
 
 export interface GraphEdgeVm {
@@ -311,6 +302,8 @@ export interface NodeDetailVm {
   hasProgressEvents: boolean;
   hasRawStream: boolean;
   hasWorkerRef: boolean;
+  manualCheckEnabled: boolean;
+  manualCheckPending: boolean;
   acpSession?: AcpSessionVm | null;
 }
 

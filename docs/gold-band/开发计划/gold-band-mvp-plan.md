@@ -57,6 +57,7 @@
 - `web/` 作为桌面前端，实现左侧一级功能导航 + 右侧递进式任务编排页面栈；点击“任务编排”一级入口会重置到任务列表根页面。
 - 前端通过 Tauri commands 读取 task/run/round/node/artifact view model，所有终局状态仍来自 canonical state。
 - MVP 实现任务列表、任务工作流、Round 详情、上下文管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组；模型管理仅作为一级导航占位。
+- 工作流作者态支持对 worker 节点在 AI 输出验证与人工 check 间二选一；开启人工 check 后 ACP 节点结束时暂停等待用户在会话面板点击“成功”或“失败”，再复用既有 success / failure edge 继续执行。
 - 2026-05-02：前端已按 `docs/gold-band/产品设计文档/interaction/app/原型` 对齐应用壳、任务列表 Task Preview、工作流 execution history、Round 三块工作台和设置页本地偏好控件。
 - 2026-05-02：补充浏览器调试 mock view model fallback；非 Tauri 浏览器环境使用 mock 数据，Tauri 环境继续使用真实 commands，方便后续用 Vite/浏览器验证布局。
 - 2026-05-03：桌面端新增 workspace 选择、最近 workspace 记忆与默认项目根解析；Tauri dev 即使从 `src-tauri/` 启动，也会向上识别包含 `.gold-band/` 的项目根。

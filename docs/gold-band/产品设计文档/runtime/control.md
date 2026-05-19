@@ -57,6 +57,19 @@ Runtime Control 用来定义 Gold Band 如何根据节点执行结果，驱动 w
 - 当前 run 是否已 pause
 - 当前 run 是否处于错误阻塞态
 
+### 3.5 prompt 前序链输入
+`round.trace` 是当前节点 system prompt 中“前序运行节点链”的权威来源。
+
+runtime 在调用 provider 前应：
+- 读取当前 run 已完成的历史 rounds，并按 `round.index` 排序
+- 使用内存中的当前 round trace 覆盖磁盘上的当前 round
+- 按 `trace.sequence` 展开执行链
+- 截止到当前 `node / attempt` 之前
+- 用下一条 trace 的 `edge_outcome` 表达分支方向
+- 用节点 DSL 判断分支原因是普通节点、人工 check，还是节点输出检查
+
+该信息只用于帮助 agent 理解“为什么走到当前节点”，不替代控制层的 edge 计算。
+
 ---
 
 ## 4. 节点终局 outcome 与 `paused` 状态

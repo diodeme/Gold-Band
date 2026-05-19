@@ -65,8 +65,8 @@ Claude Code 当前以 `--output-format stream-json` 作为首选流式协议。
 说明：
 - provider 会把 Claude Code stdout 的每条 stream-json 事件原样旁路写入 `raw.stream.jsonl`
 - provider 当前会把调用 provider 的输入快照写入 `progress.events.jsonl`，用于记录本次 invocation 输入上下文；若发现旧文件中残留了非 `provider_input` 内容，会在流读取前先清理
-- 对 `exec-plan` 与 `verify-result` 这类结构化 primary artifact，schema output contract 会明确写入 system prompt，而不只是在 task/user prompt 中隐含约束
-- primary artifact 的输出契约当前放在 system prompt 中，而不是 user prompt 中
+- 结构化输出约束只来自当前节点 `output` DSL，并明确写入 system prompt，而不只是在 task/user prompt 中隐含约束
+- 不再根据 `exec-plan`、`verify-result` 等 artifact 名称自动向 system prompt 注入内置输出契约
 - `raw.stream.jsonl` 仍属于 provider-specific 原始观测面
 - `progress.events.jsonl` 仍保留为 Gold Band 的 provider-agnostic 过程观测面路径；Claude Code 输出流的正式规范化解析留待后续实现
 - 两者都不应直接成为 Gold Band 稳定控制流的依据
@@ -90,10 +90,9 @@ Claude Code implementation 接收的应是 runtime 已经准备好的 `prompt bu
   "systemPrompt": "<rendered system prompt>",
   "userPrompt": "<rendered user prompt>",
   "metadata": {
-    "invocationKind": "worker_generic",
     "profile": "developer",
     "nodeType": "worker",
-    "primaryArtifact": "exec-plan"
+    "primaryArtifact": "dev-result"
   }
 }
 ```
@@ -179,13 +178,11 @@ claude -c <session_id>
 Claude Code implementation 本身不决定策略，但建议 runtime 在调用 Claude Code 时默认采用：
 
 - 未显式提供 `sessionMode`：默认 `new`
-- `worker_generic`：默认 `new`
-- `worker_repair_exec`：默认 `new`
-- `worker_repair_verify`：默认 `new`
-- `verify_acceptance`：强烈建议 `new`
+- 只有 workflow edge 明确声明 `session = continue` 时才复用历史会话
+- 如果跨节点需要新的角色、文件规则或 output DSL 约束，应使用新 session
 
 原因：
-- repair 与 verify 场景更容易受到历史上下文污染
+- ACP 的 system prompt 只在 `session/new` 注入
 - 首版优先保证输入边界清晰，而不是追求会话复用率
 
 ---

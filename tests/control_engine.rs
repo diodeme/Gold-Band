@@ -20,7 +20,7 @@ fn sample_run() -> RunState {
         current_round: Some("round-001".to_string()),
         current_node: Some("accept".to_string()),
         current_attempt: Some("attempt-001".to_string()),
-        acceptance_loops_used: 0,
+        new_rounds_opened: 0,
         pause_reason: None,
     }
 }
@@ -52,26 +52,25 @@ fn sample_node(node_id: &str, node_type: NodeType, outcome: NodeOutcome) -> Node
         outcome: Some(outcome),
         started_at: "0Z".to_string(),
         finished_at: Some("1Z".to_string()),
+        manual_check_pending: false,
         resolved_config: Default::default(),
     }
 }
 
 #[test]
-fn verify_success_completes_run() {
+fn worker_success_to_end_completes_run() {
     let workflow = parse_workflow(
         r#"{
             "version": "0.1",
-            "id": "verify-only",
+            "id": "worker-accept",
             "entry": "accept",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "control": { "max_repair_loops": 1 },
             "nodes": [
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
-            "edges": []
+            "edges": [
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 
@@ -80,7 +79,7 @@ fn verify_success_completes_run() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("accept", NodeType::Verify, NodeOutcome::Success),
+        &sample_node("accept", NodeType::Worker, NodeOutcome::Success),
     );
     assert!(matches!(
         decision,
@@ -104,7 +103,7 @@ fn exec_invalid_prefers_explicit_edge() {
                 { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
                 { "id": "run-tests", "type": "exec", "plan_from": "dev" },
                 { "id": "fix", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },
@@ -141,7 +140,7 @@ fn exec_invalid_defaults_back_to_plan_from() {
             "nodes": [
                 { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
                 { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },
@@ -177,7 +176,7 @@ fn exec_invalid_downgrades_continue_when_provider_cannot_continue() {
             "nodes": [
                 { "id": "dev", "type": "worker", "provider": "other-provider", "primary_artifact": "exec-plan" },
                 { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },
@@ -213,7 +212,7 @@ fn exec_invalid_completes_failure_when_repair_budget_is_exhausted() {
             "nodes": [
                 { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
                 { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "verify", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
                 { "from": "dev", "to": "run-tests", "on": "success" },
@@ -235,6 +234,29 @@ fn exec_invalid_completes_failure_when_repair_budget_is_exhausted() {
         decision,
         ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Failure)
     ));
+}
+
+#[test]
+fn worker_manual_check_rejects_output_validation() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "manual-check-exclusive",
+            "entry": "review",
+            "control": {
+                "max_repair_loops": 1,
+                "max_acceptance_loops": 1,
+                "on_acceptance_failure": "stop"
+            },
+            "nodes": [
+                { "id": "review", "type": "worker", "provider": "claude-code", "manual_check": true, "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } }
+            ],
+            "edges": []
+        }"#,
+    );
+
+    let err = gold_band::dsl::validate_workflow(workflow).unwrap_err();
+    assert!(err.to_string().contains("cannot enable manual_check together with output validation"));
 }
 
 #[test]

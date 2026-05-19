@@ -46,7 +46,7 @@ const defaultWorkflow: WorkflowDsl = {
   version: '0.1',
   id: 'task-workflow',
   entry: 'plan',
-  control: { max_repair_loops: 3, max_acceptance_loops: 1, on_acceptance_failure: 'stop' },
+  control: { max_repair_loops: 3 },
   nodes: [
     { type: 'worker', id: 'plan', provider: 'claude-code', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.', primary_artifact: null },
     { type: 'worker', id: 'dev', provider: 'claude-code', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.', primary_artifact: null },
@@ -107,7 +107,7 @@ const graph = {
     { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
     { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
     { id: 'node-03 execute', label: 'Processing code logic...', nodeType: 'exec', status: 'running', outcome: null, attemptId: 'att-2-node03-rev1', artifactCount: 3, attachmentCount: 2, current: true },
-    { id: 'validate', label: 'Verification pending', nodeType: 'verify', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'validate', label: 'Verification pending', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
     { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
@@ -121,7 +121,7 @@ const graph = {
 const failedAcceptanceGraph = {
   nodes: [
     { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', status: 'completed', outcome: 'success', attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'accept', label: 'accept', nodeType: 'verify', status: 'completed', outcome: 'failure', attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'completed', outcome: 'failure', attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
@@ -131,7 +131,7 @@ const failedAcceptanceGraph = {
 const errorBlockedGraph = {
   nodes: [
     { id: 'dev', label: 'dev', nodeType: 'worker', status: 'paused', outcome: null, attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
-    { id: 'accept', label: 'accept', nodeType: 'verify', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
@@ -157,6 +157,8 @@ const mockNodeDetail: NodeDetailVm = {
   hasProgressEvents: true,
   hasRawStream: true,
   hasWorkerRef: true,
+  manualCheckEnabled: false,
+  manualCheckPending: false,
   acpSession: {
     sessionId: 'acp-session-7f3',
     provider: 'claude-code',
@@ -326,8 +328,6 @@ export const mockWorkflow: WorkflowVm = {
   graph,
   control: {
     maxRepairLoops: 1,
-    maxAcceptanceLoops: 1,
-    onAcceptanceFailure: 'auto-loop',
   },
   runs: [
     { run: latestRun, rounds },

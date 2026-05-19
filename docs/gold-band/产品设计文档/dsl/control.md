@@ -68,6 +68,13 @@ runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
 - `exec`
 - `verify`
 
+补充约束：
+- `worker/verify` 可选 `manual_check=true`
+- 对 `worker` 节点，`manual_check=true` 与 AI 输出验证（`output` + `success_condition`）互斥；开启人工 check 时由用户判定结果，不再同时要求 AI 返回可验证 JSON
+- `manual_check=true` 的节点在 ACP 会话自然结束后不立即进入后续 edge，而是先暂停为 `WaitingForUserInput`
+- 人工 check 只允许用户提交 `success` 或 `failure`，随后继续复用现有 edge 的 `on=success|failure` 分支
+- `exec` 不支持人工 check
+
 ### 3.3 边定义
 例如：
 - 正常顺序流转

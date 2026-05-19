@@ -1,6 +1,6 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, Copy, RefreshCw, Upload } from 'lucide-react';
+import { Check, Copy, RefreshCw, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayStatus } from '../i18n';
@@ -269,6 +269,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
   const [requirementFileName, setRequirementFileName] = useState('');
   const [requirementContent, setRequirementContent] = useState('');
   const [workflow, setWorkflow] = useState<WorkflowDsl | null>(null);
+  const requirementInputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
@@ -305,6 +306,21 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     setRequirementContent(content);
     if (!title.trim()) setTitle(file.name.replace(/\.(txt|md)$/i, ''));
     setError(null);
+  };
+
+  const clearRequirementFile = () => {
+    setRequirementFileName('');
+    setRequirementContent('');
+    setError(null);
+    if (requirementInputRef.current) requirementInputRef.current.value = '';
+  };
+
+  const handleRequirementFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    try {
+      await readRequirementFile(event.target.files?.[0]);
+    } finally {
+      event.target.value = '';
+    }
   };
 
   const selectWorkflowTemplate = (templateId: string) => {
@@ -371,8 +387,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       if (created) {
         setTitle('');
         setDescription('');
-        setRequirementFileName('');
-        setRequirementContent('');
+        clearRequirementFile();
         setWorkflow(null);
       }
     } finally {
@@ -391,11 +406,35 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
           <div className="space-y-4 p-5">
             <AppCard className="grid gap-4 p-4 lg:grid-cols-[320px_minmax(0,1fr)]">
               <div className="space-y-3">
-                <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/30">
-                  <Upload className="size-5" />
-                  <span>{requirementFileName || t('taskList.create.pickFile')}</span>
-                  <Input className="sr-only" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => void readRequirementFile(event.target.files?.[0])} />
-                </label>
+                <div className="group relative">
+                  {requirementFileName ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-2 z-10 h-7 w-7 rounded-full bg-background/85 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                      aria-label={t('taskList.create.removeFile')}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        clearRequirementFile();
+                      }}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  ) : null}
+                  <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/30">
+                    <Upload className="size-5" />
+                    <span>{requirementFileName || t('taskList.create.pickFile')}</span>
+                    <Input
+                      ref={requirementInputRef}
+                      className="sr-only"
+                      type="file"
+                      accept=".txt,.md,text/plain,text/markdown"
+                      onChange={(event) => void handleRequirementFileChange(event)}
+                    />
+                  </label>
+                </div>
                 <div className="grid gap-1.5 text-sm">
                   <Label className="text-xs text-muted-foreground">{t('taskList.create.taskTitle')}</Label>
                   <Input value={title} onChange={(event) => setTitle(event.target.value)} />

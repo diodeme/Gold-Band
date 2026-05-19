@@ -12,7 +12,7 @@ import { Message, MessageContent } from '@/components/prompt-kit/message';
 import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
 import { cn } from '@/lib/utils';
-import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt } from '@/api';
+import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
 import { displayStatus } from '@/i18n';
 import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 
@@ -24,8 +24,10 @@ interface ACPChatDialogProps {
   nodeId: string;
   attemptId: string;
   runtimeStatus?: string | null;
+  manualCheckPending?: boolean;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
+  onManualCheckSubmitted?: () => void;
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
@@ -146,7 +148,7 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
   const restoredOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
@@ -166,6 +168,9 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [manualCheckError, setManualCheckError] = useState<string | null>(null);
+  const [manualCheckSubmitting, setManualCheckSubmitting] = useState(false);
+  const [manualCheckResolved, setManualCheckResolved] = useState(false);
   const [canvasMode, setCanvasMode] = useState<AcpCanvasMode>('chat');
   const [rawPage, setRawPage] = useState<AcpRawFramePageVm | null>(null);
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({ page: 0, pageSize: 100 });
@@ -201,6 +206,12 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   }, [controlledOptimisticEvents]);
 
   useEffect(() => subscribeStoredOptimisticEvents(sessionKey, setOptimisticEvents), [sessionKey]);
+
+  useEffect(() => {
+    setManualCheckResolved(false);
+    setManualCheckSubmitting(false);
+    setManualCheckError(null);
+  }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
 
   useEffect(() => {
     setCurrentSession(session ?? null);
@@ -268,9 +279,10 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const pendingPermission = effective?.pendingPermissions?.find((request) => !dismissedPermissionIds.has(request.requestId)) ?? null;
   const waitingForPermission = Boolean(pendingPermission);
   const planInterventionOption = pendingPermission ? findPlanInterventionOption(pendingPermission) : null;
-  const composerLocked = waitingForPermission && !planInterventionOption;
   const timeline = useMemo(() => buildAcpTimeline(effectiveEvents), [effectiveEvents]);
   const sessionActive = isSessionActive(effective?.status) || isRuntimeActiveStatus(runtimeStatus);
+  const showManualCheckActions = manualCheckPending && !manualCheckResolved;
+  const composerLocked = (waitingForPermission && !planInterventionOption) || showManualCheckActions;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const submittingPrompt = (sending || waitingForOptimisticPrompt) && !turnAccepted;
   const activePromptLocked = sending || awaitingResponse || waitingForOptimisticPrompt || sessionActive || cancelling;
@@ -557,6 +569,21 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     }
   };
 
+  const submitManualDecision = async (outcome: 'success' | 'failure') => {
+    if (!showManualCheckActions || manualCheckSubmitting) return;
+    setManualCheckError(null);
+    setManualCheckSubmitting(true);
+    try {
+      await submitManualCheck(taskId, runId, roundId, nodeId, attemptId, outcome);
+      setManualCheckResolved(true);
+      onManualCheckSubmitted?.();
+    } catch (error) {
+      setManualCheckError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setManualCheckSubmitting(false);
+    }
+  };
+
   const answerPermission = async (request: AcpPermissionRequestVm, optionId: string) => {
     setPermissionError(null);
     setDismissedPermissionIds((current) => new Set(current).add(request.requestId));
@@ -643,6 +670,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
                 <div className="space-y-4 pb-5">
                   {sendError ? <AcpErrorBanner reason={`${t('acp.sendFailed')}：${sendError}`} /> : null}
                   {cancelError ? <AcpErrorBanner reason={`${t('acp.stopFailed')}：${cancelError}`} /> : null}
+                  {manualCheckError ? <AcpErrorBanner reason={`${t('acp.manualCheckSubmitFailed')}：${manualCheckError}`} /> : null}
                   {permissionError ? <AcpErrorBanner reason={permissionError} /> : null}
                   {pendingPermission ? <PermissionRequestCard request={pendingPermission} onSelect={(optionId) => answerPermission(pendingPermission, optionId)} /> : null}
                 </div>
@@ -655,7 +683,15 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
           {composerLocked ? (
-            <AcpPermissionComposerLock />
+            showManualCheckActions ? (
+              <AcpManualCheckPanel
+                submitting={manualCheckSubmitting}
+                onSuccess={() => void submitManualDecision('success')}
+                onFailure={() => void submitManualDecision('failure')}
+              />
+            ) : (
+              <AcpPermissionComposerLock />
+            )
           ) : (
             <PromptInput
               value={prompt}
@@ -731,6 +767,29 @@ function AcpPermissionComposerLock() {
       </span>
       <span className="min-w-0 truncate font-medium">{t('acp.permissionPending')}</span>
     </div>
+  );
+}
+
+function AcpManualCheckPanel({ submitting, onSuccess, onFailure }: { submitting: boolean; onSuccess: () => void; onFailure: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Card className="rounded-2xl border-primary/20 bg-card/85 shadow-sm shadow-background/30">
+      <CardContent className="space-y-3 p-4">
+        <div className="space-y-1">
+          <div className="text-sm font-semibold text-foreground">{t('acp.manualCheckPending')}</div>
+          <p className="text-xs leading-5 text-muted-foreground">{t('acp.manualCheckDescription')}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button className="h-9 rounded-full px-4" size="sm" disabled={submitting} onClick={onSuccess}>
+            {submitting ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {submitting ? t('acp.manualCheckSubmitting') : t('acp.manualCheckSuccess')}
+          </Button>
+          <Button className="h-9 rounded-full px-4" size="sm" variant="outline" disabled={submitting} onClick={onFailure}>
+            {t('acp.manualCheckFailure')}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

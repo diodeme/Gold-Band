@@ -48,7 +48,7 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
     std::fs::write(
         app.paths.workflow_file("task-001").as_std_path(),
         format!(
-            r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}","primary_artifact":"exec-plan"}},{{"type":"exec","id":"run-cmd","plan_from":"dev"}},{{"type":"verify","id":"accept","provider":"claude-code","profile":"{}"}}],"edges":[{{"from":"dev","to":"run-cmd","on":"success"}},{{"from":"dev","to":"accept","on":"failure"}},{{"from":"run-cmd","to":"accept","on":"invalid"}}]}}"#,
+            r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}","primary_artifact":"exec-plan"}},{{"type":"exec","id":"run-cmd","plan_from":"dev"}},{{"type":"worker","id":"accept","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}],"edges":[{{"from":"dev","to":"run-cmd","on":"success"}},{{"from":"dev","to":"accept","on":"failure"}},{{"from":"run-cmd","to":"accept","on":"invalid"}}]}}"#,
             dev_profile, dev_profile
         ),
     )

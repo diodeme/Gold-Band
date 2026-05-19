@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import dagre from 'dagre';
 import {
   Background,
   Controls,
@@ -15,6 +14,15 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import type { GraphNodeVm, GraphVm } from '../types';
+import {
+  NODE_WIDTH,
+  NODE_HEIGHT,
+  runtimeNodeOrder,
+  layoutSuccessPath,
+  runtimeEdgeColor,
+  topLeft,
+  type DagreNodeSpec,
+} from './workflowGraph';
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -22,10 +30,8 @@ import { EmptyState } from '@/components/PageScaffold';
 import { cn } from '@/lib/utils';
 import { normalizeTone, statusBadgeClass } from '@/lib/status';
 
-const NODE_WIDTH = 226;
-const NODE_HEIGHT = 138;
-const NODE_GAP_X = 112;
-const NODE_GAP_Y = 72;
+/** Runtime graph nodes use a slightly taller card for status badges. */
+const RUNTIME_NODE_HEIGHT = 138;
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.2;
 const WORKFLOW_FIT_MAX_ZOOM = 0.88;
@@ -45,6 +51,7 @@ type WorkflowNodeData = {
   statusLabel: string;
   artifactLabel: string;
   attachmentLabel: string;
+  iconKey?: string | null;
 };
 
 interface GraphViewProps {
@@ -203,7 +210,7 @@ function boundsForNodes(nodes: Node<WorkflowNodeData>[]) {
   const left = Math.min(...nodes.map((node) => node.position.x));
   const top = Math.min(...nodes.map((node) => node.position.y));
   const right = Math.max(...nodes.map((node) => node.position.x + NODE_WIDTH));
-  const bottom = Math.max(...nodes.map((node) => node.position.y + NODE_HEIGHT));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + RUNTIME_NODE_HEIGHT));
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
@@ -222,33 +229,26 @@ function calculateCenteredViewport(bounds: { x: number; y: number; width: number
 }
 
 function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, activeStatus: string | null | undefined, mode: GraphMode, t: TFunction) {
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ rankdir: 'LR', nodesep: NODE_GAP_Y, ranksep: NODE_GAP_X, marginx: 40, marginy: 36 });
-
-  graph.nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-  });
-  graph.edges.forEach((edge) => {
-    dagreGraph.setEdge(edge.from, edge.to);
-  });
-  dagre.layout(dagreGraph);
+  const nodeOrder = runtimeNodeOrder(graph.nodes);
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  const layoutPositions = layoutSuccessPath(
+    graph.nodes.map((n) => ({ id: n.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT })),
+    graph.edges.map((e) => ({ from: e.from, to: e.to, on: e.label?.toLowerCase() ?? '' })),
+    nodeIds,
+  );
 
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
   const runningActiveNode = normalizeTone(activeStatus ?? activeNode?.status ?? activeNode?.outcome) === 'running';
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((node) => {
-    const layout = dagreGraph.node(node.id);
+    const pos = layoutPositions.get(node.id) ?? { x: 0, y: 0 };
     const displayStatusValue = graphNodeDisplayStatus(node, activeStatus);
     const active = matchesNodeId(node, activeNodeId) || (node.current && normalizeTone(node.status ?? node.outcome) === 'running');
     const running = active && (runningActiveNode || normalizeTone(node.status ?? node.outcome) === 'running');
     return {
       id: node.id,
       type: 'workflowNode',
-      position: {
-        x: layout.x - NODE_WIDTH / 2,
-        y: layout.y - NODE_HEIGHT / 2,
-      },
+      position: topLeft(pos.x, pos.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT),
       data: {
         node,
         selected: selectedNodeId === node.id || selectedNodeId === node.nodeId,
@@ -261,6 +261,7 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
         statusLabel: displayStatus(t, displayStatusValue),
         artifactLabel: t('common.artifacts'),
         attachmentLabel: t('common.attachments'),
+        iconKey: node.iconKey,
       },
       draggable: false,
       selectable: mode === 'interactive',
@@ -268,17 +269,18 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
   });
 
   const edges: Edge[] = graph.edges.map((edge, index) => {
-    const activeEdge = runningActiveNode && activeNodeKey && edge.to === activeNodeKey;
+    const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
+    const color = runtimeEdgeColor(edge, activeEdge);
     return {
       id: `${edge.from}-${edge.to}-${index}`,
       source: edge.from,
       target: edge.to,
       label: edge.label || undefined,
       type: 'smoothstep',
-      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: activeEdge ? 'var(--gold-running)' : 'var(--muted-foreground)' },
-      style: { stroke: activeEdge ? 'var(--gold-running)' : 'var(--muted-foreground)', strokeWidth: activeEdge ? 2.4 : 1.8 },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color },
+      style: { stroke: color, strokeWidth: activeEdge ? 2.4 : 1.8 },
       className: activeEdge ? 'workflow-edge-running' : undefined,
-      labelStyle: { fill: activeEdge ? 'var(--gold-running)' : 'var(--muted-foreground)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.04em' },
+      labelStyle: { fill: color, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.04em' },
       labelBgStyle: { fill: 'var(--card)', fillOpacity: 0.92 },
       labelBgPadding: [8, 4],
       labelBgBorderRadius: 999,
@@ -303,7 +305,7 @@ function isProcessStatus(status?: string | null) {
 }
 
 function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, statusLabel, artifactLabel, attachmentLabel } = data;
+  const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
   const hasStatus = Boolean(displayStatusValue);
   const tone = normalizeTone(displayStatusValue);
   return (
@@ -319,7 +321,8 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <div className="pointer-events-none absolute left-3 right-3 top-2 z-10 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {iconKey ? <img src={`/agent-icons/${iconKey}.svg`} alt="" className="size-4 shrink-0 rounded-sm" /> : null}
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}
         </div>

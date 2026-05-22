@@ -6,6 +6,15 @@
 /src-tauri/target
 .external
 .gold-band
+/Archive
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 .claude/*
 !.claude/skills
 !.claude/CLAUDE.md

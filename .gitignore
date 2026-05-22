@@ -5,3 +5,8 @@
 /web/dist
 /src-tauri/target
 .external
+.gold-band
+.claude/*
+!.claude/skills
+!.claude/CLAUDE.md
+!.claude/settings.json

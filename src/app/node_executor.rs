@@ -1,15 +1,11 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
 
-use crate::artifacts::{
-    ExecPlanArtifact, ExecResultArtifact, ExecResultStatus, parse_json_artifact, validate_exec_plan,
-    validate_exec_result,
-};
+use crate::artifacts::parse_json_artifact;
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
 };
-use crate::exec::run_exec_plan;
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
     PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
@@ -23,7 +19,6 @@ use crate::storage::{read_json, write_json};
 
 use super::App;
 use super::ids::now_rfc3339_like;
-use super::transition_context::find_latest_artifact_path;
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
     worker
@@ -37,7 +32,9 @@ fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
 fn success_condition_text(condition: &JsonConditionDsl) -> String {
     match condition {
         JsonConditionDsl::Expression { expression } => expression.clone(),
-        JsonConditionDsl::PathEquals { path, equals } => format!("JSON field `{}` equals `{}`", path, equals),
+        JsonConditionDsl::PathEquals { path, equals } => {
+            format!("JSON field `{}` equals `{}`", path, equals)
+        }
     }
 }
 
@@ -46,7 +43,10 @@ fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
         artifact: output.artifact.clone(),
         kind: format!("{:?}", output.kind).to_ascii_lowercase(),
         schema: output.schema.clone(),
-        success_condition: worker.success_condition.as_ref().map(success_condition_text),
+        success_condition: worker
+            .success_condition
+            .as_ref()
+            .map(success_condition_text),
     })
 }
 
@@ -136,31 +136,17 @@ fn branch_kind_for_node(node: &NodeDsl) -> String {
         return "人工check".to_string();
     }
     match node {
-        NodeDsl::Worker(worker) if worker.output.is_some() || worker.success_condition.is_some() => {
+        NodeDsl::Worker(worker)
+            if worker.output.is_some() || worker.success_condition.is_some() =>
+        {
             "节点输出检查".to_string()
         }
         _ => "普通".to_string(),
     }
 }
 
-fn output_contract_reason(worker: &WorkerNode) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(output) = &worker.output {
-        parts.push(format!(
-            "输出 DSL artifact={} kind={:?}",
-            output.artifact, output.kind
-        ));
-        if let Some(schema) = &output.schema {
-            parts.push(format!(
-                "schema={}",
-                serde_json::to_string(schema).expect("serialize output schema")
-            ));
-        }
-    }
-    if let Some(condition) = &worker.success_condition {
-        parts.push(format!("success_condition={}", success_condition_text(condition)));
-    }
-    (!parts.is_empty()).then(|| parts.join("；"))
+fn output_contract_reason(_worker: &WorkerNode) -> Option<String> {
+    None
 }
 
 fn artifact_preview(path: &Utf8PathBuf) -> Option<String> {
@@ -168,7 +154,10 @@ fn artifact_preview(path: &Utf8PathBuf) -> Option<String> {
     const LIMIT: usize = 2048;
     if content.len() > LIMIT {
         let preview = content.chars().take(LIMIT).collect::<String>();
-        Some(format!("{}\n... preview omitted; read the file if needed", preview))
+        Some(format!(
+            "{}\n... preview omitted; read the file if needed",
+            preview
+        ))
     } else {
         Some(content)
     }
@@ -183,8 +172,10 @@ fn output_artifact_for_predecessor(
     node_dsl: &NodeDsl,
 ) -> Option<PromptArtifactRef> {
     let artifact = match node_dsl {
-        NodeDsl::Worker(worker) => worker.output.as_ref().map(|output| output.artifact.as_str()),
-        _ => None,
+        NodeDsl::Worker(worker) => worker
+            .output
+            .as_ref()
+            .map(|output| output.artifact.as_str()),
     }?;
     let path = app.paths.artifact_file(
         task_id,
@@ -252,7 +243,6 @@ fn build_predecessor_contexts(
                 });
             let branch_reason = match node_dsl {
                 NodeDsl::Worker(worker) => output_contract_reason(worker),
-                _ => None,
             };
             Some(PromptPredecessorContext {
                 round_id: trace_ref.round_id.clone(),
@@ -291,12 +281,12 @@ pub(crate) fn execute_ai_node(
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
-    feedback_summary: Option<String>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
         profile,
+        permission_mode,
         primary_artifact,
         output_contract,
         task_instruction,
@@ -304,23 +294,16 @@ pub(crate) fn execute_ai_node(
         cold_artifacts,
         cold_attachments,
     ) = match node_dsl {
-        NodeDsl::Worker(worker) => {
-            let kind = if feedback_summary.is_some() {
-                InvocationKind::WorkerRepairExec
-            } else {
-                InvocationKind::WorkerGeneric
-            };
-            (
-                worker.profile.clone(),
-                worker.primary_artifact.clone(),
-                worker_output_contract(worker),
-                worker_task_instruction(worker),
-                kind,
-                Vec::new(),
-                Vec::new(),
-            )
-        }
-        NodeDsl::Exec(_) => bail!("execute_ai_node cannot run exec nodes"),
+        NodeDsl::Worker(worker) => (
+            worker.profile.clone(),
+            worker.permission_mode.clone(),
+            worker.primary_artifact.clone(),
+            worker_output_contract(worker),
+            worker_task_instruction(worker),
+            InvocationKind::WorkerGeneric,
+            Vec::new(),
+            Vec::new(),
+        ),
     };
 
     let profile_content = profile
@@ -330,15 +313,8 @@ pub(crate) fn execute_ai_node(
 
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
-    let predecessors = build_predecessor_contexts(
-        app,
-        task_id,
-        run_id,
-        round,
-        node_id,
-        attempt_id,
-        workflow,
-    );
+    let predecessors =
+        build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
 
     let invocation = WorkerInvocation {
         invocation_kind,
@@ -354,13 +330,13 @@ pub(crate) fn execute_ai_node(
         predecessors,
         task_instruction,
         session_mode,
+        permission_mode,
         continue_ref,
         resume_prompt,
         resume_prompt_id,
         stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
         log_provider_command: app.config.log_provider_command,
-        feedback_summary,
         attachments_dir: matches!(node_dsl, NodeDsl::Worker(_)).then(|| {
             app.paths
                 .attachments_dir(task_id, run_id, round_id, node_id, attempt_id)
@@ -393,68 +369,6 @@ pub(crate) fn execute_ai_node(
     finalize_ai_attempt(
         app, task_id, run_id, round_id, attempt_id, node_id, node, result,
     )
-}
-
-pub(crate) fn execute_exec_node(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    workflow: &ValidatedWorkflow,
-    mut node: NodeState,
-) -> Result<NodeState> {
-    let node_dsl = workflow
-        .get_node(&node.node_id)
-        .expect("validated node exists");
-    let exec_node = match node_dsl {
-        NodeDsl::Exec(exec) => exec,
-        _ => bail!("execute_exec_node requires exec node"),
-    };
-
-    let exec_plan_path = find_latest_artifact_path(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        &exec_node.plan_from,
-        "exec-plan",
-    )?
-    .ok_or_else(|| anyhow!("exec-plan not found for current round"))?;
-    let exec_plan: ExecPlanArtifact = read_json(&exec_plan_path)?;
-    validate_exec_plan(&exec_plan)?;
-
-    progress(&format!(
-        "running command for {}/{}/{}",
-        round_id, node.node_id, node.attempt_id
-    ));
-    tracing::debug!(task_id, run_id, round_id, node_id = %node.node_id, attempt_id = %node.attempt_id, stage = ?ProgressStage::RunningCommand, "running exec plan");
-    let exec_result = run_exec_plan(
-        &exec_plan,
-        &app.paths.repo_root,
-        &app.paths
-            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
-    )?;
-    validate_exec_result(&exec_result)?;
-    write_json(
-        &app.paths.artifact_file(
-            task_id,
-            run_id,
-            round_id,
-            &node.node_id,
-            &node.attempt_id,
-            "exec-result",
-        ),
-        &exec_result,
-    )?;
-
-    node.status = RunStatus::Completed;
-    node.outcome = Some(match exec_result.status {
-        ExecResultStatus::Success => NodeOutcome::Success,
-        ExecResultStatus::Failure => NodeOutcome::Failure,
-    });
-    node.finished_at = Some(now_rfc3339_like());
-    validate_node_state(&node)?;
-    Ok(node)
 }
 
 fn evaluate_json_success_condition(
@@ -673,22 +587,12 @@ pub(crate) fn finalize_ai_attempt(
                         attempt_id,
                         &primary_artifact.name,
                     );
-                    match primary_artifact.name.as_str() {
-                        "exec-plan" => {
-                            let plan: ExecPlanArtifact =
-                                parse_json_artifact(&primary_artifact.content)?;
-                            validate_exec_plan(&plan)?;
-                            write_json(&artifact_path, &plan)?;
-                        }
-                        _ => {
-                            std::fs::create_dir_all(
-                                app.paths
-                                    .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
-                                    .as_std_path(),
-                            )?;
-                            std::fs::write(artifact_path.as_std_path(), primary_artifact.content)?;
-                        }
-                    }
+                    std::fs::create_dir_all(
+                        app.paths
+                            .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
+                            .as_std_path(),
+                    )?;
+                    std::fs::write(artifact_path.as_std_path(), primary_artifact.content)?;
                 }
             }
 
@@ -724,7 +628,7 @@ pub(crate) fn finalize_ai_attempt(
             node.status = RunStatus::Completed;
             node.outcome = Some(if needs_primary_artifact && !has_artifact {
                 NodeOutcome::Invalid
-            } else if matches!(node.node_type, crate::domain::NodeType::Worker) {
+            } else {
                 expected_artifact
                     .as_deref()
                     .map(|artifact| {
@@ -735,8 +639,6 @@ pub(crate) fn finalize_ai_attempt(
                     .transpose()?
                     .flatten()
                     .unwrap_or(NodeOutcome::Success)
-            } else {
-                NodeOutcome::Success
             });
         }
         ProviderRunStatus::Failure => {
@@ -761,14 +663,11 @@ pub(crate) fn re_evaluate_attempt(
     round_id: &str,
     mut node: NodeState,
 ) -> Result<NodeState> {
-    let artifact_name = match node.node_type {
-        crate::domain::NodeType::Worker => node
-            .resolved_config
-            .get("primaryArtifact")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        crate::domain::NodeType::Exec => Some("exec-result".to_string()),
-    };
+    let artifact_name = node
+        .resolved_config
+        .get("primaryArtifact")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
 
     if let Some(artifact_name) = artifact_name {
         let path = app.paths.artifact_file(
@@ -791,34 +690,10 @@ pub(crate) fn re_evaluate_attempt(
             return Ok(node);
         }
 
-        match artifact_name.as_str() {
-            "exec-plan" => {
-                let value: ExecPlanArtifact = read_json(&path)?;
-                validate_exec_plan(&value)?;
-                node.outcome = Some(NodeOutcome::Success);
-            }
-            "exec-result" => {
-                let value: ExecResultArtifact = read_json(&path)?;
-                validate_exec_result(&value)?;
-                node.outcome = Some(match value.status {
-                    ExecResultStatus::Success => NodeOutcome::Success,
-                    ExecResultStatus::Failure => NodeOutcome::Failure,
-                });
-            }
-            _ => {
-                node.outcome = Some(
-                    evaluate_json_success_condition(
-                        app,
-                        task_id,
-                        run_id,
-                        round_id,
-                        &node,
-                        &artifact_name,
-                    )?
-                    .unwrap_or(NodeOutcome::Success),
-                );
-            }
-        }
+        node.outcome = Some(
+            evaluate_json_success_condition(app, task_id, run_id, round_id, &node, &artifact_name)?
+                .unwrap_or(NodeOutcome::Success),
+        );
     }
 
     node.status = RunStatus::Completed;

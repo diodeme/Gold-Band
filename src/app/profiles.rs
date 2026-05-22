@@ -123,15 +123,8 @@ pub(crate) fn ensure_default_user_profiles(paths: &GoldBandPaths) -> Result<Defa
             .iter()
             .find(|profile| profile.name == seed.name)
         {
-            if legacy_default_profile_id(&existing.id) {
-                let path = Utf8PathBuf::from(&existing.path);
-                if path.exists() {
-                    fs::remove_file(path.as_std_path())?;
-                }
-            } else {
-                by_key.insert(seed.key.to_string(), existing.id.clone());
-                continue;
-            }
+            by_key.insert(seed.key.to_string(), existing.id.clone());
+            continue;
         }
         let now = local_timestamp();
         let entry = ProfileEntry {
@@ -419,22 +412,13 @@ fn base36(mut value: u128) -> String {
     String::from_utf8(output).expect("base36 uses ascii digits")
 }
 
-fn legacy_default_profile_id(id: &str) -> bool {
-    matches!(
-        id,
-        "profile-plan" | "profile-dev" | "profile-review" | "profile-test" | "profile-accept"
-    )
-}
-
 fn remove_seeded_user_defaults_with_name(
     profiles: &[ProfileEntry],
     name: &str,
     summary: &str,
 ) -> Result<()> {
     for profile in profiles.iter().filter(|profile| {
-        profile.name == name
-            && (legacy_default_profile_id(&profile.id)
-                || (profile.summary == summary && profile.content.trim().is_empty()))
+        profile.name == name && profile.summary == summary && profile.content.trim().is_empty()
     }) {
         let path = Utf8PathBuf::from(&profile.path);
         if path.exists() {

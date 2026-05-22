@@ -9,9 +9,6 @@ mod transition_context;
 
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
-use crate::artifacts::{
-    ExecPlanArtifact, ExecResultArtifact, validate_exec_plan, validate_exec_result,
-};
 use crate::config::{
     ConsoleThemeName, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig, UserConfig,
@@ -33,7 +30,7 @@ use crate::runtime::{
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
 use crate::storage::{GoldBandPaths, read_json, write_json};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -114,6 +111,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
+            permission_mode: None,
             manual_check: None,
         })
     }
@@ -122,9 +120,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         version: "0.1".to_string(),
         id: "task-workflow".to_string(),
         entry: "plan".to_string(),
-        control: WorkflowControl {
-            max_repair_loops: 3,
-        },
+        control: WorkflowControl::default(),
         nodes: vec![
             worker(
                 provider,
@@ -501,6 +497,57 @@ impl App {
         Ok(store)
     }
 
+    pub fn update_workflow_template(
+        &self,
+        template_id: &str,
+        workflow: WorkflowDsl,
+    ) -> Result<WorkflowTemplateStore> {
+        let template_id = template_id.trim();
+        if template_id.is_empty() {
+            bail!("workflow template id cannot be empty");
+        }
+        if template_id == "default" {
+            bail!("default workflow template cannot be updated");
+        }
+        let validated = validate_workflow(workflow)?;
+        self.validate_workflow_agents(&validated)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+
+        let mut store = self.load_workflow_template_store()?;
+        let template = store
+            .templates
+            .iter_mut()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        template.workflow = validated.raw;
+        template.updated_at = now_rfc3339_like();
+        store.last_used_template_id = Some(template_id.to_string());
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn delete_workflow_template(&self, template_id: &str) -> Result<WorkflowTemplateStore> {
+        let template_id = template_id.trim();
+        if template_id.is_empty() {
+            bail!("workflow template id cannot be empty");
+        }
+        if template_id == "default" {
+            bail!("default workflow template cannot be deleted");
+        }
+
+        let mut store = self.load_workflow_template_store()?;
+        let original_len = store.templates.len();
+        store.templates.retain(|template| template.id != template_id);
+        if store.templates.len() == original_len {
+            bail!("workflow template `{template_id}` not found");
+        }
+        if store.last_used_template_id.as_deref() == Some(template_id) {
+            store.last_used_template_id = Some("default".to_string());
+        }
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template = default_workflow_template(&default_profiles);
@@ -576,13 +623,15 @@ impl App {
         match agent_type {
             ManagedAgentType::ClaudeCode => {
                 match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
-                    Ok(()) => Ok(DoctorResult {
+                    Ok(capabilities) => Ok(DoctorResult {
                         available: true,
                         reason: None,
+                        capabilities: Some(capabilities),
                     }),
                     Err(err) => Ok(DoctorResult {
                         available: false,
                         reason: Some(err.to_string()),
+                        capabilities: None,
                     }),
                 }
             }
@@ -1350,16 +1399,6 @@ impl App {
     ) -> Result<ControlDecision> {
         let validated = validate_workflow(workflow)?;
         Ok(decide_next_step(&validated, run, round, node))
-    }
-
-    pub fn validate_artifact_samples(
-        &self,
-        exec_plan: &ExecPlanArtifact,
-        exec_result: &ExecResultArtifact,
-    ) -> Result<()> {
-        validate_exec_plan(exec_plan)?;
-        validate_exec_result(exec_result)?;
-        Ok(())
     }
 
     fn read_json_dir_sorted<T: DeserializeOwned>(&self, dir: &Utf8Path) -> Result<Vec<T>> {

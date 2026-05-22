@@ -14,7 +14,7 @@
 ### 2.1 `worker-ref.json` 是边界文件，不是业务产物
 它不参与：
 - workflow 成功判断
-- `exec / verify` 的控制流判断
+- `worker / output validation` 的控制流判断
 - artifact 语义计算
 
 ### 2.2 由 runtime 落盘

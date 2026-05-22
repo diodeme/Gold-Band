@@ -21,13 +21,11 @@ use crate::runtime::{
 use crate::storage::{read_json, write_json};
 
 use super::ids::{next_attempt_id, next_run_id, now_rfc3339_like};
-use super::node_executor::{execute_ai_node, execute_exec_node, re_evaluate_attempt};
+use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
 use super::state_factory::create_node_state;
-use super::transition_context::{
-    feedback_summary_from_previous_node, find_latest_worker_ref_for_transition,
-};
+use super::transition_context::find_latest_worker_ref_for_transition;
 use super::{App, is_run_continuable};
 
 struct PreparedRun {
@@ -42,7 +40,6 @@ struct NextExecution {
     node: NodeState,
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
-    feedback_summary: Option<String>,
 }
 
 fn localized_continue_prompt(language: DesktopLanguage) -> String {
@@ -172,7 +169,6 @@ fn prepare_run(
         status: RunStatus::Running,
         outcome: None,
         trigger: RoundTrigger::Initial,
-        repair_loops_used: 0,
         started_at: now.clone(),
         trace: vec![round_trace_step(
             1,
@@ -194,7 +190,6 @@ fn prepare_run(
             .profile
             .as_deref()
             .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
-        crate::dsl::NodeDsl::Exec(_) => None,
     };
     let node = create_node_state(
         &run_id,
@@ -348,7 +343,6 @@ pub(crate) fn run_continue(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
-        None,
     )?;
     Ok(run)
 }
@@ -418,9 +412,15 @@ pub(crate) fn submit_manual_check(
     let (mut round, mut node) = current_attempt_state(app, task_id, &run)?;
     ensure!(round.id == round_id, "round mismatch for manual check");
     ensure!(node.node_id == node_id, "node mismatch for manual check");
-    ensure!(node.attempt_id == attempt_id, "attempt mismatch for manual check");
+    ensure!(
+        node.attempt_id == attempt_id,
+        "attempt mismatch for manual check"
+    );
     ensure!(node.status == RunStatus::Paused, "node is not paused");
-    ensure!(node.manual_check_pending, "node is not waiting for manual check");
+    ensure!(
+        node.manual_check_pending,
+        "node is not waiting for manual check"
+    );
 
     node.status = RunStatus::Completed;
     node.outcome = Some(outcome);
@@ -502,7 +502,6 @@ pub(crate) fn submit_manual_check(
             next.continue_ref,
             None,
             None,
-            next.feedback_summary,
         )?;
     }
     Ok(run)
@@ -566,7 +565,6 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
             .profile
             .as_deref()
             .and_then(|name| resolve_profile_for_node(&resolved_profiles, name)),
-        crate::dsl::NodeDsl::Exec(_) => None,
     };
     let fresh = create_node_state(
         run_id,
@@ -640,6 +638,53 @@ fn next_trace_sequence(round: &RoundState) -> u32 {
         .last()
         .map(|step| step.sequence + 1)
         .unwrap_or(1)
+}
+
+fn fail_workflow_control_limit(
+    app: &App,
+    task_id: &str,
+    run: &mut RunState,
+    round: &mut RoundState,
+    node: &NodeState,
+    summary: String,
+) -> Result<Option<NextExecution>> {
+    let now = now_rfc3339_like();
+    run.status = RunStatus::Completed;
+    run.outcome = Some(RunOutcome::Failure);
+    run.pause_reason = None;
+    run.updated_at = now.clone();
+    round.status = RunStatus::Completed;
+    round.outcome = Some(RunOutcome::Failure);
+    progress(&summary);
+    write_run_progress_best_effort(
+        &app.paths,
+        task_id,
+        run,
+        Some(node.node_type),
+        ProgressStage::Completed,
+        summary.clone(),
+    );
+    append_run_event_best_effort(
+        &app.paths,
+        task_id,
+        &run.id,
+        "workflow_control_limit_exceeded",
+        now,
+        run_event_data(
+            &ExecutionContext::for_run(task_id, &run.id)
+                .with_round(round.id.clone())
+                .with_node(node.node_id.clone())
+                .with_attempt(node.attempt_id.clone()),
+            Some(ProgressStage::Completed),
+            Some(run.status),
+            Some(summary),
+            None,
+        ),
+    );
+    validate_round_state(round)?;
+    validate_run_state(run)?;
+    persist_runtime_state(app, task_id, run, round, node)?;
+    Ok(None)
 }
 
 fn edge_outcome_label(outcome: NodeOutcome) -> String {
@@ -755,39 +800,48 @@ fn apply_control_decision(
 ) -> Result<Option<NextExecution>> {
     match decision {
         ControlDecision::TransitionToNode { node_id, session } => {
-            if matches!(node.node_type, crate::domain::NodeType::Exec)
-                && matches!(node.outcome, Some(NodeOutcome::Failure | NodeOutcome::Invalid))
-            {
-                round.repair_loops_used += 1;
-            }
-
             let next_node_dsl = workflow
                 .get_node(&node_id)
                 .expect("validated transition target exists");
+            let previous_node_id = node.node_id.clone();
+            if let Some(max_attempts) = workflow.raw.control.max_attempts {
+                let proposed_attempts = round
+                    .trace
+                    .iter()
+                    .filter(|step| {
+                        step.from_node_id.as_deref() == Some(previous_node_id.as_str())
+                            && step.node_id == node_id
+                    })
+                    .count() as u32
+                    + 1;
+                if proposed_attempts > max_attempts {
+                    return fail_workflow_control_limit(
+                        app,
+                        task_id,
+                        run,
+                        round,
+                        node,
+                        format!(
+                            "max attempts exceeded for {} -> {}: {} > {}",
+                            previous_node_id, node_id, proposed_attempts, max_attempts
+                        ),
+                    );
+                }
+            }
             let next_attempt_id =
                 next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
-            let previous_node_id = node.node_id.clone();
             let edge_outcome = node.outcome.map(edge_outcome_label);
             let continue_ref = find_latest_worker_ref_for_transition(
-                app,
-                task_id,
-                &run.id,
-                &round.id,
-                node,
-                &node_id,
-                session,
+                app, task_id, &run.id, &round.id, node, &node_id, session,
             )?
             .map(|path| read_json::<WorkerRefState>(&path))
             .transpose()?
             .and_then(|worker_ref| worker_ref.continue_ref);
-            let feedback_summary =
-                feedback_summary_from_previous_node(app, task_id, &run.id, &round.id, node)?;
             let next_profile = match next_node_dsl {
                 crate::dsl::NodeDsl::Worker(worker) => worker
                     .profile
                     .as_deref()
                     .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                crate::dsl::NodeDsl::Exec(_) => None,
             };
             let next_node = create_node_state(
                 &run.id,
@@ -810,8 +864,10 @@ fn apply_control_decision(
             run.status = RunStatus::Running;
             run.pause_reason = None;
             run.updated_at = now_rfc3339_like();
-            let transition_summary =
-                format!("transitioned to {}/{}/{}", round.id, node_id, next_attempt_id);
+            let transition_summary = format!(
+                "transitioned to {}/{}/{}",
+                round.id, node_id, next_attempt_id
+            );
             progress(&transition_summary);
             write_run_progress_best_effort(
                 &app.paths,
@@ -844,17 +900,31 @@ fn apply_control_decision(
                 node: next_node,
                 session_mode: session,
                 continue_ref,
-                feedback_summary,
             }))
         }
         ControlDecision::OpenNewRound => {
+            if let Some(max_rounds) = workflow.raw.control.max_rounds {
+                let proposed_rounds = run.new_rounds_opened + 1;
+                if proposed_rounds > max_rounds {
+                    return fail_workflow_control_limit(
+                        app,
+                        task_id,
+                        run,
+                        round,
+                        node,
+                        format!(
+                            "max rounds exceeded for $new-round: {} > {}",
+                            proposed_rounds, max_rounds
+                        ),
+                    );
+                }
+            }
             round.status = RunStatus::Completed;
             round.outcome = Some(RunOutcome::Failure);
             validate_round_state(round)?;
             write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
 
             run.new_rounds_opened += 1;
-            let previous_round_id = round.id.clone();
             let next_round_index = round.index + 1;
             let next_round_id = format!("round-{next_round_index:03}");
             *round = RoundState {
@@ -865,7 +935,6 @@ fn apply_control_decision(
                 status: RunStatus::Running,
                 outcome: None,
                 trigger: RoundTrigger::NewRound,
-                repair_loops_used: 0,
                 started_at: now_rfc3339_like(),
                 trace: Vec::new(),
             };
@@ -876,14 +945,11 @@ fn apply_control_decision(
                 .get_node(&workflow.raw.entry)
                 .expect("validated entry exists");
             let next_attempt_id = "attempt-001".to_string();
-            let feedback_summary =
-                feedback_summary_from_previous_node(app, task_id, &run.id, &previous_round_id, node)?;
             let next_profile = match next_node_dsl {
                 crate::dsl::NodeDsl::Worker(worker) => worker
                     .profile
                     .as_deref()
                     .and_then(|name| resolve_profile_for_node(resolved_profiles, name)),
-                crate::dsl::NodeDsl::Exec(_) => None,
             };
             let next_node = create_node_state(
                 &run.id,
@@ -942,7 +1008,6 @@ fn apply_control_decision(
                 node: next_node,
                 session_mode: SessionMode::New,
                 continue_ref: None,
-                feedback_summary,
             }))
         }
         ControlDecision::PauseRun(reason) => {
@@ -1051,7 +1116,6 @@ pub(crate) fn drive_from_node(
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -1067,13 +1131,11 @@ fn drive_from_node_with_initial_session(
     initial_continue_ref: Option<serde_json::Value>,
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
-    initial_feedback_summary: Option<String>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
     let mut continue_ref = initial_continue_ref;
     let mut resume_prompt = initial_resume_prompt;
     let mut resume_prompt_id = initial_resume_prompt_id;
-    let mut feedback_summary: Option<String> = initial_feedback_summary;
 
     loop {
         if run_is_killed(app, task_id, &run.id)? {
@@ -1093,10 +1155,7 @@ fn drive_from_node_with_initial_session(
             node.status = RunStatus::Running;
             node.finished_at = None;
         }
-        let node_stage = match node.node_type {
-            crate::domain::NodeType::Exec => ProgressStage::RunningCommand,
-            crate::domain::NodeType::Worker => ProgressStage::CallingProvider,
-        };
+        let node_stage = ProgressStage::CallingProvider;
         let summary = format!(
             "running {}/{}/{}",
             round.id, current_node_id, current_attempt_id
@@ -1126,133 +1185,70 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
         setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
-        node = match workflow
-            .get_node(&current_node_id)
-            .expect("validated node exists")
-        {
-            crate::dsl::NodeDsl::Worker(_) => {
-                match execute_ai_node(
+        node = match execute_ai_node(
+            app,
+            task_id,
+            &run.id,
+            round,
+            &current_attempt_id,
+            workflow,
+            &current_node_id,
+            node.clone(),
+            session_mode,
+            continue_ref.as_ref().cloned(),
+            resume_prompt.take(),
+            resume_prompt_id.take(),
+        ) {
+            Ok(node) => node,
+            Err(err) => {
+                if run_is_killed(app, task_id, &run.id)? {
+                    return Ok(());
+                }
+                let error_summary = format!(
+                    "run {} blocked at {}/{}/{}: {}",
+                    run.id, round.id, current_node_id, current_attempt_id, err
+                );
+                progress(&error_summary);
+                run.status = RunStatus::Paused;
+                run.pause_reason = Some(PauseReason::ErrorBlocked);
+                run.updated_at = now_rfc3339_like();
+                round.status = RunStatus::Paused;
+                let mut failed_node = node;
+                failed_node.status = RunStatus::Paused;
+                failed_node.outcome = None;
+                failed_node.finished_at = Some(run.updated_at.clone());
+                write_run_progress_best_effort(
+                    &app.paths,
+                    task_id,
+                    run,
+                    Some(failed_node.node_type),
+                    ProgressStage::Blocked,
+                    error_summary.clone(),
+                );
+                append_run_event_best_effort(
+                    &app.paths,
+                    task_id,
+                    &run.id,
+                    "run_paused",
+                    run.updated_at.clone(),
+                    run_event_data(
+                        &ctx,
+                        Some(ProgressStage::Blocked),
+                        Some(run.status),
+                        Some(error_summary),
+                        run.pause_reason,
+                    ),
+                );
+                teardown_node_environment_best_effort(
                     app,
                     task_id,
                     &run.id,
-                    round,
-                    &current_attempt_id,
-                    workflow,
-                    &current_node_id,
-                    node.clone(),
-                    session_mode,
-                    continue_ref.as_ref().cloned(),
-                    resume_prompt.take(),
-                    resume_prompt_id.take(),
-                    feedback_summary.clone(),
-                ) {
-                    Ok(node) => node,
-                    Err(err) => {
-                        if run_is_killed(app, task_id, &run.id)? {
-                            return Ok(());
-                        }
-                        let error_summary = format!(
-                            "run {} blocked at {}/{}/{}: {}",
-                            run.id, round.id, current_node_id, current_attempt_id, err
-                        );
-                        progress(&error_summary);
-                        run.status = RunStatus::Paused;
-                        run.pause_reason = Some(PauseReason::ErrorBlocked);
-                        run.updated_at = now_rfc3339_like();
-                        round.status = RunStatus::Paused;
-                        let mut failed_node = node;
-                        failed_node.status = RunStatus::Paused;
-                        failed_node.outcome = None;
-                        failed_node.finished_at = Some(run.updated_at.clone());
-                        write_run_progress_best_effort(
-                            &app.paths,
-                            task_id,
-                            run,
-                            Some(failed_node.node_type),
-                            ProgressStage::Blocked,
-                            error_summary.clone(),
-                        );
-                        append_run_event_best_effort(
-                            &app.paths,
-                            task_id,
-                            &run.id,
-                            "run_paused",
-                            run.updated_at.clone(),
-                            run_event_data(
-                                &ctx,
-                                Some(ProgressStage::Blocked),
-                                Some(run.status),
-                                Some(error_summary),
-                                run.pause_reason,
-                            ),
-                        );
-                        teardown_node_environment_best_effort(
-                            app,
-                            task_id,
-                            &run.id,
-                            &round.id,
-                            &failed_node,
-                            &ctx,
-                        );
-                        persist_runtime_state(app, task_id, run, round, &failed_node)?;
-                        return Ok(());
-                    }
-                }
-            }
-            crate::dsl::NodeDsl::Exec(_) => {
-                match execute_exec_node(app, task_id, &run.id, &round.id, workflow, node.clone()) {
-                    Ok(node) => node,
-                    Err(err) => {
-                        if run_is_killed(app, task_id, &run.id)? {
-                            return Ok(());
-                        }
-                        let error_summary = format!(
-                            "run {} blocked at {}/{}/{}: {}",
-                            run.id, round.id, current_node_id, current_attempt_id, err
-                        );
-                        progress(&error_summary);
-                        run.status = RunStatus::Paused;
-                        run.pause_reason = Some(PauseReason::ErrorBlocked);
-                        run.updated_at = now_rfc3339_like();
-                        round.status = RunStatus::Paused;
-                        let mut failed_node = node;
-                        failed_node.status = RunStatus::Paused;
-                        failed_node.outcome = None;
-                        failed_node.finished_at = Some(run.updated_at.clone());
-                        write_run_progress_best_effort(
-                            &app.paths,
-                            task_id,
-                            run,
-                            Some(failed_node.node_type),
-                            ProgressStage::Blocked,
-                            error_summary.clone(),
-                        );
-                        append_run_event_best_effort(
-                            &app.paths,
-                            task_id,
-                            &run.id,
-                            "run_paused",
-                            run.updated_at.clone(),
-                            run_event_data(
-                                &ctx,
-                                Some(ProgressStage::Blocked),
-                                Some(run.status),
-                                Some(error_summary),
-                                run.pause_reason,
-                            ),
-                        );
-                        teardown_node_environment_best_effort(
-                            app,
-                            task_id,
-                            &run.id,
-                            &round.id,
-                            &failed_node,
-                            &ctx,
-                        );
-                        persist_runtime_state(app, task_id, run, round, &failed_node)?;
-                        return Ok(());
-                    }
-                }
+                    &round.id,
+                    &failed_node,
+                    &ctx,
+                );
+                persist_runtime_state(app, task_id, run, round, &failed_node)?;
+                return Ok(());
             }
         };
 
@@ -1348,7 +1344,6 @@ fn drive_from_node_with_initial_session(
             node = next.node;
             session_mode = next.session_mode;
             continue_ref = next.continue_ref;
-            feedback_summary = next.feedback_summary;
             resume_prompt = None;
             resume_prompt_id = None;
             continue;

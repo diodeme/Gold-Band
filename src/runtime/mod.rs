@@ -40,7 +40,6 @@ pub struct RoundState {
     pub status: RunStatus,
     pub outcome: Option<RunOutcome>,
     pub trigger: RoundTrigger,
-    pub repair_loops_used: u32,
     pub started_at: String,
     #[serde(default)]
     pub trace: Vec<RoundTraceStep>,

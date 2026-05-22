@@ -235,6 +235,7 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
     graph.nodes.map((n) => ({ id: n.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT })),
     graph.edges.map((e) => ({ from: e.from, to: e.to, on: e.label?.toLowerCase() ?? '' })),
     nodeIds,
+    nodeOrder,
   );
 
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));

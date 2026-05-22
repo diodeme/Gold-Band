@@ -596,7 +596,7 @@
 ### 测试计划对齐
 
 - 主测试计划以 `docs/gold-band/开发计划/gold-band-mvp-plan.md` 的 `## MVP 验证标准` 为准。
-- 本模块只补充 ACP 特有验证项，不重复定义通用的 `worker -> exec -> verify` 主链路标准。
+- 本模块只补充 ACP 特有验证项，不重复定义通用的 `worker-only 工作流` 主链路标准。
 - 记录 ACP 验收结果时，需要同时关联主流程状态、ACP 会话状态与 UI 展示结果。
 
 ### ACP 特有检查项

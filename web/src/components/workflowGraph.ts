@@ -36,7 +36,7 @@ export function isBackwardEdge(
   return s !== undefined && t !== undefined && t < s;
 }
 
-/** Compute lane index for each non-success backward edge (for routed rendering). */
+/** Compute lane index for each backward edge (for routed rendering). */
 export function computeBackwardLanes(
   edges: Array<{ from: string; to: string; on: string }>,
   nodeOrder: Map<string, number>,
@@ -44,7 +44,7 @@ export function computeBackwardLanes(
   const lanes = new Map<number, number>();
   edges
     .map((edge, index) => ({ edge, index }))
-    .filter(({ edge }) => edge.on !== 'success' && isBackwardEdge(edge.from, edge.to, nodeOrder))
+    .filter(({ edge }) => isBackwardEdge(edge.from, edge.to, nodeOrder))
     .forEach(({ index }, lane) => lanes.set(index, lane));
   return lanes;
 }
@@ -65,6 +65,7 @@ export function layoutSuccessPath(
   nodes: DagreNodeSpec[],
   edges: Array<{ from: string; to: string; on?: string }>,
   nodeIds: Set<string>,
+  nodeOrder?: Map<string, number>,
 ): Map<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -78,6 +79,7 @@ export function layoutSuccessPath(
   for (const n of nodes) g.setNode(n.id, { width: n.width, height: n.height });
   for (const e of edges) {
     if (e.on !== undefined && e.on !== 'success') continue;
+    if (nodeOrder && isBackwardEdge(e.from, e.to, nodeOrder)) continue;
     if (nodeIds.has(e.from) && nodeIds.has(e.to)) g.setEdge(e.from, e.to);
   }
   dagre.layout(g);

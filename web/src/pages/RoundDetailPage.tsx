@@ -146,9 +146,10 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
           </>
         )}
         metrics={(
-          <MetricsBar className="lg:grid-cols-4 xl:grid-cols-4">
+          <MetricsBar className="lg:grid-cols-5 xl:grid-cols-5">
             <Metric label={t('roundDetail.trigger')} value={displayStatus(t, vm.round.trigger)} compact />
-            <Metric label={t('roundDetail.repairLoopsUsed')} value={vm.round.repairLoopsUsed} compact />
+            <Metric label={t('roundDetail.maxAttempts')} value={formatLimit(vm.control?.maxAttempts, t)} compact />
+            <Metric label={t('roundDetail.maxRounds')} value={formatLimit(vm.control?.maxRounds, t)} compact />
             <Metric label={roundTerminal ? t('roundDetail.finalNode') : t('common.currentNode')} value={currentNode} tooltip={currentNode} compact />
             <Metric label={t('common.outcome')} value={<StatusBadge value={roundDisplayStatus} label={displayStatus(t, roundDisplayStatus)} />} compact />
           </MetricsBar>
@@ -508,6 +509,10 @@ function exportLogItems(items: LogEntryVm[]) {
 
 function canonicalNodeId(node: GraphNodeVm) {
   return node.nodeId ?? node.id;
+}
+
+function formatLimit(value: number | null | undefined, t: (key: string) => string) {
+  return value ?? t('workflow.unlimited');
 }
 
 function selectedNodeIdFromSelection(selection: RoundSelection) {

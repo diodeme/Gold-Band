@@ -1,14 +1,15 @@
 import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, Copy, RefreshCw, Upload, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayStatus } from '../i18n';
-import { getAgentRegistry, getProfiles, getWorkflowTemplates, saveWorkflowTemplate } from '../api';
+import { deleteWorkflowTemplate, getAgentRegistry, getProfiles, getWorkflowTemplates, saveWorkflowTemplate, updateWorkflowTemplate } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
-import { WorkflowEditor, createDefaultWorkflow } from '../components/WorkflowEditor';
+import { validateWorkflowForSave, WorkflowEditor } from '../components/WorkflowEditor';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { fullRequirementText } from '@/components/RequirementDisclosure';
 import { TaskTableSkeleton } from '@/components/LoadingState';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink } from '@/components/ui/pagination';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -50,7 +52,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
   const [filter, setFilter] = useState<TaskFilter>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [sortKey, setSortKey] = useState<TaskSortKey>('id');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   const [createOpen, setCreateOpen] = useState(false);
@@ -92,7 +94,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
       setSortDir((current) => current === 'asc' ? 'desc' : 'asc');
     } else {
       setSortKey(key);
-      setSortDir('asc');
+      setSortDir(key === 'id' ? 'desc' : 'asc');
     }
   };
 
@@ -262,6 +264,8 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
   const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<WorkflowTemplate | null>(null);
   const [lastUsedHintDismissed, setLastUsedHintDismissed] = useState(false);
   const [baseWorkflow, setBaseWorkflow] = useState<WorkflowDsl | null>(null);
   const [saveTemplateName, setSaveTemplateName] = useState('');
@@ -271,48 +275,57 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
   const [requirementContent, setRequirementContent] = useState('');
   const [workflow, setWorkflow] = useState<WorkflowDsl | null>(null);
   const requirementInputRef = useRef<HTMLInputElement | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
 
   useEffect(() => {
+    if (!workflowNotice) return;
+    const timeout = window.setTimeout(() => setWorkflowNotice(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [workflowNotice]);
+
+  useEffect(() => {
     if (!open) return;
-    setError(null);
+    setFormError(null);
+    setWorkflowError(null);
+    setWorkflowNotice(null);
     Promise.all([getAgentRegistry(), getWorkflowTemplates(), getProfiles()])
       .then(([registry, templates, profiles]) => {
         setAgentRegistry(registry);
         setTemplateStore(templates);
         setProfileList(profiles);
-        const provider = registry.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code';
-        const fallback = createDefaultWorkflow(provider, profiles.profiles);
         const selectedTemplate = templates.templates[0] ?? null;
-        const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? fallback;
+        const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? null;
         setSelectedTemplateId(selectedTemplate?.id ?? null);
         setLastUsedHintDismissed(false);
         setBaseWorkflow(initialWorkflow);
         setWorkflow(initialWorkflow);
         setSaveTemplateName('');
+        if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setFormError(String(err)));
   }, [open]);
 
   const readRequirementFile = async (file: File | undefined) => {
     if (!file) return;
     if (!/\.(txt|md)$/i.test(file.name)) {
-      setError(t('taskList.create.invalidFile'));
+      setFormError(t('taskList.create.invalidFile'));
       return;
     }
     const content = await file.text();
     setRequirementFileName(file.name);
     setRequirementContent(content);
     if (!title.trim()) setTitle(file.name.replace(/\.(txt|md)$/i, ''));
-    setError(null);
+    setFormError(null);
   };
 
   const clearRequirementFile = () => {
     setRequirementFileName('');
     setRequirementContent('');
-    setError(null);
+    setFormError(null);
     if (requirementInputRef.current) requirementInputRef.current.value = '';
   };
 
@@ -333,6 +346,21 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     setWorkflow(template.workflow);
     setLastUsedHintDismissed(template.id === templateStore.lastUsedTemplateId);
     setSaveTemplateName('');
+    setWorkflowError(null);
+    setWorkflowNotice(null);
+  };
+
+  const startBlankWorkflowTemplate = () => {
+    const blankWorkflow = createBlankWorkflowDraft();
+    setSelectedTemplateId(null);
+    setBaseWorkflow(blankWorkflow);
+    setWorkflow(blankWorkflow);
+    setLastUsedHintDismissed(false);
+    setSaveTemplateName('');
+    setTemplatePickerOpen(false);
+    setFormError(null);
+    setWorkflowError(null);
+    setWorkflowNotice(null);
   };
 
   const applyDefaultWorkflow = (next: WorkflowDsl) => {
@@ -341,32 +369,105 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     setBaseWorkflow(next);
     setWorkflow(next);
     setSaveTemplateName('');
+    setWorkflowError(null);
+    setWorkflowNotice(null);
+  };
+
+  const validateTemplateWorkflow = (workflowDraft: WorkflowDsl) => {
+    if (!agentRegistry || !profileList) {
+      setWorkflowNotice(null);
+      setWorkflowError(t('common.loading'));
+      return null;
+    }
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported), t);
+    if (!validation.valid) {
+      setWorkflowNotice(null);
+      setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
+      return null;
+    }
+    return validation.sanitizedWorkflow;
   };
 
   const saveCurrentAsTemplate = async () => {
     if (!workflow || !saveTemplateName.trim()) return;
+    const validatedWorkflow = validateTemplateWorkflow(workflow);
+    if (!validatedWorkflow) return;
     setSaving(true);
     try {
-      const nextStore = await saveWorkflowTemplate(saveTemplateName.trim(), workflow);
+      const nextStore = await saveWorkflowTemplate(saveTemplateName.trim(), validatedWorkflow);
       const selected = nextStore.templates.at(-1) ?? null;
+      const savedWorkflow = selected?.workflow ?? validatedWorkflow;
       setTemplateStore(nextStore);
       setSelectedTemplateId(selected?.id ?? nextStore.lastUsedTemplateId ?? null);
-      setBaseWorkflow(selected?.workflow ?? workflow);
+      setBaseWorkflow(savedWorkflow);
+      setWorkflow(savedWorkflow);
       setSaveTemplateName('');
+      setWorkflowError(null);
+      setWorkflowNotice(t('taskList.create.workflowTemplateSaved'));
     } catch (err) {
-      setError(String(err));
+      setWorkflowNotice(null);
+      setWorkflowError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveCurrentTemplateChanges = async () => {
+    if (!workflow || !selectedTemplateId || selectedTemplateId === 'default') return;
+    const validatedWorkflow = validateTemplateWorkflow(workflow);
+    if (!validatedWorkflow) return;
+    setSaving(true);
+    try {
+      const nextStore = await updateWorkflowTemplate(selectedTemplateId, validatedWorkflow);
+      const selected = nextStore.templates.find((template) => template.id === selectedTemplateId) ?? null;
+      const savedWorkflow = selected?.workflow ?? validatedWorkflow;
+      setTemplateStore(nextStore);
+      setBaseWorkflow(savedWorkflow);
+      setWorkflow(savedWorkflow);
+      setSaveTemplateName('');
+      setWorkflowError(null);
+      setWorkflowNotice(t('taskList.create.workflowTemplateUpdated'));
+    } catch (err) {
+      setWorkflowNotice(null);
+      setWorkflowError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDeleteWorkflowTemplate = async () => {
+    if (!deleteTemplateTarget || deleteTemplateTarget.id === 'default') return;
+    setSaving(true);
+    try {
+      const deletedTemplateId = deleteTemplateTarget.id;
+      const nextStore = await deleteWorkflowTemplate(deletedTemplateId);
+      const selected = selectedTemplateId === deletedTemplateId ? nextStore.templates[0] ?? null : nextStore.templates.find((template) => template.id === selectedTemplateId) ?? nextStore.templates[0] ?? null;
+      setTemplateStore(nextStore);
+      setSelectedTemplateId(selected?.id ?? null);
+      setBaseWorkflow(selected?.workflow ?? null);
+      setWorkflow(selected?.workflow ?? null);
+      setDeleteTemplateTarget(null);
+      setSaveTemplateName('');
+      setWorkflowError(null);
+      setWorkflowNotice(t('taskList.create.workflowTemplateDeleted'));
+    } catch (err) {
+      setWorkflowNotice(null);
+      setWorkflowError(String(err));
     } finally {
       setSaving(false);
     }
   };
 
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
+  const selectedTemplate = templateStore?.templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const workflowTemplateLabel = selectedTemplate?.name ?? (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
+  const canUpdateSelectedTemplate = Boolean(selectedTemplateId && selectedTemplateId !== 'default');
   const lastUsedTemplate = templateStore?.templates.find((template) => template.id === templateStore.lastUsedTemplateId) ?? null;
   const showLastUsedHint = Boolean(lastUsedTemplate && selectedTemplateId !== lastUsedTemplate.id && !lastUsedHintDismissed);
 
   const submit = async (workflowDraft: WorkflowDsl) => {
     if (!requirementFileName || !requirementContent.trim()) {
-      setError(t('taskList.create.requirementRequired'));
+      setFormError(t('taskList.create.requirementRequired'));
       return;
     }
     setSaving(true);
@@ -449,18 +550,64 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                 </ScrollArea>
               </div>
             </AppCard>
-            {error ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+            {formError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div> : null}
             {workflow ? (
               <div className="space-y-3">
                 <AppCard className="flex flex-col gap-3 p-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
                     <span className="text-xs font-medium text-muted-foreground">{t('taskList.create.workflowTemplate')}</span>
-                    <Select value={selectedTemplateId ?? ''} onValueChange={selectWorkflowTemplate}>
-                      <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder={t('taskList.create.workflowTemplatePlaceholder')} /></SelectTrigger>
-                      <SelectContent>
-                        {templateStore?.templates.map((template) => <SelectItem value={template.id} key={template.id}>{template.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <Popover open={templatePickerOpen} onOpenChange={setTemplatePickerOpen}>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="outline" className="w-full justify-between sm:w-64" aria-label={t('taskList.create.workflowTemplate')}>
+                          <span className="truncate">{workflowTemplateLabel}</span>
+                          <ChevronDown className="size-4 opacity-60" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-72 p-1">
+                        <div className="space-y-1">
+                          <Button type="button" variant="ghost" className="h-9 w-full justify-start gap-2 px-2" onClick={startBlankWorkflowTemplate}>
+                            <Plus className="size-4" />
+                            {t('taskList.create.newWorkflowTemplate')}
+                          </Button>
+                          <div className="my-1 border-t" />
+                          {templateStore?.templates.map((template) => {
+                            const isDefaultTemplate = template.id === 'default';
+                            const selected = template.id === selectedTemplateId;
+                            return (
+                              <div key={template.id} className={cn('flex items-center gap-1 rounded-md p-1', selected && 'bg-accent text-accent-foreground')}>
+                                <button
+                                  type="button"
+                                  className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-sm px-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                                  onClick={() => {
+                                    selectWorkflowTemplate(template.id);
+                                    setTemplatePickerOpen(false);
+                                  }}
+                                >
+                                  <span className="truncate">{template.name}</span>
+                                  {selected ? <Check className="size-4 shrink-0" /> : null}
+                                </button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+                                  disabled={isDefaultTemplate || saving}
+                                  title={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
+                                  aria-label={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
+                                  onClick={() => {
+                                    if (isDefaultTemplate) return;
+                                    setTemplatePickerOpen(false);
+                                    setDeleteTemplateTarget(template);
+                                  }}
+                                >
+                                  <Trash2 className="size-4" />
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                     {showLastUsedHint && lastUsedTemplate ? (
                       <span className="text-xs text-muted-foreground">
                         {t('taskList.create.lastUsedWorkflowPrefix')}
@@ -478,17 +625,53 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   </div>
                   {workflowDirty ? (
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
                       <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => setSaveTemplateName(event.target.value)} />
                       <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
                     </div>
                   ) : null}
                 </AppCard>
-                <WorkflowEditor value={workflow} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={saving} onChange={setWorkflow} onApplyDefaultTemplate={applyDefaultWorkflow} onSave={submit} />
+                {workflowError ? (
+                  <div className="flex items-start justify-between gap-3 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                    <span className="min-w-0 whitespace-pre-wrap break-words">{workflowError}</span>
+                    <Button type="button" variant="ghost" size="icon" className="-mr-2 -mt-1 size-7 shrink-0 text-destructive/70 hover:bg-destructive/10 hover:text-destructive" aria-label={t('common.close')} onClick={() => setWorkflowError(null)}>
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                ) : null}
+                {workflowNotice ? <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">{workflowNotice}</div> : null}
+                <WorkflowEditor
+                  value={workflow}
+                  agentRegistry={agentRegistry}
+                  profiles={profileList?.profiles ?? []}
+                  onOpenProfileManagement={onOpenProfileManagement}
+                  defaultWorkflow={defaultWorkflow}
+                  saving={saving}
+                  onChange={(next) => {
+                    setWorkflow(next);
+                    setWorkflowError(null);
+                    setWorkflowNotice(null);
+                  }}
+                  onApplyDefaultTemplate={applyDefaultWorkflow}
+                  onSave={submit}
+                />
               </div>
-            ) : <EmptyState>{t('common.loading')}</EmptyState>}
+            ) : <EmptyState>{templateStore ? t('taskList.create.noWorkflowTemplate') : t('common.loading')}</EmptyState>}
           </div>
         </ScrollArea>
       </SheetContent>
+      <AlertDialog open={Boolean(deleteTemplateTarget)} onOpenChange={(open) => !open && setDeleteTemplateTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('taskList.create.deleteWorkflowTemplateTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('taskList.create.deleteWorkflowTemplateDescription', { name: deleteTemplateTarget?.name ?? '' })}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction disabled={saving} onClick={() => void confirmDeleteWorkflowTemplate()}>{t('taskList.create.deleteWorkflowTemplateAction')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }
@@ -534,6 +717,17 @@ function TaskPagination({ pageIndex, pageCount, onPageChange }: { pageIndex: num
 
 function canonicalWorkflow(workflow: WorkflowDsl) {
   return JSON.stringify(workflow);
+}
+
+function createBlankWorkflowDraft(): WorkflowDsl {
+  return {
+    version: '0.1',
+    id: `workflow-${Date.now().toString(36)}`,
+    entry: '',
+    control: {},
+    nodes: [],
+    edges: [],
+  };
 }
 
 function compareTasks(left: TaskRowVm, right: TaskRowVm, key: TaskSortKey, dir: SortDir) {

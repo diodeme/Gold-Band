@@ -10,6 +10,6 @@ agent需要有对应icon标识，参考docs\gold-band\资源\icon目录
 agent配置需要做持久化管理；修改 Sheet 的参数和环境变量使用可换行的多行编辑区，编辑时不即时吞掉空行或换行；参数保存时按空格或换行拆分，环境变量保存时按行解析；保存配置不自动执行环境诊断，只清空旧诊断状态，避免保存卡死
 
 补充实现约束：
-- worker / verify 节点中的 `provider` 字段显式声明 agent type，当前不提供默认 claude 兜底
+- worker 节点中的 `provider` 字段显式声明 agent type，当前不提供默认 claude 兜底
 - 当前 agent type 直接作为 registry key 使用，因此同一类型只能维护一份配置
 - 节点详情页需要展示当前节点声明的 agent type，便于确认执行来源

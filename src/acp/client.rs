@@ -70,12 +70,17 @@ struct AcpRuntime {
     config_options: Option<Value>,
 }
 
-pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<()> {
+pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
-    let mut runtime = AcpRuntime::start(config, cwd, paths.runtime_root.join("doctor/acp"))?;
-    let result = runtime
-        .initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))
-        .map(|_| ());
+    let mut runtime =
+        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"))?;
+    let result = (|| {
+        let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
+        runtime.setup_session(cwd, None, None, "", false)?;
+        runtime.cleanup_diagnostic_session()?;
+        runtime.merge_session_config_into_capabilities(&mut capabilities);
+        Ok(capabilities)
+    })();
     runtime.shutdown();
     result
 }
@@ -86,6 +91,7 @@ pub fn run_prompt(
     attempt_dir: Utf8PathBuf,
     prompt: &PromptBundle,
     session_mode: SessionMode,
+    permission_mode: Option<String>,
     continue_ref: Option<Value>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
@@ -95,6 +101,7 @@ pub fn run_prompt(
     let restored = runtime.setup_session(
         workspace_dir.clone(),
         continue_ref,
+        permission_mode.as_deref(),
         &prompt.system_prompt,
         strict_continue,
     )?;
@@ -295,6 +302,7 @@ impl AcpRuntime {
         &mut self,
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
+        permission_mode: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
     ) -> Result<bool> {
@@ -317,6 +325,11 @@ impl AcpRuntime {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.session_id = Some(session_id.to_string());
+                    if let Some(permission_mode) =
+                        permission_mode.filter(|value| !value.trim().is_empty())
+                    {
+                        self.apply_permission_mode(permission_mode)?;
+                    }
                     return Ok(true);
                 }
                 Err(err) => {
@@ -355,13 +368,136 @@ impl AcpRuntime {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.session_id = Some(session_id.to_string());
+        if let Some(permission_mode) = permission_mode.filter(|value| !value.trim().is_empty()) {
+            self.apply_permission_mode(permission_mode)?;
+        }
         Ok(false)
     }
 
     fn capture_session_config(&mut self, result: &Value) {
-        self.models = result.get("models").cloned();
-        self.modes = result.get("modes").cloned();
-        self.config_options = result.get("configOptions").cloned();
+        if let Some(models) = result.get("models") {
+            self.models = Some(models.clone());
+        }
+        if let Some(modes) = result.get("modes") {
+            self.modes = Some(modes.clone());
+        }
+        if let Some(config_options) = result.get("configOptions") {
+            self.config_options = Some(config_options.clone());
+        }
+    }
+
+    fn apply_permission_mode(&mut self, permission_mode: &str) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP permission mode requires a session id"))?;
+        let permission_mode = permission_mode.trim();
+        if permission_mode.is_empty() {
+            return Ok(());
+        }
+
+        if has_mode_config_option(self.config_options.as_ref()) {
+            let result = self.request(
+                "session/set_config_option",
+                json!({
+                    "sessionId": session_id,
+                    "configId": "mode",
+                    "value": permission_mode,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_mode(permission_mode);
+            return Ok(());
+        }
+
+        if self.modes.is_some() {
+            let result = self.request(
+                "session/set_mode",
+                json!({
+                    "sessionId": session_id,
+                    "modeId": permission_mode,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_mode(permission_mode);
+            return Ok(());
+        }
+
+        bail!("ACP session does not expose mode configuration APIs")
+    }
+
+    fn set_current_mode(&mut self, permission_mode: &str) {
+        if let Some(modes) = self.modes.as_mut().and_then(Value::as_object_mut) {
+            modes.insert(
+                "currentModeId".to_string(),
+                Value::String(permission_mode.to_string()),
+            );
+        }
+        if let Some(options) = self.config_options.as_mut().and_then(Value::as_array_mut) {
+            if let Some(option) = options.iter_mut().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some("mode")
+                    || option.get("category").and_then(Value::as_str) == Some("mode")
+            }) {
+                if let Some(object) = option.as_object_mut() {
+                    object.insert(
+                        "currentValue".to_string(),
+                        Value::String(permission_mode.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    fn merge_session_config_into_capabilities(&self, capabilities: &mut Value) {
+        let object = capabilities.as_object_mut();
+        if let Some(object) = object {
+            if let Some(models) = &self.models {
+                object.insert("models".to_string(), models.clone());
+            }
+            if let Some(modes) = &self.modes {
+                object.insert("modes".to_string(), modes.clone());
+            }
+            if let Some(config_options) = &self.config_options {
+                object.insert("configOptions".to_string(), config_options.clone());
+            }
+            return;
+        }
+
+        *capabilities = json!({
+            "models": self.models.clone(),
+            "modes": self.modes.clone(),
+            "configOptions": self.config_options.clone(),
+        });
+    }
+
+    fn cleanup_diagnostic_session(&mut self) -> Result<()> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Ok(());
+        };
+        if self
+            .request(
+                "session/delete",
+                json!({
+                    "sessionId": session_id,
+                }),
+            )
+            .is_ok()
+        {
+            self.session_id = None;
+            return Ok(());
+        }
+        if self
+            .request(
+                "session/close",
+                json!({
+                    "sessionId": session_id,
+                }),
+            )
+            .is_ok()
+        {
+            self.session_id = None;
+        }
+        Ok(())
     }
 
     fn prompt(&mut self, prompt: &PromptBundle) -> Result<Option<String>> {
@@ -432,8 +568,12 @@ impl AcpRuntime {
             };
             match self.rx.recv_timeout(wait_for) {
                 Ok(value) => {
-                    let response_id = value.get("id").and_then(Value::as_u64);
-                    if response_id == Some(id) {
+                    if value.get("method").is_some() {
+                        self.handle_inbound(value)?;
+                        continue;
+                    }
+
+                    if response_matches_request(&value, id) {
                         if let Some(error) = value.get("error") {
                             if cancel_started_at.is_some() {
                                 return Err(anyhow!(AcpCancelled));
@@ -692,6 +832,17 @@ fn rpc_id_to_string(id: &Value) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+fn has_mode_config_option(config_options: Option<&Value>) -> bool {
+    config_options
+        .and_then(Value::as_array)
+        .is_some_and(|options| {
+            options.iter().any(|option| {
+                option.get("id").and_then(Value::as_str) == Some("mode")
+                    || option.get("category").and_then(Value::as_str) == Some("mode")
+            })
+        })
+}
+
 fn cancel_notification_frame(session_id: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -702,11 +853,17 @@ fn cancel_notification_frame(session_id: &str) -> Value {
     })
 }
 
+fn response_matches_request(value: &Value, request_id: u64) -> bool {
+    value.get("method").is_none()
+        && value.get("id").and_then(Value::as_u64) == Some(request_id)
+        && (value.get("result").is_some() || value.get("error").is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{cancel_notification_frame, contributes_to_final_text};
+    use super::{cancel_notification_frame, contributes_to_final_text, response_matches_request};
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
@@ -729,5 +886,23 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn inbound_request_with_matching_id_is_not_response() {
+        let permission_request = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/request_permission",
+            "params": {}
+        });
+        let prompt_response = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": { "stopReason": "end_turn" }
+        });
+
+        assert!(!response_matches_request(&permission_request, 3));
+        assert!(response_matches_request(&prompt_response, 3));
     }
 }

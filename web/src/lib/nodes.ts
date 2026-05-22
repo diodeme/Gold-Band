@@ -29,8 +29,7 @@ function formatUnknownNode(t: TFunction, id: string) {
 
 function inferNodeType(id: string) {
   const normalized = id.toLowerCase();
-  if (/^(run|exec|test|tests|build|lint|format|check)(-|_|$)/.test(normalized) || normalized.includes('test')) return 'exec';
-  if (normalized.includes('dev') || normalized.includes('plan') || normalized.includes('worker') || normalized.includes('accept') || normalized.includes('review') || normalized.includes('validate')) return 'worker';
+  if (normalized.includes('dev') || normalized.includes('plan') || normalized.includes('worker') || normalized.includes('accept') || normalized.includes('review') || normalized.includes('validate') || normalized.includes('test')) return 'worker';
   return 'unknown';
 }
 

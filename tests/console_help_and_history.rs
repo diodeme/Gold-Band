@@ -36,13 +36,14 @@ impl ProviderAdapter for StartTaskProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         let payload = match req.primary_artifact.as_deref() {
-            Some("exec-plan") => PrimaryArtifactPayload {
-                name: "exec-plan".to_string(),
+            Some("implementation-result") => PrimaryArtifactPayload {
+                name: "implementation-result".to_string(),
                 content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
             },
             Some("accept-result") => PrimaryArtifactPayload {
@@ -124,7 +125,7 @@ fn developer_profile_id(app: &App) -> String {
 
 fn worker_workflow(app: &App) -> String {
     format!(
-        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}"}}],"edges":[]}}"#,
+        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}"}}],"edges":[]}}"#,
         developer_profile_id(app)
     )
 }
@@ -219,14 +220,14 @@ fn task_picker_selection_with_active_run_enters_attempt_detail() {
     .unwrap();
     std::fs::write(
         app.paths.round_file("task-001", "run-001", "round-001").as_std_path(),
-        r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"running","outcome":null,"trigger":"initial","repair_loops_used":0,"started_at":"2026-03-30T10:00:00Z"}"#,
+        r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"running","outcome":null,"trigger":"initial","started_at":"2026-03-30T10:00:00Z"}"#,
     )
     .unwrap();
     std::fs::write(
         app.paths
             .node_file("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
-        r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{"primaryArtifact":"exec-plan"}}"#,
+        r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{"primaryArtifact":"implementation-result"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -389,15 +390,13 @@ fn start_selected_task_enters_workspace() {
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {{ "max_repair_loops": 1 }},
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
-            {{"id":"run-tests","type":"exec","plan_from":"dev"}},
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an implementation result","primary_artifact":"implementation-result"}},
             {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"dev","to":"run-tests","on":"success"}},
-            {{"from":"run-tests","to":"accept","on":"success"}},
+            {{"from":"dev","to":"accept","on":"success"}},
             {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
@@ -486,7 +485,7 @@ fn invalid_task_shows_reason_and_cannot_enter_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_repair_loops":1,"max_acceptance_loops":1,"on_acceptance_failure":"stop"},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"missing-profile"}],"edges":[]}"#,
+        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_attempts":1,"max_rounds":1},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"missing-profile"}],"edges":[]}"#,
     );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;

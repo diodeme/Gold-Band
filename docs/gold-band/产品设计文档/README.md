@@ -27,12 +27,9 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 - [Control DSL](dsl/control.md)
 - 节点规范
   - [worker 节点](dsl/nodes/worker.md)
-  - [exec 节点](dsl/nodes/exec.md)
-  - [verify 节点](dsl/nodes/verify.md)
-- 标准产物规范
-  - [exec-plan](dsl/artifacts/exec-plan.md)
-  - [exec-result](dsl/artifacts/exec-result.md)
-  - [verify-result](dsl/artifacts/verify-result.md)
+- 输出与结果判定
+  - worker 节点通过 `output` 声明输出 DSL，通过 `success_condition` 判断 success / failure / invalid
+  - 人工 check 通过 `manual_check` 声明，且与 AI 输出验证互斥
 
 ## 5. Runtime / Layout
 - [Runtime 概览](runtime/overview.md)

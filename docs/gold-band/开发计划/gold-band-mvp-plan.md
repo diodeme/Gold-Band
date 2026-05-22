@@ -6,8 +6,8 @@
 
 1. 读取 task + workflow
 2. 跑 `worker`
-3. 若产出 `exec-plan`，跑 `exec`
-4. 若有 `verify`，跑 `verify`
+3. 若产出 `节点输出产物`，跑 `worker`
+4. 若有 `worker`，跑 `worker`
 5. 按 control 规则做 `continue / retry / acceptance loop`
 6. 通过 CLI 查看状态、artifact、open-session
 
@@ -27,12 +27,12 @@
   - `node.json`
   - `worker-ref.json`
 - `worker` 调用 Claude Code
-- `exec` 串行执行命令
-- `verify` 调用 Claude Code
+- `worker` 串行执行命令
+- `worker` 调用 Claude Code
 - canonical artifact 落盘
-  - `exec-plan`
-  - `exec-result`
-  - `verify-result`
+  - `节点输出产物`
+  - `节点输出产物`
+  - `验收输出产物`
 - control engine
 - CLI
   - `run start`
@@ -91,6 +91,7 @@
 - 2026-05-08：任务工作流页运行记录改为固定行高摘要列表；Run/Round 主行统一使用单行截断的 current node / pauseReason 摘要，展开后直接进入 round 明细列表，不再插入重复的 run 摘要条，避免不同分页因长文本换行导致列表高度和分页器位置抖动。
 - 2026-05-09：任务工作流页进一步收敛首屏主次关系：新建 Run 移入运行记录 Header，需求摘要改为无轮廓的弱强调同名单行，运行记录增加稳定列头并用中性增强表面、缩进时间线和独立 Round 行背景强化 run -> round 父子层级；随后只压缩运行记录区域自身的 Header 与行高，页面标题区保持与其他详情页统一的 Page Header 间距。
 - 2026-05-09：任务列表 Task Preview 抽屉改为上方完整需求框 + 框内滚动 + 复制 icon，底部固定单一“工作流”按钮；移除抽屉执行统计、查看产物入口，并校准任务列表 Action 列表头与“进入”按钮右对齐。随后继续收敛抽屉视觉：任务列表中的完整需求区与 Workflow / Round 详情复用同一套白底单框抽屉样式，不再保留额外的彩色外框，底部工作流保持强调色主按钮；共享的完整需求抽屉组件同步补充复制 icon，并收口到标题右侧。
+- 2026-05-20：任务列表默认排序从 task ID 升序调整为降序，首页优先展示最新编号任务；切回 ID 列时也保持默认降序，减少用户每次进页后手动反转排序的操作。
 - 2026-05-10：任务编排三页统一为后台每 10 秒静默刷新；Workflow 与 Round 详情补充手动刷新按钮；Workflow 顶部四张 stats 卡片对齐；Round 运行状态从标题旁移动到顶部结果卡；Workflow / Round 工作图节点与 Round 顶部当前节点卡都支持“前部展示 + 尾部截断 + hover 全文”。
 - 2026-05-10：Workflow 运行记录改为单展开 accordion，同一时间最多展开一个 run，降低多条 run 同时展开时的视觉噪音；工作空间选择页主视觉图标改为复用 Gold Band logo；Run 分组行操作列没有操作时不再显示横线占位。
 - 2026-05-11：Workflow 运行中 Run 的操作列提供查看与停止；停止会终止当前 provider 进程树并把 run 终止为 killed；最新 Run 未终止时禁用新建 Run，避免同一任务并发启动多个 workflow。
@@ -105,9 +106,15 @@
 - 2026-05-07：桌面端 UI 框架层级收敛为少卡片工作台规则：AppCard 与 Metric 弱化边框和阴影，Settings 页由三张独立卡片改为单主面板 + section 分隔，主题摘要、字体选项和本地字体预览降级为低对比选项行；各主题共享同一布局层级，Tauri command、view model 和偏好保存契约不变。
 - 2026-05-14：ACP 会话 agent 输出接入紧凑 Markdown 渲染，用户 prompt 保持纯文本；标题不使用文章页大字号层级，只用加粗和轻量标识表达层级；本次不引入 Pretext，后续仅在纯文本日志/Raw frame 虚拟化行高预估等测量场景再评估。
 - 2026-05-15：Round 当前节点处于 `error_blocked` 时不再显示成普通已暂停，而是用错误阻塞状态和危险色展示；该状态仍暴露“继续运行”入口，ACP 最新 error diagnostic 或 Raw frame JSON-RPC error 显示为会话顶部横幅，错误后的正常 agent 输出会自动清除横幅；恢复 prompt `继续/Continue` 按独立用户气泡展示，不拼到上一条需求气泡；ACP stop 超过 15 秒未收敛时自动熔断为 `paused + process_interrupted`。
-- 2026-05-17：创建任务流程升级为“创建任务 -> 导入 txt/md requirement -> 创建 workflow -> 保存任务”；任务列表移除独立导入入口，工作流编辑器基于 `@xyflow/react` 支持拖拽节点、连接边、选择 Agent、配置 JSON 输出验证和 `$new-round` 边目标。任务级 workflow 写入 `authoring/workflow.json`，run 启动时冻结 `workflow.snapshot.json`，Round 详情继续展示运行态快照。人工 check 仅保留 UI 占位，后端 `exec` 兼容保留但新建默认模板不再生成。
+- 2026-05-17：创建任务流程升级为“创建任务 -> 导入 txt/md requirement -> 创建 workflow -> 保存任务”；任务列表移除独立导入入口，工作流编辑器基于 `@xyflow/react` 支持拖拽节点、连接边、选择 Agent、配置 JSON 输出验证和 `$new-round` 边目标。任务级 workflow 写入 `authoring/workflow.json`，run 启动时冻结 `workflow.snapshot.json`，Round 详情继续展示运行态快照。人工 check 仅保留 UI 占位，后端 `worker` 兼容保留但新建默认模板不再生成。
 - 2026-05-18：侧边栏“知识库”升级为“上下文管理”，首版提供角色管理；用户级 profile 存储在 `~/.gold-band/context/profiles/<name>-<id>.md`，项目级 profile 存储在 `~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md`。工作流节点通过分布式唯一 profile `id` 引用，编辑器使用可搜索选择器，创建/更新时间使用本地 `YYYY-MM-DD HH:MM:SS`，运行时把 profile Markdown 正文注入 prompt bundle。
 - 2026-05-18：默认角色扩展为方案、开发、审查、测试、验收、清理六类；默认 workflow 初始化时先同步默认角色，再将可见 profile `id` 绑定到 `plan/dev/review/test/accept/cleanup` 节点。默认路径更新为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，cleanup 为普通 worker 节点且不启用 AI 输出验证；保存 workflow 时集中校验必填字段、角色绑定和角色可见性，错误弹窗关闭后在字段处红色标注。
+- 2026-05-20：修复 ACP JSON-RPC 帧判定：adapter 发起的 `session/request_permission` 即使与当前 `session/prompt` request id 相同，也按 inbound request 处理，不再误判节点已完成并提前进入 artifact 归一化。
+- 2026-05-20：收敛 provider system prompt：未声明 `primary_artifact` 的节点会被明确告知无需产出 canonical artifact 或查找 artifact/output 约束；当前节点上下文由 prompt 给出，前序产出仅按 prompt 明确给出的路径读取，`run_dir` 只作为这些路径的父级上下文，避免节点为寻找未声明产物或确认约束主动扫描 run 目录。前序节点结果统一进入 system prompt 的执行链、artifact 路径和 preview，不再以 `Current Feedback` 注入 user prompt；跨 round 链路用 `-$new-round->` 说明新轮次来源。
+- 2026-05-21：ACP session 累计处理耗时改为净耗时，扣除 `session/request_permission` pending 到用户选择之间的阻塞式用户等待；该规则同时覆盖普通工具授权和 `ExitPlanMode` / keep planning 等 plan 决策。
+- 2026-05-21：ACP 会话详情新增“系统提示”入口，从 raw frame 中解析 `session/new._meta.systemPrompt.append` 并用弹窗只读展示实际追加的 system prompt；`session/load` / continue 不会重新追加 system prompt，无追加内容时入口禁用。
+- 2026-05-21：工作流编辑器的节点 id 输入改为本地草稿提交，避免中文输入法 composition 阶段被受控值和 sanitize 打断；作者态画布普通节点直接展示原始 id，不再把 `test` 等默认模板名称本地化显示。
+- 2026-05-21：AI 输出验证的 JSON 输出约束输入改为本地草稿 + 延迟校验，停止输入约 2 秒或失焦后再写入 DSL；自动 beautify 改为输入框右上角手动美化按钮，避免编辑半截 JSON 时被重排。
 - 启动：`npm run dev`；构建：`npm run build`。
 
 ---
@@ -125,7 +132,7 @@ src/
   dsl/
   runtime/
   provider/
-  exec/
+  worker/
   storage/
   control/
   artifacts/
@@ -211,9 +218,9 @@ CLI 只做参数解析和调用 app service，不直接碰底层细节。
 负责 canonical artifact 的规范化、校验、落盘。
 
 先做三类：
-- `exec-plan`
-- `exec-result`
-- `verify-result`
+- `节点输出产物`
+- `节点输出产物`
+- `验收输出产物`
 
 职责：
 - schema struct
@@ -250,17 +257,17 @@ trait ProviderAdapter {
 
 MVP 只实现 `claude-code`。
 
-### 8. `exec/`
-负责执行 `exec-plan`。
+### 8. `worker/`
+负责执行 `节点输出产物`。
 
 包括：
-- 读取当前 round 最新 `exec-plan`
+- 读取当前 round 最新 `节点输出产物`
 - 串行执行 commands
 - fail-fast
-- 生成 `exec-result.json`
+- 生成 `节点输出产物.json`
 - 写 `stdout.log` / `stderr.log`
 
-这一层不混 control 逻辑，只返回 exec 结果。
+这一层不混 control 逻辑，只返回 worker 结果。
 
 ### 9. `control/`
 MVP 核心。
@@ -269,7 +276,7 @@ MVP 核心。
 - 根据 node result 归纳 outcome
 - 查 edge
 - 判断 `$end`
-- 判断 `onAcceptanceFailure`
+- 判断 `failure/invalid 边`
 - 判断 repair loop / acceptance loop
 - 计算下一步动作
 
@@ -296,7 +303,7 @@ enum ControlDecision {
 ```
 
 ### 10. `app/`
-应用服务层，串起 CLI、runtime、provider、exec、control。
+应用服务层，串起 CLI、runtime、provider、worker、control。
 
 例如：
 - `start_run()`
@@ -338,16 +345,16 @@ MVP 行为：
 - 生成 artifact / worker-ref / node.json
 - control 决定下一步
 
-### 如果 node 是 `exec`
-- 读取当前 round 最新 `exec-plan`
+### 如果 node 是 `worker`
+- 读取当前 round 最新 `节点输出产物`
 - 执行 commands
-- 写 `exec-result`
+- 写 `节点输出产物`
 - control 决定下一步
 
-### 如果 node 是 `verify`
+### 如果 node 是 `worker`
 - 组装默认 evidence package
 - 调 provider
-- 写 `verify-result`
+- 写 `验收输出产物`
 - control 决定下一步
 
 循环直到：
@@ -364,12 +371,12 @@ MVP 行为：
 - `invalid`
 - `paused`
 
-### `exec`
+### `worker`
 - `success`
 - `failure`
 - `invalid`
 
-### `verify`
+### `worker`
 - `success`
 - `failure`
 - `invalid`
@@ -383,8 +390,8 @@ MVP 行为：
   - manual retry default `session = new`
 
 ### 默认 repair 规则
-- `exec.invalid`
-  - 若无显式 edge，默认回 `planFrom`
+- `worker.invalid`
+  - 若无显式 edge，默认回 `显式 edge`
   - 优先 `continue`
   - provider 不支持则降级 `new`
 
@@ -398,17 +405,17 @@ attempt-001/
   node.json
   worker-ref.json
   artifacts/
-    exec-plan.json   # 如果有
+    节点输出产物.json   # 如果有
   attachments/
 ```
 
-### exec attempt
+### worker attempt
 ```text
 attempt-001/
   node.json
-  exec-plan.source.json
+  节点输出产物.source.json
   artifacts/
-    exec-result.json
+    节点输出产物.json
   commands/
     01-build/
       command.json
@@ -416,13 +423,13 @@ attempt-001/
       stderr.log
 ```
 
-### verify attempt
+### output validation attempt
 ```text
 attempt-001/
   node.json
   worker-ref.json
   artifacts/
-    verify-result.json
+    验收输出产物.json
 ```
 
 ---
@@ -460,11 +467,11 @@ attempt-001/
 7. worker invocation + prompt bundle
 8. worker artifact normalize
 
-### Phase 3：接通 exec / verify
-9. exec runner
-10. exec-result writer
-11. verify invocation
-12. verify-result writer
+### Phase 3：接通 worker / output validation
+9. worker runner
+10. 节点输出产物 writer
+11. output validation invocation
+12. 验收输出产物 writer
 
 ### Phase 4：控制流闭环
 13. control engine
@@ -483,14 +490,14 @@ attempt-001/
 
 ### 测试目标
 
-将本节作为 MVP 的主测试计划入口，用于验证 `worker -> exec -> verify` 主链路、repair loop、acceptance loop 与异常恢复机制是否形成可重复执行的闭环。
+将本节作为 MVP 的主测试计划入口，用于验证 `worker-only 工作流` 主链路、repair loop、acceptance loop 与异常恢复机制是否形成可重复执行的闭环。
 
 ### 测试范围
 
 - task / workflow 读取与运行初始化。
 - `worker` 节点执行与 artifact 落盘。
-- `exec-plan` 产出后的 `exec` 执行。
-- `verify` 执行与 run 最终状态收敛。
+- `节点输出产物` 产出后的 `worker` 执行。
+- `worker` 执行与 run 最终状态收敛。
 - `continue` / `retry` / `open-session` 等恢复入口。
 - run 状态、artifact、session 等 CLI 检查能力。
 
@@ -509,29 +516,29 @@ attempt-001/
 
 ### 核心测试场景
 
-#### 场景 1：`worker -> exec -> verify -> success`
+#### 场景 1：`worker-only 工作流 -> success`
 
-- 前置条件：`worker` 能生成合法 `exec-plan`，`exec` 与 `verify` 均可成功执行。
-- 操作步骤：启动 run，等待 `worker`、`exec`、`verify` 依次完成。
+- 前置条件：`worker` 能生成合法 `节点输出产物`，`worker` 与 `worker` 均可成功执行。
+- 操作步骤：启动 run，等待 `worker`、`worker`、`worker` 依次完成。
 - 预期结果：run 最终状态为 `completed + success`。
-- 关键产物或状态：worker artifact、exec 结果、verify 结果、最终 run 状态均已落盘且可查看。
+- 关键产物或状态：worker artifact、worker 结果、output validation 结果、最终 run 状态均已落盘且可查看。
 - 失败判定：任一阶段未产出预期文件、状态未收敛或最终状态不是 `completed + success`。
 
-#### 场景 2：`exec failure -> repair -> exec success -> verify success`
+#### 场景 2：`worker failure -> repair -> worker success -> output validation success`
 
-- 前置条件：首次 `exec` 会失败，系统允许进入 repair loop。
-- 操作步骤：启动 run，触发 `exec` 失败，执行修复后重新运行 `exec`，再进入 `verify`。
-- 预期结果：repair loop 生效，后续 `exec` 与 `verify` 成功，run 最终成功结束。
+- 前置条件：首次 `worker` 会失败，系统允许进入 repair loop。
+- 操作步骤：启动 run，触发 `worker` 失败，执行修复后重新运行 `worker`，再进入 `worker`。
+- 预期结果：repair loop 生效，后续 `worker` 与 `worker` 成功，run 最终成功结束。
 - 关键产物或状态：失败原因、修复后的新输入、重试记录与最终成功结果均可追踪。
-- 失败判定：`exec` 失败后无法进入修复流程，或修复后状态、产物、轮次记录不一致。
+- 失败判定：`worker` 失败后无法进入修复流程，或修复后状态、产物、轮次记录不一致。
 
-#### 场景 3：`verify failure -> auto_loop -> new round -> success`
+#### 场景 3：`output validation failure -> auto_loop -> new round -> success`
 
-- 前置条件：首次 `verify` 返回失败，系统允许进入 acceptance loop。
-- 操作步骤：启动 run，执行到 `verify` 失败，触发自动 loop，进入新 round 后再次完成主链路。
+- 前置条件：首次 `worker` 返回失败，系统允许进入 acceptance loop。
+- 操作步骤：启动 run，执行到 `worker` 失败，触发自动 loop，进入新 round 后再次完成主链路。
 - 预期结果：acceptance loop 生效，新 round 可以继续推进，最终收敛为成功状态。
-- 关键产物或状态：verify 失败原因、新 round 状态迁移、后续 round 产物与最终结果均清晰可追踪。
-- 失败判定：`verify` 失败后未生成新的可执行 round，或 loop 行为与文档定义不一致。
+- 关键产物或状态：output validation 失败原因、新 round 状态迁移、后续 round 产物与最终结果均清晰可追踪。
+- 失败判定：`worker` 失败后未生成新的可执行 round，或 loop 行为与文档定义不一致。
 
 #### 场景 4：`worker invalid / interrupted`
 
@@ -567,12 +574,12 @@ attempt-001/
 - `run status`
 
 ### Slice 2
-- `exec`
-- `exec-result`
+- `worker`
+- `节点输出产物`
 - repair loop
 
 ### Slice 3
-- `verify`
+- `worker`
 - acceptance loop
 - `$end`
 

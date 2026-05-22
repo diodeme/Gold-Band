@@ -30,7 +30,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const { t } = useTranslation();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>('create');
-  const [selectedType, setSelectedType] = useState('claude-code');
+  const [selectedType, setSelectedType] = useState('');
   const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
   const [argsText, setArgsText] = useState('');
   const [envText, setEnvText] = useState('');
@@ -84,6 +84,10 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const submit = async () => {
+    if (!selectedType.trim()) {
+      setError(t('agentManagement.agentTypeRequired'));
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -237,7 +241,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             </Field>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !form.displayName.trim() || !form.command.trim()} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim()} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>

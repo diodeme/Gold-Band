@@ -24,7 +24,6 @@ pub enum RunOutcome {
 #[serde(rename_all = "kebab-case")]
 pub enum NodeType {
     Worker,
-    Exec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,17 +60,8 @@ pub enum RoundTrigger {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum CommandStatus {
-    Success,
-    Failure,
-    Skipped,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum InvocationKind {
     WorkerGeneric,
-    WorkerRepairExec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

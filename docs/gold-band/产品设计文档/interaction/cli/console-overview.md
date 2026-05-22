@@ -110,7 +110,7 @@ runtime passthrough 命令仍可保留，例如：
 
 ```text
 /run continue task-001 run-001
-/artifact show task-001 run-001 --round round-001 --node dev --attempt attempt-001 --name exec-result
+/artifact show task-001 run-001 --round round-001 --node dev --attempt attempt-001 --name 节点输出产物
 ```
 
 ### 5.4 查看与执行恢复分离

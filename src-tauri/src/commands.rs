@@ -1,19 +1,21 @@
-use std::{
-    collections::BTreeSet,
-    io::{BufRead, BufReader},
-    str::FromStr,
-};
 use gold_band::acp::client;
 use gold_band::acp::events::{append_ui_event, current_timestamp, permission_decision_event};
 use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
-use gold_band::app::{CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore};
+use gold_band::app::{
+    CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
+};
 use gold_band::domain::{NodeOutcome, SessionMode};
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::PromptBundle;
 use gold_band::runtime::{NodeState, WorkerRefState};
 use gold_band::storage::read_json;
+use std::{
+    collections::BTreeSet,
+    io::{BufRead, BufReader},
+    str::FromStr,
+};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -27,12 +29,12 @@ use tauri_plugin_dialog::DialogExt;
 use crate::i18n::Translator;
 use crate::state::DesktopState;
 use crate::view_models::{
-    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm,
-    AgentRegistryVm, AppBootstrapVm, ContentVm, LogPageVm, LogQueryInput, PreferencesVm,
-    RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm,
-    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
-    log_page_vm, preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
-    task_detail_vm, task_list_vm, workflow_vm,
+    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
+    AppBootstrapVm, ContentVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, WorkflowVm,
+    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
+    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm,
+    workflow_vm,
 };
 
 pub type CommandResult<T> = Result<T, String>;
@@ -69,6 +71,12 @@ pub struct SaveWorkflowInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowTemplateInputVm {
     pub name: String,
+    pub workflow: WorkflowDsl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateWorkflowTemplateInputVm {
     pub workflow: WorkflowDsl,
 }
 
@@ -151,7 +159,9 @@ pub fn update_agent(
         .map_err(command_error)?;
     let config = RuntimeConfig::default().apply_user_config(&user_config);
     state.update_config(config).map_err(command_error)?;
-    state.clear_agent_diagnostic(agent_type).map_err(command_error)?;
+    state
+        .clear_agent_diagnostic(agent_type)
+        .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -164,7 +174,9 @@ pub fn delete_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    let user_config = app.remove_managed_agent(agent_type).map_err(command_error)?;
+    let user_config = app
+        .remove_managed_agent(agent_type)
+        .map_err(command_error)?;
     let config = RuntimeConfig::default().apply_user_config(&user_config);
     state.update_config(config).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
@@ -178,7 +190,9 @@ pub async fn doctor_agent(
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    state.refresh_agent_diagnostic(agent_type).map_err(command_error)?;
+    state
+        .refresh_agent_diagnostic(agent_type)
+        .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -304,7 +318,9 @@ pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandR
 }
 
 #[tauri::command]
-pub fn get_workflow_templates(state: State<'_, DesktopState>) -> CommandResult<WorkflowTemplateStore> {
+pub fn get_workflow_templates(
+    state: State<'_, DesktopState>,
+) -> CommandResult<WorkflowTemplateStore> {
     let app = state.app().map_err(command_error)?;
     app.workflow_templates().map_err(command_error)
 }
@@ -316,6 +332,27 @@ pub fn save_workflow_template(
 ) -> CommandResult<WorkflowTemplateStore> {
     let app = state.app().map_err(command_error)?;
     app.save_workflow_template(input.name, input.workflow)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn update_workflow_template(
+    state: State<'_, DesktopState>,
+    template_id: String,
+    input: UpdateWorkflowTemplateInputVm,
+) -> CommandResult<WorkflowTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.update_workflow_template(&template_id, input.workflow)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn delete_workflow_template(
+    state: State<'_, DesktopState>,
+    template_id: String,
+) -> CommandResult<WorkflowTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.delete_workflow_template(&template_id)
         .map_err(command_error)
 }
 
@@ -490,6 +527,11 @@ pub async fn send_acp_prompt(
             .and_then(|value| value.as_str())
             .ok_or_else(|| "node is missing resolved provider".to_string())?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
+        let permission_mode = node
+            .resolved_config
+            .get("permissionMode")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         let (session_mode, continue_ref) = if worker_ref_path.exists() {
             let worker_ref =
                 read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
@@ -507,6 +549,7 @@ pub async fn send_acp_prompt(
                 prompt_id,
             },
             session_mode,
+            permission_mode,
             continue_ref,
         )
         .map_err(command_error)?;

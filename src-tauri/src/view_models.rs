@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
 };
@@ -13,6 +13,7 @@ use gold_band::config::{
 };
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus};
 use gold_band::dsl::{NodeDsl, WorkflowDsl};
+use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::i18n::Translator;
@@ -57,6 +58,14 @@ pub struct ManagedAgentVm {
     pub icon_key: String,
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
+    pub supported_modes: Option<Vec<AcpModeVm>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpModeVm {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,7 +149,8 @@ pub struct WorkflowVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowControlVm {
-    pub max_repair_loops: u32,
+    pub max_attempts: Option<u32>,
+    pub max_rounds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,6 +168,7 @@ pub struct RoundDetailVm {
     pub run: RunSummaryVm,
     pub round: RoundSummaryVm,
     pub graph: GraphVm,
+    pub control: Option<WorkflowControlVm>,
     pub requirement: String,
     pub selected_node_detail: Option<NodeDetailVm>,
 }
@@ -194,7 +205,6 @@ pub struct RoundSummaryVm {
     pub status: String,
     pub outcome: Option<String>,
     pub trigger: String,
-    pub repair_loops_used: u32,
     pub started_at: String,
     pub current_node: Option<String>,
     pub artifact_count: usize,
@@ -275,6 +285,7 @@ pub struct AcpSessionVm {
     pub session_elapsed_seconds: Option<u64>,
     pub restored: bool,
     pub stop_reason: Option<String>,
+    pub system_prompt_append: Option<String>,
     pub config: Option<AcpSessionConfigVm>,
     pub events: Vec<AcpUiEventVm>,
     pub event_page: AcpEventPageVm,
@@ -527,7 +538,9 @@ pub fn agent_registry_vm(
     let agents = app
         .managed_agents()
         .iter()
-        .map(|(agent_type, config)| managed_agent_vm(*agent_type, config, diagnostics.get(agent_type)))
+        .map(|(agent_type, config)| {
+            managed_agent_vm(*agent_type, config, diagnostics.get(agent_type))
+        })
         .collect::<Vec<_>>();
     let supported_types = [
         ManagedAgentType::ClaudeCode,
@@ -572,10 +585,25 @@ fn managed_agent_vm(
         icon_key: agent_icon_key(agent_type).to_string(),
         supported: agent_type.is_supported(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
-            status: if diagnostic.available { "healthy" } else { "unhealthy" }.to_string(),
+            status: if diagnostic.available {
+                "healthy"
+            } else {
+                "unhealthy"
+            }
+            .to_string(),
             available: diagnostic.available,
             reason: diagnostic.reason.clone(),
             checked_at: diagnostic.checked_at.clone(),
+        }),
+        supported_modes: diagnostic.and_then(|diagnostic| {
+            let modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|mode| AcpModeVm {
+                    id: mode.id.clone(),
+                    name: mode.name.unwrap_or(mode.id),
+                })
+                .collect::<Vec<_>>();
+            (!modes.is_empty()).then_some(modes)
         }),
     }
 }
@@ -727,11 +755,15 @@ pub fn round_detail_vm(
     let selected_node_detail = selected_node_detail_vm(
         app, task_id, run_id, round_id, &run, &round, &nodes, &graph, &selection,
     )?;
+    let control = read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
+        .ok()
+        .map(|workflow| workflow_control_vm(&workflow));
 
     Ok(RoundDetailVm {
         run: run_summary_vm(run.clone()),
         round: round_summary_vm(app, task_id, &run, round)?,
         graph,
+        control,
         requirement,
         selected_node_detail,
     })
@@ -824,7 +856,6 @@ fn round_summary_vm(
         status: enum_label(&round.status),
         outcome: round.outcome.map(|outcome| enum_label(&outcome)),
         trigger: enum_label(&round.trigger),
-        repair_loops_used: round.repair_loops_used,
         started_at: round.started_at,
         current_node: if run.current_round.as_deref() == Some(&round.id) {
             run.current_node.clone()
@@ -838,7 +869,8 @@ fn round_summary_vm(
 
 fn workflow_control_vm(workflow: &WorkflowDsl) -> WorkflowControlVm {
     WorkflowControlVm {
-        max_repair_loops: workflow.control.max_repair_loops,
+        max_attempts: workflow.control.max_attempts,
+        max_rounds: workflow.control.max_rounds,
     }
 }
 
@@ -990,7 +1022,12 @@ fn trace_step_graph_vm(
         current: run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&step.node_id)
             && run.current_attempt.as_deref() == Some(&step.attempt_id),
-        icon_key: node.and_then(|n| n.resolved_config.get("provider").and_then(|v| v.as_str()).and_then(provider_icon_key)),
+        icon_key: node.and_then(|n| {
+            n.resolved_config
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .and_then(provider_icon_key)
+        }),
     })
 }
 
@@ -1025,7 +1062,11 @@ fn round_node_graph_vm(
         attachment_count: attachments,
         current: run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&node.node_id),
-        icon_key: node.resolved_config.get("provider").and_then(|v| v.as_str()).and_then(provider_icon_key),
+        icon_key: node
+            .resolved_config
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .and_then(provider_icon_key),
     })
 }
 
@@ -1205,6 +1246,7 @@ pub fn acp_session_vm(
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
     let raw_frame_count = count_jsonl_lines(&raw_path)?;
+    let system_prompt_append = extract_system_prompt_append(&raw_path)?;
     let mut diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
     merge_raw_frame_error(&mut diagnostics, scan_acp_raw_error(&raw_path)?);
     let attempt_dir = app
@@ -1291,6 +1333,7 @@ pub fn acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
         usage: event_scan.usage,
@@ -1358,10 +1401,7 @@ fn scan_acp_events(
     let mut first_seq = None;
     let mut last_seq = None;
     let mut pending_delta: Option<AcpUiEventVm> = None;
-    let mut session_elapsed_seconds = 0u64;
-    let mut active_turn_started_at = None;
-    let mut active_turn_last_event_at = None;
-    let mut saw_turn = false;
+    let mut session_elapsed = AcpSessionElapsedState::default();
 
     if path.exists() {
         let file = fs::File::open(path.as_std_path())?;
@@ -1375,13 +1415,7 @@ fn scan_acp_events(
             };
             raw_event_count += 1;
             event.seq = raw_event_count as u64;
-            update_session_elapsed_state(
-                &event,
-                &mut session_elapsed_seconds,
-                &mut active_turn_started_at,
-                &mut active_turn_last_event_at,
-                &mut saw_turn,
-            );
+            session_elapsed.observe_event(&event);
             if event.kind == "permissionRequest" {
                 latest_permission_events.insert(event.id.clone(), event.clone());
             }
@@ -1442,11 +1476,7 @@ fn scan_acp_events(
         &mut last_seq,
     );
 
-    session_elapsed_seconds += finish_session_turn_elapsed(
-        active_turn_started_at,
-        active_turn_last_event_at,
-        session_active,
-    );
+    let session_elapsed_seconds = session_elapsed.finish(session_active);
     let events = if after_seq.is_some() {
         after_window
     } else {
@@ -1473,7 +1503,7 @@ fn scan_acp_events(
         events,
         event_page,
         event_count: raw_event_count,
-        session_elapsed_seconds: saw_turn.then_some(session_elapsed_seconds),
+        session_elapsed_seconds,
         latest_permission_events,
         available_commands,
         usage,
@@ -1581,40 +1611,100 @@ fn parse_epoch_timestamp(value: &str) -> Option<u64> {
     value.trim_end_matches('Z').parse::<u64>().ok()
 }
 
-fn update_session_elapsed_state(
-    event: &AcpUiEventVm,
-    session_elapsed_seconds: &mut u64,
-    active_turn_started_at: &mut Option<u64>,
-    active_turn_last_event_at: &mut Option<u64>,
-    saw_turn: &mut bool,
-) {
-    if is_gold_band_user_prompt_event(event) {
-        *session_elapsed_seconds +=
-            finish_session_turn_elapsed(*active_turn_started_at, *active_turn_last_event_at, false);
-        *active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
-        *active_turn_last_event_at = None;
-        *saw_turn = true;
-        return;
-    }
-    if active_turn_started_at.is_some() {
-        *active_turn_last_event_at = parse_epoch_timestamp(&event.timestamp);
-    }
+#[derive(Default)]
+struct AcpSessionElapsedState {
+    elapsed_seconds: u64,
+    active_turn_started_at: Option<u64>,
+    active_turn_last_event_at: Option<u64>,
+    saw_turn: bool,
+    pending_permission_ids: HashSet<String>,
+    permission_wait_started_at: Option<u64>,
+    permission_wait_seconds: u64,
 }
 
-fn finish_session_turn_elapsed(
-    started_at: Option<u64>,
-    last_event_at: Option<u64>,
-    session_active: bool,
-) -> u64 {
-    let Some(started_at) = started_at else {
-        return 0;
-    };
-    if session_active {
-        return current_epoch_seconds().saturating_sub(started_at);
+impl AcpSessionElapsedState {
+    fn observe_event(&mut self, event: &AcpUiEventVm) {
+        if is_gold_band_user_prompt_event(event) {
+            self.elapsed_seconds = self
+                .elapsed_seconds
+                .saturating_add(self.finish_current_turn(false, None));
+            self.active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
+            self.active_turn_last_event_at = None;
+            self.pending_permission_ids.clear();
+            self.permission_wait_started_at = None;
+            self.permission_wait_seconds = 0;
+            self.saw_turn = true;
+            return;
+        }
+        if self.active_turn_started_at.is_none() {
+            return;
+        }
+        let Some(timestamp) = parse_epoch_timestamp(&event.timestamp) else {
+            return;
+        };
+        self.observe_permission_event(event, timestamp);
+        self.active_turn_last_event_at = Some(timestamp);
     }
-    last_event_at
-        .map(|ended_at| ended_at.saturating_sub(started_at))
-        .unwrap_or_default()
+
+    fn finish(&self, session_active: bool) -> Option<u64> {
+        self.finish_at(session_active, None)
+    }
+
+    fn finish_at(&self, session_active: bool, now: Option<u64>) -> Option<u64> {
+        self.saw_turn.then_some(
+            self.elapsed_seconds
+                .saturating_add(self.finish_current_turn(session_active, now)),
+        )
+    }
+
+    fn finish_current_turn(&self, session_active: bool, now: Option<u64>) -> u64 {
+        let Some(started_at) = self.active_turn_started_at else {
+            return 0;
+        };
+        let end_at = if session_active {
+            now.unwrap_or_else(current_epoch_seconds)
+        } else {
+            self.active_turn_last_event_at.unwrap_or(started_at)
+        };
+        let base_elapsed = end_at.saturating_sub(started_at);
+        base_elapsed.saturating_sub(
+            self.permission_wait_seconds
+                .saturating_add(self.open_permission_wait(end_at)),
+        )
+    }
+
+    fn open_permission_wait(&self, end_at: u64) -> u64 {
+        self.permission_wait_started_at
+            .map(|started_at| end_at.saturating_sub(started_at))
+            .unwrap_or_default()
+    }
+
+    fn observe_permission_event(&mut self, event: &AcpUiEventVm, timestamp: u64) {
+        if event.kind != "permissionRequest" {
+            return;
+        }
+        let is_pending = event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
+        if is_pending {
+            let was_empty = self.pending_permission_ids.is_empty();
+            if self.pending_permission_ids.insert(event.id.clone()) && was_empty {
+                self.permission_wait_started_at = Some(timestamp);
+            }
+            return;
+        }
+        if !self.pending_permission_ids.remove(&event.id) {
+            return;
+        }
+        if self.pending_permission_ids.is_empty() {
+            if let Some(started_at) = self.permission_wait_started_at.take() {
+                self.permission_wait_seconds = self
+                    .permission_wait_seconds
+                    .saturating_add(timestamp.saturating_sub(started_at));
+            }
+        }
+    }
 }
 
 fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
@@ -2068,6 +2158,42 @@ fn count_jsonl_lines(path: &camino::Utf8Path) -> Result<usize> {
         .map_while(std::result::Result::ok)
         .filter(|line| !line.trim().is_empty())
         .count())
+}
+
+fn extract_system_prompt_append(path: &camino::Utf8Path) -> Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = fs::File::open(path.as_std_path())?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if value.get("direction").and_then(|item| item.as_str()) != Some("outbound") {
+            continue;
+        }
+        if value
+            .pointer("/frame/method")
+            .and_then(|item| item.as_str())
+            != Some("session/new")
+        {
+            continue;
+        }
+        let prompt = value
+            .pointer("/frame/params/_meta/systemPrompt/append")
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string);
+        if prompt.is_some() {
+            return Ok(prompt);
+        }
+    }
+    Ok(None)
 }
 
 fn asset_item_vm(kind: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
@@ -2528,7 +2654,6 @@ fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<Strin
 fn node_label(node: &NodeDsl) -> String {
     match node {
         NodeDsl::Worker(node) => node.goal.clone().unwrap_or_else(|| node.id.clone()),
-        NodeDsl::Exec(node) => format!("exec from {}", node.plan_from),
     }
 }
 
@@ -2589,6 +2714,91 @@ mod tests {
         }
     }
 
+    fn acp_event_at(
+        id: &str,
+        kind: &str,
+        status: Option<&str>,
+        timestamp: u64,
+        raw: Option<serde_json::Value>,
+    ) -> AcpUiEventVm {
+        AcpUiEventVm {
+            id: id.to_string(),
+            seq: 1,
+            timestamp: format!("{timestamp}Z"),
+            kind: kind.to_string(),
+            session_id: Some("session-123".to_string()),
+            content: Some(id.to_string()),
+            title: None,
+            tool_call_id: None,
+            status: status.map(str::to_string),
+            raw,
+        }
+    }
+
+    fn gold_band_prompt_at(timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("prompt-{timestamp}"),
+            "userTextDelta",
+            Some("completed"),
+            timestamp,
+            Some(json!({ "source": "goldBandPrompt" })),
+        )
+    }
+
+    fn text_event_at(timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("text-{timestamp}"),
+            "textDelta",
+            Some("completed"),
+            timestamp,
+            None,
+        )
+    }
+
+    fn permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            request_id,
+            "permissionRequest",
+            Some(status),
+            timestamp,
+            Some(json!({
+                "requestId": request_id,
+                "options": [
+                    { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                    { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }
+                ]
+            })),
+        )
+    }
+
+    fn plan_permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            request_id,
+            "permissionRequest",
+            Some(status),
+            timestamp,
+            Some(json!({
+                "requestId": request_id,
+                "options": [
+                    { "optionId": "keep-planning", "name": "继续规划", "kind": "keep_planning" },
+                    { "optionId": "accept-plan", "name": "Accept plan", "kind": "accept" }
+                ]
+            })),
+        )
+    }
+
+    fn elapsed_for(
+        events: Vec<AcpUiEventVm>,
+        session_active: bool,
+        now: Option<u64>,
+    ) -> Option<u64> {
+        let mut state = AcpSessionElapsedState::default();
+        for event in events {
+            state.observe_event(&event);
+        }
+        state.finish_at(session_active, now)
+    }
+
     #[test]
     fn raw_frame_error_populates_session_diagnostics() {
         let dir =
@@ -2644,5 +2854,119 @@ mod tests {
             pending.and_then(|event| event.content),
             Some("输出你的工具列表".to_string())
         );
+    }
+
+    #[test]
+    fn session_elapsed_excludes_selected_permission_wait() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(105),
+                permission_event_at("permission-1", "pending", 110),
+                permission_event_at("permission-1", "selected", 160),
+                text_event_at(190),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(40));
+    }
+
+    #[test]
+    fn session_elapsed_stops_while_permission_is_pending_for_active_turn() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(105),
+                permission_event_at("permission-1", "pending", 110),
+            ],
+            true,
+            Some(200),
+        );
+
+        assert_eq!(elapsed, Some(10));
+    }
+
+    #[test]
+    fn session_elapsed_resumes_after_permission_selected() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                permission_event_at("permission-1", "pending", 110),
+                permission_event_at("permission-1", "selected", 160),
+                text_event_at(170),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(20));
+    }
+
+    #[test]
+    fn session_elapsed_does_not_double_count_overlapping_permission_waits() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                permission_event_at("permission-1", "pending", 110),
+                permission_event_at("permission-2", "pending", 120),
+                permission_event_at("permission-1", "selected", 150),
+                permission_event_at("permission-2", "selected", 170),
+                text_event_at(180),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(20));
+    }
+
+    #[test]
+    fn session_elapsed_ignores_unmatched_permission_selected() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                permission_event_at("permission-1", "selected", 150),
+                text_event_at(160),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(60));
+    }
+
+    #[test]
+    fn session_elapsed_resets_permission_wait_between_prompt_turns() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                permission_event_at("permission-1", "pending", 110),
+                text_event_at(130),
+                gold_band_prompt_at(200),
+                text_event_at(230),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(40));
+    }
+
+    #[test]
+    fn session_elapsed_excludes_plan_intervention_permission_wait() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                plan_permission_event_at("plan-permission-1", "pending", 110),
+                plan_permission_event_at("plan-permission-1", "selected", 160),
+                text_event_at(180),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(30));
     }
 }

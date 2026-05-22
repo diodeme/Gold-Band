@@ -30,6 +30,12 @@ export interface ManagedAgentVm {
   iconKey: string;
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
+  supportedModes?: AcpModeVm[] | null;
+}
+
+export interface AcpModeVm {
+  id: string;
+  name: string;
 }
 
 export interface AgentEnvEntryVm {
@@ -111,10 +117,11 @@ export interface WorkflowDsl {
 }
 
 export interface WorkflowControlDsl {
-  max_repair_loops: number;
+  max_attempts?: number | null;
+  max_rounds?: number | null;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowExecNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl;
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -125,13 +132,8 @@ export interface WorkflowWorkerNodeDsl {
   primary_artifact?: string | null;
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
+  permission_mode?: string | null;
   manual_check?: boolean | null;
-}
-
-export interface WorkflowExecNodeDsl {
-  type: 'exec';
-  id: string;
-  plan_from: string;
 }
 
 export interface WorkflowOutputContractDsl {
@@ -204,7 +206,8 @@ export interface SaveWorkflowInput {
 }
 
 export interface WorkflowControlVm {
-  maxRepairLoops: number;
+  maxAttempts?: number | null;
+  maxRounds?: number | null;
 }
 
 export interface RunDetailVm {
@@ -218,6 +221,7 @@ export interface RoundDetailVm {
   run: RunSummaryVm;
   round: RoundSummaryVm;
   graph: GraphVm;
+  control?: WorkflowControlVm | null;
   requirement: string;
   selectedNodeDetail?: NodeDetailVm | null;
 }
@@ -248,7 +252,6 @@ export interface RoundSummaryVm {
   status: string;
   outcome?: string | null;
   trigger: string;
-  repairLoopsUsed: number;
   startedAt: string;
   currentNode?: string | null;
   artifactCount: number;
@@ -319,6 +322,7 @@ export interface AcpSessionVm {
   sessionElapsedSeconds?: number | null;
   restored: boolean;
   stopReason?: string | null;
+  systemPromptAppend?: string | null;
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;

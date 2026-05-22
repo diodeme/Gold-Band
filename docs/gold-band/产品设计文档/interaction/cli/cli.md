@@ -146,8 +146,8 @@ gold-band run open-session <run-id> --round round-001 --node develop --attempt a
 
 ```bash
 gold-band artifact list <run-id> --round round-001 --node develop --attempt attempt-002
-gold-band artifact show <run-id> --round round-001 --node run-tests --attempt attempt-001 --name exec-result
-gold-band artifact export <run-id> --round round-001 --node accept --attempt attempt-001 --name verify-result
+gold-band artifact show <run-id> --round round-001 --node run-tests --attempt attempt-001 --name 节点输出产物
+gold-band artifact export <run-id> --round round-001 --node accept --attempt attempt-001 --name 验收输出产物
 ```
 
 ## 8. `inspect` 命令

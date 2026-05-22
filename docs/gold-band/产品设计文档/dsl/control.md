@@ -1,425 +1,75 @@
 # Gold Band Control DSL 规范
 
 ## 1. 一句话定义
-Control DSL 用来定义 workflow 的**控制语法**，也就是：
+Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 outcome 如何映射到下一步、何时结束 run、何时打开新 round，以及 session 是否复用。
 
-- 节点之间怎么连
-- 小循环怎么回
-- 大循环怎么回
-- 全局控制策略是什么
-- runtime 启动前要校验哪些合法性条件
+## 2. 控制原则
+- 节点统一为 `worker`，控制层不根据节点 id 或历史名称赋予特殊语义。
+- 所有跳转优先由显式 edge 表达。
+- edge 的 `on` 只接受 `success / failure / invalid`。
+- edge 的 `to` 可指向真实 worker 节点、`$end` 或 `$new-round`。
+- edge 的 `session` 可选；省略时为 `new`，声明 `continue` 时目标 provider 必须支持 continue session。
+- `$end` 与 `$new-round` 是控制目标，不是节点 id。
 
-它描述的是 workflow 的控制面，不是运行产物本身。
-
----
-
-## 2. 设计原则
-
-### 2.1 控制语法属于 DSL，不属于 artifact
-`exec-plan`、`exec-result`、`verify-result` 是运行产物。
-
-但：
-- 小循环如何回跳
-- 大循环如何回跳
-- session policy 是 `continue` 还是 `new`
-- retry / loop 次数上限
-
-这些都属于 workflow 控制语法，应放在 DSL 层表达。
-
-### 2.2 显式优先，但允许受限默认规则
-控制相关关键行为应尽量显式表达。
-
-例如：
-- `worker` 需要产出什么 primary artifact
-- `exec` 消费哪个节点的 `exec-plan`
-- 大循环失败怎么处理
-
-runtime 可以做校验，但不应靠大量隐式推导替用户补语义。
-
-首版允许的受限默认规则是：
-- `exec.invalid` 若未显式声明 edge，可默认按 repair 路径回到 `planFrom` 指向的 `worker`
-- 该默认 repair 分支优先使用 `continue`；若目标 provider 不支持 continue，则自动降级为 `new`
-- 该默认只适用于 `exec` 的 repair 场景，不扩展成通用隐式推导机制
-
-### 2.3 内置节点名保留字必须受限
-当前内置节点类型为：
-- `worker`
-- `exec`
-- `verify`
-
-为了避免歧义：
-- 节点 `id` 不应直接使用这些保留字作为业务节点名
-- 尤其不建议把某个自定义 `worker` 节点直接命名为 `exec` 或 `verify`
-
----
-
-## 3. 控制 DSL 应表达的内容
-首版建议至少表达以下几类信息：
-
-### 3.1 全局控制配置
-例如：
-- 大循环最大次数
-- 小循环最大次数
-- `verify` 失败后的默认处理策略
-
-### 3.2 节点定义
-例如：
-- `worker`
-- `exec`
-- `verify`
-
-补充约束：
-- `worker/verify` 可选 `manual_check=true`
-- 对 `worker` 节点，`manual_check=true` 与 AI 输出验证（`output` + `success_condition`）互斥；开启人工 check 时由用户判定结果，不再同时要求 AI 返回可验证 JSON
-- `manual_check=true` 的节点在 ACP 会话自然结束后不立即进入后续 edge，而是先暂停为 `WaitingForUserInput`
-- 人工 check 只允许用户提交 `success` 或 `failure`，随后继续复用现有 edge 的 `on=success|failure` 分支
-- `exec` 不支持人工 check
-
-### 3.3 边定义
-例如：
-- 正常顺序流转
-- 小循环回跳
-- 大循环回跳
-- session policy
-
-### 3.4 启动前校验规则
-例如：
-- DSL 语法是否合法
-- `exec` 前置是否真的声明了 `exec-plan`
-- 节点引用是否存在
-- 控制策略是否冲突
-
----
-
-## 4. 顶层结构
-建议在 workflow 顶层增加一个明确的 `control` 字段：
+## 3. 全局控制字段
 
 ```json
 {
-  "version": "0.1",
-  "id": "implement-feature",
-  "entry": "dev",
   "control": {
-    "max_repair_loops": 3,
-    "max_acceptance_loops": 2,
-    "on_acceptance_failure": "auto-loop"
-  },
-  "nodes": [],
-  "edges": []
+    "max_attempts": 3,
+    "max_rounds": 2
+  }
 }
 ```
 
----
+两个字段均可省略，省略表示不限制。
 
-## 5. 全局控制配置
+- `max_attempts`：当前 round 内，同一条 `来源节点 -> 目标节点` transition 可创建的最大 attempt 次数。比如值为 3 时，`A -> B` 在同一个 round 内最多执行 3 次，`C -> B` 也可独立执行 3 次。
+- `max_rounds`：`$new-round` 可打开的新 round 最大次数，初始 round 不计入。
 
-## 5.1 `control.max_repair_loops`
-- 类型：number
-- 含义：单个 round 内，小循环允许的最大次数
-- 适用场景：`exec.failure -> worker` 或 `exec.invalid -> worker`
+超过任一限制时，runtime 不再创建新的 attempt / round，当前 workflow 以 failure 结束。
 
-### 建议规则
-- 必须为正整数
-- 到达上限后，应由 runtime 结束当前 repair 路径
-- 首版不建议允许无限循环
-
-### 计数口径
-`maxRepairLoops` 统计的不是 attempt 数，也不是完整闭环数；它统计的是：
-
-> **在同一个 round 内，控制层因 `exec.failure` 或 `exec.invalid`，决定沿 repair 路径回到某个 `worker` 的次数。**
-
-也就是说，计数发生在：
-- `exec` 已产出 outcome
-- runtime 决定“回到某个 `worker` 修复”
-- 此次 repair 回跳真正成立
-
-首版建议：
-- `exec.failure -> worker`：计入 repair loop
-- `exec.invalid -> worker`：计入 repair loop
-- `worker.failure`：不计入 repair loop
-- `worker.invalid`：不计入 repair loop
-- `verify.failure`：不计入 repair loop
-- `verify.invalid`：不计入 repair loop
-
-## 5.2 `control.max_acceptance_loops`
-- 类型：number
-- 含义：单个 run 内，大循环允许的最大次数
-- 适用场景：`verify.failure -> worker`
-
-### 建议规则
-- 必须为正整数
-- 到达上限后，不再继续自动进入新 round
-
-### 计数口径
-`maxAcceptanceLoops` 统计的不是 round 总数；它统计的是：
-
-> **在同一个 run 内，控制层因 `verify.failure`，决定新建 round 并回到 `workflow.entry` 的次数。**
-
-也就是说，计数发生在：
-- `verify` 已产出 `failure`
-- runtime 决定进入下一轮
-- 新 round 真正被创建
-
-首版建议：
-- `round-001` 是初始执行，不计入 acceptance loop
-- `verify.failure + auto_loop`：在新 round 被创建时计入 acceptance loop
-- `verify.failure + stop`：不计入 acceptance loop
-- `verify.invalid`：不计入 acceptance loop
-
-## 5.3 `control.on_acceptance_failure`
-- 类型：string
-- 枚举：`auto-loop | stop`
-
-### 语义
-- `auto_loop`：自动进入下一轮，并回到 `workflow.entry`
-- `stop`：直接失败结束
-
-补充规则：
-- 桌面端工作流页必须把该 `control` 对象作为全局控制信息展示，字段显示名分别为最大修复循环、最大验收循环、验收失败策略。
-- 新一轮不会改写 task 的原始 requirement
-- 下一轮 `worker` 应直接消费原始 requirement 与最新 `verify-result`
-
-说明：
-- 它是全局默认的验收失败处理策略
-- 首版不建议再为大循环额外声明 `target` 或 `session`
-- 大循环的回跳目标固定为 `workflow.entry`
-
----
-
-## 6. 节点定义中的控制相关字段
-
-## 6.1 `worker`
-`worker` 节点建议显式声明：
-
-- `provider`
-- `profile`
-- `goal`
-- `primaryArtifact`
-
-当前建议：
-- `goal` 是该节点任务意图的 canonical 来源；runtime 必须把它映射为 invocation 中的 `taskInstruction`
-- `taskInstruction` 进入 `userPrompt` 的 `# Task`
-- `primaryArtifact` 直接表达该节点这次唯一标准输出的逻辑名
-- 首版一个 `worker` 节点一次只应有一个 `primaryArtifact`
-- `primaryArtifact` 是可选字段；未声明时，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
-- 未声明 `primaryArtifact` 时，只有 provider adapter 返回包本身不合法，runtime 才归为 `invalid`
-
-示例：
+## 4. edge 语义
 
 ```json
 {
-  "id": "test",
-  "type": "worker",
-  "provider": "claude-code",
-  "profile": "pf-example-tester",
-  "goal": "编写测试并给出执行计划",
-  "primaryArtifact": "exec-plan"
-}
-```
-
-## 6.2 `exec`
-`exec` 节点建议显式声明它消费哪个节点的 `exec-plan`。
-
-示例：
-
-```json
-{
-  "id": "run-tests",
-  "type": "exec",
-  "planFrom": "test"
-}
-```
-
-说明：
-- `planFrom` 必须指向某个 `worker` 节点
-- 且该节点必须显式声明 `primaryArtifact = "exec-plan"`
-- runtime 解析时只看当前 round 内该节点最新一次 attempt 的 `exec-plan`
-
-## 6.3 `verify`
-`verify` 节点是可选的最终验收关口。
-
-首版建议：
-- 一个 workflow 最多只能有一个 `verify`
-- `onAcceptanceFailure` 只有在存在 `verify` 节点时才有效
-- 若不存在 `verify` 节点却声明了 `onAcceptanceFailure`，应视为 DSL 校验错误
-
----
-
-## 7. 边语法
-边建议统一采用结构化对象，而不是只靠位置推断。
-
-最小示意：
-
-```json
-{
-  "from": "dev",
-  "to": "run-tests",
-  "on": "success",
-  "session": "new"
-}
-```
-
-### 7.1 `from`
-- 起点节点 id
-
-### 7.2 `to`
-- 终点节点 id，或特殊终止目标 `"$end"`
-- `"$end"` 表示 workflow 显式进入终止态
-- 若需要语法糖，可在更上层支持 `A -> B.new`，但 canonical JSON 中不依赖语法糖
-
-### 7.3 `on`
-- 枚举建议：`success | failure | invalid`
-- 表示当前 edge 在什么 outcome 下生效
-
-### 7.4 `session`
-- 枚举：`continue | new`
-- 仅在回到 `worker` 节点时有明显意义
-- 可省略；省略时默认 `new`
-
-说明：
-- 不再采用“`A -> B` 等价于 `session = continue`”的默认规则
-- 只有明确要复用历史上下文时，才建议显式写 `continue`
-
----
-
-## 8. 小循环与大循环的控制语法
-
-## 8.1 小循环
-典型写法：
-
-```json
-{
-  "from": "run-tests",
+  "from": "test",
   "to": "dev",
   "on": "failure",
   "session": "continue"
 }
 ```
 
-语义：
-- `exec.failure` 回到 `worker`
-- 不开新 round
-- session 策略按 edge 明确声明；省略时默认 `new`
-- 每当控制层实际沿这条 repair 路径回到 `worker` 一次，就消耗 1 次 repair loop 配额
+- `from`：真实 worker 节点 id。
+- `to`：真实 worker 节点 id、`$end` 或 `$new-round`。
+- `on`：当前节点归纳出的 outcome。
+- `session`：可选，`new` 或 `continue`。
 
-补充规则：
-- 若 `exec.invalid` 未显式声明 edge，runtime 可默认按 repair 路径回到 `planFrom` 指向的 `worker`
-- 该默认 repair 分支优先使用 `continue`；若目标 provider 不支持 continue，则自动降级为 `new`
-- 该默认仅用于 `exec.invalid` 的 repair 场景
+## 5. outcome 到控制决策
 
-## 8.2 大循环
-大循环不通过普通 edge 表达，而由全局 `control.onAcceptanceFailure` 统一控制。
+| outcome | 有匹配 edge | 无匹配 edge |
+| --- | --- | --- |
+| `success` | 按 edge 跳转；`$end` 完成成功；`$new-round` 打开新 round | 暂停为错误阻塞 |
+| `failure` | 按 edge 跳转；`$end` 完成失败；`$new-round` 打开新 round | 暂停为错误阻塞 |
+| `invalid` | 按 edge 跳转；不能指向 `$end` | 暂停为错误阻塞 |
+| `killed` | 不看 edge | run 完成 killed |
+| `none` | 不看 edge | 暂停，等待外部继续或人工处理 |
 
-语义：
-- `verify.failure` 后是否进入下一轮，只看：
-  - `control.onAcceptanceFailure`
-  - 当前 acceptance loop 次数是否已达上限
-- 若 `onAcceptanceFailure = auto_loop`，则新建 round，并回到 `workflow.entry`
-- 若 `onAcceptanceFailure = stop`，则直接结束 run
-- 进入下一轮时，原始 requirement 保持不变；反馈直接来自最新 `verify-result`
-- 每当控制层实际创建一个新的 acceptance round，就消耗 1 次 acceptance loop 配额
+## 6. 人工 check 与 AI 输出验证
+- `manual_check=true`：worker 会话自然结束后暂停到 `WaitingForUserInput`，用户提交成功/失败后再按对应 edge 继续。
+- `output + success_condition`：runtime 保存 AI 输出产物，并按成功条件归纳 outcome。
+- 二者互斥；一个节点不能同时启用人工 check 和 AI 输出验证。
 
----
+## 7. 新 round
+`$new-round` 表示开启下一轮执行，entry 仍使用 workflow 的 `entry`。下一轮保留原始 requirement，并把上一轮失败节点的输出摘要作为反馈上下文提供给新的 worker 调用。
 
-## 9. 启动前 DSL 合法性校验
-runtime 在启动 control 前，应至少检查以下几类合法性。
-
-## 9.1 语法合法性
-- JSON 是否可解析
-- 必填字段是否存在
-- 字段类型是否正确
-- 枚举值是否合法
-
-## 9.2 节点合法性
-- `entry` 指向的节点必须存在
-- 节点 `id` 不能重复
-- 节点 `id` 不应与内置类型保留字冲突（如 `exec`、`verify`）
-- 节点 `type` 必须属于支持集合
-
-## 9.3 边合法性
-- `from` 必须指向存在的节点
-- `to` 必须指向存在的节点，或使用特殊终止目标 `"$end"`
-- `on` 必须属于合法 outcome 集合
-- `session` 若存在，必须属于 `continue | new`
-- 若 `to = "$end"`，MVP 中 `on` 只允许 `success | failure`
-
-## 9.4 `exec-plan` 合法性
-- 每个 `exec` 节点若声明了 `planFrom`，该节点必须存在
-- `planFrom` 指向的节点必须是 `worker`
-- 且该 `worker` 必须显式声明 `primaryArtifact = "exec-plan"`
-
-## 9.5 控制策略合法性
-- `maxRepairLoops` / `maxAcceptanceLoops` 必须是正整数
-- `onAcceptanceFailure` 必须属于 `auto_loop | stop`
-- 若存在多个 `verify` 节点，应直接报错
-- 若不存在 `verify` 节点却声明了 `onAcceptanceFailure`，应直接报错
-- 不应再通过普通 edge 表达 `verify.failure -> worker` 的大循环回跳
-- 若某条 edge 显式声明 `session = continue`，其目标 `worker` 对应的 provider 必须支持 continue；否则应视为 DSL 校验错误
-- `maxRepairLoops` 的语义应按“repair 回跳次数”解释，而不是 attempt 总数
-- `maxAcceptanceLoops` 的语义应按“新 acceptance round 创建次数”解释，而不是 round 总数
-
-## 9.6 歧义提示
-runtime 至少应给出 warning 或 error：
-- 某个 `exec` 未声明 `planFrom`
-- 某条边在当前策略下可能不可达
-- 某个 loop 没有上限保护
-
-补充说明：
-- `worker` 未声明 `primaryArtifact` 本身不是 DSL 错误，也不应默认 warning
-- 只有当某个下游节点或控制语义实际依赖该 `worker` 的 canonical artifact 时，才应要求显式声明对应 `primaryArtifact`
-
----
-
-## 10. 一个最小示意
-
-```json
-{
-  "version": "0.1",
-  "id": "dev-test-verify",
-  "entry": "dev",
-  "control": {
-    "max_repair_loops": 3,
-    "max_acceptance_loops": 2,
-    "on_acceptance_failure": "auto-loop"
-  },
-  "nodes": [
-    {
-      "id": "dev",
-      "type": "worker",
-      "provider": "claude-code",
-      "profile": "pf-example-developer",
-      "goal": "实现需求并给出执行计划",
-      "primaryArtifact": "exec-plan"
-    },
-    {
-      "id": "run-tests",
-      "type": "exec",
-      "planFrom": "dev"
-    },
-    {
-      "id": "accept",
-      "type": "verify"
-    }
-  ],
-  "edges": [
-    { "from": "dev", "to": "run-tests", "on": "success" },
-    { "from": "run-tests", "to": "accept", "on": "success" },
-    { "from": "run-tests", "to": "dev", "on": "failure", "session": "continue" }
-  ]
-}
-```
-
----
-
-## 11. 与其他文档的关系
-- [DSL 概览](overview.md)
-- [worker 节点](nodes/worker.md)
-- [exec 节点](nodes/exec.md)
-- [verify 节点](nodes/verify.md)
-- [Runtime Control](../runtime/control.md)
-
----
-
-## 12. 一句话总结
-
-> **Control DSL 负责显式表达 workflow 的控制面：节点怎么连、loop 怎么回、session 怎么处理、上限是多少，以及 runtime 启动前要检查哪些合法性；首版只允许一条受限默认规则：`exec.invalid` 可默认回到 `planFrom` 对应的 worker，并优先使用 `continue`，若 provider 不支持则降级为 `new`。**
+## 8. 校验要求
+- `entry` 必须存在。
+- 所有 edge source 必须是真实 worker 节点。
+- edge target 必须是真实 worker 节点、`$end` 或 `$new-round`。
+- `invalid -> $end` 非法。
+- `session=continue` 不能指向 `$end` / `$new-round`。
+- `session=continue` 的目标 provider 必须支持 continue session。
+- `control.max_attempts` 与 `control.max_rounds` 可省略；声明时必须为正整数。
+- 启用 `success_condition` 时必须声明 JSON `output`。
+- `output.artifact` 必须与 `primary_artifact` 一致。

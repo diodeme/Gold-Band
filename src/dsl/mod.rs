@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 pub const END_NODE: &str = "$end";
 pub const NEW_ROUND_NODE: &str = "$new-round";
-const RESERVED_NODE_IDS: &[&str] = &["worker", "exec", END_NODE, NEW_ROUND_NODE];
+const RESERVED_NODE_IDS: &[&str] = &[END_NODE, NEW_ROUND_NODE];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsonPathSegment {
@@ -157,49 +157,46 @@ pub struct WorkflowDsl {
     pub version: String,
     pub id: String,
     pub entry: String,
+    #[serde(default)]
     pub control: WorkflowControl,
     pub nodes: Vec<NodeDsl>,
     pub edges: Vec<EdgeDsl>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkflowControl {
-    pub max_repair_loops: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum NodeDsl {
     Worker(WorkerNode),
-    Exec(ExecNode),
 }
 
 impl NodeDsl {
     pub fn id(&self) -> &str {
         match self {
             Self::Worker(node) => &node.id,
-            Self::Exec(node) => &node.id,
         }
     }
 
     pub fn node_type(&self) -> NodeType {
-        match self {
-            Self::Worker(_) => NodeType::Worker,
-            Self::Exec(_) => NodeType::Exec,
-        }
+        NodeType::Worker
     }
 
     pub fn provider(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.provider.as_deref(),
-            Self::Exec(_) => None,
         }
     }
 
     pub fn manual_check_enabled(&self) -> bool {
         match self {
             Self::Worker(node) => node.manual_check.unwrap_or(false),
-            Self::Exec(_) => false,
         }
     }
 }
@@ -213,6 +210,8 @@ pub struct WorkerNode {
     pub primary_artifact: Option<String>,
     pub output: Option<OutputContractDsl>,
     pub success_condition: Option<JsonConditionDsl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     #[serde(default)]
     pub manual_check: Option<bool>,
 }
@@ -244,12 +243,6 @@ pub enum JsonConditionDsl {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecNode {
-    pub id: String,
-    pub plan_from: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeDsl {
     pub from: String,
     pub to: String,
@@ -257,7 +250,7 @@ pub struct EdgeDsl {
     pub session: Option<SessionMode>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EdgeOutcome {
     Success,
@@ -295,10 +288,12 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         !workflow.nodes.is_empty(),
         "workflow must contain at least one node"
     );
-    ensure!(
-        workflow.control.max_repair_loops > 0,
-        "max_repair_loops must be a positive integer"
-    );
+    if let Some(max_attempts) = workflow.control.max_attempts {
+        ensure!(max_attempts > 0, "max_attempts must be a positive integer");
+    }
+    if let Some(max_rounds) = workflow.control.max_rounds {
+        ensure!(max_rounds > 0, "max_rounds must be a positive integer");
+    }
 
     let mut nodes_by_id = IndexMap::new();
     let mut seen_ids = HashSet::new();
@@ -328,6 +323,12 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                     ensure!(
                         !profile.trim().is_empty(),
                         "worker node `{id}` profile cannot be blank"
+                    );
+                }
+                if let Some(permission_mode) = &worker.permission_mode {
+                    ensure!(
+                        !permission_mode.trim().is_empty(),
+                        "worker node `{id}` permission_mode cannot be blank"
                     );
                 }
                 ensure!(
@@ -387,7 +388,6 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                     }
                 }
             }
-            NodeDsl::Exec(_) => {}
         }
 
         nodes_by_id.insert(id.to_string(), node.clone());
@@ -398,6 +398,7 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         "entry node not found: {}",
         workflow.entry
     );
+    let mut edge_outcomes_by_source = HashSet::new();
     for edge in &workflow.edges {
         ensure!(
             nodes_by_id.contains_key(&edge.from),
@@ -419,6 +420,12 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             "edge source cannot be a terminal target: {}",
             edge.from
         );
+        ensure!(
+            edge_outcomes_by_source.insert((edge.from.clone(), edge.on)),
+            "node `{}` already has a {:?} edge",
+            edge.from,
+            edge.on
+        );
 
         if matches!(edge.session, Some(SessionMode::Continue)) {
             ensure!(
@@ -435,28 +442,6 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                 supports_continue_session(provider)?,
                 "session=continue currently only supports agents with continue-session capability"
             );
-        }
-    }
-
-    for node in nodes_by_id.values() {
-        if let NodeDsl::Exec(exec) = node {
-            let source = nodes_by_id
-                .get(&exec.plan_from)
-                .ok_or_else(|| anyhow!("exec planFrom not found: {}", exec.plan_from))?;
-            match source {
-                NodeDsl::Worker(worker) => {
-                    ensure!(
-                        worker.primary_artifact.as_deref() == Some("exec-plan"),
-                        "exec node `{}` requires planFrom worker `{}` to declare primaryArtifact=exec-plan",
-                        exec.id,
-                        exec.plan_from
-                    );
-                }
-                _ => bail!(
-                    "exec node `{}` planFrom must point to a worker node",
-                    exec.id
-                ),
-            }
         }
     }
 

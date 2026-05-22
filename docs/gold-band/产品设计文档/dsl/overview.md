@@ -1,111 +1,90 @@
 # Gold Band DSL 概览
 
 ## 1. 一句话定义
-Gold Band DSL 是一份面向 runtime 的最小工作流描述规范。
+Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：节点统一为 `worker`，结果判定由节点配置和边控制表达。
 
 ## 2. 当前主结构
-- 节点：`worker / exec / verify`，其中新建工作流默认只生成 `worker`
-- 边：顺序、分支、循环，可指向节点、`$end` 或 `$new-round`
-- 默认策略：例如 `control.onAcceptanceFailure`、边级 `session`、节点级 AI 输出验证，以及 worker/verify 可选的 `manual_check`
+- 节点：只有 `worker`。
+- 边：顺序、分支、循环，可指向节点、`$end` 或 `$new-round`。
+- 节点能力：`goal`、`provider`、`profile`、`primary_artifact`、`output`、`success_condition`、`manual_check`、`permission_mode`。
+- 结果判定：默认 provider 成功即节点成功；开启 AI 输出验证时由 `output` + `success_condition` 判定；开启人工 check 时由用户确认 success/failure。
 
 ## 3. 当前设计原则
-- provider-first
-- 节点少于边界条件重要
-- session 策略属于边，不属于节点
-- edge 的 `session` 可省略；省略时默认 `new`
-- AI 决定做什么，runtime 决定是否通过
+- provider-first：节点只声明使用哪个 agent/provider，不绑定具体实现。
+- 数据优先：节点输出、结果判定和边跳转都显式落在 DSL 中。
+- session 策略属于边，不属于节点；edge 的 `session` 可省略，默认 `new`。
+- AI 决定做什么，runtime 只负责保存产物并把结果归纳为 `success / failure / invalid`。
 
 ## 4. 子文档结构
 - [Control DSL](control.md)
-
-### 节点规范
 - [worker 节点](nodes/worker.md)
-- [exec 节点](nodes/exec.md)
-- [verify 节点](nodes/verify.md)
 
-### 标准产物规范
-- [exec-plan](artifacts/exec-plan.md)
-- [exec-result](artifacts/exec-result.md)
-- [verify-result](artifacts/verify-result.md)
+输出产物不再按内置名称区分；每个 worker 通过 `primary_artifact` 或 `output.artifact` 自定义产物 key。
 
-## 5. canonical workflow 结构总览
-
-首版建议将 workflow 的 canonical JSON 统一收敛为：
+## 5. canonical workflow 示例
 
 ```json
 {
   "version": "0.1",
-  "id": "dev-test-verify",
+  "id": "dev-test-accept",
   "entry": "dev",
-  "control": {
-    "maxRepairLoops": 3,
-    "maxAcceptanceLoops": 2,
-    "onAcceptanceFailure": "auto_loop"
-  },
+  "control": { "max_attempts": 3, "max_rounds": 2 },
   "nodes": [
     {
       "id": "dev",
       "type": "worker",
       "provider": "claude-code",
       "profile": "pf-example-developer",
-      "goal": "实现需求并给出执行计划",
-      "primaryArtifact": "exec-plan",
-      "manual_check": true
+      "goal": "实现需求",
+      "primary_artifact": "implementation-result"
     },
     {
-      "id": "run-tests",
-      "type": "exec",
-      "planFrom": "dev"
+      "id": "test",
+      "type": "worker",
+      "provider": "claude-code",
+      "profile": "pf-example-tester",
+      "goal": "检查实现并输出 JSON 结果",
+      "primary_artifact": "test-result",
+      "output": {
+        "kind": "json",
+        "artifact": "test-result",
+        "schema": { "reason": "String", "result": "boolean" }
+      },
+      "success_condition": { "expression": "$.result == true" }
     },
     {
       "id": "accept",
-      "type": "verify"
+      "type": "worker",
+      "provider": "claude-code",
+      "profile": "pf-example-acceptance",
+      "goal": "对照需求判断是否满足验收条件",
+      "manual_check": true
     }
   ],
   "edges": [
-    { "from": "dev", "to": "run-tests", "on": "success" },
-    { "from": "run-tests", "to": "accept", "on": "success" },
-    { "from": "run-tests", "to": "dev", "on": "failure", "session": "continue" }
+    { "from": "dev", "to": "test", "on": "success" },
+    { "from": "test", "to": "accept", "on": "success" },
+    { "from": "test", "to": "dev", "on": "failure", "session": "continue" },
+    { "from": "accept", "to": "$new-round", "on": "failure" },
+    { "from": "accept", "to": "$end", "on": "success" }
   ]
 }
 ```
 
-### 顶层字段
-- `version`：DSL 版本号，首版固定为 `0.1`
-- `id`：workflow 标识
-- `entry`：入口节点 id
-- `control`：全局控制策略
-- `nodes`：节点列表
-- `edges`：边列表
+## 6. 关键约束
+- `version` 首版固定为 `0.1`。
+- `entry` 必须指向真实 worker 节点。
+- `$end` 只能作为边目标，不能作为节点 id；`invalid -> $end` 非法。
+- `session=continue` 只能指向真实 worker 节点，并且目标 provider 必须支持 continue session。
+- `control.max_attempts` / `control.max_rounds` 都是可选正整数；不填表示不限制。
+- `max_attempts` 按当前 round 内的 `来源节点 -> 目标节点` 分别计数，`max_rounds` 只统计 `$new-round` 打开的新 round。
+- 同一来源节点的同一结果类型只能有一条出边，例如一个节点只能配置一条 `success` 边。
+- `manual_check=true` 与 AI 输出验证互斥。
+- `success_condition` 必须搭配 JSON `output` 使用。
+- `output.artifact` 必须与 `primary_artifact` 一致。
+- `output.schema` 使用简化输出结构，不使用 JSON Schema。
 
-### 节点类型
-首版固定三类：
-- `worker`
-- `exec`
-- `verify`
-
-### 控制原则
-- 小循环走 `edges`
-- 大循环走 `control.onAcceptanceFailure`
-- 旧版 `verify` 节点仍兼容，但新建工作流优先使用 worker 节点的 JSON 输出验证表达 review/test/accept
-- edge 的 `to` 可指向节点 id、特殊终止目标 `"$end"`，或打开新 round 的 `"$new-round"`
-- 新一轮 worker 的目标不改写原始 requirement，而是消费原始 requirement、前序反馈与运行时快照上下文
-- `worker.goal` 是 runtime `taskInstruction` 的 canonical 来源，并进入 `userPrompt` 的 `# Task`
-- `exec.invalid` 允许一条受限默认规则：若未显式声明 repair edge，可默认回到 `planFrom` 对应的 worker；默认优先使用 `continue`，若 provider 不支持则降级为 `new`
-
-## 6. 当前关键结论
-- DSL 当前使用 `worker` 作为默认 AI worker 节点名
-- 执行层必须是 provider-first，而不是 Claude-only
-- `worker` 节点必须显式声明 `provider`，桌面作者态 UI 从 Agent 管理页已配置 agent 中选择
-- `profile` 保存 profile `id`，运行前按当前项目级 profile、用户级 profile 的优先级解析为可见角色正文；保存/运行前必须可见
-- `worker` 一次只允许一个 `primaryArtifact`
-- `worker.output.kind=json` + `successCondition` 可把 AI 输出字段转换为 `success / failure / invalid` 路由结果
-- `worker` 节点的 AI 输出验证与 `manual_check=true` 是互斥的结果判定方式；开启人工 check 时，不再同时要求 AI 返回可验证 JSON
-- `manual_check=true` 仅适用于会话型 `worker/verify` 节点；ACP 会话自然结束后，runtime 先暂停到 `WaitingForUserInput`，再由用户在会话面板点击“成功”或“失败”决定最终 `NodeOutcome`
-- 人工 check 提交后仍复用现有 `success / failure` edge 语义继续流转，不新增额外分支类型
-- `failure` 与 `invalid` 同时保留，但边界不同：`failure` 表示目标未达成或执行失败，`invalid` 表示结果不满足最小 contract
-
-## 7. 后续优先事项
-- 继续细化节点输入契约
-- 继续细化 edge / control 的完整字段集
-- 把更多已知规则分拆进节点和 artifact 子文档
+## 7. 结果语义
+- `success`：节点完成且满足默认成功条件、AI 输出验证或人工 check。
+- `failure`：节点完成但目标未达成，或 AI 输出验证返回 false。
+- `invalid`：节点产物缺失、输出结构不合法，或成功条件无法按声明路径求值。

@@ -28,6 +28,7 @@ impl ProviderAdapter for FakeProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
@@ -37,8 +38,8 @@ impl ProviderAdapter for FakeProvider {
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
                 primary_artifact: Some(PrimaryArtifactPayload {
-                    name: "exec-plan".to_string(),
-                    content: r#"{"version":"0.1","commands":[{"id":"write-ok","run":"echo ok","purpose":"validate happy path"}]}"#.to_string(),
+                    name: "implementation-result".to_string(),
+                    content: r#"{"summary":"implemented"}"#.to_string(),
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
@@ -66,7 +67,7 @@ impl ProviderAdapter for FakeProvider {
 }
 
 #[test]
-fn run_start_executes_worker_then_exec() {
+fn run_start_executes_worker_node() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
@@ -92,31 +93,20 @@ fn run_start_executes_worker_then_exec() {
         format!(
             r#"{{
           "version": "0.1",
-          "id": "dev-exec",
+          "id": "dev-worker",
           "entry": "dev",
-          "control": {{
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 1,
-            "on_acceptance_failure": "stop"
-          }},
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
             {{
               "id": "dev",
               "type": "worker",
               "provider": "claude-code",
               "profile": "{}",
-              "goal": "Create an exec plan",
-              "primary_artifact": "exec-plan"
-            }},
-            {{
-              "id": "run-tests",
-              "type": "exec",
-              "plan_from": "dev"
+              "goal": "Create an implementation result",
+              "primary_artifact": "implementation-result"
             }}
           ],
-          "edges": [
-            {{ "from": "dev", "to": "run-tests", "on": "success" }}
-          ]
+          "edges": []
         }}"#,
             dev_profile
         ),
@@ -130,19 +120,13 @@ fn run_start_executes_worker_then_exec() {
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
-    let exec_result_path = app.paths.artifact_file(
+    let artifact_path = app.paths.artifact_file(
         task_id,
         "run-001",
         "round-001",
-        "run-tests",
+        "dev",
         "attempt-001",
-        "exec-result",
+        "implementation-result",
     );
-    assert!(exec_result_path.exists());
-
-    let stdout_log = app
-        .paths
-        .attempt_dir(task_id, "run-001", "round-001", "run-tests", "attempt-001")
-        .join("commands/01-write-ok/stdout.log");
-    assert!(stdout_log.exists());
+    assert!(artifact_path.exists());
 }

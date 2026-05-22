@@ -6,7 +6,7 @@ import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupV
 import { displayStatus } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
-import { WorkflowEditor, createDefaultWorkflow, parseWorkflowJson } from '../components/WorkflowEditor';
+import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
@@ -117,8 +117,8 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
 
   // Seed draft once when entering an editing mode; never recompute from vm during editing.
   if (editingWorkflow && !workflowDraft) {
-    const seed = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? createDefaultWorkflow(agentRegistry?.agents.find((agent) => agent.supported)?.agentType ?? 'claude-code', profileList?.profiles ?? []);
-    setWorkflowDraft(seed);
+    const seed = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? null;
+    if (seed) setWorkflowDraft(seed);
   }
 
   const saveWorkflow = async (workflow: WorkflowDsl) => {
@@ -251,11 +251,14 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
             <div className="space-y-4 p-5">
               {vm.control && vm.task.workflowExists ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
-                  <ControlPill label={t('workflow.maxRepairLoops')} value={vm.control.maxRepairLoops} />
+                  <ControlPill label={t('workflow.maxAttempts')} value={vm.control.maxAttempts ?? t('workflow.unlimited')} />
+                  <ControlPill label={t('workflow.maxRounds')} value={vm.control.maxRounds ?? t('workflow.unlimited')} />
                 </div>
               ) : null}
-              {editingWorkflow && workflowDraft ? (
-                <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} onChange={setWorkflowDraft} />
+              {editingWorkflow ? (
+                workflowDraft ? (
+                  <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} onChange={setWorkflowDraft} />
+                ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (
                 <>
                   <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} activeStatus={activeRun?.status} />

@@ -299,6 +299,24 @@ export function saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
   return command<WorkflowTemplateStore>('save_workflow_template', { input: { name, workflow } }, fallback);
 }
 
+export function updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
+  const fallback = {
+    ...mockWorkflowTemplates,
+    lastUsedTemplateId: templateId,
+    templates: mockWorkflowTemplates.templates.map((template) => template.id === templateId ? { ...template, workflow, updatedAt: new Date().toISOString() } : template),
+  };
+  return command<WorkflowTemplateStore>('update_workflow_template', { templateId, input: { workflow } }, fallback);
+}
+
+export function deleteWorkflowTemplate(templateId: string) {
+  const fallback = {
+    ...mockWorkflowTemplates,
+    lastUsedTemplateId: mockWorkflowTemplates.lastUsedTemplateId === templateId ? 'default' : mockWorkflowTemplates.lastUsedTemplateId,
+    templates: mockWorkflowTemplates.templates.filter((template) => template.id !== templateId),
+  };
+  return command<WorkflowTemplateStore>('delete_workflow_template', { templateId }, fallback);
+}
+
 export function getRunDetail(taskId: string, runId: string) {
   return command<RunDetailVm>('get_run_detail', { taskId, runId }, { ...mockRunDetail, run: { ...mockRunDetail.run, id: runId, taskId } });
 }

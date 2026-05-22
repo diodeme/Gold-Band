@@ -30,6 +30,7 @@ impl ProviderAdapter for LoopingProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
@@ -37,9 +38,9 @@ impl ProviderAdapter for LoopingProvider {
         let mut count = self.call_count.lock().unwrap();
         *count += 1;
         let payload = match req.primary_artifact.as_deref() {
-            Some("exec-plan") => PrimaryArtifactPayload {
-                name: "exec-plan".to_string(),
-                content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
+            Some("implementation-result") => PrimaryArtifactPayload {
+                name: "implementation-result".to_string(),
+                content: r#"{"summary":"implemented"}"#.to_string(),
             },
             Some("accept-result") if *count < 4 => PrimaryArtifactPayload {
                 name: "accept-result".to_string(),
@@ -120,15 +121,13 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {{ "max_repair_loops": 1 }},
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
-            {{"id":"run-tests","type":"exec","plan_from":"dev"}},
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
             {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"dev","to":"run-tests","on":"success"}},
-            {{"from":"run-tests","to":"accept","on":"success"}},
+            {{"from":"dev","to":"accept","on":"success"}},
             {{"from":"accept","to":"$end","on":"success"}},
             {{"from":"accept","to":"$new-round","on":"failure"}}
           ]

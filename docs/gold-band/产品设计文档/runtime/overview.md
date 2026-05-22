@@ -60,7 +60,7 @@ preset -> task -> run -> round/attempt
 2. 用户目录下的 profile
 
 约束：
-- 若 `worker` / `verify` 节点声明了 `profile`，runtime 在 `run start` 时必须解析成功，否则直接失败
+- 若 `worker` / `worker` 节点声明了 `profile`，runtime 在 `run start` 时必须解析成功，否则直接失败
 - `validate_workflow()` 只负责结构校验；profile 是否存在属于 runtime resolution
 
 ## 6. 状态语义总说明

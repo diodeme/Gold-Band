@@ -34,8 +34,8 @@ const latestRun: RunSummaryVm = {
   startedAt: '2026-05-02 15:42',
   updatedAt: '2026-05-02 16:12',
   currentRound: 'round-007',
-  currentNode: 'node-03 execute',
-  currentAttempt: 'att-2-node03-rev1',
+  currentNode: 'test',
+  currentAttempt: 'att-test-001',
   resumable: true,
   pauseReason: null,
 };
@@ -46,7 +46,7 @@ const defaultWorkflow: WorkflowDsl = {
   version: '0.1',
   id: 'task-workflow',
   entry: 'plan',
-  control: { max_repair_loops: 3 },
+  control: {},
   nodes: [
     { type: 'worker', id: 'plan', provider: 'claude-code', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.', primary_artifact: null },
     { type: 'worker', id: 'dev', provider: 'claude-code', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.', primary_artifact: null },
@@ -106,14 +106,14 @@ const graph = {
   nodes: [
     { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
     { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
-    { id: 'node-03 execute', label: 'Processing code logic...', nodeType: 'exec', status: 'running', outcome: null, attemptId: 'att-2-node03-rev1', artifactCount: 3, attachmentCount: 2, current: true },
-    { id: 'validate', label: 'Verification pending', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'test', label: 'Checking output result...', nodeType: 'worker', status: 'running', outcome: null, attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
+    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
     { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'prepare', to: 'plan', label: 'success' },
-    { from: 'plan', to: 'node-03 execute', label: 'success' },
-    { from: 'node-03 execute', to: 'validate', label: 'success' },
+    { from: 'plan', to: 'test', label: 'success' },
+    { from: 'test', to: 'validate', label: 'success' },
     { from: 'validate', to: 'finalize', label: 'success' },
   ],
 };
@@ -139,16 +139,16 @@ const errorBlockedGraph = {
 };
 
 const mockNodeDetail: NodeDetailVm = {
-  id: 'node-03 execute',
-  nodeId: 'node-03 execute',
+  id: 'test',
+  nodeId: 'test',
   sequence: 3,
-  label: 'Processing code logic...',
-  nodeType: 'exec',
+  label: 'Checking output result...',
+  nodeType: 'worker',
   provider: 'claude-code',
   providerDisplayName: 'Claude Code ACP',
   status: 'running',
   outcome: null,
-  attemptId: 'att-2-node03-rev1',
+  attemptId: 'att-test-001',
   current: true,
   startedAt: '2026-05-02 16:08',
   finishedAt: null,
@@ -169,6 +169,7 @@ const mockNodeDetail: NodeDetailVm = {
     sessionElapsedSeconds: 240,
     restored: true,
     stopReason: null,
+    systemPromptAppend: '你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: mock-project\n- Node: dev\n\nGold Band 文件规则：\n- 当前节点所需上下文已在本 prompt 中给出。',
     diagnostics: { rawFrameCount: 18, eventCount: 7, errorCount: 0, lastError: null, lastErrorTimestamp: null },
     eventPage: { loadedCount: 5, total: 7, oldestSeq: 1, newestSeq: 5, hasOlder: false, hasNewer: false },
     pendingPermissions: [
@@ -192,11 +193,11 @@ const mockNodeDetail: NodeDetailVm = {
     ],
   },
   artifacts: [
-    { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1' },
-    { kind: 'artifact', name: 'layout_patch.json', title: 'layout_patch.json', tone: 'accent', preview: 'layout patch', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1' },
+    { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', nodeId: 'test', attemptId: 'att-test-001' },
+    { kind: 'artifact', name: 'layout_patch.json', title: 'layout_patch.json', tone: 'accent', preview: 'layout patch', nodeId: 'test', attemptId: 'att-test-001' },
   ],
   attachments: [
-    { kind: 'attachment', name: 'dpi_scaling_logs_win11.txt', title: 'dpi_scaling_logs_win11.txt', tone: 'neutral', preview: 'provider attachment', nodeId: 'node-03 execute', attemptId: 'att-2-node03-rev1' },
+    { kind: 'attachment', name: 'dpi_scaling_logs_win11.txt', title: 'dpi_scaling_logs_win11.txt', tone: 'neutral', preview: 'provider attachment', nodeId: 'test', attemptId: 'att-test-001' },
   ],
 };
 
@@ -238,9 +239,8 @@ const rounds = [
     status: 'running',
     outcome: null,
     trigger: 'Resume',
-    repairLoopsUsed: 1,
     startedAt: '2026-05-02 16:02',
-    currentNode: 'node-03 execute',
+    currentNode: 'test',
     artifactCount: 5,
     attachmentCount: 2,
   },
@@ -251,7 +251,6 @@ const rounds = [
     status: 'completed',
     outcome: 'success',
     trigger: 'manual',
-    repairLoopsUsed: 0,
     startedAt: '2026-05-02 15:54',
     currentNode: 'validate',
     artifactCount: 3,
@@ -281,6 +280,11 @@ export const mockAgentRegistry: AgentRegistryVm = {
         reason: null,
         checkedAt: '2026-05-16 10:42:00',
       },
+      supportedModes: [
+        { id: 'ask', name: 'Ask' },
+        { id: 'bypass', name: 'Bypass' },
+        { id: 'allow-edit', name: 'Allow Edit' },
+      ],
     },
   ],
   supportedTypes: [
@@ -327,7 +331,8 @@ export const mockWorkflow: WorkflowVm = {
   task,
   graph,
   control: {
-    maxRepairLoops: 1,
+    maxAttempts: 3,
+    maxRounds: 2,
   },
   runs: [
     { run: latestRun, rounds },
@@ -340,7 +345,7 @@ export const mockWorkflow: WorkflowVm = {
 export const mockRunDetail: RunDetailVm = {
   run: latestRun,
   rounds,
-  events: 'node-03 started\nartifact emitted\nvalidation pending',
+  events: 'node-03 started\nartifact emitted\nacceptance pending',
   progress: { currentStage: 'node_running' },
 };
 
@@ -353,9 +358,9 @@ export function mockRoundDetail(selection?: RoundSelection, route?: { taskId: st
       ? { ...latestRun, id: 'run-024', status: 'completed', outcome: 'failure', currentRound: 'round-001', currentNode: 'accept', resumable: true }
       : latestRun;
   const routeRound = isErrorBlockedRound
-    ? { ...rounds[0], id: 'round-001', runId: 'run-051', index: 1, status: 'paused', outcome: null, trigger: 'initial', repairLoopsUsed: 0, currentNode: 'dev', artifactCount: 0, attachmentCount: 0 }
+    ? { ...rounds[0], id: 'round-001', runId: 'run-051', index: 1, status: 'paused', outcome: null, trigger: 'initial', currentNode: 'dev', artifactCount: 0, attachmentCount: 0 }
     : isFailedAcceptanceRound
-      ? { ...rounds[0], id: 'round-001', runId: 'run-024', index: 1, status: 'completed', outcome: 'failure', trigger: 'initial', repairLoopsUsed: 0, currentNode: 'accept', artifactCount: 1, attachmentCount: 0 }
+      ? { ...rounds[0], id: 'round-001', runId: 'run-024', index: 1, status: 'completed', outcome: 'failure', trigger: 'initial', currentNode: 'accept', artifactCount: 1, attachmentCount: 0 }
       : rounds[0];
   const selectedNodeDetail = selection?.kind === 'node' || selection?.kind === 'artifact' || selection?.kind === 'attachment' || selection?.kind === 'worker-ref' || selection?.kind === 'log'
     ? isErrorBlockedRound
@@ -366,6 +371,7 @@ export function mockRoundDetail(selection?: RoundSelection, route?: { taskId: st
     run: routeRun,
     round: routeRound,
     graph: isErrorBlockedRound ? errorBlockedGraph : isFailedAcceptanceRound ? failedAcceptanceGraph : graph,
+    control: mockWorkflow.control,
     requirement,
     selectedNodeDetail,
   };
@@ -376,7 +382,7 @@ function mockRoundContent(selection?: RoundSelection): ContentVm {
     return {
       title: 'Round Summary',
       kind: 'round',
-      content: JSON.stringify({ round_id: 'round-007', run_id: 'run-003', status: 'running', current_node: 'node-03 execute' }, null, 2),
+      content: JSON.stringify({ round_id: 'round-007', run_id: 'run-003', status: 'running', current_node: 'test' }, null, 2),
       metadata: { source: 'mock-round' },
     };
   }
@@ -392,7 +398,7 @@ function mockRoundContent(selection?: RoundSelection): ContentVm {
     return {
       title: selection.nodeId,
       kind: 'node',
-      content: JSON.stringify({ node_id: selection.nodeId, attempt_id: 'att-2-node03-rev1', status: 'running', artifacts: 3, attachments: 2 }, null, 2),
+      content: JSON.stringify({ node_id: selection.nodeId, attempt_id: 'att-test-001', status: 'running', artifacts: 3, attachments: 2 }, null, 2),
       metadata: { source: 'mock-node' },
     };
   }
@@ -451,8 +457,8 @@ export function mockLogPage(query: LogQueryInput): LogPageVm {
         timestamp: `2026-05-11 10:${String(index % 60).padStart(2, '0')}`,
         entryType: source === 'raw-stream' ? 'stdout' : index % 3 === 0 ? 'node_started' : 'provider_event',
         level: source === 'raw-stream' ? 'stdout' : null,
-        nodeId: query.scope.nodeId ?? 'node-03 execute',
-        attemptId: query.scope.attemptId ?? 'att-2-node03-rev1',
+        nodeId: query.scope.nodeId ?? 'test',
+        attemptId: query.scope.attemptId ?? 'att-test-001',
         stage: index % 2 === 0 ? 'calling-provider' : 'streaming',
         summary: source === 'raw-stream' ? `raw stream envelope ${index}` : `structured runtime event ${index}`,
         source,

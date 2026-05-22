@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtItem, ChainOfThoughtStep, ChainOfThoughtTrigger } from '@/components/prompt-kit/chain-of-thought';
 import { Markdown } from '@/components/prompt-kit/markdown';
@@ -172,6 +173,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const [manualCheckSubmitting, setManualCheckSubmitting] = useState(false);
   const [manualCheckResolved, setManualCheckResolved] = useState(false);
   const [canvasMode, setCanvasMode] = useState<AcpCanvasMode>('chat');
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [rawPage, setRawPage] = useState<AcpRawFramePageVm | null>(null);
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({ page: 0, pageSize: 100 });
   const [rawLoading, setRawLoading] = useState(false);
@@ -643,7 +645,14 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
-      <ACPSessionHeader session={effective} rawActive={canvasMode === 'raw'} rawLoading={rawLoading} onToggleRaw={toggleRawFrames} />
+      <ACPSessionHeader
+        session={effective}
+        rawActive={canvasMode === 'raw'}
+        rawLoading={rawLoading}
+        onToggleRaw={toggleRawFrames}
+        onOpenSystemPrompt={() => setSystemPromptOpen(true)}
+      />
+      <SystemPromptDialog open={systemPromptOpen} prompt={effective.systemPromptAppend} onOpenChange={setSystemPromptOpen} />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === 'raw' ? (
@@ -845,21 +854,56 @@ function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
   );
 }
 
-export function ACPSessionHeader({ session, rawActive, rawLoading, onToggleRaw }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; onToggleRaw: () => void }) {
+export function ACPSessionHeader({ session, rawActive, rawLoading, onToggleRaw, onOpenSystemPrompt }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; onToggleRaw: () => void; onOpenSystemPrompt: () => void }) {
   const { t } = useTranslation();
+  const mode = session.config?.currentModeName ?? session.config?.currentModeId;
+  const hasSystemPrompt = Boolean(session.systemPromptAppend?.trim());
   return (
     <div className="shrink-0 border-b bg-muted/10 px-5 py-3">
       <div className="min-w-0 space-y-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate text-base font-semibold">{session.adapterDisplayName ?? session.provider}</span>
-          <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="ml-auto h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
-            {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
-            {t('acp.rawFrames')}
-          </Button>
+          {mode ? (
+            <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+              <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
+              <span className="min-w-0 truncate text-foreground">{mode}</span>
+            </Badge>
+          ) : null}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenSystemPrompt} disabled={!hasSystemPrompt}>
+              <FileText className="size-3" />
+              {t('acp.systemPrompt')}
+            </Button>
+            <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
+              {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
+              {t('acp.rawFrames')}
+            </Button>
+          </div>
         </div>
         <div className="truncate text-xs text-muted-foreground">{session.sessionId ?? t('acp.noSessionId')}</div>
       </div>
     </div>
+  );
+}
+
+function SystemPromptDialog({ open, prompt, onOpenChange }: { open: boolean; prompt?: string | null; onOpenChange: (open: boolean) => void }) {
+  const { t } = useTranslation();
+  const content = prompt?.trim() || '';
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden p-0">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle className="text-base">{t('acp.systemPromptTitle')}</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 px-5 pb-5">
+          {content ? (
+            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-mono text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
+          ) : (
+            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t('acp.systemPromptEmpty')}</div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1594,7 +1638,7 @@ function acpEventKey(event: AcpUiEventVm) {
   return `${event.seq}:${event.id}:${event.kind}`;
 }
 
-function mergeOptimisticSession(session: AcpSessionVm | null | undefined, optimisticEvents: AcpUiEventVm[]) {
+function mergeOptimisticSession(session: AcpSessionVm | null | undefined, optimisticEvents: AcpUiEventVm[]): AcpSessionVm | null {
   if (!session || optimisticEvents.length === 0) return session ?? null;
   const pending = optimisticEvents.filter((event) => !hasMatchingUserPrompt(session.events, event));
   if (pending.length === 0) return session;

@@ -295,6 +295,7 @@
 }
 
 .workflow-graph .workflow-node-selected {
+  border-radius: 14px;
   border-color: var(--gold-running) !important;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold-running) 72%, transparent), 0 0 0 5px color-mix(in srgb, var(--gold-running) 16%, transparent), 0 18px 42px color-mix(in srgb, var(--gold-running) 14%, transparent);
 }

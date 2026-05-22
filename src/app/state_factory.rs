@@ -51,6 +51,12 @@ pub(crate) fn resolved_config_for_node(
                     serde_json::Value::String(profile.clone()),
                 );
             }
+            if let Some(permission_mode) = &worker.permission_mode {
+                config.insert(
+                    "permissionMode".to_string(),
+                    serde_json::Value::String(permission_mode.clone()),
+                );
+            }
             if let Some(profile) = resolved_profile.as_ref() {
                 config.insert(
                     "profileSource".to_string(),
@@ -104,12 +110,6 @@ pub(crate) fn resolved_config_for_node(
             config.insert(
                 "sessionMode".to_string(),
                 serde_json::Value::String("new".to_string()),
-            );
-        }
-        NodeDsl::Exec(exec) => {
-            config.insert(
-                "planFrom".to_string(),
-                serde_json::Value::String(exec.plan_from.clone()),
             );
         }
     }

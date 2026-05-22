@@ -48,8 +48,8 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
     std::fs::write(
         app.paths.workflow_file("task-001").as_std_path(),
         format!(
-            r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_repair_loops":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}","primary_artifact":"exec-plan"}},{{"type":"exec","id":"run-cmd","plan_from":"dev"}},{{"type":"worker","id":"accept","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}],"edges":[{{"from":"dev","to":"run-cmd","on":"success"}},{{"from":"dev","to":"accept","on":"failure"}},{{"from":"run-cmd","to":"accept","on":"invalid"}}]}}"#,
-            dev_profile, dev_profile
+            r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}","primary_artifact":"implementation-result"}},{{"type":"worker","id":"review","provider":"claude-code","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},{{"type":"worker","id":"accept","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}],"edges":[{{"from":"dev","to":"review","on":"success"}},{{"from":"dev","to":"accept","on":"failure"}},{{"from":"review","to":"accept","on":"invalid"}}]}}"#,
+            dev_profile, dev_profile, dev_profile
         ),
     )
     .unwrap();
@@ -72,7 +72,7 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
     .unwrap();
     std::fs::write(
         app.paths.round_file("task-001", "run-001", "round-001").as_std_path(),
-        r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"paused","outcome":null,"trigger":"initial","repair_loops_used":0,"started_at":"2026-03-30T10:00:00Z"}"#,
+        r#"{"version":"0.1","id":"round-001","run_id":"run-001","index":1,"status":"paused","outcome":null,"trigger":"initial","started_at":"2026-03-30T10:00:00Z"}"#,
     )
     .unwrap();
     std::fs::write(
@@ -102,7 +102,7 @@ fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
                 "round-001",
                 "dev",
                 "attempt-001",
-                "exec-result",
+                "implementation-result",
             )
             .as_std_path(),
         "result-body",
@@ -136,7 +136,7 @@ fn workspace_renders_dag_with_edge_markers() {
     let vm = build_view_model(&app, &state).unwrap();
     let dag = vm.body_lines.join("\n");
     assert!(dag.contains("dev"));
-    assert!(dag.contains("run-cmd"));
+    assert!(dag.contains("review"));
     assert!(dag.contains("accept"));
 }
 

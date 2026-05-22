@@ -29,6 +29,7 @@ impl ProviderAdapter for SuccessProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::domain::{PauseReason, RunOutcome, SessionMode};
-use crate::dsl::{END_NODE, EdgeOutcome, NEW_ROUND_NODE, NodeDsl, ValidatedWorkflow};
+use crate::dsl::{END_NODE, EdgeOutcome, NEW_ROUND_NODE, ValidatedWorkflow};
 use crate::provider::supports_continue_session;
 use crate::runtime::{NodeState, RoundState};
 
@@ -17,7 +17,7 @@ pub enum ControlDecision {
 pub fn decide_next_step(
     workflow: &ValidatedWorkflow,
     _run: &crate::runtime::RunState,
-    round: &RoundState,
+    _round: &RoundState,
     node: &NodeState,
 ) -> ControlDecision {
     match node.outcome {
@@ -26,61 +26,20 @@ pub fn decide_next_step(
                 ControlDecision::PauseRun(PauseReason::ErrorBlocked)
             })
         }
-        Some(crate::domain::NodeOutcome::Failure) => match node.node_type {
-            crate::domain::NodeType::Exec => decide_exec_failure(workflow, round, &node.node_id),
-            crate::domain::NodeType::Worker => {
-                match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
-                    ControlDecision::PauseRun(PauseReason::ErrorBlocked)
-                })
-            }
-        },
-        Some(crate::domain::NodeOutcome::Invalid) => match node.node_type {
-            crate::domain::NodeType::Exec => decide_exec_invalid(workflow, round, &node.node_id),
-            crate::domain::NodeType::Worker => {
-                match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Invalid, || {
-                    ControlDecision::PauseRun(PauseReason::ErrorBlocked)
-                })
-            }
-        },
+        Some(crate::domain::NodeOutcome::Failure) => {
+            match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
+                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+            })
+        }
+        Some(crate::domain::NodeOutcome::Invalid) => {
+            match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Invalid, || {
+                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+            })
+        }
         Some(crate::domain::NodeOutcome::Killed) => {
             ControlDecision::CompleteRun(RunOutcome::Killed)
         }
         None => ControlDecision::PauseRun(PauseReason::ProcessInterrupted),
-    }
-}
-
-fn decide_exec_failure(
-    workflow: &ValidatedWorkflow,
-    round: &RoundState,
-    node_id: &str,
-) -> ControlDecision {
-    match_edge_or_default(workflow, node_id, EdgeOutcome::Failure, || {
-        if round.repair_loops_used >= workflow.raw.control.max_repair_loops {
-            ControlDecision::CompleteRun(RunOutcome::Failure)
-        } else {
-            ControlDecision::PauseRun(PauseReason::ErrorBlocked)
-        }
-    })
-}
-
-fn decide_exec_invalid(
-    workflow: &ValidatedWorkflow,
-    round: &RoundState,
-    node_id: &str,
-) -> ControlDecision {
-    if let Some(decision) = find_edge_decision(workflow, node_id, EdgeOutcome::Invalid) {
-        return decision;
-    }
-    if round.repair_loops_used >= workflow.raw.control.max_repair_loops {
-        return ControlDecision::CompleteRun(RunOutcome::Failure);
-    }
-    let Some(NodeDsl::Exec(exec)) = workflow.get_node(node_id) else {
-        return ControlDecision::PauseRun(PauseReason::ErrorBlocked);
-    };
-    let session = session_for_target(workflow, &exec.plan_from, Some(SessionMode::Continue));
-    ControlDecision::TransitionToNode {
-        node_id: exec.plan_from.clone(),
-        session,
     }
 }
 

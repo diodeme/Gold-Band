@@ -6,6 +6,7 @@ use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::str::FromStr;
 use tracing::debug;
 
@@ -25,9 +26,22 @@ pub struct ProviderCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcpModeOption {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
     pub reason: Option<String>,
+    pub capabilities: Option<Value>,
+}
+
+impl DoctorResult {
+    pub fn supported_modes(&self) -> Vec<AcpModeOption> {
+        supported_modes_from_capabilities(self.capabilities.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +59,7 @@ pub struct WorkerInvocation {
     pub predecessors: Vec<PromptPredecessorContext>,
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
+    pub permission_mode: Option<String>,
     pub continue_ref: Option<serde_json::Value>,
     pub resume_prompt: Option<String>,
     pub resume_prompt_id: Option<String>,
@@ -53,7 +68,6 @@ pub struct WorkerInvocation {
     pub log_prompts: bool,
     #[serde(default)]
     pub log_provider_command: bool,
-    pub feedback_summary: Option<String>,
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
@@ -161,6 +175,68 @@ pub trait ProviderAdapter: Send + Sync {
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
 }
 
+pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
+    if let Some(options) = capabilities
+        .and_then(find_mode_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+    {
+        return options
+            .iter()
+            .filter_map(|option| {
+                let id = option.get("value").and_then(Value::as_str)?.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                Some(AcpModeOption {
+                    id: id.to_string(),
+                    name: option
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                })
+            })
+            .collect();
+    }
+
+    capabilities
+        .and_then(|value| value.get("modes"))
+        .and_then(|value| value.get("availableModes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mode| {
+            let id = mode.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            Some(AcpModeOption {
+                id: id.to_string(),
+                name: mode
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {
+    capabilities
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some("mode")
+                    || option.get("category").and_then(Value::as_str) == Some("mode")
+            })
+        })
+}
+
 pub struct AcpProvider {
     adapter_config: AcpAdapterConfig,
 }
@@ -191,13 +267,15 @@ impl ProviderAdapter for AcpProvider {
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         match client::doctor(&self.adapter_config, cwd) {
-            Ok(()) => DoctorResult {
+            Ok(capabilities) => DoctorResult {
                 available: true,
                 reason: None,
+                capabilities: Some(capabilities),
             },
             Err(err) => DoctorResult {
                 available: false,
                 reason: Some(err.to_string()),
+                capabilities: None,
             },
         }
     }
@@ -209,7 +287,6 @@ impl ProviderAdapter for AcpProvider {
             req.invocation_kind,
             req.profile.as_deref(),
             req.primary_artifact.as_deref(),
-            req.feedback_summary.is_some(),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
@@ -220,6 +297,7 @@ impl ProviderAdapter for AcpProvider {
             req.attempt_dir.clone(),
             &prompt,
             req.session_mode,
+            req.permission_mode.clone(),
             req.continue_ref.clone(),
         )?;
         let status = match run.stop_reason.as_deref() {
@@ -298,10 +376,6 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     let system_prompt = render_system_prompt(req);
     let mut user_sections = vec![format!("# Requirement\n{}", requirement_text.trim())];
 
-    if let Some(feedback_summary) = &req.feedback_summary {
-        user_sections.push(format!("# Current Feedback\n{}", feedback_summary.trim()));
-    }
-
     if let Some(task_instruction) = &req.task_instruction {
         user_sections.push(format!("# Task\n{}", task_instruction.trim()));
     }
@@ -339,11 +413,14 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
 fn render_system_prompt(req: &WorkerInvocation) -> String {
     [
         render_current_location(&req.runtime_context),
-        render_predecessor_chain(&req.predecessors),
+        render_predecessor_chain(&req.predecessors, &req.runtime_context),
         render_predecessor_reasons(&req.predecessors),
         render_directory_rules(&req.runtime_context),
         render_role_section(req.profile.as_deref(), req.profile_content.as_deref()),
-        render_output_constraints(req.output_contract.as_ref()),
+        render_artifact_constraints(
+            req.primary_artifact.as_deref(),
+            req.output_contract.as_ref(),
+        ),
     ]
     .into_iter()
     .filter(|section| !section.trim().is_empty())
@@ -358,21 +435,40 @@ fn render_current_location(ctx: &PromptRuntimeContext) -> String {
     )
 }
 
-fn render_predecessor_chain(predecessors: &[PromptPredecessorContext]) -> String {
+fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
+    format!(
+        "{}/{}/{}",
+        predecessor.round_id, predecessor.node_id, predecessor.attempt_id
+    )
+}
+
+fn render_predecessor_chain(
+    predecessors: &[PromptPredecessorContext],
+    ctx: &PromptRuntimeContext,
+) -> String {
     if predecessors.is_empty() {
         return "当前节点的前序运行节点：无，当前节点是本轮入口节点。".to_string();
     }
 
     let mut chain = String::from("当前节点的前序运行节点：\n");
-    for predecessor in predecessors {
-        chain.push_str(&format!("{}/{} ", predecessor.node_id, predecessor.attempt_id));
-        if let Some(direction) = predecessor.branch_direction.as_deref() {
+    for (index, predecessor) in predecessors.iter().enumerate() {
+        chain.push_str(&format!("{} ", predecessor_ref(predecessor)));
+        let next_round = predecessors
+            .get(index + 1)
+            .map(|next| next.round_id.as_str())
+            .unwrap_or(ctx.round_id.as_str());
+        if predecessor.round_id != next_round {
+            chain.push_str("-$new-round-> ");
+        } else if let Some(direction) = predecessor.branch_direction.as_deref() {
             chain.push_str(&format!("-{direction}-> "));
         } else {
             chain.push_str("-> ");
         }
     }
-    chain.push_str("当前节点");
+    chain.push_str(&format!(
+        "当前节点({}/{}/{})",
+        ctx.round_id, ctx.node_id, ctx.attempt_id
+    ));
     chain
 }
 
@@ -402,15 +498,21 @@ fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> Stri
                 parts.push(reason.to_string());
             }
             if let Some(artifact) = &predecessor.output_artifact {
-                parts.push(format!("输出 artifact={}: {}", artifact.name, artifact.path));
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
                 if let Some(preview) = artifact.preview.as_deref() {
-                    parts.push(format!("输出预览={}{}", preview.trim(), if preview.ends_with('\n') { "" } else { "" }));
+                    parts.push(format!(
+                        "输出预览={}{}",
+                        preview.trim(),
+                        if preview.ends_with('\n') { "" } else { "" }
+                    ));
                 }
             }
             Some(format!(
-                "- {}/{}：{}。",
-                predecessor.node_id,
-                predecessor.attempt_id,
+                "- {}：{}。",
+                predecessor_ref(predecessor),
                 parts.join("；")
             ))
         })
@@ -425,7 +527,7 @@ fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> Stri
 
 fn render_directory_rules(ctx: &PromptRuntimeContext) -> String {
     format!(
-        "Gold Band 文件规则：\n- 所有节点运行产物都位于：{}\n- 本次节点运行中，你创建的自由文件必须写入：{}\n- 不要把自由文件写到 attachments 之外。\n- 当前 run 目录可读取：{}\n- 当前 node 目录可写入：{}\n- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。",
+        "Gold Band 文件规则：\n- 本节点运行产物目录：{}\n- 本次节点运行中，你创建的自由文件必须写入：{}\n- 不要把自由文件写到 attachments 之外。\n- 当前节点所需上下文已在本 prompt 中给出。\n- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。\n- 当前 run 目录仅作为这些已给出路径的父级上下文：{}\n- 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。\n- 当前 node 目录可写入：{}\n- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。",
         ctx.attempt_dir, ctx.attachments_dir, ctx.run_dir, ctx.node_dir
     )
 }
@@ -434,16 +536,26 @@ fn render_role_section(profile: Option<&str>, profile_content: Option<&str>) -> 
     let Some(profile) = profile else {
         return "当前节点角色：\n- 未配置 profile。".to_string();
     };
-    let content = profile_content.map(str::trim).filter(|value| !value.is_empty());
+    let content = profile_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     match content {
         Some(content) => format!("当前节点角色：\n- Profile ID: {profile}\n\n{content}"),
         None => format!("当前节点角色：\n- Profile ID: {profile}\n- 未找到 profile 正文。"),
     }
 }
 
-fn render_output_constraints(contract: Option<&PromptOutputContract>) -> String {
+fn render_artifact_constraints(
+    primary_artifact: Option<&str>,
+    contract: Option<&PromptOutputContract>,
+) -> String {
     let Some(contract) = contract else {
-        return String::new();
+        return match primary_artifact {
+            Some(primary_artifact) => format!(
+                "当前节点 artifact 规则：\n- primary artifact: {primary_artifact}\n- 当前节点未声明结构化 output DSL；不要自行推断 JSON/schema 输出格式。"
+            ),
+            None => "当前节点 artifact 规则：\n- 当前节点未声明 primary_artifact / output DSL，不需要产出 canonical artifact。\n- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。".to_string(),
+        };
     };
 
     let mut section = format!(
@@ -459,7 +571,9 @@ fn render_output_constraints(contract: Option<&PromptOutputContract>) -> String 
         section.push_str("\n当前节点未声明结构化 schema。");
     }
     if let Some(condition) = contract.success_condition.as_deref() {
-        section.push_str(&format!("\n\nruntime 将使用以下条件判断节点结果：\n{condition}"));
+        section.push_str(&format!(
+            "\n\nruntime 将使用以下条件判断节点结果：\n{condition}"
+        ));
     }
     section
 }
@@ -469,7 +583,6 @@ fn log_prompt_bundle(
     invocation_kind: InvocationKind,
     profile: Option<&str>,
     primary_artifact: Option<&str>,
-    has_feedback: bool,
     cold_artifacts: usize,
     cold_attachments: usize,
     log_prompts: bool,
@@ -480,7 +593,6 @@ fn log_prompt_bundle(
         primary_artifact = ?primary_artifact,
         system_prompt_len = prompt.system_prompt.len(),
         user_prompt_len = prompt.user_prompt.len(),
-        has_feedback,
         cold_artifacts,
         cold_attachments,
         "provider prompt bundle summary"
@@ -538,7 +650,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn render_prompt_bundle_does_not_add_builtin_verify_or_exec_contracts() {
+    fn render_prompt_bundle_does_not_add_builtin_output_contracts() {
         let runtime_context = PromptRuntimeContext {
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
@@ -550,29 +662,31 @@ mod tests {
             round_dir: Utf8PathBuf::from("/run/rounds/round-001"),
             node_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev"),
             attempt_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev/attempt-001"),
-            attachments_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev/attempt-001/attachments"),
+            attachments_dir: Utf8PathBuf::from(
+                "/run/rounds/round-001/nodes/dev/attempt-001/attachments",
+            ),
         };
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             profile: None,
             profile_content: None,
             requirement_path: None,
-            requirement_text: Some("Need an execution plan".to_string()),
+            requirement_text: Some("Need a structured result".to_string()),
             workspace_dir: Utf8PathBuf::from("/repo"),
             attempt_dir: runtime_context.attempt_dir.clone(),
-            primary_artifact: Some("exec-plan".to_string()),
+            primary_artifact: Some("analysis-result".to_string()),
             output_contract: None,
             runtime_context,
             predecessors: Vec::new(),
-            task_instruction: Some("Create an exec plan".to_string()),
+            task_instruction: Some("Create a structured result".to_string()),
             session_mode: SessionMode::New,
+            permission_mode: None,
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
             log_provider_command: false,
-            feedback_summary: None,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
@@ -580,8 +694,6 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
-        assert!(!prompt.system_prompt.contains("verify-result"));
-        assert!(!prompt.system_prompt.contains("exec-plan"));
     }
 
     #[test]

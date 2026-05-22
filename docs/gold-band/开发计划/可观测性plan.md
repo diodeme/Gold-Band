@@ -30,7 +30,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 - 输出全局 debug 日志文件，例如：
   - `runtime.log`（当前活动日志）
   - `runtime.yyyy-mm-dd.log` 或按小时/日期滚动出来的归档文件
-- 系统日志只记录 runtime / CLI / provider / exec 的内部行为与异常
+- 系统日志只记录 runtime / CLI / provider / worker 的内部行为与异常
 - run 内继续记录：
   - `run-progress.json`
   - `events.jsonl`
@@ -93,8 +93,8 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
   - append run `events.jsonl`：`run_continue_requested`
 - `drive_from_node(...)`
   - 节点开始前：`node_started`
-  - 调 worker/verify 前：`calling_provider`
-  - 调 exec 前：`running_command`
+  - 调 worker 前：`calling_provider`
+  - 调 worker 前：`running_command`
   - 节点完成后：`node_completed`
   - 节点切换时：`transitioned`
   - acceptance loop 新 round：`round_opened`
@@ -114,14 +114,14 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 
 ### 5. 在 `node_executor` 中开启 AI 节点 `raw.stream.jsonl`，并写系统日志
 当前 `execute_ai_node(...)` 把 `stream_mode` 写死成 `StreamMode::None`。这轮改为：
-- worker / verify 节点统一请求 `StreamMode::Raw`
+- worker 节点统一请求 `StreamMode::Raw`
 
 同时在 `node_executor` 里补这些日志点：
 - AI 节点 invocation 构造完成
 - provider 返回 success / failure / interrupted
 - artifact 正在规范化
 - worker-ref 是否已落盘
-- exec 节点开始执行 / 执行完成
+- worker 节点开始执行 / 执行完成
 
 这里不让日志改变控制流，只记录事实。
 

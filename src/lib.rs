@@ -8,7 +8,6 @@ pub mod console;
 pub mod control;
 pub mod domain;
 pub mod dsl;
-pub mod exec;
 pub mod inspect;
 pub mod observability;
 pub mod process;

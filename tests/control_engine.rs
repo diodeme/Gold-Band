@@ -34,17 +34,16 @@ fn sample_round() -> RoundState {
         status: RunStatus::Running,
         outcome: None,
         trigger: gold_band::domain::RoundTrigger::Initial,
-        repair_loops_used: 0,
         started_at: "0Z".to_string(),
         trace: Vec::new(),
     }
 }
 
-fn sample_node(node_id: &str, node_type: NodeType, outcome: NodeOutcome) -> NodeState {
+fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
     NodeState {
         version: VERSION.to_string(),
         node_id: node_id.to_string(),
-        node_type,
+        node_type: NodeType::Worker,
         run_id: "run-001".to_string(),
         round_id: "round-001".to_string(),
         attempt_id: "attempt-001".to_string(),
@@ -64,7 +63,7 @@ fn worker_success_to_end_completes_run() {
             "version": "0.1",
             "id": "worker-accept",
             "entry": "accept",
-            "control": { "max_repair_loops": 1 },
+            "control": { "max_attempts": 1 },
             "nodes": [
                 { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
@@ -79,7 +78,7 @@ fn worker_success_to_end_completes_run() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("accept", NodeType::Worker, NodeOutcome::Success),
+        &sample_node("accept", NodeOutcome::Success),
     );
     assert!(matches!(
         decision,
@@ -88,26 +87,20 @@ fn worker_success_to_end_completes_run() {
 }
 
 #[test]
-fn exec_invalid_prefers_explicit_edge() {
+fn worker_invalid_prefers_explicit_edge() {
     let workflow = parse_workflow(
         r#"{
             "version": "0.1",
-            "id": "exec-invalid-edge",
-            "entry": "dev",
-            "control": {
-                "max_repair_loops": 2,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "id": "worker-invalid-edge",
+            "entry": "test",
+            "control": { "max_attempts": 2 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
-                { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "fix", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
+                { "id": "test", "type": "worker", "provider": "claude-code", "primary_artifact": "test-result", "output": { "kind": "json", "artifact": "test-result" }, "success_condition": { "path": "passed", "equals": true } },
+                { "id": "fix", "type": "worker", "provider": "claude-code" },
                 { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
-                { "from": "dev", "to": "run-tests", "on": "success" },
-                { "from": "run-tests", "to": "fix", "on": "invalid", "session": "continue" },
+                { "from": "test", "to": "fix", "on": "invalid", "session": "continue" },
                 { "from": "fix", "to": "accept", "on": "success" }
             ]
         }"#,
@@ -118,7 +111,7 @@ fn exec_invalid_prefers_explicit_edge() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("run-tests", NodeType::Exec, NodeOutcome::Invalid),
+        &sample_node("test", NodeOutcome::Invalid),
     );
     assert!(
         matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::Continue } if node_id == "fix")
@@ -126,25 +119,19 @@ fn exec_invalid_prefers_explicit_edge() {
 }
 
 #[test]
-fn exec_invalid_defaults_back_to_plan_from() {
+fn worker_invalid_without_edge_pauses() {
     let workflow = parse_workflow(
         r#"{
             "version": "0.1",
-            "id": "exec-invalid-default",
-            "entry": "dev",
-            "control": {
-                "max_repair_loops": 2,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "id": "worker-invalid-no-edge",
+            "entry": "test",
+            "control": { "max_attempts": 2 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
-                { "id": "run-tests", "type": "exec", "plan_from": "dev" },
+                { "id": "test", "type": "worker", "provider": "claude-code" },
                 { "id": "accept", "type": "worker", "provider": "claude-code" }
             ],
             "edges": [
-                { "from": "dev", "to": "run-tests", "on": "success" },
-                { "from": "run-tests", "to": "accept", "on": "success" }
+                { "from": "test", "to": "accept", "on": "success" }
             ]
         }"#,
     );
@@ -154,85 +141,11 @@ fn exec_invalid_defaults_back_to_plan_from() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("run-tests", NodeType::Exec, NodeOutcome::Invalid),
-    );
-    assert!(
-        matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::Continue } if node_id == "dev")
-    );
-}
-
-#[test]
-fn exec_invalid_downgrades_continue_when_provider_cannot_continue() {
-    let workflow = parse_workflow(
-        r#"{
-            "version": "0.1",
-            "id": "exec-invalid-new",
-            "entry": "dev",
-            "control": {
-                "max_repair_loops": 2,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
-            "nodes": [
-                { "id": "dev", "type": "worker", "provider": "other-provider", "primary_artifact": "exec-plan" },
-                { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
-            ],
-            "edges": [
-                { "from": "dev", "to": "run-tests", "on": "success" },
-                { "from": "run-tests", "to": "accept", "on": "success" }
-            ]
-        }"#,
-    );
-
-    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
-    let decision = decide_next_step(
-        &validated,
-        &sample_run(),
-        &sample_round(),
-        &sample_node("run-tests", NodeType::Exec, NodeOutcome::Invalid),
-    );
-    assert!(
-        matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::New } if node_id == "dev")
-    );
-}
-
-#[test]
-fn exec_invalid_completes_failure_when_repair_budget_is_exhausted() {
-    let workflow = parse_workflow(
-        r#"{
-            "version": "0.1",
-            "id": "exec-invalid-budget",
-            "entry": "dev",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
-            "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code", "primary_artifact": "exec-plan" },
-                { "id": "run-tests", "type": "exec", "plan_from": "dev" },
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
-            ],
-            "edges": [
-                { "from": "dev", "to": "run-tests", "on": "success" },
-                { "from": "run-tests", "to": "accept", "on": "success" }
-            ]
-        }"#,
-    );
-
-    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
-    let mut round = sample_round();
-    round.repair_loops_used = 1;
-    let decision = decide_next_step(
-        &validated,
-        &sample_run(),
-        &round,
-        &sample_node("run-tests", NodeType::Exec, NodeOutcome::Invalid),
+        &sample_node("test", NodeOutcome::Invalid),
     );
     assert!(matches!(
         decision,
-        ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Failure)
+        ControlDecision::PauseRun(gold_band::domain::PauseReason::ErrorBlocked)
     ));
 }
 
@@ -243,11 +156,7 @@ fn worker_manual_check_rejects_output_validation() {
             "version": "0.1",
             "id": "manual-check-exclusive",
             "entry": "review",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "control": { "max_attempts": 1 },
             "nodes": [
                 { "id": "review", "type": "worker", "provider": "claude-code", "manual_check": true, "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
@@ -256,7 +165,10 @@ fn worker_manual_check_rejects_output_validation() {
     );
 
     let err = gold_band::dsl::validate_workflow(workflow).unwrap_err();
-    assert!(err.to_string().contains("cannot enable manual_check together with output validation"));
+    assert!(
+        err.to_string()
+            .contains("cannot enable manual_check together with output validation")
+    );
 }
 
 #[test]
@@ -266,11 +178,7 @@ fn worker_failure_uses_explicit_edge() {
             "version": "0.1",
             "id": "worker-failure-edge",
             "entry": "review",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "control": { "max_attempts": 1 },
             "nodes": [
                 { "id": "review", "type": "worker", "provider": "claude-code", "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } },
                 { "id": "dev", "type": "worker", "provider": "claude-code" }
@@ -286,7 +194,7 @@ fn worker_failure_uses_explicit_edge() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("review", NodeType::Worker, NodeOutcome::Failure),
+        &sample_node("review", NodeOutcome::Failure),
     );
     assert!(
         matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::Continue } if node_id == "dev")
@@ -300,11 +208,7 @@ fn edge_to_new_round_opens_round() {
             "version": "0.1",
             "id": "new-round-edge",
             "entry": "accept",
-            "control": {
-                "max_repair_loops": 1,
-                "max_acceptance_loops": 1,
-                "on_acceptance_failure": "stop"
-            },
+            "control": { "max_attempts": 1 },
             "nodes": [
                 { "id": "accept", "type": "worker", "provider": "claude-code", "primary_artifact": "accept-result", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
@@ -319,7 +223,7 @@ fn edge_to_new_round_opens_round() {
         &validated,
         &sample_run(),
         &sample_round(),
-        &sample_node("accept", NodeType::Worker, NodeOutcome::Failure),
+        &sample_node("accept", NodeOutcome::Failure),
     );
     assert!(matches!(decision, ControlDecision::OpenNewRound));
 }

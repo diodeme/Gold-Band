@@ -22,7 +22,6 @@
   "status": "running",
   "outcome": null,
   "trigger": "initial",
-  "repairLoopsUsed": 0,
   "startedAt": "2026-03-20T10:30:10Z",
   "trace": [
     {
@@ -47,7 +46,6 @@
 - `status`
 - `outcome`
 - `trigger`
-- `repairLoopsUsed`
 - `startedAt`
 - `trace`
 
@@ -81,17 +79,7 @@
 
 说明：
 - `initial`：首轮执行
-- `acceptance_loop`：由 `verify.failure` 触发的新 round
-
-### `repairLoopsUsed`
-- 类型：number
-- 含义：当前 round 已实际消耗的 repair loop 次数
-
-说明：
-- 统计口径应与 Runtime Control 中的 repair loop 定义一致
-- 只有 `exec.failure` 或 `exec.invalid` 真正触发回到某个 `worker` 时才加 1
-- `worker.failure` / `worker.invalid` 不计入
-- `verify.failure` / `verify.invalid` 不计入
+- `acceptance_loop`：由 `worker.failure` 触发的新 round
 
 ### `trace`
 - 类型：array
@@ -117,7 +105,6 @@
 - `status` 不在合法枚举内
 - `outcome` 不在合法枚举内且不为 null
 - `trigger` 不在合法枚举内
-- `repairLoopsUsed` 不是非负整数
 - `trace` 中任一 step 的 `sequence` 不是正整数，或 `nodeId` / `attemptId` 为空
 - `status = running` 但 `outcome != null`
 - `status = paused` 但 `outcome != null`

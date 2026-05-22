@@ -33,6 +33,7 @@ impl ProviderAdapter for SequencedProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
@@ -42,15 +43,21 @@ impl ProviderAdapter for SequencedProvider {
         self.invocations.lock().unwrap().push(req.clone());
 
         let payload = match req.primary_artifact.as_deref() {
-            Some("exec-plan") => {
-                if req.invocation_kind == gold_band::domain::InvocationKind::WorkerGeneric {
-                    std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
-                    std::fs::write(req.attempt_dir.join("attachments/context.md").as_std_path(), "attachment context").unwrap();
-                }
+            Some("implementation-result") => {
+                std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
+                std::fs::write(
+                    req.attempt_dir.join("attachments/context.md").as_std_path(),
+                    "attachment context",
+                )
+                .unwrap();
                 PrimaryArtifactPayload {
-                    name: "exec-plan".to_string(),
-                    content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
+                    name: "implementation-result".to_string(),
+                    content: r#"{"summary":"implemented"}"#.to_string(),
                 }
+            }
+            Some("test-result") => PrimaryArtifactPayload {
+                name: "test-result".to_string(),
+                content: r#"{"result":true,"reason":"checks passed"}"#.to_string(),
             },
             Some("accept-result") => PrimaryArtifactPayload {
                 name: "accept-result".to_string(),
@@ -118,19 +125,19 @@ fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) 
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {{ "max_repair_loops": 1 }},
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an exec plan","primary_artifact":"exec-plan"}},
-            {{"id":"run-tests","type":"exec","plan_from":"dev"}},
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
+            {{"id":"test","type":"worker","provider":"claude-code","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","primary_artifact":"test-result","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
             {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"dev","to":"run-tests","on":"success"}},
-            {{"from":"run-tests","to":"accept","on":"success"}},
+            {{"from":"dev","to":"test","on":"success"}},
+            {{"from":"test","to":"accept","on":"success"}},
             {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
-            dev_profile, accept_profile
+            dev_profile, dev_profile, accept_profile
         ),
     )
     .unwrap();
@@ -142,7 +149,7 @@ fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) 
 }
 
 #[test]
-fn run_start_completes_worker_exec_accept_happy_path() {
+fn run_start_completes_worker_test_accept_happy_path() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";

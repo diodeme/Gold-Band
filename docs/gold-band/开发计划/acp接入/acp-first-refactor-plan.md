@@ -181,7 +181,9 @@ Gold Band 可借鉴：
 3. cold start：spawn stdio adapter，执行 `initialize`。
 4. session 生命周期：优先 `session/load`，不可恢复时创建 `session/new`。
 5. `session/update` 转为宿主会话视图事件。
-6. ACP 事件先归一化为 UI event model，再推送到前端。
+6. Agent 管理页诊断时缓存 `agentCapabilities` 里的 `modes` / `configOptions`，并把可选权限模式持久化到当前 workspace 运行时目录。
+7. workflow worker 节点支持保存 `permission_mode`，运行时在 `session/new` / `session/load` 后优先通过 `session/set_config_option(configId=mode)`，兼容旧版 `session/set_mode` 应用该模式。
+8. ACP 事件先归一化为 UI event model，再推送到前端。
 
 参考文档：
 

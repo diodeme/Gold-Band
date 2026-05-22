@@ -38,9 +38,9 @@
 - 前序节点分支执行原因
 - Gold Band / ACP 文件夹规则
 - 当前节点 profile id 解析出的完整角色说明
-- 当前节点 `output` DSL 派生出的输出约束
+- 当前节点 `primary_artifact` / `output` DSL 派生出的 artifact 规则与输出约束
 
-`systemPrompt` 不再承载旧的 `InvocationKind` 语义，也不根据 artifact 名称内置 `exec-plan` / `verify-result` 之类特殊输出规则。
+`systemPrompt` 不再承载旧的 `InvocationKind` 语义，也不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则。
 
 ### 3.2 `userPrompt`
 
@@ -51,7 +51,6 @@
 它承载：
 
 - 原始 `requirement`
-- 当前 feedback 摘要
 - 由 `worker.goal` 映射得到的 `taskInstruction`
 - 冷 artifact 索引
 - 冷 attachment 索引
@@ -80,10 +79,13 @@ profile 正文和 output DSL 不放在 `userPrompt` 中。
 {{predecessor_branch_reasons}}
 
 Gold Band 文件规则：
-- 所有节点运行产物都位于：{{attempt_dir}}
+- 本节点运行产物目录：{{attempt_dir}}
 - 本次节点运行中，你创建的自由文件必须写入：{{attachments_dir}}
 - 不要把自由文件写到 attachments 之外。
-- 当前 run 目录可读取：{{run_dir}}
+- 当前节点所需上下文已在本 prompt 中给出。
+- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。
+- 当前 run 目录仅作为这些已给出路径的父级上下文：{{run_dir}}
+- 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。
 - 当前 node 目录可写入：{{node_dir}}
 - runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。
 
@@ -104,14 +106,24 @@ Gold Band 文件规则：
 runtime 将使用以下条件判断节点结果：
 {{output_contract.success_condition}}
 {{/if}}
+{{else if primary_artifact}}
+当前节点 artifact 规则：
+- primary artifact: {{primary_artifact}}
+- 当前节点未声明结构化 output DSL；不要自行推断 JSON/schema 输出格式。
+{{else}}
+当前节点 artifact 规则：
+- 当前节点未声明 primary_artifact / output DSL，不需要产出 canonical artifact。
+- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。
 {{/if}}
 ```
 
 说明：
 
-- `predecessor_chain` 以执行路径形式展示，例如 `A/attempt-001 -success-> B/attempt-001 -failure-> 当前节点`。
-- `predecessor_branch_reasons` 对普通节点可省略详细原因；人工 check 展示人工检查结果；节点输出检查展示 output DSL、节点输出和分支方向。
+- `predecessor_chain` 以执行路径形式展示，例如 `round-001/A/attempt-001 -success-> round-001/B/attempt-001 -failure-> 当前节点(round-001/C/attempt-001)`；跨 round 时使用 `-$new-round->` 标记进入新轮次。
+- `predecessor_branch_reasons` 对普通节点可省略详细原因；人工 check 展示人工检查结果；节点输出检查只展示前序节点结果、分支方向、artifact 路径和 artifact preview，不展示前序节点自身的 output DSL schema 或 success condition。
 - 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。
+- 若节点没有声明 `primary_artifact`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
+- 当前节点所需上下文应在 prompt 中给全；如需查阅前序节点产出，agent 只读取 prompt 明确给出的前序产出路径；`run_dir` 只作为这些路径的父级上下文，不应诱导 agent 为寻找未声明产物或理解当前任务主动扫描 run 目录。
 - 冷数据正文不默认展开，只提供索引。
 
 ---
@@ -121,11 +133,6 @@ runtime 将使用以下条件判断节点结果：
 ```md
 # Requirement
 {{requirement_text}}
-
-{{#if feedback_summary}}
-# Current Feedback
-{{feedback_summary}}
-{{/if}}
 
 {{#if task_instruction}}
 # Task
@@ -151,7 +158,7 @@ runtime 将使用以下条件判断节点结果：
 
 - `requirement_text` 是稳定任务目标。
 - `taskInstruction` 对 `worker` 默认由 `worker.goal` 映射得到。
-- `feedback_summary` 表达当前修复背景或上一节点失败摘要。
+- 前序节点结果、artifact 路径和 artifact preview 统一由 `systemPrompt` 的前序链表达，不再以 `Current Feedback` 形式注入 `userPrompt`。
 - 冷数据索引只给路径清单，不默认展开正文。
 
 ---
@@ -191,6 +198,7 @@ runtime 将使用以下条件判断节点结果：
 
 - `profile`
 - `profile_content`
+- `primary_artifact`
 - `output_contract.artifact`
 - `output_contract.kind`
 - `output_contract.schema`

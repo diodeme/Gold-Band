@@ -122,6 +122,10 @@ impl GoldBandPaths {
         self.authoring_dir().join("workflows.json")
     }
 
+    pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
+        self.runtime_root.join("desktop/agent-diagnostics.json")
+    }
+
     pub fn tasks_dir(&self) -> Utf8PathBuf {
         self.runtime_root.join("tasks")
     }

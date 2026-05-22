@@ -336,80 +336,152 @@ fn build_task_picker_view_model(state: &ConsoleState) -> Result<ConsoleViewModel
         .as_ref()
         .map(|overlay| overlay.scroll)
         .unwrap_or(0);
-    let (body_lines, body_line_kinds, body_rich_lines) =
-        if let Some(message) = state.message.as_ref() {
-            let lines = message
-                .lines()
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>();
-            let kinds = vec![BodyLineKind::Warning; lines.len()];
-            (lines, kinds, None)
-        } else if state.task_list.is_empty() {
-            (
-                vec!["No task-* directories found under .gold-band/tasks".to_string()],
-                vec![BodyLineKind::Muted],
-                None,
-            )
-        } else {
-            let mut lines = Vec::new();
-            let mut kinds = Vec::new();
-            let mut rich_lines = Vec::new();
-            let width = state.viewport.width.saturating_sub(10) as usize;
-            let width = width.clamp(32, 88);
-            for (index, summary) in state.task_list.iter().enumerate() {
-                let selected = index == state.task_index;
-                let marker = if selected { '▶' } else { '·' };
-                let desc = summary.task.description.as_deref().unwrap_or("");
-                let run_hint = summary
-                    .suggested_run_id
-                    .as_ref()
-                    .map(|run_id| format!("run {run_id}"))
-                    .unwrap_or_else(|| "run none".to_string());
-                let shell = if selected {
-                    ("┏", "┓", "┗", "┛", "━")
-                } else {
-                    ("╭", "╮", "╰", "╯", "─")
-                };
-                let border_top = format!("{}{}", shell.0, shell.4.to_string().repeat(width));
-                lines.push(border_top.clone());
-                kinds.push(BodyLineKind::Normal);
-                rich_lines.push(vec![BodySpan {
-                    text: border_top,
-                    role: BodySpanRole::PickerBorder,
-                }]);
+    let (body_lines, body_line_kinds, body_rich_lines) = if let Some(message) =
+        state.message.as_ref()
+    {
+        let lines = message
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        let kinds = vec![BodyLineKind::Warning; lines.len()];
+        (lines, kinds, None)
+    } else if state.task_list.is_empty() {
+        (
+            vec![
+                "No task-* directories found in this project's Gold Band runtime store".to_string(),
+            ],
+            vec![BodyLineKind::Muted],
+            None,
+        )
+    } else {
+        let mut lines = Vec::new();
+        let mut kinds = Vec::new();
+        let mut rich_lines = Vec::new();
+        let width = state.viewport.width.saturating_sub(10) as usize;
+        let width = width.clamp(32, 88);
+        for (index, summary) in state.task_list.iter().enumerate() {
+            let selected = index == state.task_index;
+            let marker = if selected { '▶' } else { '·' };
+            let desc = summary.task.description.as_deref().unwrap_or("");
+            let run_hint = summary
+                .suggested_run_id
+                .as_ref()
+                .map(|run_id| format!("run {run_id}"))
+                .unwrap_or_else(|| "run none".to_string());
+            let shell = if selected {
+                ("┏", "┓", "┗", "┛", "━")
+            } else {
+                ("╭", "╮", "╰", "╯", "─")
+            };
+            let border_top = format!("{}{}", shell.0, shell.4.to_string().repeat(width));
+            lines.push(border_top.clone());
+            kinds.push(BodyLineKind::Normal);
+            rich_lines.push(vec![BodySpan {
+                text: border_top,
+                role: BodySpanRole::PickerBorder,
+            }]);
 
-                let title_line = format!(
-                    "│ {} {}{}",
-                    marker,
-                    summary.task.id,
-                    if selected { "   [selected]" } else { "" }
-                );
-                lines.push(title_line);
-                kinds.push(BodyLineKind::Normal);
-                let mut title_spans = vec![
+            let title_line = format!(
+                "│ {} {}{}",
+                marker,
+                summary.task.id,
+                if selected { "   [selected]" } else { "" }
+            );
+            lines.push(title_line);
+            kinds.push(BodyLineKind::Normal);
+            let mut title_spans = vec![
+                BodySpan {
+                    text: "│ ".to_string(),
+                    role: BodySpanRole::PickerBorder,
+                },
+                BodySpan {
+                    text: format!("{} ", marker),
+                    role: BodySpanRole::PickerSelection,
+                },
+                BodySpan {
+                    text: summary.task.id.clone(),
+                    role: BodySpanRole::PickerTitle,
+                },
+            ];
+            if selected {
+                title_spans.push(BodySpan {
+                    text: "   [selected]".to_string(),
+                    role: BodySpanRole::Accent,
+                });
+            }
+            rich_lines.push(title_spans);
+
+            let desc_line = format!("│   {}", desc);
+            lines.push(desc_line.clone());
+            kinds.push(BodyLineKind::Muted);
+            rich_lines.push(vec![
+                BodySpan {
+                    text: "│   ".to_string(),
+                    role: BodySpanRole::PickerBorder,
+                },
+                BodySpan {
+                    text: desc_line.trim_start_matches("│   ").to_string(),
+                    role: BodySpanRole::Muted,
+                },
+            ]);
+
+            if summary.workflow_valid {
+                let workflow_line = format!("│   workflow valid   {}", run_hint);
+                lines.push(workflow_line);
+                kinds.push(BodyLineKind::Success);
+                rich_lines.push(vec![
                     BodySpan {
-                        text: "│ ".to_string(),
+                        text: "│   ".to_string(),
                         role: BodySpanRole::PickerBorder,
                     },
                     BodySpan {
-                        text: format!("{} ", marker),
-                        role: BodySpanRole::PickerSelection,
+                        text: "workflow valid".to_string(),
+                        role: BodySpanRole::Success,
                     },
                     BodySpan {
-                        text: summary.task.id.clone(),
-                        role: BodySpanRole::PickerTitle,
+                        text: "   ".to_string(),
+                        role: BodySpanRole::Normal,
                     },
-                ];
-                if selected {
-                    title_spans.push(BodySpan {
-                        text: "   [selected]".to_string(),
-                        role: BodySpanRole::Accent,
-                    });
-                }
-                rich_lines.push(title_spans);
-
-                let desc_line = format!("│   {}", desc);
-                lines.push(desc_line.clone());
+                    BodySpan {
+                        text: run_hint,
+                        role: BodySpanRole::PickerMeta,
+                    },
+                ]);
+            } else if summary.workflow_exists {
+                lines.push("│   workflow invalid".to_string());
+                kinds.push(BodyLineKind::Error);
+                rich_lines.push(vec![
+                    BodySpan {
+                        text: "│   ".to_string(),
+                        role: BodySpanRole::PickerBorder,
+                    },
+                    BodySpan {
+                        text: "workflow invalid".to_string(),
+                        role: BodySpanRole::Error,
+                    },
+                ]);
+                let reason = summary
+                    .workflow_error
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string();
+                lines.push(format!("│   reason: {}", reason));
+                kinds.push(BodyLineKind::Warning);
+                rich_lines.push(vec![
+                    BodySpan {
+                        text: "│   ".to_string(),
+                        role: BodySpanRole::PickerBorder,
+                    },
+                    BodySpan {
+                        text: "reason: ".to_string(),
+                        role: BodySpanRole::PickerReasonLabel,
+                    },
+                    BodySpan {
+                        text: reason,
+                        role: BodySpanRole::Warning,
+                    },
+                ]);
+                lines.push(format!("│   {}", run_hint));
                 kinds.push(BodyLineKind::Muted);
                 rich_lines.push(vec![
                     BodySpan {
@@ -417,140 +489,71 @@ fn build_task_picker_view_model(state: &ConsoleState) -> Result<ConsoleViewModel
                         role: BodySpanRole::PickerBorder,
                     },
                     BodySpan {
-                        text: desc_line.trim_start_matches("│   ").to_string(),
-                        role: BodySpanRole::Muted,
+                        text: run_hint,
+                        role: BodySpanRole::PickerMeta,
                     },
                 ]);
+            } else {
+                lines.push("│   workflow missing".to_string());
+                kinds.push(BodyLineKind::Warning);
+                rich_lines.push(vec![
+                    BodySpan {
+                        text: "│   ".to_string(),
+                        role: BodySpanRole::PickerBorder,
+                    },
+                    BodySpan {
+                        text: "workflow missing".to_string(),
+                        role: BodySpanRole::Warning,
+                    },
+                ]);
+                lines.push("│   reason: missing authoring/workflow.json".to_string());
+                kinds.push(BodyLineKind::Warning);
+                rich_lines.push(vec![
+                    BodySpan {
+                        text: "│   ".to_string(),
+                        role: BodySpanRole::PickerBorder,
+                    },
+                    BodySpan {
+                        text: "reason: ".to_string(),
+                        role: BodySpanRole::PickerReasonLabel,
+                    },
+                    BodySpan {
+                        text: "missing authoring/workflow.json".to_string(),
+                        role: BodySpanRole::Warning,
+                    },
+                ]);
+                lines.push(format!("│   {}", run_hint));
+                kinds.push(BodyLineKind::Muted);
+                rich_lines.push(vec![
+                    BodySpan {
+                        text: "│   ".to_string(),
+                        role: BodySpanRole::PickerBorder,
+                    },
+                    BodySpan {
+                        text: run_hint,
+                        role: BodySpanRole::PickerMeta,
+                    },
+                ]);
+            }
 
-                if summary.workflow_valid {
-                    let workflow_line = format!("│   workflow valid   {}", run_hint);
-                    lines.push(workflow_line);
-                    kinds.push(BodyLineKind::Success);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: "workflow valid".to_string(),
-                            role: BodySpanRole::Success,
-                        },
-                        BodySpan {
-                            text: "   ".to_string(),
-                            role: BodySpanRole::Normal,
-                        },
-                        BodySpan {
-                            text: run_hint,
-                            role: BodySpanRole::PickerMeta,
-                        },
-                    ]);
-                } else if summary.workflow_exists {
-                    lines.push("│   workflow invalid".to_string());
-                    kinds.push(BodyLineKind::Error);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: "workflow invalid".to_string(),
-                            role: BodySpanRole::Error,
-                        },
-                    ]);
-                    let reason = summary
-                        .workflow_error
-                        .as_deref()
-                        .unwrap_or("unknown")
-                        .to_string();
-                    lines.push(format!("│   reason: {}", reason));
-                    kinds.push(BodyLineKind::Warning);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: "reason: ".to_string(),
-                            role: BodySpanRole::PickerReasonLabel,
-                        },
-                        BodySpan {
-                            text: reason,
-                            role: BodySpanRole::Warning,
-                        },
-                    ]);
-                    lines.push(format!("│   {}", run_hint));
-                    kinds.push(BodyLineKind::Muted);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: run_hint,
-                            role: BodySpanRole::PickerMeta,
-                        },
-                    ]);
-                } else {
-                    lines.push("│   workflow missing".to_string());
-                    kinds.push(BodyLineKind::Warning);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: "workflow missing".to_string(),
-                            role: BodySpanRole::Warning,
-                        },
-                    ]);
-                    lines.push("│   reason: missing authoring/workflow.json".to_string());
-                    kinds.push(BodyLineKind::Warning);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: "reason: ".to_string(),
-                            role: BodySpanRole::PickerReasonLabel,
-                        },
-                        BodySpan {
-                            text: "missing authoring/workflow.json".to_string(),
-                            role: BodySpanRole::Warning,
-                        },
-                    ]);
-                    lines.push(format!("│   {}", run_hint));
-                    kinds.push(BodyLineKind::Muted);
-                    rich_lines.push(vec![
-                        BodySpan {
-                            text: "│   ".to_string(),
-                            role: BodySpanRole::PickerBorder,
-                        },
-                        BodySpan {
-                            text: run_hint,
-                            role: BodySpanRole::PickerMeta,
-                        },
-                    ]);
-                }
-
-                let border_bottom = format!("{}{}", shell.2, shell.4.to_string().repeat(width));
-                lines.push(border_bottom.clone());
+            let border_bottom = format!("{}{}", shell.2, shell.4.to_string().repeat(width));
+            lines.push(border_bottom.clone());
+            kinds.push(BodyLineKind::Normal);
+            rich_lines.push(vec![BodySpan {
+                text: border_bottom,
+                role: BodySpanRole::PickerBorder,
+            }]);
+            if index + 1 < state.task_list.len() {
+                lines.push(String::new());
                 kinds.push(BodyLineKind::Normal);
                 rich_lines.push(vec![BodySpan {
-                    text: border_bottom,
-                    role: BodySpanRole::PickerBorder,
+                    text: String::new(),
+                    role: BodySpanRole::Normal,
                 }]);
-                if index + 1 < state.task_list.len() {
-                    lines.push(String::new());
-                    kinds.push(BodyLineKind::Normal);
-                    rich_lines.push(vec![BodySpan {
-                        text: String::new(),
-                        role: BodySpanRole::Normal,
-                    }]);
-                }
             }
-            (lines, kinds, Some(rich_lines))
-        };
+        }
+        (lines, kinds, Some(rich_lines))
+    };
     Ok(ConsoleViewModel {
         header: if show_overlay {
             "Gold Band Console • overlay mode".to_string()

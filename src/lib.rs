@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod app;
 pub mod artifacts;
 pub mod cli;
@@ -7,9 +8,9 @@ pub mod console;
 pub mod control;
 pub mod domain;
 pub mod dsl;
-pub mod exec;
 pub mod inspect;
 pub mod observability;
+pub mod process;
 pub mod provider;
 pub mod runtime;
 pub mod storage;

@@ -1,5 +1,7 @@
 # Gold Band 日志 / 进度可观测性落地计划
 
+> 2026-05-12 更新：本文记录的是 ACP-first 重构前的日志 / raw stream 落地计划。新的 provider 会话可视化方向已切换为 ACP session events，`progress.events.jsonl` 不再作为新增目标；attempt 级会话观测应参考 `acp接入/acp-first-refactor-plan.md`。
+
 ## Context
 当前 `cargo run -- run start task-001` 在真实执行时几乎没有过程反馈：CLI 只会在命令返回后打印最终 JSON，而 provider 调用期间用户看不到“现在正在做什么”；同时仓库里虽然已经有 progress 设计文档（`raw.stream.jsonl`、`progress.events.jsonl`、`run-progress.json`），但代码层还没有真正把这些观测文件打通。用户明确要求这一轮优先解决“过程黑盒”问题：控制台要有关键进度提示，但核心日志应以文件落盘为主，而且希望整个系统运行过程也能被记录下来；在 `progress.events.jsonl` 尚未完全设计实现前，可以先优先落地 `raw.stream.jsonl`。
 
@@ -24,11 +26,11 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 
 基于这个方向，这轮系统日志设计为：
 
-- 在 repo 下新增系统日志目录：`<repo>/.gold-band/logs/`
+- 在 user project runtime 下新增系统日志目录：`~/.gold-band/projects/{project-id}/logs/`
 - 输出全局 debug 日志文件，例如：
   - `runtime.log`（当前活动日志）
   - `runtime.yyyy-mm-dd.log` 或按小时/日期滚动出来的归档文件
-- 系统日志只记录 runtime / CLI / provider / exec 的内部行为与异常
+- 系统日志只记录 runtime / CLI / provider / worker 的内部行为与异常
 - run 内继续记录：
   - `run-progress.json`
   - `events.jsonl`
@@ -38,7 +40,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 为了贴近 logback 的体验，这轮建议至少实现：
 - 自动滚动（优先按日，必要时可加按小时）
 - 自动保留清理（例如只保留最近 N 天）
-- 日志目录集中在 `.gold-band/logs/`
+- 日志目录集中在 `~/.gold-band/projects/{project-id}/logs/`
 
 如果 tracing 现成 rolling appender 只能满足“按时间滚动”，而不能直接满足“按大小 + 历史清理”两者同时具备，那么这轮优先：
 1. 先用 tracing 生态落稳定的 rolling file 输出
@@ -91,8 +93,8 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
   - append run `events.jsonl`：`run_continue_requested`
 - `drive_from_node(...)`
   - 节点开始前：`node_started`
-  - 调 worker/verify 前：`calling_provider`
-  - 调 exec 前：`running_command`
+  - 调 worker 前：`calling_provider`
+  - 调 worker 前：`running_command`
   - 节点完成后：`node_completed`
   - 节点切换时：`transitioned`
   - acceptance loop 新 round：`round_opened`
@@ -112,14 +114,14 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 
 ### 5. 在 `node_executor` 中开启 AI 节点 `raw.stream.jsonl`，并写系统日志
 当前 `execute_ai_node(...)` 把 `stream_mode` 写死成 `StreamMode::None`。这轮改为：
-- worker / verify 节点统一请求 `StreamMode::Raw`
+- worker 节点统一请求 `StreamMode::Raw`
 
 同时在 `node_executor` 里补这些日志点：
 - AI 节点 invocation 构造完成
 - provider 返回 success / failure / interrupted
 - artifact 正在规范化
 - worker-ref 是否已落盘
-- exec 节点开始执行 / 执行完成
+- worker 节点开始执行 / 执行完成
 
 这里不让日志改变控制流，只记录事实。
 
@@ -203,12 +205,12 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
    - `cargo run -- run start task-001`
 2. 终端应立即看到 stderr 进度，而不是长时间无反馈
 3. 检查系统日志：
-   - `.gold-band/logs/runtime.log`
+   - `~/.gold-band/projects/{project-id}/logs/runtime.log`
 4. 检查 run 级文件：
-   - `.gold-band/tasks/task-001/runs/run-001/run-progress.json`
-   - `.gold-band/tasks/task-001/runs/run-001/events.jsonl`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/run-progress.json`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/events.jsonl`
 5. 检查 attempt 级 raw stream：
-   - `.gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl`
+   - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/raw.stream.jsonl`
 6. 若 run pause/fail：
    - 终端能看到关键状态
    - 文件里能追溯 provider failure / blocked 的上下文

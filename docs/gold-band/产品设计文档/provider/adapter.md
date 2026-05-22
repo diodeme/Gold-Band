@@ -14,14 +14,14 @@ provider adapter 是 provider-specific 差异的隔离层。
 - Gold Band runtime 只应直接依赖 A()，不应直接依赖某个 provider 的 B()
 
 它整体负责：
-- 调起 provider
+- 调起 provider，优先启动 ACP-compatible adapter
 - 接收 runtime 传来的外层调用请求
 - 在 A() 内部选择热数据与冷数据
 - 在 A() 内部把调用请求整理成 prompt bundle
-- 把 prompt bundle 交给 B() 执行
-- 由 B() 把 prompt bundle 映射成 provider 特定命令或参数
-- 接收输出
-- 提供 worker reference
+- 把 prompt bundle 映射为 ACP 调用：新建 session 时通过 `_meta.systemPrompt.append` 注入 system prompt，继续会话的 `session/prompt` 只发送用户 prompt 内容
+- 接收 ACP `session/update`、permission request 与 prompt response
+- 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）与 raw frame
+- 提供 worker reference 与外部 CLI handoff
 - 暴露能力信息
 
 ## 2. 最小接口
@@ -52,16 +52,18 @@ provider adapter 是 provider-specific 差异的隔离层。
 其正式调用契约见 [Worker Invocation Contract](invocation.md)。
 
 最小输入语义：
-- `profile`
+- `profile` / `profileContent`
 - `requirementPath` 或 `requirementText`
 - `workspaceDir`
 - `attemptDir`
 - `primaryArtifact`
+- `outputContract`（来自当前节点 `output` DSL）
+- `runtimeContext`
+- `predecessors[]`
 - `taskInstruction`
 - `sessionMode`（可选，缺省为 `new`）
 - `continueRefPath`
 - `streamMode`
-- `verifyResultPath` 或 `verifyResultText`
 
 说明：
 - `sessionMode` / `continueRefPath` 只影响 provider 如何启动本次 attempt
@@ -73,13 +75,16 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `exitCode`
 - `resultPayload`
 - `workerRefSeed`
-- `stream`
+- `sessionEvents`（ACP normalized UI events，落盘到 `acp.events.jsonl`）
+- `rawSession`（ACP raw frame，落盘到 `acp.raw.jsonl`）
 
 说明：
 - `resultPayload` 不要求顶层携带 `version`
 - 若当前节点声明了 `primaryArtifact`，则 `resultPayload.primaryArtifact` 必须存在
 - `primaryArtifact.content` 固定为字符串，表示模型按 output structure 返回的原始内容
 - provider 不负责把 `primaryArtifact.content` parse 成语义对象
+- `sessionEvents` 保持 ACP session event 语义，用于会话详情可视化，不再转换为 Gold Band 自研 `progress.events.jsonl`
+- `rawSession` 只用于 raw viewer / 排障，不作为 UI 主协议
 - 若当前节点未声明 `primaryArtifact`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
 
 ### `openSession(ref)`
@@ -125,10 +130,12 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 若 workflow edge 显式请求 `session = continue`，但 provider 不支持 continue，则应在 DSL / runtime 校验阶段直接报错
 - 若 provider 不支持 `openSession`，CLI `open-session` 应明确报错，而不是静默降级为其他动作
 
-### Level 3：增强观测能力
-- 原始流式输出
-- 更稳定的中间进度来源
+### Level 3：ACP 会话可视化能力
+- ACP session events
+- ACP raw frame / raw transcript
+- tool call / plan / thought / permission / terminal 等原始 agent 过程展示
 - 更丰富的 provider capability 暴露
+- 外部 CLI handoff
 
 ## 4. 与其他文档的关系
 - [CLI 规范](../interaction/cli.md)

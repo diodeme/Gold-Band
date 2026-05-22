@@ -105,8 +105,8 @@
 - 统计口径应与 Runtime Control 中的 acceptance loop 定义一致
 - `round-001` 不计入
 - 只有真正新建 acceptance round 时才加 1
-- `verify.failure + stop` 不计入
-- `verify.invalid` 不计入
+- `worker.failure + stop` 不计入
+- `worker.invalid` 不计入
 
 ### `pauseReason`
 - 类型：string | null

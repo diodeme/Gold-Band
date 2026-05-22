@@ -1,234 +1,518 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { GraphNodeVm, RoundDetailVm, RoundSelection, StreamItemVm } from '../types';
+import type { AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayStatus } from '../i18n';
+import { getLogPage, showArtifact, showAttachment } from '../api';
+import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
+import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { EmptyState, Metric, Page } from '@/components/PageScaffold';
+import { EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { MoreVertical, Pin, PinOff, X } from 'lucide-react';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ArrowLeft, MoreVertical, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { toneSurfaceClass } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
+import { normalizeTone } from '@/lib/status';
 
 interface RoundDetailPageProps {
   vm: RoundDetailVm | null;
+  breadcrumbs?: ReactNode;
   selection: RoundSelection;
+  refreshing: boolean;
+  busy: boolean;
+  onRefresh: () => void;
   onSelect: (selection: RoundSelection) => void;
+  onContinueRun: (taskId: string, runId: string, promptId: string) => Promise<unknown>;
 }
 
-type RoundTab = 'requirement' | 'events' | 'progress' | 'artifacts' | 'attachments';
+type NodeDrawerTab = 'detail' | 'session';
 
-export function RoundDetailPage({ vm, selection, onSelect }: RoundDetailPageProps) {
+const defaultLogPageSize = 50;
+const defaultHotLimit = 1000;
+
+export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<RoundTab>('requirement');
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [detailPinned, setDetailPinned] = useState(false);
+  const [requirementOpen, setRequirementOpen] = useState(false);
+  const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
+  const [nodeDrawerTab, setNodeDrawerTab] = useState<NodeDrawerTab>('detail');
+  const [asset, setAsset] = useState<AssetItemVm | null>(null);
+  const [assetContent, setAssetContent] = useState<ContentVm | null>(null);
+  const [assetLoading, setAssetLoading] = useState(false);
+  const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const [optimisticAcpEventsByKey, setOptimisticAcpEventsByKey] = useState<Record<string, AcpUiEventVm[]>>({});
   const selectedNodeId = selectedNodeIdFromSelection(selection);
-  const pinnedPanelWidth = detailOpen && detailPinned ? 'clamp(360px, 34vw, 520px)' : undefined;
-  const streamGroups = useMemo(() => groupStream(vm?.stream ?? []), [vm?.stream]);
-  const availableTabs = useMemo(() => {
-    const tabs: RoundTab[] = ['requirement', 'events'];
-    if (selectedNodeId && streamGroups.progress.length > 0) tabs.push('progress');
-    if (selectedNodeId && streamGroups.artifacts.length > 0) tabs.push('artifacts');
-    if (selectedNodeId && streamGroups.attachments.length > 0) tabs.push('attachments');
-    return tabs;
-  }, [selectedNodeId, streamGroups.progress.length, streamGroups.artifacts.length, streamGroups.attachments.length]);
 
   useEffect(() => {
-    if (!availableTabs.includes(activeTab)) setActiveTab('requirement');
-  }, [activeTab, availableTabs]);
+    if (!asset || !vm) return undefined;
+    let cancelled = false;
+    setAssetLoading(true);
+    const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
+    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name)
+      .then((content) => { if (!cancelled) setAssetContent(content); })
+      .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: String(error), metadata: {} }); })
+      .finally(() => { if (!cancelled) setAssetLoading(false); });
+    return () => { cancelled = true; };
+  }, [asset, vm]);
 
   if (!vm) return <Page><EmptyState>{t('common.loading')}</EmptyState></Page>;
 
-  const closeDetail = () => {
-    setDetailOpen(false);
-    setDetailPinned(false);
+  const requirement = fullRequirementText(vm.requirement, null, t('common.empty'));
+  const roundDisplayStatus = displayPausedRuntimeStatus(vm.round.outcome ?? vm.round.status, vm.run.pauseReason);
+  const roundTerminal = Boolean(vm.round.outcome) || ['success', 'danger'].includes(normalizeTone(roundDisplayStatus));
+  const activeNodeId = vm.round.currentNode ?? vm.run.currentNode;
+  const activeAttemptId = vm.run.currentAttempt;
+  const currentNode = formatCurrentNode(t, vm.graph, activeNodeId);
+  const nodeDetail = vm.selectedNodeDetail;
+  const canContinueRound = isRoundContinuable(vm);
+
+  const openNodeDrawer = (node: GraphNodeVm, tab: NodeDrawerTab = 'detail') => {
+    const nodeId = canonicalNodeId(node);
+    onSelect({ kind: 'node', nodeId });
+    setNodeDrawerTab(tab);
+    setNodeDrawerOpen(true);
+    setAsset(null);
+    setAssetContent(null);
   };
 
-  const pinDetail = (pinned: boolean) => {
-    setDetailPinned(pinned);
-    setDetailOpen(true);
-  };
-
-  const openDetail = () => setDetailOpen(true);
-
-  const selectGraphNode = (node: GraphNodeVm) => {
+  const openGraphNodeLog = (node: GraphNodeVm) => {
     onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
-    if (detailPinned) setDetailOpen(true);
+    setLogDrawerOpen(true);
   };
-  const openGraphNodeDetail = (node: GraphNodeVm) => {
-    onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
-    openDetail();
+
+  const openAsset = (nextAsset: AssetItemVm) => {
+    setAsset(nextAsset);
+    setAssetContent(null);
   };
-  const openGraphSession = (node: GraphNodeVm) => {
-    if (!node.attemptId) return;
-    onSelect({ kind: 'worker-ref', nodeId: canonicalNodeId(node), attemptId: node.attemptId });
-    openDetail();
-  };
-  const openStreamDetail = (nextSelection: RoundSelection) => {
-    onSelect(withCurrentNodeContext(nextSelection, selection));
-    openDetail();
+
+  const handleContinueRun = async () => {
+    if (!activeNodeId || !activeAttemptId) return;
+    const promptId = createAcpPromptId();
+    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, activeNodeId, activeAttemptId);
+    const optimisticEvent = optimisticUserEvent(t('acp.continuePrompt'), promptId);
+    const appendOptimisticEvent = (events: AcpUiEventVm[]) => [...events.filter((event) => promptIdFromAcpEvent(event) !== promptId), optimisticEvent];
+    updateAcpOptimisticEvents(optimisticKey, appendOptimisticEvent);
+    setOptimisticAcpEventsByKey((current) => ({
+      ...current,
+      [optimisticKey]: appendOptimisticEvent(current[optimisticKey] ?? []),
+    }));
+    const result = await onContinueRun(vm.run.taskId, vm.run.id, promptId);
+    if (result) return;
+    const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
+    updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
+    setOptimisticAcpEventsByKey((current) => {
+      const events = markPromptFailed(current[optimisticKey] ?? []);
+      if (events.length === 0) return current;
+      return { ...current, [optimisticKey]: events };
+    });
   };
 
   return (
-    <Page flush className="flex flex-col">
-      <div className="grid min-h-24 grid-cols-[minmax(220px,1fr)_minmax(420px,560px)_auto] items-center gap-5 border-b bg-background/60 px-8 py-4">
-        <div className="min-w-0 space-y-2">
-          <p className="truncate font-mono text-xs text-muted-foreground">{vm.run.id} / {displayStatus(t, vm.round.trigger)}</p>
-          <div className="flex items-center gap-3">
-            <h1 className="truncate text-2xl font-semibold tracking-tight">{vm.round.id}</h1>
-            <StatusBadge value={vm.round.status} label={displayStatus(t, vm.round.status)} />
-            <StatusBadge value={vm.round.outcome} label={displayStatus(t, vm.round.outcome)} />
+    <Page flush className="flex flex-col overflow-y-auto overflow-x-hidden">
+      <PageHeader
+        className="px-5 py-3 xl:px-6"
+        breadcrumbs={breadcrumbs}
+        title={`${vm.run.id}/${vm.round.id}`}
+        subtitle={(
+          <div className="flex min-w-0 items-center gap-2 overflow-hidden text-xs">
+            <span className="shrink-0 font-medium text-foreground">{t('common.requirement')}</span>
+            <RequirementTeaser compact className="flex-1" text={requirement} detailLabel={t('common.viewFullRequirement')} onOpenDetail={() => setRequirementOpen(true)} />
           </div>
-        </div>
-        <div className="grid min-w-0 grid-cols-3 gap-3">
-          <Metric label={t('roundDetail.trigger')} value={displayStatus(t, vm.round.trigger)} compact />
-          <Metric label={t('roundDetail.repairLoopsUsed')} value={vm.round.repairLoopsUsed} compact />
-          <Metric label={t('common.currentNode')} value={formatCurrentNode(t, vm.graph, vm.round.currentNode ?? vm.run.currentNode)} compact />
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="outline" onClick={openDetail}>{t('roundDetail.openDetail')}</Button>
-          <Button variant="outline">{t('roundDetail.exportLog')}</Button>
-          <Button>{t('common.continueRun')}</Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild><Button variant="outline" size="icon"><MoreVertical /></Button></DropdownMenuTrigger>
-            <DropdownMenuContent align="end"><DropdownMenuItem disabled>{t('roundDetail.moreActions')}</DropdownMenuItem></DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        )}
+        actions={(
+          <>
+            <Button variant="outline" disabled={refreshing} onClick={onRefresh}>
+              <RefreshCw className={cn(refreshing && 'animate-spin')} />
+              {t('common.refresh')}
+            </Button>
+            <Button variant="outline" onClick={() => setLogDrawerOpen(true)}>{t('roundDetail.openLog')}</Button>
+            {canContinueRound ? <Button disabled={busy} onClick={() => void handleContinueRun()}>{t('common.continueRun')}</Button> : null}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label={t('roundDetail.moreActions')}>
+                  <MoreVertical />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end"><DropdownMenuItem disabled>{t('roundDetail.moreActions')}</DropdownMenuItem></DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        )}
+        metrics={(
+          <MetricsBar className="lg:grid-cols-5 xl:grid-cols-5">
+            <Metric label={t('roundDetail.trigger')} value={displayStatus(t, vm.round.trigger)} compact />
+            <Metric label={t('roundDetail.maxAttempts')} value={formatLimit(vm.control?.maxAttempts, t)} compact />
+            <Metric label={t('roundDetail.maxRounds')} value={formatLimit(vm.control?.maxRounds, t)} compact />
+            <Metric label={roundTerminal ? t('roundDetail.finalNode') : t('common.currentNode')} value={currentNode} tooltip={currentNode} compact />
+            <Metric label={t('common.outcome')} value={<StatusBadge value={roundDisplayStatus} label={displayStatus(t, roundDisplayStatus)} />} compact />
+          </MetricsBar>
+        )}
+      />
+      <div className="min-h-0 flex-1 overflow-hidden p-4 xl:p-5">
+        <AppCard className="flex h-full min-h-[420px] min-w-0 flex-col gap-0 overflow-hidden py-0">
+          <CardHeader className="border-b px-4 py-2.5">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="shrink-0 whitespace-nowrap">{t('roundDetail.graph')}</CardTitle>
+              {selectedNodeId ? <span className="min-w-0 truncate text-xs text-muted-foreground sm:flex-1 sm:text-right">{t('roundDetail.selectedNode', { node: formatCurrentNode(t, vm.graph, selectedNodeId) })}</span> : null}
+            </div>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 p-3">
+            <GraphView
+              graph={vm.graph}
+              variant="actual"
+              selectedNodeId={selectedNodeId}
+              activeNodeId={vm.round.currentNode ?? vm.run.currentNode}
+              activeStatus={roundDisplayStatus}
+              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node) })}
+              onNodeOpenDetail={(node) => openNodeDrawer(node, 'detail')}
+              onNodeOpenSession={(node) => openNodeDrawer(node, 'session')}
+              onNodeOpenLog={openGraphNodeLog}
+            />
+          </CardContent>
+        </AppCard>
       </div>
-      <div className="grid min-h-0 flex-1 overflow-hidden" style={{ gridTemplateColumns: pinnedPanelWidth ? `minmax(0, 1fr) ${pinnedPanelWidth}` : 'minmax(0, 1fr)' }}>
-        <div className="min-w-0 overflow-hidden p-5">
-          <div className="grid h-full min-h-[620px] min-w-0 grid-rows-[minmax(300px,0.9fr)_minmax(280px,1fr)] gap-5">
-          <AppCard className="flex min-h-0 min-w-0 flex-col overflow-hidden py-0">
-            <CardHeader className="flex-row items-center justify-between border-b px-5 py-3">
-              <CardTitle>{t('roundDetail.graph')}</CardTitle>
-              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground"><Legend tone="success" label={t('roundDetail.success')} /><Legend tone="running" label={t('roundDetail.running')} /><Legend tone="pending" label={t('roundDetail.pending')} /><Legend tone="artifact" label={t('roundDetail.hasArtifacts')} /><Legend tone="attachment" label={t('roundDetail.hasAttachments')} /></div>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 px-4 py-4"><GraphView graph={vm.graph} variant="actual" selectedNodeId={selectedNodeId} onNodeSelect={selectGraphNode} onNodeOpenDetail={openGraphNodeDetail} onNodeOpenSession={openGraphSession} /></CardContent>
-          </AppCard>
-          <AppCard className="flex min-h-0 min-w-0 flex-col gap-0 overflow-hidden py-0">
-            <CardHeader className="border-b px-4 py-2 !pb-2">
-              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as RoundTab)}>
-                <div className="flex flex-wrap items-center gap-3">
-                  <TabsList className="h-9">
-                    <TabsTrigger value="requirement" className="h-7 px-3">{t('roundDetail.contextTab')}</TabsTrigger>
-                    <TabsTrigger value="events" className="h-7 px-3">{t('roundDetail.eventsTab')}</TabsTrigger>
-                    {availableTabs.includes('progress') ? <TabsTrigger value="progress" className="h-7 px-3">{t('roundDetail.progressTab')}</TabsTrigger> : null}
-                    {availableTabs.includes('artifacts') ? <TabsTrigger value="artifacts" className="h-7 px-3">{t('roundDetail.artifactTab', { count: streamGroups.artifacts.length })}</TabsTrigger> : null}
-                    {availableTabs.includes('attachments') ? <TabsTrigger value="attachments" className="h-7 px-3">{t('roundDetail.attachmentTab', { count: streamGroups.attachments.length })}</TabsTrigger> : null}
-                  </TabsList>
-                  <span className="min-w-0 truncate text-xs text-muted-foreground">{selectedNodeId ? t('roundDetail.selectedNode', { node: formatCurrentNode(t, vm.graph, selectedNodeId) }) : t('roundDetail.roundContext')}</span>
-                </div>
-              </Tabs>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 px-0 py-0"><ScrollArea className="h-full"><div className="space-y-2 p-2">{tabItems(activeTab, streamGroups).map((item) => <StreamItem item={item} key={item.id} onOpenDetail={openStreamDetail} />)}{tabItems(activeTab, streamGroups).length === 0 ? <EmptyState>{t('common.empty')}</EmptyState> : null}</div></ScrollArea></CardContent>
-          </AppCard>
-        </div>
-        </div>
-        {detailOpen && detailPinned ? (
-          <aside className="min-h-0 min-w-0 border-l bg-card">
-            <RoundDetailPanelContent content={vm.detail} emptyLabel={t('common.empty')} pinned={detailPinned} onClose={closeDetail} onPinnedChange={pinDetail} />
-          </aside>
-        ) : null}
-        {!detailPinned ? (
-          <RoundDetailSheet
-            content={vm.detail}
-            emptyLabel={t('common.empty')}
-            open={detailOpen}
-            pinned={detailPinned}
-            onOpenChange={(open) => { if (open) setDetailOpen(true); else closeDetail(); }}
-            onPinnedChange={pinDetail}
-          />
-        ) : null}
-      </div>
+      <RequirementDetailSheet
+        open={requirementOpen}
+        title={t('common.fullRequirement')}
+        description={t('common.fullRequirementDescription')}
+        requirement={requirement}
+        closeLabel={t('common.close')}
+        onOpenChange={setRequirementOpen}
+      />
+      <NodeDetailSheet
+        vm={vm}
+        nodeDetail={nodeDetail}
+        open={nodeDrawerOpen}
+        activeTab={nodeDrawerTab}
+        onOpenChange={setNodeDrawerOpen}
+        onTabChange={setNodeDrawerTab}
+        onRefresh={onRefresh}
+        optimisticAcpEventsByKey={optimisticAcpEventsByKey}
+        onOptimisticAcpEventsChange={(key, events) => setOptimisticAcpEventsByKey((current) => {
+          const next = { ...current };
+          if (events.length === 0) delete next[key];
+          else next[key] = events;
+          return next;
+        })}
+        onOpenAsset={openAsset}
+      />
+      <AssetDetailSheet
+        asset={asset}
+        content={assetContent}
+        loading={assetLoading}
+        onBack={() => {
+          setNodeDrawerOpen(true);
+          setAsset(null);
+        }}
+      />
+      <LogDrawer vm={vm} open={logDrawerOpen} onOpenChange={setLogDrawerOpen} />
     </Page>
   );
 }
 
-function RoundDetailSheet({ content, emptyLabel, open, pinned, onOpenChange, onPinnedChange }: { content: RoundDetailVm['detail']; emptyLabel: string; open: boolean; pinned: boolean; onOpenChange: (open: boolean) => void; onPinnedChange: (pinned: boolean) => void }) {
+function displayPausedRuntimeStatus(status: string, pauseReason?: string | null) {
+  if (status === 'paused' && pauseReason === 'error-blocked') return pauseReason;
+  return status;
+}
+
+function isRoundContinuable(vm: RoundDetailVm) {
+  const activeNodeId = vm.round.currentNode ?? vm.run.currentNode;
+  const activeAttemptId = vm.run.currentAttempt;
+  const currentPausedNode = vm.graph.nodes.some((node) => {
+    const sameNode = node.nodeId === activeNodeId || node.id === activeNodeId;
+    const sameAttempt = !activeAttemptId || node.attemptId === activeAttemptId;
+    return node.current && sameNode && sameAttempt && node.status === 'paused' && !node.outcome;
+  });
+
+  return Boolean(
+    vm.run.resumable
+    && vm.run.status === 'paused'
+    && !vm.run.outcome
+    && vm.round.status === 'paused'
+    && !vm.round.outcome
+    && vm.run.currentRound === vm.round.id
+    && activeNodeId
+    && activeAttemptId
+    && currentPausedNode,
+  );
+}
+
+function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[520px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden border-border bg-card p-0 sm:max-w-[520px]" closeLabel={t('common.close')} showOverlay={false}>
-        <RoundDetailPanelContent content={content} emptyLabel={emptyLabel} pinned={pinned} onClose={() => onOpenChange(false)} onPinnedChange={onPinnedChange} />
+      <SheetContent
+        className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
+        style={{ width: 'min(760px, calc(100vw - 32px))', maxWidth: 'min(760px, calc(100vw - 32px))' }}
+        closeLabel={t('common.close')}
+        showOverlay={false}
+      >
+        <Tabs value={activeTab} onValueChange={(value) => onTabChange(value as NodeDrawerTab)} className="h-full min-h-0 gap-0">
+          <SheetHeader className="shrink-0 gap-0 border-b bg-muted/10 px-5 py-2.5 text-left">
+            <SheetTitle className="sr-only">{nodeDetail?.label ?? t('roundDetail.nodeDetail')}</SheetTitle>
+            <SheetDescription className="sr-only">{t('roundDetail.detailDrawerDescription')}</SheetDescription>
+            <TabsList className="h-8 w-fit rounded-full border bg-background/70 p-1 shadow-sm">
+              <TabsTrigger value="detail" className="h-6 rounded-full px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                {t('roundDetail.detailTab')}
+              </TabsTrigger>
+              <TabsTrigger value="session" className="h-6 rounded-full px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none" disabled={!nodeDetail?.attemptId}>
+                {t('roundDetail.sessionTab')}
+              </TabsTrigger>
+            </TabsList>
+          </SheetHeader>
+          <TabsContent value="detail" className="min-h-0 flex-1 overflow-hidden">
+            <ScrollArea className="h-full">
+              <div className="space-y-5 p-6">
+                {nodeDetail ? <NodeDetailContent detail={nodeDetail} runPauseReason={vm.run.pauseReason} onOpenAsset={onOpenAsset} /> : <EmptyState>{t('roundDetail.selectNodeForDetail')}</EmptyState>}
+              </div>
+            </ScrollArea>
+          </TabsContent>
+          <TabsContent value="session" className="min-h-0 flex-1 overflow-hidden">
+            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
+          </TabsContent>
+        </Tabs>
       </SheetContent>
     </Sheet>
   );
 }
 
-function RoundDetailPanelContent({ content, emptyLabel, pinned, onClose, onPinnedChange }: { content: RoundDetailVm['detail']; emptyLabel: string; pinned: boolean; onClose: () => void; onPinnedChange: (pinned: boolean) => void }) {
+function NodeDetailContent({ detail, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
+  const { t } = useTranslation();
+  const detailDisplayStatus = displayPausedRuntimeStatus(detail.outcome ?? detail.status, detail.current ? runPauseReason : null);
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge value={detailDisplayStatus} label={displayStatus(t, detailDisplayStatus)} />
+        <Badge variant="secondary" className="rounded-full px-3">{displayStatus(t, detail.nodeType)}</Badge>
+        {detail.current ? <Badge className="rounded-full px-3">{t('graph.current')}</Badge> : null}
+      </div>
+      <InfoGrid items={[
+        [t('roundDetail.nodeId'), detail.nodeId],
+        [t('roundDetail.sequence'), detail.sequence ?? '-'],
+        [t('agentManagement.agentType'), detail.provider ?? '-'],
+        [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
+        [t('roundDetail.attemptId'), detail.attemptId],
+        [t('roundDetail.startedAt'), detail.startedAt || '-'],
+        [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
+        [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
+        [t('common.artifacts'), detail.artifactCount],
+        [t('common.attachments'), detail.attachmentCount],
+      ]} />
+      <AssetList title={t('common.artifacts')} items={detail.artifacts} emptyLabel={t('roundDetail.noArtifacts')} onOpenAsset={onOpenAsset} />
+      <AssetList title={t('common.attachments')} items={detail.attachments} emptyLabel={t('roundDetail.noAttachments')} onOpenAsset={onOpenAsset} />
+    </div>
+  );
+}
+
+function InfoGrid({ items }: { items: Array<[ReactNode, ReactNode]> }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-3">
+      {items.map(([label, value], index) => (
+        <div className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3" key={index}>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div className="mt-1.5 min-w-0 truncate text-sm font-medium text-foreground" title={String(value)}>{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AssetList({ title, items, emptyLabel, onOpenAsset }: { title: string; items: AssetItemVm[]; emptyLabel: string; onOpenAsset: (asset: AssetItemVm) => void }) {
+  return (
+    <section className="space-y-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <Badge variant="secondary" className="rounded-full px-2.5">{items.length}</Badge>
+      </div>
+      <div className="space-y-2">
+        {items.map((item) => (
+          <Button variant="outline" className="h-11 w-full justify-start gap-3 rounded-xl border-border/70 bg-background/60 px-3 text-left shadow-none hover:bg-muted/25" key={`${item.kind}-${item.name}`} onClick={() => onOpenAsset(item)}>
+            <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
+          </Button>
+        ))}
+        {items.length === 0 ? <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 py-8 text-center text-sm text-muted-foreground">{emptyLabel}</div> : null}
+      </div>
+    </section>
+  );
+}
+
+function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetItemVm | null; content: ContentVm | null; loading: boolean; onBack: () => void }) {
   const { t } = useTranslation();
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 space-y-3 border-b px-5 py-4 text-left">
-        <div className="flex min-w-0 items-center justify-between gap-3 pr-8">
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold text-foreground">{t('common.detail')}</h2>
-            <p className="sr-only">{t('roundDetail.detailDrawerDescription')}</p>
-          </div>
-          {content ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{content.kind}</span> : null}
+    <Sheet modal={false} open={Boolean(asset)} onOpenChange={(open) => { if (!open) onBack(); }}>
+      <SheetContent
+        className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
+        style={{ width: 'min(680px, calc(100vw - 128px))', maxWidth: 'min(680px, calc(100vw - 128px))' }}
+        closeLabel={t('common.close')}
+        showOverlay={false}
+      >
+        <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
+          <Button variant="ghost" size="sm" className="w-fit px-2" onClick={onBack}><ArrowLeft />{t('roundDetail.backToNode')}</Button>
+          <SheetTitle className="truncate text-base">{asset?.title ?? t('roundDetail.assetDetail')}</SheetTitle>
+          <SheetDescription className="sr-only">{t('roundDetail.assetDetail')}</SheetDescription>
+        </SheetHeader>
+        <div className="min-h-0 flex-1">
+          {loading ? <EmptyState>{t('common.loading')}</EmptyState> : <DetailViewerContent content={content} emptyLabel={t('common.empty')} />}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button className="w-fit" variant="outline" size="sm" onClick={() => onPinnedChange(!pinned)}>
-            {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
-            {pinned ? t('roundDetail.unpinDetail') : t('roundDetail.pinDetail')}
-          </Button>
-          {pinned ? <Button className="w-fit" variant="outline" size="sm" onClick={onClose}><X className="size-4" />{t('common.close')}</Button> : null}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function promptIdFromAcpEvent(event: AcpUiEventVm) {
+  if (!event.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return null;
+  const promptId = (event.raw as { promptId?: unknown }).promptId;
+  return typeof promptId === 'string' ? promptId : null;
+}
+
+function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
+  return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
+}
+
+function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
+  const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, detail.attemptId);
+  return (
+    <ACPChatDialog
+      session={detail.acpSession}
+      taskId={vm.run.taskId}
+      runId={vm.run.id}
+      roundId={vm.round.id}
+      nodeId={detail.nodeId}
+      attemptId={detail.attemptId}
+      runtimeStatus={detail.status}
+      manualCheckPending={detail.manualCheckPending}
+      optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
+      onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
+      onManualCheckSubmitted={onRefresh}
+    />
+  );
+}
+
+function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useTranslation();
+  const query = useMemo<LogQueryInput>(() => ({
+    source: 'system',
+    page: 0,
+    pageSize: defaultLogPageSize,
+    hotLimit: defaultHotLimit,
+    scope: { taskId: vm.run.taskId, runId: vm.run.id, roundId: vm.round.id },
+  }), [vm.round.id, vm.run.id, vm.run.taskId]);
+  return (
+    <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
+        style={{ width: 'min(860px, calc(100vw - 96px))', maxWidth: 'min(860px, calc(100vw - 96px))' }}
+        closeLabel={t('common.close')}
+        showOverlay={false}
+      >
+        <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
+          <SheetTitle>{t('roundDetail.systemLogs')}</SheetTitle>
+          <SheetDescription>{t('roundDetail.hotLogHint', { count: defaultHotLimit, days: 30 })}</SheetDescription>
+        </SheetHeader>
+        <LogPageList query={query} exportable />
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function LogPageList({ query, exportable = false, compact = false }: { query: LogQueryInput; exportable?: boolean; compact?: boolean }) {
+  const { t } = useTranslation();
+  const [page, setPage] = useState(query.page ?? 0);
+  const [pageSize, setPageSize] = useState(query.pageSize ?? defaultLogPageSize);
+  const [data, setData] = useState<LogPageVm | null>(null);
+  const [loading, setLoading] = useState(false);
+  const effectiveQuery = useMemo<LogQueryInput>(() => ({ ...query, page, pageSize }), [page, pageSize, query]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getLogPage(effectiveQuery)
+      .then((result) => { if (!cancelled) setData(result); })
+      .catch((error) => { if (!cancelled) setData({ items: [{ id: 'error', timestamp: '', entryType: 'error', summary: String(error), source: effectiveQuery.source ?? 'system', raw: String(error) }], page, pageSize, total: 1, hasPrevious: false, hasNext: false, tier: 'hot', hotLimit: effectiveQuery.hotLimit ?? defaultHotLimit, archiveRetentionDays: 30 }); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [effectiveQuery, page, pageSize]);
+
+  const items = data?.items ?? [];
+  const start = data && data.total > 0 ? data.page * data.pageSize + 1 : 0;
+  const end = data ? Math.min(data.total, (data.page + 1) * data.pageSize) : 0;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className={cn('flex shrink-0 flex-wrap items-center justify-between gap-3 border-b text-sm text-muted-foreground', compact ? 'px-6 py-2.5' : 'px-5 py-3')}>
+        {!compact ? <span>{t('roundDetail.hotLogHint', { count: data?.hotLimit ?? defaultHotLimit, days: data?.archiveRetentionDays ?? 30 })}</span> : <span>{query.source}</span>}
+        <div className="flex items-center gap-2">
+          {exportable ? <Button variant="outline" size="sm" onClick={() => exportLogItems(items)}>{t('roundDetail.exportLog')}</Button> : null}
+          <span>{t('common.pageSize')}</span>
+          <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPage(0); }}>
+            <SelectTrigger className="h-8 w-20"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[25, 50, 100].map((value) => <SelectItem value={String(value)} key={value}>{value}</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
       </div>
-      <div className="min-h-0 flex-1">
-        <DetailViewerContent content={content} emptyLabel={emptyLabel} />
+      <ScrollArea className="min-h-0 flex-1">
+        <div className={cn('divide-y divide-border/70', compact ? 'px-4 py-2' : 'px-3 py-2')}>
+          <div className={cn('grid gap-3 px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
+            <span>{t('roundDetail.logTime')}</span>
+            <span>{t('roundDetail.logType')}</span>
+            {!compact ? <span>{t('roundDetail.logNode')}</span> : null}
+            {!compact ? <span>{t('roundDetail.logStage')}</span> : null}
+            <span>{t('roundDetail.logSummary')}</span>
+          </div>
+          {items.map((item) => <LogRow item={item} compact={compact} key={item.id} />)}
+          {!loading && items.length === 0 ? <EmptyState className="py-10">{t('roundDetail.noLogs')}</EmptyState> : null}
+          {loading ? <EmptyState className="py-10">{t('common.loading')}</EmptyState> : null}
+        </div>
+      </ScrollArea>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 text-sm text-muted-foreground">
+        <span>{t('common.pageRange', { start, end, total: data?.total ?? 0 })}</span>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" disabled={!data?.hasPrevious} onClick={() => setPage((value) => Math.max(0, value - 1))}>{t('common.previousPage')}</Button>
+          <Button variant="outline" size="sm" disabled={!data?.hasNext} onClick={() => setPage((value) => value + 1)}>{t('common.nextPage')}</Button>
+        </div>
       </div>
     </div>
   );
 }
 
-function Legend({ tone, label }: { tone: string; label: string }) {
-  return <span className="inline-flex items-center gap-1.5"><i className={cn('size-2 rounded-full', tone === 'success' && 'bg-gold-success', tone === 'running' && 'bg-gold-running', tone === 'pending' && 'bg-muted-foreground', tone === 'artifact' && 'bg-gold-warning', tone === 'attachment' && 'bg-slate-400')} />{label}</span>;
-}
-
-function StreamItem({ item, onOpenDetail }: { item: StreamItemVm; onOpenDetail: (selection: RoundSelection) => void }) {
-  const target = streamTarget(item);
+function LogRow({ item, compact }: { item: LogEntryVm; compact?: boolean }) {
   return (
-    <Button variant="outline" className={cn('h-auto w-full flex-col items-stretch justify-start gap-2 p-3 text-left', toneSurfaceClass(item.tone), !target && 'opacity-60')} onClick={() => target && onOpenDetail(target)} disabled={!target}>
-      <span className="flex items-start justify-between gap-3">
-        <strong className="line-clamp-1 text-sm">{item.title}</strong>
-        <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">{item.kind}</Badge>
-      </span>
-      <p className="line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{item.content}</p>
-    </Button>
+    <div className={cn('grid gap-3 px-2 py-2.5 text-sm', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
+      <span className="truncate text-muted-foreground" title={item.timestamp}>{item.timestamp || '-'}</span>
+      <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{item.entryType}</Badge></span>
+      {!compact ? <span className="truncate text-muted-foreground" title={item.nodeId ?? undefined}>{item.nodeId ?? '-'}</span> : null}
+      {!compact ? <span className="truncate text-muted-foreground" title={item.stage ?? undefined}>{item.stage ?? '-'}</span> : null}
+      <span className="min-w-0 truncate" title={item.summary}>{item.summary}</span>
+    </div>
   );
 }
 
-function groupStream(items: StreamItemVm[]) {
-  return {
-    requirement: items.filter((item) => item.kind === 'requirement' || item.kind === 'round' || item.kind === 'node'),
-    events: items.filter((item) => item.kind === 'event'),
-    progress: items.filter((item) => item.kind === 'log'),
-    artifacts: items.filter((item) => item.kind === 'artifact'),
-    attachments: items.filter((item) => item.kind === 'attachment'),
-  };
-}
-
-function tabItems(tab: RoundTab, groups: ReturnType<typeof groupStream>) {
-  if (tab === 'events') return groups.events;
-  if (tab === 'progress') return groups.progress;
-  if (tab === 'artifacts') return groups.artifacts;
-  if (tab === 'attachments') return groups.attachments;
-  return groups.requirement;
+function exportLogItems(items: LogEntryVm[]) {
+  const blob = new Blob([items.map((item) => JSON.stringify(item.raw)).join('\n')], { type: 'application/x-ndjson;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'gold-band-logs.jsonl';
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function canonicalNodeId(node: GraphNodeVm) {
   return node.nodeId ?? node.id;
+}
+
+function formatLimit(value: number | null | undefined, t: (key: string) => string) {
+  return value ?? t('workflow.unlimited');
 }
 
 function selectedNodeIdFromSelection(selection: RoundSelection) {
@@ -239,20 +523,4 @@ function selectedNodeIdFromSelection(selection: RoundSelection) {
     return selection.nodeId ?? selection.contextNodeId;
   }
   return selection.contextNodeId;
-}
-
-function withCurrentNodeContext(nextSelection: RoundSelection, currentSelection: RoundSelection) {
-  const contextNodeId = nextSelection.contextNodeId ?? selectedNodeIdFromSelection(nextSelection) ?? selectedNodeIdFromSelection(currentSelection);
-  return contextNodeId ? { ...nextSelection, contextNodeId } : nextSelection;
-}
-
-function streamTarget(item: StreamItemVm): RoundSelection | null {
-  if (item.kind === 'requirement') return { kind: 'requirement' };
-  if (item.kind === 'round') return { kind: 'round' };
-  if (item.kind === 'artifact' && item.nodeId && item.attemptId && item.name) return { kind: 'artifact', nodeId: item.nodeId, attemptId: item.attemptId, name: item.name };
-  if (item.kind === 'attachment' && item.nodeId && item.attemptId && item.name) return { kind: 'attachment', nodeId: item.nodeId, attemptId: item.attemptId, name: item.name };
-  if (item.kind === 'node' && item.nodeId) return { kind: 'node', nodeId: item.nodeId };
-  if (item.kind === 'event') return { kind: 'event', id: item.id, nodeId: item.nodeId ?? undefined, attemptId: item.attemptId ?? undefined };
-  if (item.kind === 'log') return { kind: 'log', id: item.id, nodeId: item.nodeId ?? undefined, attemptId: item.attemptId ?? undefined };
-  return null;
 }

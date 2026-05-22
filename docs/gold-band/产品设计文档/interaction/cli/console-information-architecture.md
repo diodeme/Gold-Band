@@ -34,7 +34,7 @@ Console 不再是单一页面，而是 3 个显式 screen：
 - 不允许 Input 获得焦点
 
 ### 3.2 Task Picker
-- 列出 `.gold-band/tasks/task-*`
+- 列出 `~/.gold-band/projects/{project-id}/tasks/task-*`
 - 当前桌面端采用 refined 双栏布局：左侧为 task list pane，右侧为 preview/action pane
 - 每个 task 展示：
   - task id

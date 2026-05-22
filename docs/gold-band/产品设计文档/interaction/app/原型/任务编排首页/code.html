@@ -175,34 +175,27 @@
 </div>
 </div>
 </div>
-<!-- Summary Cards Bento Grid -->
-<div class="grid grid-cols-5 gap-4 mb-8">
-<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
-<span class="text-stone-500 text-xs font-medium">全部任务</span>
-<span class="text-3xl font-bold font-headline text-stone-100">24</span>
-</div>
-<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
-<span class="text-stone-500 text-xs font-medium">运行中</span>
-<div class="flex items-center gap-2">
-<span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-<span class="text-3xl font-bold font-headline text-blue-400">3</span>
-</div>
-</div>
-<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
-<span class="text-stone-500 text-xs font-medium">可恢复</span>
-<span class="text-3xl font-bold font-headline text-orange-400">2</span>
-</div>
-<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
-<span class="text-stone-500 text-xs font-medium">校验失败</span>
-<span class="text-3xl font-bold font-headline text-red-400">4</span>
-</div>
-<div class="bg-surface-container p-4 rounded-xl border border-stone-800/50 flex flex-col justify-between h-28">
-<span class="text-stone-500 text-xs font-medium">最近完成</span>
-<span class="text-3xl font-bold font-headline text-green-400">8</span>
-</div>
-</div>
-<!-- Custom Task Table -->
+<!-- Task Table Workbench -->
 <div class="flex-1 bg-surface-container-low rounded-xl border border-stone-800 overflow-hidden flex flex-col">
+<div class="flex flex-wrap items-center justify-between gap-3 border-b border-stone-800 px-4 py-3">
+<div>
+<h4 class="text-sm font-semibold text-stone-100">任务列表</h4>
+</div>
+<div class="flex flex-wrap items-center gap-2">
+<div class="bg-stone-950 border border-stone-800 rounded-lg p-1 text-xs text-stone-400">
+<button class="px-3 py-1.5 rounded-md bg-blue-600/20 text-blue-300">全部任务</button>
+<button class="px-3 py-1.5 rounded-md hover:bg-stone-800">运行中</button>
+<button class="px-3 py-1.5 rounded-md hover:bg-stone-800">已完成</button>
+</div>
+<select class="h-9 rounded-md border border-stone-800 bg-stone-950 px-3 text-xs text-stone-300">
+<option>全部状态</option>
+<option>可恢复</option>
+<option>失败</option>
+<option>配置异常</option>
+</select>
+<input class="h-9 min-w-[240px] rounded-md border border-stone-800 bg-stone-950 px-3 text-xs text-stone-300 placeholder:text-stone-600" placeholder="搜索 ID、标题、需求或 Run" />
+</div>
+</div>
 <div class="overflow-x-auto scrollbar-hide">
 <table class="w-full text-left border-collapse min-w-[1000px]">
 <thead>

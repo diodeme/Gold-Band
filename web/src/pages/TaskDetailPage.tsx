@@ -29,7 +29,6 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
             <Button onClick={() => onNavigate({ kind: 'workflow', taskId: vm.task.id })}>{labels.openWorkflow}</Button>
             <Button variant="outline" disabled={busy || !vm.task.workflowValid} onClick={() => onStartRun(vm.task.id)}>{labels.startRun}</Button>
             <Button variant="outline" disabled={busy || !resumable} onClick={() => resumable && onContinueRun(vm.task.id, resumable)}>{labels.continueRun}</Button>
-            <Button variant="outline" disabled>查看产物</Button>
           </>
         )}
       />
@@ -48,7 +47,7 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
             <CardTitle>{labels.requirement}</CardTitle>
             <span className="text-sm text-muted-foreground">完整 authoring 内容，只读</span>
           </CardHeader>
-          <CardContent className="px-4 py-4"><CodeBlock>{vm.requirement}</CodeBlock></CardContent>
+          <CardContent className="px-4 py-4"><CodeBlock className="font-sans text-sm leading-7">{vm.requirement}</CodeBlock></CardContent>
         </AppCard>
 
         <AppCard className="gap-0 py-0">
@@ -71,10 +70,10 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
             <TableBody>
               {vm.runs.map((run) => (
                 <TableRow className="cursor-pointer" key={run.id} onClick={() => onNavigate({ kind: 'workflow', taskId: vm.task.id })}>
-                  <TableCell className="font-mono font-semibold">{run.id}</TableCell>
+                  <TableCell className="font-semibold">{run.id}</TableCell>
                   <TableCell><StatusBadge value={run.status} /></TableCell>
                   <TableCell><StatusBadge value={run.outcome} /></TableCell>
-                  <TableCell className="font-mono text-muted-foreground">{run.currentRound ?? '-'}</TableCell>
+                  <TableCell className="text-muted-foreground">{run.currentRound ?? '-'}</TableCell>
                   <TableCell className="text-muted-foreground">{run.updatedAt}</TableCell>
                   <TableCell className="text-right"><Button variant="link" size="sm" onClick={(event) => { event.stopPropagation(); onNavigate({ kind: 'workflow', taskId: vm.task.id }); }}>{labels.openRun}</Button></TableCell>
                 </TableRow>

@@ -28,7 +28,7 @@
   "resolvedConfig": {
     "provider": "claude-code",
     "profile": "developer",
-    "primaryArtifact": "exec-plan",
+    "primaryArtifact": "节点输出产物",
     "sessionMode": "new"
   }
 }
@@ -57,7 +57,7 @@
 
 ### `nodeType`
 - 类型：string
-- 枚举：`worker | exec | verify`
+- 枚举：`worker | worker | output validation`
 
 ### `status`
 - 类型：string
@@ -87,21 +87,21 @@
 - `primaryArtifact`
 - `sessionMode`（例如 `new | continue`）
 
-#### 对 `exec`
+#### 对 `worker`
 建议至少可包含：
-- `planFrom`
+- `显式 edge`
 
-#### 对 `verify`
+#### 对 `worker`
 建议至少可包含：
 - `provider`
 - `profile`
-- `primaryArtifact`（固定为 `verify-result`）
-- `onAcceptanceFailure`
+- `primaryArtifact`（固定为 `验收输出产物`）
+- `failure/invalid 边`
 - `evidenceScope`（首版固定为 `current-round`）
 
 说明：
-- 虽然 `verify` 在 DSL 上是独立节点类型，但在执行层复用 provider worker 通道
-- 因此 `verify` 的 `resolvedConfig` 建议保留与 `worker` 对称的 provider/profile 信息
+- 虽然 `worker` 在 DSL 上是独立节点类型，但在执行层复用 provider worker 通道
+- 因此 `worker` 的 `resolvedConfig` 建议保留与 `worker` 对称的 provider/profile 信息
 
 ---
 

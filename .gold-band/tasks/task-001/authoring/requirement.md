@@ -1,1 +1,0 @@
-在web目录下输出一个python类，输出hello-world

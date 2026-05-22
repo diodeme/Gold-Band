@@ -30,6 +30,7 @@ impl ProviderAdapter for LoopingProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
@@ -37,17 +38,17 @@ impl ProviderAdapter for LoopingProvider {
         let mut count = self.call_count.lock().unwrap();
         *count += 1;
         let payload = match req.primary_artifact.as_deref() {
-            Some("exec-plan") => PrimaryArtifactPayload {
-                name: "exec-plan".to_string(),
-                content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
+            Some("implementation-result") => PrimaryArtifactPayload {
+                name: "implementation-result".to_string(),
+                content: r#"{"summary":"implemented"}"#.to_string(),
             },
-            Some("verify-result") if *count < 3 => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"failure","summary":"not yet","unmet_requirements":["missing requirement"],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") if *count < 4 => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":false,"reason":"not yet"}"#.to_string(),
             },
-            Some("verify-result") => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"success","summary":"accepted","unmet_requirements":[],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
             _ => unreachable!(),
         };
@@ -88,66 +89,58 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    std::fs::create_dir_all(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring")
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let profiles = app.profiles().unwrap();
+    let dev_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    let accept_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
     std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "developer profile",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/verifier.md")
-            .as_std_path(),
-        "verifier profile",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/authoring/requirement.md")
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(".gold-band/tasks/task-001/authoring/workflow.json").as_std_path(),
-        r#"{
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 2,
-            "on_acceptance_failure": "auto-loop"
-          },
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {"id":"dev","type":"worker","provider":"claude-code","profile":"developer","goal":"Create an exec plan","primary_artifact":"exec-plan"},
-            {"id":"run-tests","type":"exec","plan_from":"dev"},
-            {"id":"accept","type":"verify","provider":"claude-code","profile":"verifier"}
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
+            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {"from":"dev","to":"run-tests","on":"success"},
-            {"from":"run-tests","to":"accept","on":"success"}
+            {{"from":"dev","to":"accept","on":"success"}},
+            {{"from":"accept","to":"$end","on":"success"}},
+            {{"from":"accept","to":"$new-round","on":"failure"}}
           ]
-        }"#,
+        }}"#,
+            dev_profile, accept_profile
+        ),
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(".gold-band/tasks/task-001/task.json")
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         r#"{"version":"0.1","id":"task-001"}"#,
     )
     .unwrap();
-
-    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
@@ -157,8 +150,8 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
         Some(gold_band::domain::RunOutcome::Success)
     );
     assert!(
-        repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-002")
+        app.paths
+            .round_dir(task_id, "run-001", "round-002")
             .exists()
     );
 
@@ -170,7 +163,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     let artifacts = app
         .artifact_list(task_id, "run-001", "round-002", "accept", "attempt-001")
         .unwrap();
-    assert!(artifacts.iter().any(|name| name == "verify-result"));
+    assert!(artifacts.iter().any(|name| name == "accept-result"));
     assert!(
         app.artifact_show(
             task_id,
@@ -178,7 +171,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
             "round-002",
             "accept",
             "attempt-001",
-            "verify-result"
+            "accept-result"
         )
         .unwrap()
         .contains("accepted")
@@ -190,7 +183,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
             "round-002",
             "accept",
             "attempt-001",
-            "verify-result.json"
+            "accept-result.json"
         )
         .unwrap()
         .contains("accepted")

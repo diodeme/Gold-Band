@@ -21,10 +21,6 @@ impl Translator {
     pub fn format(&self, key: &str, value: &str) -> String {
         self.tr(key).replace("{value}", value)
     }
-
-    pub fn format_pair(&self, key: &str, value: &str) -> String {
-        self.tr(key).replace("{value}", value)
-    }
 }
 
 fn zh_cn(key: &str) -> Option<&'static str> {

@@ -1,166 +1,225 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { GraphVm, RoundSummaryVm, RunGroupVm, TaskPage, WorkflowVm } from '../types';
-import { displayPolicy, displayStatus } from '../i18n';
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import { displayStatus } from '../i18n';
+import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
+import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { EmptyState, Metric, MetricsBar, ModuleBar, Page, PageHeader } from '@/components/PageScaffold';
+import { CodeBlock, EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
+import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '@/components/RequirementDisclosure';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { normalizeTone } from '@/lib/status';
+import { isRunStoppable, normalizeTone } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
 
 interface WorkflowPageProps {
   vm: WorkflowVm | null;
   busy: boolean;
+  refreshing: boolean;
+  breadcrumbs?: ReactNode;
   onNavigate: (page: TaskPage) => void;
-  onStartRun: (taskId: string) => void;
+  onRefresh: () => void;
+  onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
   onContinueRun: (taskId: string, runId: string) => void;
   onKillRun: (taskId: string, runId: string) => void;
+  onSaveWorkflow: (taskId: string, workflow: WorkflowDsl) => Promise<WorkflowVm | undefined>;
+  onOpenProfileManagement: () => void;
 }
 
 type StatusFilter = 'all' | 'running' | 'paused' | 'completed' | 'failed' | 'resumable';
 type SortDir = 'asc' | 'desc';
-const pageSizes = [5, 10, 20];
+type WorkflowDrawerMode = 'view' | 'create' | 'edit' | 'repair';
 
-export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, onKillRun }: WorkflowPageProps) {
+type WorkflowLifecycle = {
+  status: 'valid' | 'invalid' | 'missing-workflow';
+  primaryMode: WorkflowDrawerMode;
+  primaryLabelKey: string;
+};
+
+const pageSizes = [5, 10, 20];
+const collapsedRunRowMinHeight = 64;
+const historyRowGridClass = 'grid min-w-0 gap-3 lg:grid-cols-[minmax(160px,0.92fr)_minmax(96px,0.34fr)_minmax(132px,0.48fr)_minmax(0,1.18fr)_minmax(84px,max-content)] lg:items-center';
+
+function historyBodyMinHeightFor(pageSize: number) {
+  return Math.max(320, pageSize * collapsedRunRowMinHeight);
+}
+
+export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onKillRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
   const { t } = useTranslation();
+  const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(5);
-  const [blueprintExpanded, setBlueprintExpanded] = useState(false);
-  const [expandedRunIds, setExpandedRunIds] = useState<Set<string>>(new Set());
-  const [collapsedRunIds, setCollapsedRunIds] = useState<Set<string>>(new Set());
+  const [workflowDrawerMode, setWorkflowDrawerMode] = useState<WorkflowDrawerMode | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
+  const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
+  const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
 
   const toggleRun = (runId: string, expanded: boolean) => {
-    setExpandedRunIds((current) => {
-      const next = new Set(current);
-      if (expanded) next.delete(runId);
-      else next.add(runId);
-      return next;
-    });
-    setCollapsedRunIds((current) => {
-      const next = new Set(current);
-      if (expanded) next.add(runId);
-      else next.delete(runId);
-      return next;
-    });
+    setExpandedRunId(expanded ? null : runId);
+  };
+
+  const closeWorkflowDrawer = useCallback(() => {
+    setWorkflowDrawerMode(null);
+    setWorkflowDraft(null);
+  }, []);
+
+  const openWorkflowDrawer = (mode: WorkflowDrawerMode) => {
+    setWorkflowDrawerMode(mode);
+    if (mode !== 'view') {
+      if (!agentRegistry) getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], supportedTypes: [] }));
+      if (!profileList) getProfiles().then(setProfileList).catch(() => setProfileList({ profiles: [] }));
+      if (!templateStore) getWorkflowTemplates().then(setTemplateStore).catch(() => setTemplateStore({ version: '0.1', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] }));
+    }
   };
 
   if (!vm) return <Page><EmptyState>{t('common.loading')}</EmptyState></Page>;
-  const activeRun = vm.runs.find((group) => group.run.status === 'running' || group.run.status === 'paused')?.run ?? vm.runs[0]?.run;
-  const latestRunId = vm.runs[0]?.run.id;
+  const handleStartRun = async () => {
+    const run = await onStartRun(vm.task.id);
+    if (!run) return;
+    setStatusFilter('all');
+    setSortDir('desc');
+    setPageIndex(0);
+    setExpandedRunId(run.id);
+  };
+
+  const latestRun = vm.runs[0]?.run;
+  const startBlockedByActiveRun = Boolean(latestRun && !isTerminalRun(latestRun));
+  const startRunDisabled = busy || !vm.task.workflowValid || startBlockedByActiveRun;
+  const startRunTitle = startBlockedByActiveRun ? t('workflow.startRunBlockedByActiveRun', { runId: latestRun?.id }) : undefined;
+  const activeRun = vm.runs.find((group) => normalizeTone(group.run.status) === 'running')?.run;
+  const activeWorkflowNodeId = activeRun?.currentNode ?? null;
   const filteredRuns = vm.runs.filter((group) => matchesRunFilter(group, statusFilter));
   const sortedRuns = [...filteredRuns].sort((left, right) => left.run.id.localeCompare(right.run.id, undefined, { numeric: true }) * (sortDir === 'asc' ? 1 : -1));
   const pageCount = Math.max(1, Math.ceil(sortedRuns.length / pageSize));
   const safePageIndex = Math.min(pageIndex, pageCount - 1);
   const pagedRuns = sortedRuns.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
   const emptyMessage = vm.runs.length === 0 ? t('workflow.noRuns') : t('workflow.noRunsForFilter');
+  const requirement = fullRequirementText(vm.task.requirement, vm.task.requirementPreview || vm.task.description, t('common.empty'));
+  const workflowLifecycle = workflowLifecycleFor(vm.task);
+  const workflowDrawerOpen = workflowDrawerMode !== null;
+  const editingWorkflow = workflowDrawerMode === 'create' || workflowDrawerMode === 'edit' || workflowDrawerMode === 'repair';
+  const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
+  const historyBodyMinHeight = historyBodyMinHeightFor(pageSize);
+
+  // Seed draft once when entering an editing mode; never recompute from vm during editing.
+  if (editingWorkflow && !workflowDraft) {
+    const seed = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? null;
+    if (seed) setWorkflowDraft(seed);
+  }
+
+  const saveWorkflow = async (workflow: WorkflowDsl) => {
+    setSavingWorkflow(true);
+    try {
+      const saved = await onSaveWorkflow(vm.task.id, workflow);
+      if (saved) {
+        setWorkflowDraft(null);
+        setWorkflowDrawerMode(null);
+      }
+    } finally {
+      setSavingWorkflow(false);
+    }
+  };
 
   return (
     <Page flush className="flex flex-col">
-      <ModuleBar
-        title={t('workflow.moduleTitle')}
-        tabs={<Tabs value="runs"><TabsList><TabsTrigger value="overview">{t('workflow.overview')}</TabsTrigger><TabsTrigger value="runs">{t('workflow.runs')}</TabsTrigger><TabsTrigger value="nodes">{t('workflow.nodes')}</TabsTrigger><TabsTrigger value="artifacts">{t('workflow.artifacts')}</TabsTrigger></TabsList></Tabs>}
-        actions={<><Button disabled={busy || !vm.task.workflowValid} onClick={() => onStartRun(vm.task.id)}>{t('common.startRun')}</Button><Button variant="outline" disabled={busy || !activeRun?.resumable} onClick={() => activeRun && onContinueRun(vm.task.id, activeRun.id)}>{t('common.continueRun')}</Button></>}
+      <PageHeader
+        className="px-5 py-4 xl:px-6"
+        breadcrumbs={breadcrumbs}
+        title={vm.task.title}
+        subtitle={(
+          <div className="flex min-w-0 items-center gap-2 overflow-hidden text-xs">
+            <span className="shrink-0 font-medium text-foreground">{t('common.requirement')}</span>
+            <RequirementTeaser compact className="flex-1" text={requirement} detailLabel={t('common.viewFullRequirement')} onOpenDetail={() => setRequirementOpen(true)} />
+          </div>
+        )}
+        actions={(
+          <Button variant="outline" disabled={busy || refreshing} onClick={onRefresh}>
+            <RefreshCw className={cn(refreshing && 'animate-spin')} />
+            {t('common.refresh')}
+          </Button>
+        )}
+        metrics={(
+          <MetricsBar className="lg:grid-cols-4 xl:grid-cols-4">
+            <Metric label={t('workflow.taskId')} value={vm.task.id} compact />
+            <WorkflowMetricCard lifecycle={workflowLifecycle} onOpen={openWorkflowDrawer} t={t} />
+            <Metric label={t('taskList.latestRun')} value={latestRun?.id ?? '-'} compact />
+            <Metric label={t('common.outcome')} value={<StatusBadge value={vm.task.displayStatus} label={displayStatus(t, vm.task.displayStatus)} />} compact />
+          </MetricsBar>
+        )}
       />
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-5 p-6">
-          <PageHeader
-            eyebrow={vm.task.id}
-            title={vm.task.title}
-            subtitle={t('workflow.requirementSummary', { summary: vm.task.requirementPreview || vm.task.description || '-' })}
-            actions={<><Button variant="outline" disabled>{t('workflow.viewRequirement')}</Button>{activeRun && (activeRun.status === 'running' || activeRun.status === 'paused') ? <Button variant="destructive" disabled={busy} onClick={() => onKillRun(vm.task.id, activeRun.id)}>{t('common.stopRun')}</Button> : null}</>}
-          />
-          <MetricsBar>
-            <Metric label={t('workflow.taskId')} value={vm.task.id} />
-            <Metric label={t('workflow.workflowStatus')} value={vm.task.workflowValid ? displayStatus(t, 'valid') : vm.task.workflowExists ? displayStatus(t, 'invalid') : displayStatus(t, 'missing-workflow')} />
-            <Metric label={t('workflow.activeRun')} value={activeRun?.id ?? '-'} />
-            <Metric label={t('common.outcome')} value={displayStatus(t, activeRun?.outcome ?? activeRun?.status ?? vm.task.displayStatus)} />
-            <Metric label={t('common.artifacts')} value={vm.task.artifactCount} />
-          </MetricsBar>
-          <AppCard className="gap-0 overflow-hidden py-0">
-            <button
-              type="button"
-              className={cn(
-                'flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55',
-                blueprintExpanded && 'border-b',
-              )}
-              onClick={() => setBlueprintExpanded((value) => !value)}
-              aria-expanded={blueprintExpanded}
-              aria-label={t(blueprintExpanded ? 'workflow.collapseBlueprint' : 'workflow.expandBlueprint')}
-            >
-              {blueprintExpanded ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-              <span className="truncate text-base font-semibold leading-6 text-foreground">{t('workflow.blueprintTitle')}</span>
-            </button>
-            {blueprintExpanded ? (
-              <CardContent className="space-y-3 p-4">
-                {vm.control ? (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
-                    <ControlPill label={t('workflow.maxRepairLoops')} value={vm.control.maxRepairLoops} />
-                    <ControlPill label={t('workflow.maxAcceptanceLoops')} value={vm.control.maxAcceptanceLoops} />
-                    <ControlPill label={t('workflow.onAcceptanceFailure')} value={displayPolicy(t, vm.control.onAcceptanceFailure)} />
-                  </div>
-                ) : null}
-                <GraphView graph={vm.graph} variant="workflow" />
-              </CardContent>
-            ) : null}
-          </AppCard>
-          <AppCard className="gap-0 py-0">
-            <CardHeader className="flex-row items-center justify-between gap-3 border-b px-5 py-3 !pb-3">
-              <CardTitle>{t('workflow.historyTitle')}</CardTitle>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <span>{t('common.filterByStatus')}</span>
-                <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPageIndex(0); }}>
-                  <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(['all', 'running', 'paused', 'completed', 'failed', 'resumable'] as StatusFilter[]).map((value) => <SelectItem value={value} key={value}>{value === 'all' ? t('common.all') : displayStatus(t, value)}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Button variant="outline" size="sm" onClick={() => setSortDir((value) => value === 'asc' ? 'desc' : 'asc')}>{t('common.sort')} {sortDir === 'asc' ? '↑' : '↓'}</Button>
-              </div>
-            </CardHeader>
-            <CardContent className="px-4 py-4">
-              {pagedRuns.length ? (
-                <div className="overflow-hidden rounded-xl border bg-card/35">
-                  <div className="divide-y divide-border/80">
-                    {pagedRuns.map((group) => {
-                      const defaultExpanded = group.run.id === latestRunId || group.run.resumable || group.run.status === 'running' || group.run.status === 'paused';
-                      const expanded = expandedRunIds.has(group.run.id) || (defaultExpanded && !collapsedRunIds.has(group.run.id));
-                      return (
-                        <RunGroupRow
-                          key={group.run.id}
-                          group={group}
-                          graph={vm.graph}
-                          busy={busy}
-                          expanded={expanded}
-                          onToggle={() => toggleRun(group.run.id, expanded)}
-                          onContinue={() => onContinueRun(vm.task.id, group.run.id)}
-                          onKill={() => onKillRun(vm.task.id, group.run.id)}
-                          onOpenRound={(roundId) => onNavigate({ kind: 'round-detail', taskId: vm.task.id, runId: group.run.id, roundId })}
-                          t={t}
-                        />
-                      );
-                    })}
-                  </div>
+        <div className="space-y-3 p-3 xl:p-4">
+          <AppCard className="flex min-h-0 flex-col gap-0 py-0">
+            <CardHeader className="flex flex-col items-stretch gap-3 border-b bg-muted/10 px-4 py-2.5 !pb-2.5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+                <CardTitle className="shrink-0">{t('workflow.historyTitle')}</CardTitle>
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <span className="shrink-0">{t('common.filterByStatus')}</span>
+                  <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value as StatusFilter); setPageIndex(0); }}>
+                    <SelectTrigger className="h-9 w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(['all', 'running', 'paused', 'completed', 'failed', 'resumable'] as StatusFilter[]).map((value) => <SelectItem value={value} key={value}>{value === 'all' ? t('common.all') : displayStatus(t, value)}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button variant="outline" size="sm" onClick={() => setSortDir((value) => value === 'asc' ? 'desc' : 'asc')}>{t('common.sort')} {sortDir === 'asc' ? '↑' : '↓'}</Button>
                 </div>
-              ) : <EmptyState>{emptyMessage}</EmptyState>}
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+              </div>
+              <Button className="w-full shrink-0 sm:w-auto" disabled={startRunDisabled} title={startRunTitle} onClick={handleStartRun}>{t('common.startRun')}</Button>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col px-3 py-2">
+              <div className="min-h-0 flex-1" style={{ minHeight: historyBodyMinHeight }}>
+                {pagedRuns.length ? (
+                  <div className="overflow-hidden rounded-xl border bg-card/55 shadow-sm shadow-background/10">
+                    <div className={cn(historyRowGridClass, 'hidden border-b bg-muted/20 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid')}>
+                      <span>{t('workflow.idGroup')}</span>
+                      <span>{t('common.status')}</span>
+                      <span>{t('workflow.historyProgress')}</span>
+                      <span>{t('workflow.historyContext')}</span>
+                      <span className="text-right">{t('common.action')}</span>
+                    </div>
+                    <div className="divide-y divide-border/80">
+                      {pagedRuns.map((group) => {
+                        const expanded = expandedRunId === group.run.id;
+                        return (
+                          <RunGroupRow
+                            key={group.run.id}
+                            group={group}
+                            graph={vm.graph}
+                            expanded={expanded}
+                            onToggle={() => toggleRun(group.run.id, expanded)}
+                            onOpenRound={(roundId) => onNavigate({ kind: 'round-detail', taskId: vm.task.id, runId: group.run.id, roundId })}
+                            onKillRun={() => onKillRun(vm.task.id, group.run.id)}
+                            t={t}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : <EmptyState className="h-full min-h-full">{emptyMessage}</EmptyState>}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
                 <span>{t('workflow.groupsRange', { start: sortedRuns.length ? safePageIndex * pageSize + 1 : 0, end: Math.min(sortedRuns.length, (safePageIndex + 1) * pageSize), total: sortedRuns.length })}</span>
                 <div className="flex items-center gap-2">
                   <span>{t('common.pageSize')}</span>
                   <Select value={String(pageSize)} onValueChange={(value) => { setPageSize(Number(value)); setPageIndex(0); }}>
                     <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
-                    <SelectContent>{pageSizes.map((value) => <SelectItem value={String(value)} key={value}>{value}</SelectItem>)}</SelectContent>
+                    <SelectContent position="popper" side="top" align="end" sideOffset={6}>
+                      {pageSizes.map((value) => <SelectItem value={String(value)} key={value}>{value}</SelectItem>)}
+                    </SelectContent>
                   </Select>
                   <Button variant="outline" size="sm" disabled={safePageIndex === 0} onClick={() => setPageIndex((value) => Math.max(0, value - 1))}>{t('common.previousPage')}</Button>
                   <Button variant="outline" size="sm" disabled={safePageIndex >= pageCount - 1} onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}>{t('common.nextPage')}</Button>
@@ -170,8 +229,75 @@ export function WorkflowPage({ vm, busy, onNavigate, onStartRun, onContinueRun, 
           </AppCard>
         </div>
       </ScrollArea>
+      <RequirementDetailSheet
+        open={requirementOpen}
+        title={t('common.fullRequirement')}
+        description={t('common.fullRequirementDescription')}
+        requirement={requirement}
+        closeLabel={t('common.close')}
+        onOpenChange={setRequirementOpen}
+      />
+      <Sheet modal={false} open={workflowDrawerOpen} onOpenChange={(open) => !open && closeWorkflowDrawer()}>
+        <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')} showOverlay={false}>
+          <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
+            <SheetDescription className="sr-only">{t('workflow.drawerDescription')}</SheetDescription>
+            <div className="flex min-w-0 flex-wrap items-center gap-3 pr-8">
+              <SheetTitle className="break-words text-xl">{workflowDrawerMode ? t(`workflow.${workflowDrawerMode}WorkflowTitle`) : t('common.workflow')}</SheetTitle>
+              <StatusBadge value={workflowLifecycle.status} label={displayStatus(t, workflowLifecycle.status)} />
+            </div>
+            {vm.task.workflowError ? <p className="text-sm text-muted-foreground">{vm.task.workflowError}</p> : null}
+          </SheetHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-4 p-5">
+              {vm.control && vm.task.workflowExists ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
+                  <ControlPill label={t('workflow.maxAttempts')} value={vm.control.maxAttempts ?? t('workflow.unlimited')} />
+                  <ControlPill label={t('workflow.maxRounds')} value={vm.control.maxRounds ?? t('workflow.unlimited')} />
+                </div>
+              ) : null}
+              {editingWorkflow ? (
+                workflowDraft ? (
+                  <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} onChange={setWorkflowDraft} />
+                ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
+              ) : vm.task.workflowExists ? (
+                <>
+                  <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} activeStatus={activeRun?.status} />
+                  {vm.workflowJson ? <div className="mt-4"><CodeBlock>{vm.workflowJson}</CodeBlock></div> : null}
+                  <div className="mt-4 flex justify-end">
+                    <Button variant="outline" onClick={() => openWorkflowDrawer('edit')}>{t('workflow.editWorkflow')}</Button>
+                  </div>
+                </>
+              ) : <EmptyState>{t('workflow.noWorkflow')}</EmptyState>}
+            </div>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
     </Page>
   );
+}
+
+function WorkflowMetricCard({ lifecycle, onOpen, t }: { lifecycle: WorkflowLifecycle; onOpen: (mode: WorkflowDrawerMode) => void; t: TFunction }) {
+  return (
+    <AppCard className="h-full gap-2 border-border/45 bg-card/45 py-3 shadow-none">
+      <CardContent className="flex h-full flex-col justify-between gap-1 px-3">
+        <span className="block text-xs uppercase tracking-[0.16em] text-muted-foreground">{t('common.workflow')}</span>
+        <div className="flex min-h-8 items-center justify-between gap-3">
+          <StatusBadge value={lifecycle.status} label={displayStatus(t, lifecycle.status)} />
+          <Button size="sm" className="h-8 px-3" onClick={() => onOpen(lifecycle.primaryMode)}>{t(lifecycle.primaryLabelKey)}</Button>
+        </div>
+      </CardContent>
+    </AppCard>
+  );
+}
+
+function workflowLifecycleFor(task: TaskRowVm): WorkflowLifecycle {
+  if (!task.workflowExists) {
+    return { status: 'missing-workflow', primaryMode: 'create', primaryLabelKey: 'workflow.createWorkflow' };
+  }
+  if (!task.workflowValid) {
+    return { status: 'invalid', primaryMode: 'repair', primaryLabelKey: 'workflow.repairWorkflow' };
+  }
+  return { status: 'valid', primaryMode: 'edit', primaryLabelKey: 'workflow.editWorkflow' };
 }
 
 function ControlPill({ label, value }: { label: string; value: ReactNode }) {
@@ -183,49 +309,71 @@ function ControlPill({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function RunGroupRow({ group, graph, busy, expanded, onToggle, onContinue, onKill, onOpenRound, t }: {
+function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun, t }: {
   group: RunGroupVm;
   graph: GraphVm;
-  busy: boolean;
   expanded: boolean;
   onToggle: () => void;
-  onContinue: () => void;
-  onKill: () => void;
   onOpenRound: (roundId: string) => void;
+  onKillRun: () => void;
   t: TFunction;
 }) {
-  const rounds = useMemo(() => [...group.rounds].sort((left, right) => left.index - right.index), [group.rounds]);
+  const rounds = useMemo(() => [...group.rounds].sort((left, right) => right.index - left.index), [group.rounds]);
   const regionId = `run-rounds-${group.run.id}`;
+  const currentNode = formatCurrentNode(t, graph, group.run.currentNode);
+  const pauseReason = group.run.pauseReason ? displayStatus(t, group.run.pauseReason) : null;
+  const running = normalizeTone(group.run.status) === 'running';
+  const stoppable = isRunStoppable(group.run.status);
 
   return (
-    <section className="bg-background/20">
-      <div className="grid gap-3 px-4 py-3 xl:grid-cols-[minmax(220px,0.9fr)_minmax(260px,0.8fr)_auto]">
+    <section className={cn('bg-background/20 transition-colors', expanded && 'bg-muted/15', running && 'workflow-run-active')}>
+      <div
+        className={cn(historyRowGridClass, 'min-h-16 cursor-pointer border-l-2 border-transparent px-4 py-2.5 transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50', expanded && 'border-l-border bg-card/65', running && 'border-l-gold-running bg-gold-running/5')}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-controls={regionId}
+        aria-label={t(expanded ? 'workflow.collapseRun' : 'workflow.expandRun', { runId: group.run.id })}
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
             size="icon"
-            className="h-7 w-7 shrink-0 text-muted-foreground"
-            aria-expanded={expanded}
-            aria-controls={regionId}
-            aria-label={t(expanded ? 'workflow.collapseRun' : 'workflow.expandRun', { runId: group.run.id })}
-            onClick={onToggle}
+            className="h-8 w-8 shrink-0 rounded-lg border-border/70 bg-background/70 text-muted-foreground shadow-sm"
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
           >
             {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </Button>
-          <strong className="truncate font-mono text-base text-foreground">{group.run.id}</strong>
-          <StatusBadge value={group.run.status} label={displayStatus(t, group.run.status)} />
-          <StatusBadge value={group.run.outcome} label={displayStatus(t, group.run.outcome)} />
-          {group.run.resumable ? <StatusBadge value="resumable" label={t('workflow.resumable')} /> : null}
+          <strong className="min-w-0 truncate text-base text-foreground">{group.run.id}</strong>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
-          <InlineMeta label={t('workflow.currentRound')} value={group.run.currentRound ?? '-'} />
-          <InlineMeta label={t('workflow.currentNode')} value={formatCurrentNode(t, graph, group.run.currentNode)} />
-          {group.run.pauseReason ? <InlineMeta label={t('workflow.pauseReason')} value={displayStatus(t, group.run.pauseReason)} /> : null}
-        </div>
-        <div className="flex shrink-0 items-center justify-end gap-2">
-          {group.run.resumable ? <Button variant="outline" size="sm" disabled={busy} onClick={onContinue}>{t('common.continueRun')}</Button> : null}
-          {group.run.status === 'running' || group.run.status === 'paused' ? <Button variant="destructive" size="sm" disabled={busy} onClick={onKill}>{t('common.stopRun')}</Button> : null}
+        <div className="min-w-0"><StatusBadge value={summaryStatusValue(group.run.status, group.run.outcome)} label={displayStatus(t, summaryStatusValue(group.run.status, group.run.outcome))} /></div>
+        <HistoryCell label={t('workflow.currentRound')} value={group.run.currentRound ?? '-'} />
+        <HistoryCell label={pauseReason ? t('workflow.pauseReason') : t('workflow.currentNode')} value={running ? <span className="inline-flex min-w-0 items-center gap-2"><span className="workflow-running-dot bg-gold-running" /> <span className="truncate">{currentNode}</span></span> : pauseReason ?? currentNode} title={pauseReason ?? currentNode} />
+        <div className="flex min-w-0 justify-start lg:justify-end">
+          {stoppable ? (
+            <div className="inline-flex h-8 max-w-full items-center overflow-hidden rounded-lg border bg-background/75 shadow-sm">
+              {group.run.currentRound ? (
+                <>
+                  <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs shadow-none" onClick={(event) => { event.stopPropagation(); onOpenRound(group.run.currentRound!); }}>{t('workflow.openRound')}</Button>
+                  <span className="h-4 w-px bg-border" aria-hidden="true" />
+                </>
+              ) : null}
+              <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); onKillRun(); }}>{t('common.stopRun')}</Button>
+            </div>
+          ) : null}
         </div>
       </div>
       {expanded ? <RoundList id={regionId} runId={group.run.id} graph={graph} rounds={rounds} onOpenRound={onOpenRound} t={t} /> : null}
@@ -233,8 +381,13 @@ function RunGroupRow({ group, graph, busy, expanded, onToggle, onContinue, onKil
   );
 }
 
-function InlineMeta({ label, value }: { label: ReactNode; value: ReactNode }) {
-  return <span className="min-w-0"><span className="text-muted-foreground/70">{label}</span><span className="mx-1 text-muted-foreground/40">/</span><strong className="font-medium text-foreground">{value}</strong></span>;
+function HistoryCell({ label, value, title, className }: { label: ReactNode; value: ReactNode; title?: string | null; className?: string }) {
+  return (
+    <div className={cn('min-w-0 space-y-0.5', className)} title={title ?? undefined}>
+      <span className="block truncate text-[11px] font-medium text-muted-foreground/70">{label}</span>
+      <strong className="block min-w-0 truncate text-sm font-medium text-foreground">{value}</strong>
+    </div>
+  );
 }
 
 function RoundList({ id, runId, graph, rounds, onOpenRound, t }: {
@@ -247,8 +400,8 @@ function RoundList({ id, runId, graph, rounds, onOpenRound, t }: {
 }) {
   if (!rounds.length) return <EmptyState className="mx-4 mb-4">{t('common.empty')}</EmptyState>;
   return (
-    <div id={id} className="border-t bg-muted/[0.08] px-4 py-3">
-      <div className="space-y-2 border-l border-border pl-4">
+    <div id={id} className="min-w-0 border-t bg-muted/20 px-3 py-3 sm:px-4">
+      <div className="ml-3 min-w-0 space-y-2 border-l-2 border-border/70 pl-4 lg:ml-8 lg:pl-5">
         {rounds.map((round) => <RoundRow key={round.id} runId={runId} graph={graph} round={round} onOpen={() => onOpenRound(round.id)} t={t} />)}
       </div>
     </div>
@@ -256,21 +409,30 @@ function RoundList({ id, runId, graph, rounds, onOpenRound, t }: {
 }
 
 function RoundRow({ runId, graph, round, onOpen, t }: { runId: string; graph: GraphVm; round: RoundSummaryVm; onOpen: () => void; t: TFunction }) {
+  const currentNode = formatCurrentNode(t, graph, round.currentNode);
+  const running = normalizeTone(round.status) === 'running';
+
   return (
-    <div className="relative grid items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted/25 xl:grid-cols-[minmax(220px,0.85fr)_minmax(180px,0.6fr)_auto]">
-      <span className={cn('absolute -left-[21px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full border', timelineDotClass(round.outcome ?? round.status))} />
-      <div className="flex min-w-0 items-center gap-2">
-        <strong className="truncate font-mono text-sm text-foreground">{round.id}</strong>
-        <Badge variant="secondary" className="font-mono text-[11px]">#{round.index}</Badge>
-        <StatusBadge value={round.status} label={displayStatus(t, round.status)} />
-        <StatusBadge value={round.outcome} label={displayStatus(t, round.outcome)} />
+    <div className={cn(historyRowGridClass, 'relative min-h-[58px] rounded-lg border border-border/55 bg-background/55 px-3 py-2.5 shadow-sm transition-colors hover:bg-card/75')}>
+      <span className={cn('absolute -left-[27px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 ring-4 ring-muted/20', timelineDotClass(round.outcome ?? round.status), running && 'workflow-timeline-dot-running')} />
+      <div className="flex min-w-0 items-center gap-2 pl-1">
+        <strong className="truncate text-sm text-foreground">{round.id}</strong>
+        <Badge variant="secondary" className="text-[11px]">#{round.index}</Badge>
       </div>
-      <div className="flex min-w-0 flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
-        <InlineMeta label={t('workflow.currentNode')} value={formatCurrentNode(t, graph, round.currentNode)} />
-      </div>
-      <Button variant="outline" size="sm" className="justify-self-end" onClick={onOpen} aria-label={t('workflow.openRoundA11y', { runId, roundId: round.id })}>{t('workflow.openRound')}</Button>
+      <div className="min-w-0"><StatusBadge value={summaryStatusValue(round.status, round.outcome)} label={displayStatus(t, summaryStatusValue(round.status, round.outcome))} /></div>
+      <HistoryCell label={t('workflow.currentNode')} value={running ? <span className="inline-flex min-w-0 items-center gap-2"><span className="workflow-running-dot bg-gold-running" /> <span className="truncate">{currentNode}</span></span> : currentNode} title={currentNode} />
+      <HistoryCell label={t('workflow.currentRound')} value={`#${round.index}`} />
+      <Button variant="outline" size="sm" className="w-full justify-self-start sm:w-auto lg:justify-self-end" onClick={onOpen} aria-label={t('workflow.openRoundA11y', { runId, roundId: round.id })}>{t('workflow.openRound')}</Button>
     </div>
   );
+}
+
+function summaryStatusValue(status?: string | null, outcome?: string | null) {
+  return outcome ?? status ?? null;
+}
+
+function isTerminalRun(run: RunSummaryVm) {
+  return run.status === 'completed' || Boolean(run.outcome);
 }
 
 function timelineDotClass(value?: string | null) {

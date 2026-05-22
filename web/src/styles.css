@@ -1,11 +1,43 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@font-face {
+  font-family: "Gold Band MiSans";
+  src: url("/fonts/misans/MiSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Gold Band MiSans";
+  src: url("/fonts/misans/MiSans-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Gold Band MiSans";
+  src: url("/fonts/misans/MiSans-Semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Gold Band MiSans";
+  src: url("/fonts/misans/MiSans-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -46,81 +78,160 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-:root {
+:root,
+:root[data-theme='dark'] {
   color-scheme: dark;
-  --background: #080808;
-  --foreground: #f3f0e8;
-  --card: #171717;
-  --card-foreground: #f3f0e8;
-  --popover: #171717;
-  --popover-foreground: #f3f0e8;
-  --primary: #f59e0b;
-  --primary-foreground: #090704;
-  --secondary: #202020;
-  --secondary-foreground: #f3f0e8;
-  --muted: #101010;
-  --muted-foreground: #8d8982;
-  --accent: rgba(245, 158, 11, 0.13);
-  --accent-foreground: #ffc174;
-  --destructive: #ff5f63;
-  --border: #2b2b2b;
-  --input: #2b2b2b;
-  --ring: #f59e0b;
-  --sidebar: #060606;
-  --sidebar-foreground: #f3f0e8;
-  --sidebar-primary: #f59e0b;
-  --sidebar-primary-foreground: #090704;
-  --sidebar-accent: rgba(245, 158, 11, 0.13);
-  --sidebar-accent-foreground: #ffc174;
-  --sidebar-border: #2b2b2b;
-  --sidebar-ring: #f59e0b;
-  --gold-workspace: #0b0b0b;
-  --gold-surface-low: #101010;
-  --gold-surface-high: #202020;
-  --gold-line-soft: rgba(255, 255, 255, 0.07);
-  --gold-running: #5aa2ff;
-  --gold-success: #35d07f;
-  --gold-warning: #ff9f43;
-  --gold-danger: #ff5f63;
+  --app-font-sans: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  --app-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --background: #0b0d10;
+  --foreground: #f4efe6;
+  --card: #101215;
+  --card-foreground: #f4efe6;
+  --popover: #121418;
+  --popover-foreground: #f4efe6;
+  --primary: #d6b36a;
+  --primary-foreground: #15100a;
+  --secondary: #171a1f;
+  --secondary-foreground: #f4efe6;
+  --muted: #111419;
+  --muted-foreground: #9b9488;
+  --accent: rgba(214, 179, 106, 0.12);
+  --accent-foreground: #f0d28a;
+  --destructive: #ff6b76;
+  --border: #242832;
+  --input: #2a2e35;
+  --ring: #d6b36a;
+  --sidebar: #080a0d;
+  --sidebar-foreground: #f4efe6;
+  --sidebar-primary: #d6b36a;
+  --sidebar-primary-foreground: #15100a;
+  --sidebar-accent: rgba(214, 179, 106, 0.12);
+  --sidebar-accent-foreground: #f0d28a;
+  --sidebar-border: #252930;
+  --sidebar-ring: #d6b36a;
+  --gold-workspace: #090b0e;
+  --gold-surface-low: #101215;
+  --gold-surface-high: #171a1f;
+  --gold-line-soft: rgba(244, 239, 230, 0.06);
+  --gold-running: #79a8ff;
+  --gold-success: #3ddc97;
+  --gold-warning: #d6b36a;
+  --gold-danger: #ff6b76;
   --radius: 0.625rem;
+}
+
+:root[data-theme='black'] {
+  color-scheme: dark;
+  --background: #050814;
+  --foreground: #edf4ff;
+  --card: #080c17;
+  --card-foreground: #edf4ff;
+  --popover: #0a0f1c;
+  --popover-foreground: #edf4ff;
+  --primary: #6ea8fe;
+  --primary-foreground: #040712;
+  --secondary: #0c1423;
+  --secondary-foreground: #edf4ff;
+  --muted: #090f1d;
+  --muted-foreground: #98a6bd;
+  --accent: rgba(110, 168, 254, 0.14);
+  --accent-foreground: #cfe3ff;
+  --destructive: #ff7185;
+  --border: #172236;
+  --input: #1b2940;
+  --ring: #6ea8fe;
+  --sidebar: #040711;
+  --sidebar-foreground: #edf4ff;
+  --sidebar-primary: #6ea8fe;
+  --sidebar-primary-foreground: #040712;
+  --sidebar-accent: rgba(110, 168, 254, 0.14);
+  --sidebar-accent-foreground: #cfe3ff;
+  --sidebar-border: #1b2940;
+  --sidebar-ring: #6ea8fe;
+  --gold-workspace: #050814;
+  --gold-surface-low: #080c17;
+  --gold-surface-high: #0c1423;
+  --gold-line-soft: rgba(152, 166, 189, 0.12);
+  --gold-running: #6ea8fe;
+  --gold-success: #2dd48f;
+  --gold-warning: #d6b36a;
+  --gold-danger: #ff7185;
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --background: #f5efe3;
-  --foreground: #201d18;
-  --card: #ffffff;
-  --card-foreground: #201d18;
+  --background: #f7faff;
+  --foreground: #111827;
+  --card: #fbfdff;
+  --card-foreground: #111827;
   --popover: #ffffff;
-  --popover-foreground: #201d18;
-  --primary: #b87506;
-  --primary-foreground: #fff9ef;
-  --secondary: #eee5d7;
-  --secondary-foreground: #201d18;
-  --muted: #fffaf2;
-  --muted-foreground: #756b5b;
-  --accent: rgba(184, 117, 6, 0.12);
-  --accent-foreground: #8a5600;
-  --destructive: #c83e43;
-  --border: #ded2c1;
-  --input: #ded2c1;
-  --ring: #b87506;
-  --sidebar: #fff9ef;
-  --sidebar-foreground: #201d18;
-  --sidebar-primary: #b87506;
-  --sidebar-primary-foreground: #fff9ef;
-  --sidebar-accent: rgba(184, 117, 6, 0.12);
-  --sidebar-accent-foreground: #8a5600;
-  --sidebar-border: #ded2c1;
-  --sidebar-ring: #b87506;
-  --gold-workspace: #f7f0e4;
-  --gold-surface-low: #fffaf2;
-  --gold-surface-high: #eee5d7;
-  --gold-line-soft: rgba(49, 39, 26, 0.11);
-  --gold-running: #2563eb;
+  --popover-foreground: #111827;
+  --primary: #3157d5;
+  --primary-foreground: #ffffff;
+  --secondary: #eaf1ff;
+  --secondary-foreground: #172554;
+  --muted: #f2f5fa;
+  --muted-foreground: #667085;
+  --accent: rgba(49, 87, 213, 0.1);
+  --accent-foreground: #2848b8;
+  --destructive: #dc2626;
+  --border: #d4deeb;
+  --input: #d9e4f2;
+  --ring: #3157d5;
+  --sidebar: #edf4ff;
+  --sidebar-foreground: #111827;
+  --sidebar-primary: #3157d5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(49, 87, 213, 0.1);
+  --sidebar-accent-foreground: #2848b8;
+  --sidebar-border: #d9e4f2;
+  --sidebar-ring: #3157d5;
+  --gold-workspace: #f4f8ff;
+  --gold-surface-low: #f7faff;
+  --gold-surface-high: #eaf1ff;
+  --gold-line-soft: rgba(49, 87, 213, 0.12);
+  --gold-running: #3157d5;
   --gold-success: #15803d;
-  --gold-warning: #c2410c;
+  --gold-warning: #9a6b1f;
   --gold-danger: #dc2626;
+}
+
+:root[data-theme='light-warm'] {
+  color-scheme: light;
+  --background: #f7f2e8;
+  --foreground: #211d16;
+  --card: #fffaf1;
+  --card-foreground: #211d16;
+  --popover: #fffdf8;
+  --popover-foreground: #211d16;
+  --primary: #9a6b1f;
+  --primary-foreground: #fffaf0;
+  --secondary: #ebe1d1;
+  --secondary-foreground: #211d16;
+  --muted: #fbf6ec;
+  --muted-foreground: #756d60;
+  --accent: rgba(154, 107, 31, 0.11);
+  --accent-foreground: #765116;
+  --destructive: #c83e43;
+  --border: #dccfba;
+  --input: #e3d7c3;
+  --ring: #9a6b1f;
+  --sidebar: #fff8ec;
+  --sidebar-foreground: #211d16;
+  --sidebar-primary: #9a6b1f;
+  --sidebar-primary-foreground: #fffaf0;
+  --sidebar-accent: rgba(154, 107, 31, 0.11);
+  --sidebar-accent-foreground: #765116;
+  --sidebar-border: #e3d7c3;
+  --sidebar-ring: #9a6b1f;
+  --gold-workspace: #f8f1e5;
+  --gold-surface-low: #fbf6ec;
+  --gold-surface-high: #ebe1d1;
+  --gold-line-soft: rgba(54, 43, 28, 0.12);
+  --gold-running: #3157d5;
+  --gold-success: #15803d;
+  --gold-warning: #9a6b1f;
+  --gold-danger: #c83e43;
 }
 
 @layer base {
@@ -183,8 +294,59 @@
   font-family: var(--font-sans);
 }
 
+.workflow-graph .workflow-node-selected {
+  border-radius: 14px;
+  border-color: var(--gold-running) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold-running) 72%, transparent), 0 0 0 5px color-mix(in srgb, var(--gold-running) 16%, transparent), 0 18px 42px color-mix(in srgb, var(--gold-running) 14%, transparent);
+}
+
+.workflow-graph .workflow-node-selected::after {
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--gold-running) 16%, transparent), transparent 42%);
+}
+
+.workflow-graph .react-flow__edge-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.workflow-graph .react-flow__edge-text {
+  paint-order: stroke;
+  stroke: var(--background);
+  stroke-width: 3px;
+}
+
 .workflow-graph .react-flow__edge-textbg {
-  stroke: var(--border);
+  stroke: transparent;
+}
+
+.workflow-edge-branch .react-flow__edge-path {
+  opacity: 0.86;
+}
+
+.workflow-edge-flow .react-flow__edge-path,
+.workflow-edge-flow.react-flow__edge-path {
+  stroke-dasharray: 3 17;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-path,
+.workflow-graph .workflow-edge-selected.react-flow__edge-path {
+  stroke: var(--gold-running) !important;
+  stroke-width: 4.5px;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--gold-running) 92%, transparent)) drop-shadow(0 0 14px color-mix(in srgb, var(--gold-running) 42%, transparent));
+  opacity: 1;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-interaction {
+  stroke-width: 22px;
+}
+
+.workflow-graph .workflow-edge-selected .react-flow__edge-text {
+  fill: var(--gold-running) !important;
 }
 
 .workflow-graph .react-flow__controls {
@@ -215,4 +377,99 @@
 
 .workflow-graph .react-flow__controls-button svg {
   fill: currentColor;
+}
+
+.workflow-running-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+}
+
+.workflow-node-running::before {
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  background: linear-gradient(110deg, transparent 0%, color-mix(in srgb, var(--gold-running) 22%, transparent) 42%, transparent 68%);
+  opacity: 0.8;
+  transform: translateX(-70%);
+}
+
+.workflow-edge-running .react-flow__edge-path {
+  stroke-dasharray: 7 9;
+}
+
+.workflow-timeline-dot-running {
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--gold-running) 13%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .workflow-node-running {
+    animation: workflow-running-halo 1.8s ease-in-out infinite;
+  }
+
+  .workflow-node-running::before {
+    animation: workflow-node-sheen 2.4s ease-in-out infinite;
+  }
+
+  .workflow-running-dot,
+  .workflow-running-mark,
+  .workflow-timeline-dot-running {
+    animation: workflow-running-pulse 1.35s ease-in-out infinite;
+  }
+
+  .workflow-edge-running .react-flow__edge-path,
+  .workflow-edge-flow .react-flow__edge-path,
+  .workflow-edge-flow.react-flow__edge-path {
+    animation: workflow-edge-flow 2.4s linear infinite;
+  }
+
+  .workflow-run-active {
+    animation: workflow-row-enter 220ms ease-out both;
+  }
+}
+
+@keyframes workflow-running-halo {
+  0%, 100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold-running) 18%, transparent), 0 12px 30px color-mix(in srgb, var(--gold-running) 10%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold-running) 34%, transparent), 0 16px 40px color-mix(in srgb, var(--gold-running) 22%, transparent);
+  }
+}
+
+@keyframes workflow-node-sheen {
+  0%, 35% { transform: translateX(-80%); opacity: 0; }
+  50% { opacity: 0.85; }
+  85%, 100% { transform: translateX(80%); opacity: 0; }
+}
+
+@keyframes workflow-running-pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes workflow-edge-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -20; }
+}
+
+@keyframes workflow-row-enter {
+  from {
+    opacity: 0.72;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

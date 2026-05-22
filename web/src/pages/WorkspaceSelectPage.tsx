@@ -22,9 +22,11 @@ export function WorkspaceSelectPage({ bootstrap, busy, onChooseWorkspace, onSele
     <Page className="grid grid-cols-[minmax(0,0.95fr)_minmax(360px,0.55fr)] gap-6 p-8">
       <AppCard className="justify-center overflow-hidden border-primary/20 bg-[radial-gradient(circle_at_top_left,rgba(245,158,11,0.18),transparent_36%),var(--card)]">
         <CardContent className="max-w-2xl space-y-7 px-8 py-10">
-          <span className="grid size-16 place-items-center rounded-2xl bg-primary text-3xl font-black text-primary-foreground">◇</span>
+          <span className="grid h-16 w-24 place-items-center rounded-2xl bg-sidebar-accent/60 p-2 ring-1 ring-primary/20">
+            <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
+          </span>
           <div className="space-y-3">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-primary">Gold Band Desktop</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">Gold Band Desktop</p>
             <h1 className="text-4xl font-semibold tracking-tight">{t('common.selectWorkspace')}</h1>
             <p className="text-sm leading-7 text-muted-foreground">选择包含 .gold-band 目录的工作空间后，桌面端会读取该目录下的 tasks、runs 与 artifacts，并在下次启动时自动恢复。</p>
           </div>
@@ -46,7 +48,7 @@ export function WorkspaceSelectPage({ bootstrap, busy, onChooseWorkspace, onSele
             <div className="space-y-2 p-3">
               {recent.map((workspace) => (
                 <Button className="h-auto w-full justify-between gap-4 p-4" variant="outline" key={workspace} onClick={() => onSelectRecentWorkspace(workspace)} disabled={busy}>
-                  <span className="truncate font-mono text-xs text-muted-foreground">{workspace}</span>
+                  <span className="truncate text-xs text-muted-foreground">{workspace}</span>
                   <small className="shrink-0 text-primary">打开</small>
                 </Button>
               ))}

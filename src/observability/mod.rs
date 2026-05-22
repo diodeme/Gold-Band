@@ -79,7 +79,6 @@ pub enum ProgressStage {
     Streaming,
     NormalizingArtifact,
     RunningCommand,
-    Verifying,
     Paused,
     Blocked,
     Completed,

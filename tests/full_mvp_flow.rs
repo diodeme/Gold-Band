@@ -33,6 +33,7 @@ impl ProviderAdapter for SequencedProvider {
         DoctorResult {
             available: true,
             reason: None,
+            capabilities: None,
         }
     }
 
@@ -42,19 +43,25 @@ impl ProviderAdapter for SequencedProvider {
         self.invocations.lock().unwrap().push(req.clone());
 
         let payload = match req.primary_artifact.as_deref() {
-            Some("exec-plan") => {
-                if req.invocation_kind == gold_band::domain::InvocationKind::WorkerGeneric {
-                    std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
-                    std::fs::write(req.attempt_dir.join("attachments/context.md").as_std_path(), "attachment context").unwrap();
-                }
+            Some("implementation-result") => {
+                std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
+                std::fs::write(
+                    req.attempt_dir.join("attachments/context.md").as_std_path(),
+                    "attachment context",
+                )
+                .unwrap();
                 PrimaryArtifactPayload {
-                    name: "exec-plan".to_string(),
-                    content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
+                    name: "implementation-result".to_string(),
+                    content: r#"{"summary":"implemented"}"#.to_string(),
                 }
+            }
+            Some("test-result") => PrimaryArtifactPayload {
+                name: "test-result".to_string(),
+                content: r#"{"result":true,"reason":"checks passed"}"#.to_string(),
             },
-            Some("verify-result") => PrimaryArtifactPayload {
-                name: "verify-result".to_string(),
-                content: r#"{"version":"0.1","status":"success","summary":"accepted","unmet_requirements":[],"validation_gaps":[]}"#.to_string(),
+            Some("accept-result") => PrimaryArtifactPayload {
+                name: "accept-result".to_string(),
+                content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
             _ => unreachable!(),
         };
@@ -89,115 +96,99 @@ impl ProviderAdapter for SequencedProvider {
     }
 }
 
-fn write_happy_path_fixture(repo_root: &Utf8PathBuf, task_id: &str) {
-    std::fs::create_dir_all(
-        repo_root
-            .join(format!(".gold-band/tasks/{task_id}/authoring"))
-            .as_std_path(),
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo_root.join(".gold-band/presets/profiles").as_std_path()).unwrap();
+fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) {
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let profiles = app.profiles().unwrap();
+    let dev_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    let accept_profile = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
     std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/developer.md")
-            .as_std_path(),
-        "developer profile",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(".gold-band/presets/profiles/verifier.md")
-            .as_std_path(),
-        "verifier profile",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root
-            .join(format!(
-                ".gold-band/tasks/{task_id}/authoring/requirement.md"
-            ))
-            .as_std_path(),
+        app.paths.requirement_file(task_id).as_std_path(),
         "Implement feature",
     )
     .unwrap();
     std::fs::write(
-        repo_root.join(format!(".gold-band/tasks/{task_id}/authoring/workflow.json")).as_std_path(),
-        r#"{
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
           "version": "0.1",
           "id": "full-flow",
           "entry": "dev",
-          "control": {
-            "max_repair_loops": 1,
-            "max_acceptance_loops": 1,
-            "on_acceptance_failure": "auto-loop"
-          },
+          "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {"id":"dev","type":"worker","provider":"claude-code","profile":"developer","goal":"Create an exec plan","primary_artifact":"exec-plan"},
-            {"id":"run-tests","type":"exec","plan_from":"dev"},
-            {"id":"accept","type":"verify","provider":"claude-code","profile":"verifier"}
+            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
+            {{"id":"test","type":"worker","provider":"claude-code","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","primary_artifact":"test-result","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {"from":"dev","to":"run-tests","on":"success"},
-            {"from":"run-tests","to":"accept","on":"success"}
+            {{"from":"dev","to":"test","on":"success"}},
+            {{"from":"test","to":"accept","on":"success"}},
+            {{"from":"accept","to":"$end","on":"success"}}
           ]
-        }"#,
+        }}"#,
+            dev_profile, dev_profile, accept_profile
+        ),
     )
     .unwrap();
     std::fs::write(
-        repo_root
-            .join(format!(".gold-band/tasks/{task_id}/task.json"))
-            .as_std_path(),
+        app.paths.task_file(task_id).as_std_path(),
         format!(r#"{{"version":"0.1","id":"{task_id}"}}"#),
     )
     .unwrap();
 }
 
 #[test]
-fn run_start_completes_worker_exec_verify_happy_path() {
+fn run_start_completes_worker_test_accept_happy_path() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
-    write_happy_path_fixture(&repo_root, task_id);
-
+    let gold_band_home = repo_root.join("gold-band-home");
+    unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
     let provider = SequencedProvider::default();
     let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    write_happy_path_fixture(&app, &repo_root, task_id);
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 
-    let run_state: RunState = gold_band::storage::read_json(
-        &repo_root.join(".gold-band/tasks/task-001/runs/run-001/run.json"),
-    )
-    .unwrap();
+    let run_state: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
     assert_eq!(run_state.status, gold_band::domain::RunStatus::Completed);
     assert_eq!(
         run_state.outcome,
         Some(gold_band::domain::RunOutcome::Success)
     );
 
-    assert!(repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/accept/attempt-001/artifacts/verify-result.json").exists());
+    assert!(
+        app.paths
+            .artifact_file(
+                task_id,
+                "run-001",
+                "round-001",
+                "accept",
+                "attempt-001",
+                "accept-result"
+            )
+            .exists()
+    );
 
     let invocations = provider.invocations.lock().unwrap();
-    let verify_call = invocations
+    let accept_call = invocations
         .iter()
-        .find(|call| call.primary_artifact.as_deref() == Some("verify-result"))
+        .find(|call| call.primary_artifact.as_deref() == Some("accept-result"))
         .unwrap();
-    assert!(verify_call.attachments_dir.is_none());
-    assert_eq!(verify_call.cold_artifacts.len(), 2);
-    assert!(
-        verify_call
-            .cold_artifacts
-            .iter()
-            .any(|entry| entry.name.as_deref() == Some("exec-result"))
-    );
-    assert!(
-        verify_call
-            .cold_artifacts
-            .iter()
-            .any(|entry| entry.name.as_deref() == Some("worker-primary-artifact"))
-    );
-    assert_eq!(verify_call.cold_attachments.len(), 1);
-    assert_eq!(
-        verify_call.cold_attachments[0].path.file_name(),
-        Some("context.md")
-    );
+    assert!(accept_call.attachments_dir.is_some());
+    assert!(accept_call.output_contract.is_some());
+    assert!(accept_call.cold_artifacts.is_empty());
+    assert!(accept_call.cold_attachments.is_empty());
 }

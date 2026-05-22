@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   chooseWorkspace,
   continueRun,
+  createTask,
+  getAgentRegistry,
   getAppBootstrap,
   getRoundDetail,
   getTaskList,
   getWorkflow,
   killRun,
   saveDesktopPreferences,
+  saveTaskWorkflow,
   selectRecentWorkspace,
   startRun,
 } from './api';
@@ -16,15 +19,20 @@ import { Breadcrumbs } from './components/Breadcrumbs';
 import { Shell } from './components/Shell';
 import i18n, { i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
+import { AgentManagementPage } from './pages/AgentManagementPage';
+import { ContextManagementPage } from './pages/ContextManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskListPage } from './pages/TaskListPage';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
-import { pushRoute, replaceRoute, routeFromPath } from './routes';
-import { applyTheme } from './theme';
+import { pushRoute, replaceRoute, routeFromPath, taskListPage } from './routes';
+import { applyFont, applyTheme } from './theme';
 import type {
+  AgentRegistryVm,
   AppBootstrapVm,
+  CreateTaskInput,
+  DesktopFontPreference,
   DesktopLanguage,
   DesktopThemePreference,
   PreferencesVm,
@@ -33,10 +41,11 @@ import type {
   RoundSelection,
   TaskListVm,
   TaskPage,
+  WorkflowDsl,
   WorkflowVm,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'dark', language: 'zh-cn' };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
@@ -46,6 +55,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
+  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
   const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
@@ -53,6 +63,7 @@ export function App() {
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const { t } = useTranslation();
@@ -60,6 +71,18 @@ export function App() {
   useEffect(() => {
     applyTheme(preferences.theme);
   }, [preferences.theme]);
+
+  useEffect(() => {
+    if (preferences.theme !== 'system') return undefined;
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => applyTheme('system');
+    colorScheme.addEventListener('change', syncSystemTheme);
+    return () => colorScheme.removeEventListener('change', syncSystemTheme);
+  }, [preferences.theme]);
+
+  useEffect(() => {
+    applyFont(preferences.font);
+  }, [preferences.font]);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
@@ -87,6 +110,7 @@ export function App() {
   const resetWorkspaceViews = () => {
     setTaskPage({ kind: 'task-list' });
     setRoundSelection({ kind: 'round' });
+    setAgentRegistry(null);
     setTaskList(null);
     setWorkflow(null);
     setRoundDetail(null);
@@ -94,18 +118,31 @@ export function App() {
     setWorkspacePickerOpen(false);
   };
 
-  const hasPageData = taskPage.kind === 'task-list'
-    ? taskList !== null
-    : taskPage.kind === 'workflow'
-      ? workflow !== null
-      : roundDetail !== null;
+  const hasPageData = primaryModule === 'agent-management'
+    ? agentRegistry !== null
+    : primaryModule === 'knowledge-base'
+      ? true
+      : taskPage.kind === 'task-list'
+      ? taskList !== null
+      : taskPage.kind === 'workflow'
+        ? workflow !== null
+        : roundDetail !== null;
 
   const refresh = useCallback(async (mode: RefreshMode = 'manual') => {
     if (!bootstrap) return;
-    if (mode !== 'background') setLoading(mode);
+    if (mode === 'background' && backgroundRefreshInFlightRef.current) return;
+    if (mode === 'background') {
+      backgroundRefreshInFlightRef.current = true;
+    } else {
+      setLoading(mode);
+    }
     setError(null);
     try {
-      if (taskPage.kind === 'task-list') {
+      if (primaryModule === 'agent-management') {
+        setAgentRegistry(await getAgentRegistry());
+      } else if (primaryModule === 'knowledge-base') {
+        return;
+      } else if (taskPage.kind === 'task-list') {
         setTaskList(await getTaskList());
       } else if (taskPage.kind === 'workflow') {
         setWorkflow(await getWorkflow(taskPage.taskId));
@@ -115,24 +152,29 @@ export function App() {
     } catch (err) {
       setError(String(err));
     } finally {
-      if (mode !== 'background') setLoading(null);
+      if (mode === 'background') {
+        backgroundRefreshInFlightRef.current = false;
+      } else {
+        setLoading(null);
+      }
     }
-  }, [bootstrap, roundSelection, taskPage]);
+  }, [bootstrap, primaryModule, roundSelection, taskPage]);
 
   useEffect(() => {
     void refresh(hasPageData ? 'background' : 'initial');
   }, [hasPageData, refresh]);
 
   useEffect(() => {
-    const active = taskList?.tasks.some((task) => task.latestRun?.status === 'running')
-      || workflow?.runs.some((group) => group.run.status === 'running')
-      || roundDetail?.run.status === 'running'
-      || roundDetail?.round.status === 'running'
-      || roundDetail?.graph.nodes.some((node) => node.status === 'running');
-    if (!active) return undefined;
-    const interval = window.setInterval(() => void refresh('background'), 1000);
+    if (!bootstrap || !hasPageData) return undefined;
+    const interval = window.setInterval(() => void refresh('background'), 10000);
     return () => window.clearInterval(interval);
-  }, [refresh, taskList, workflow, roundDetail]);
+  }, [bootstrap, hasPageData, refresh]);
+
+  const openProfileManagement = () => {
+    setWorkspacePickerOpen(false);
+    setPrimaryModule('knowledge-base');
+    pushRoute('knowledge-base', taskPage);
+  };
 
   const navigate = (page: TaskPage) => {
     setPrimaryModule('task-orchestration');
@@ -142,14 +184,16 @@ export function App() {
     pushRoute('task-orchestration', page);
   };
 
-  const runAction = async (action: () => Promise<unknown>) => {
+  const runAction = async <T,>(action: () => Promise<T>) => {
     setBusy(true);
     setError(null);
     try {
-      await action();
+      const result = await action();
       await refresh('background');
+      return result;
     } catch (err) {
       setError(String(err));
+      return undefined;
     } finally {
       setBusy(false);
     }
@@ -159,6 +203,18 @@ export function App() {
     if (window.confirm(t('common.confirmKill'))) {
       void runAction(() => killRun(taskId, runId));
     }
+  };
+
+  const onCreateTask = async (input: CreateTaskInput) => {
+    const created = await runAction(() => createTask(input));
+    if (created) setWorkflow(created);
+    return created;
+  };
+
+  const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl) => {
+    const saved = await runAction(() => saveTaskWorkflow(taskId, workflow));
+    if (saved) setWorkflow(saved);
+    return saved;
   };
 
   const applyWorkspace = (nextBootstrap: AppBootstrapVm) => {
@@ -194,10 +250,10 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage) => {
+  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => {
     setBusy(true);
     try {
-      const saved = await saveDesktopPreferences(theme, language);
+      const saved = await saveDesktopPreferences(theme, language, font);
       setBootstrap((current) => current ? { ...current, preferences: saved } : { repoRoot: '', recentWorkspaces: [], preferences: saved });
       setTaskList(null);
       setWorkflow(null);
@@ -220,41 +276,52 @@ export function App() {
     )
     : primaryModule === 'settings'
       ? <SettingsPage preferences={preferences} onSave={onSavePreferences} />
-      : renderTaskContent();
+      : primaryModule === 'agent-management'
+        ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
+        : primaryModule === 'knowledge-base'
+          ? <ContextManagementPage />
+          : renderTaskContent();
 
   return (
     <Shell
       active={primaryModule}
       repoRoot={bootstrap?.repoRoot}
       onSelect={(module) => {
+        const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);
         setPrimaryModule(module);
-        pushRoute(module, taskPage);
+        setTaskPage(nextTaskPage);
+        pushRoute(module, nextTaskPage);
       }}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
     >
-      {!workspacePickerOpen && primaryModule === 'task-orchestration' && taskPage.kind !== 'task-list' ? <Breadcrumbs page={taskPage} onNavigate={navigate} /> : null}
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {content}
     </Shell>
   );
 
   function renderTaskContent() {
+    const pageBreadcrumbs = <Breadcrumbs page={taskPage} onNavigate={navigate} />;
     if (taskPage.kind === 'task-list') {
-      return <TaskListPage vm={taskList} loading={loading} onNavigate={navigate} onRefresh={() => void refresh('manual')} />;
+      return <TaskListPage vm={taskList} loading={loading} breadcrumbs={pageBreadcrumbs} onNavigate={navigate} onRefresh={() => void refresh('manual')} onCreateTask={onCreateTask} onOpenProfileManagement={openProfileManagement} />;
     }
     if (taskPage.kind === 'workflow') {
       return (
         <WorkflowPage
           vm={workflow}
           busy={busy}
+          refreshing={loading === 'manual'}
+          breadcrumbs={pageBreadcrumbs}
           onNavigate={navigate}
-          onStartRun={(taskId) => void runAction(() => startRun(taskId))}
+          onRefresh={() => void refresh('manual')}
+          onStartRun={(taskId) => runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(taskId, runId))}
           onKillRun={onKillRun}
+          onSaveWorkflow={onSaveTaskWorkflow}
+          onOpenProfileManagement={openProfileManagement}
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} selection={roundSelection} onSelect={setRoundSelection} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(taskId, runId, promptId))} />;
   }
 }

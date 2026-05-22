@@ -3,6 +3,22 @@ use camino::Utf8Path;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) fn next_task_id(tasks_dir: &Utf8Path) -> Result<String> {
+    let mut max_id = 0_u32;
+    if tasks_dir.exists() {
+        for entry in fs::read_dir(tasks_dir.as_std_path())? {
+            let entry = entry?;
+            if let Some(name) = entry.file_name().to_str()
+                && let Some(number) = name.strip_prefix("task-")
+                && let Ok(parsed) = number.parse::<u32>()
+            {
+                max_id = max_id.max(parsed);
+            }
+        }
+    }
+    Ok(format!("task-{max:03}", max = max_id + 1))
+}
+
 pub(crate) fn next_run_id(runs_dir: &Utf8Path) -> Result<String> {
     let mut max_id = 0_u32;
     if runs_dir.exists() {

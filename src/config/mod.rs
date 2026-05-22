@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,9 @@ impl FromStr for ConsoleThemeName {
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopThemePreference {
     Light,
+    LightWarm,
     Dark,
+    Black,
     System,
 }
 
@@ -83,7 +85,9 @@ impl FromStr for DesktopThemePreference {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "light" => Ok(Self::Light),
+            "light-warm" => Ok(Self::LightWarm),
             "dark" => Ok(Self::Dark),
+            "black" => Ok(Self::Black),
             "system" => Ok(Self::System),
             _ => Err(anyhow!("unsupported desktop theme: {value}")),
         }
@@ -95,6 +99,71 @@ impl FromStr for DesktopThemePreference {
 pub enum DesktopLanguage {
     ZhCn,
     En,
+}
+
+pub type DesktopFontPreference = String;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManagedAgentType {
+    ClaudeCode,
+    CodexCli,
+    OpenCode,
+    GeminiCli,
+}
+
+impl ManagedAgentType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude-code",
+            Self::CodexCli => "codex-cli",
+            Self::OpenCode => "opencode",
+            Self::GeminiCli => "gemini-cli",
+        }
+    }
+
+    pub fn is_supported(self) -> bool {
+        matches!(self, Self::ClaudeCode)
+    }
+}
+
+impl FromStr for ManagedAgentType {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "claude-code" => Ok(Self::ClaudeCode),
+            "codex-cli" => Ok(Self::CodexCli),
+            "opencode" => Ok(Self::OpenCode),
+            "gemini-cli" => Ok(Self::GeminiCli),
+            _ => Err(anyhow!("unsupported agent type: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAdapterConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub display_name: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for AcpAdapterConfig {
+    fn default() -> Self {
+        Self {
+            command: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "@agentclientprotocol/claude-agent-acp@latest".to_string(),
+            ],
+            display_name: "Claude ACP".to_string(),
+            env: BTreeMap::new(),
+        }
+    }
 }
 
 impl FromStr for DesktopLanguage {
@@ -109,10 +178,21 @@ impl FromStr for DesktopLanguage {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedAgentConfig {
+    pub adapter: AcpAdapterConfig,
+}
+
+impl ManagedAgentConfig {
+    pub fn new(adapter: AcpAdapterConfig) -> Self {
+        Self { adapter }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserConfig {
-    pub default_provider: Option<String>,
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
     pub log_provider_command: Option<bool>,
@@ -120,14 +200,15 @@ pub struct UserConfig {
     pub console_theme: Option<ConsoleThemeName>,
     pub desktop_theme: Option<DesktopThemePreference>,
     pub desktop_language: Option<DesktopLanguage>,
+    pub desktop_font: Option<DesktopFontPreference>,
     pub desktop_workspace: Option<String>,
+    pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     #[serde(default)]
     pub recent_desktop_workspaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    pub default_provider: String,
     pub log_level: RuntimeLogLevel,
     pub log_prompts: bool,
     pub log_provider_command: bool,
@@ -135,28 +216,33 @@ pub struct RuntimeConfig {
     pub console_theme: ConsoleThemeName,
     pub desktop_theme: DesktopThemePreference,
     pub desktop_language: DesktopLanguage,
+    pub desktop_font: DesktopFontPreference,
+    pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            ManagedAgentType::ClaudeCode,
+            ManagedAgentConfig::new(AcpAdapterConfig::default()),
+        );
         Self {
-            default_provider: "claude-code".to_string(),
             log_level: RuntimeLogLevel::Debug,
             log_prompts: true,
             log_provider_command: true,
-            log_retention_days: 7,
+            log_retention_days: 30,
             console_theme: ConsoleThemeName::GoldBand,
             desktop_theme: DesktopThemePreference::System,
             desktop_language: DesktopLanguage::ZhCn,
+            desktop_font: "app-default".to_string(),
+            agents,
         }
     }
 }
 
 impl RuntimeConfig {
     pub fn apply_user_config(mut self, user_config: &UserConfig) -> Self {
-        if let Some(default_provider) = &user_config.default_provider {
-            self.default_provider = default_provider.clone();
-        }
         if let Some(log_level) = user_config.log_level {
             self.log_level = log_level;
         }
@@ -177,6 +263,12 @@ impl RuntimeConfig {
         }
         if let Some(desktop_language) = user_config.desktop_language {
             self.desktop_language = desktop_language;
+        }
+        if let Some(desktop_font) = &user_config.desktop_font {
+            self.desktop_font = desktop_font.clone();
+        }
+        if let Some(agents) = &user_config.agents {
+            self.agents = agents.clone();
         }
         self
     }
@@ -229,8 +321,16 @@ mod tests {
             DesktopThemePreference::Light
         ));
         assert!(matches!(
+            DesktopThemePreference::from_str("light-warm").unwrap(),
+            DesktopThemePreference::LightWarm
+        ));
+        assert!(matches!(
             DesktopThemePreference::from_str("dark").unwrap(),
             DesktopThemePreference::Dark
+        ));
+        assert!(matches!(
+            DesktopThemePreference::from_str("black").unwrap(),
+            DesktopThemePreference::Black
         ));
         assert!(matches!(
             DesktopThemePreference::from_str("system").unwrap(),
@@ -255,6 +355,7 @@ mod tests {
             DesktopThemePreference::System
         ));
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
+        assert_eq!(config.desktop_font, "app-default");
     }
 
     #[test]
@@ -263,12 +364,14 @@ mod tests {
             console_theme: Some(ConsoleThemeName::Nord),
             desktop_theme: Some(DesktopThemePreference::Dark),
             desktop_language: Some(DesktopLanguage::En),
+            desktop_font: Some("Microsoft YaHei UI".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
             ..UserConfig::default()
         });
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
+        assert_eq!(config.desktop_font, "Microsoft YaHei UI");
         assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
     }
 
@@ -278,6 +381,7 @@ mod tests {
         assert_eq!(config.console_theme, ConsoleThemeName::GoldBand);
         assert_eq!(config.desktop_theme, DesktopThemePreference::System);
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
+        assert_eq!(config.desktop_font, "app-default");
         assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
     }
 }

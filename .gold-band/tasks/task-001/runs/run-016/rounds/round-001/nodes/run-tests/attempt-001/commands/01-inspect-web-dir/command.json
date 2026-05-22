@@ -1,7 +1,0 @@
-{
-  "id": "inspect-web-dir",
-  "run": "ls -la",
-  "purpose": "检查 web 目录当前文件结构，确认可复用的前端项目或空目录状态",
-  "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
-  "timeout_sec": null
-}

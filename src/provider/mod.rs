@@ -1,16 +1,14 @@
+use crate::acp::client;
+use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
+use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
-use crate::observability::append_raw_stream_best_effort;
-use crate::storage::{append_jsonl, ensure_parent_dir};
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
-use std::thread;
-use tracing::{debug, warn};
-
-const WINDOWS_GIT_BASH_HINT: &str = "Claude Code on Windows requires Git Bash. Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH to your bash.exe path.";
+use serde_json::Value;
+use std::str::FromStr;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -28,33 +26,94 @@ pub struct ProviderCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcpModeOption {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
     pub reason: Option<String>,
+    pub capabilities: Option<Value>,
+}
+
+impl DoctorResult {
+    pub fn supported_modes(&self) -> Vec<AcpModeOption> {
+        supported_modes_from_capabilities(self.capabilities.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
     pub profile: Option<String>,
+    pub profile_content: Option<String>,
     pub requirement_path: Option<Utf8PathBuf>,
     pub requirement_text: Option<String>,
     pub workspace_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub primary_artifact: Option<String>,
+    pub output_contract: Option<PromptOutputContract>,
+    pub runtime_context: PromptRuntimeContext,
+    pub predecessors: Vec<PromptPredecessorContext>,
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
+    pub permission_mode: Option<String>,
     pub continue_ref: Option<serde_json::Value>,
+    pub resume_prompt: Option<String>,
+    pub resume_prompt_id: Option<String>,
     pub stream_mode: StreamMode,
     #[serde(default)]
     pub log_prompts: bool,
     #[serde(default)]
     pub log_provider_command: bool,
-    pub feedback_summary: Option<String>,
-    pub verify_result_path: Option<Utf8PathBuf>,
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRuntimeContext {
+    pub project_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub run_dir: Utf8PathBuf,
+    pub round_dir: Utf8PathBuf,
+    pub node_dir: Utf8PathBuf,
+    pub attempt_dir: Utf8PathBuf,
+    pub attachments_dir: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptPredecessorContext {
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub node_type: String,
+    pub branch_kind: String,
+    pub outcome: Option<String>,
+    pub branch_direction: Option<String>,
+    pub output_artifact: Option<PromptArtifactRef>,
+    pub branch_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptArtifactRef {
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptOutputContract {
+    pub artifact: String,
+    pub kind: String,
+    pub schema: Option<serde_json::Value>,
+    pub success_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +145,8 @@ pub enum ProviderRunStatus {
     Success,
     Failure,
     Interrupted,
+    WaitingForUserInput,
+    PermissionRequested,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,28 +164,7 @@ pub struct PrimaryArtifactPayload {
 pub struct PromptBundle {
     pub system_prompt: String,
     pub user_prompt: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderInputProgressEvent<'a> {
-    version: &'static str,
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    invocation_kind: &'a InvocationKind,
-    session_mode: &'a SessionMode,
-    stream_mode: &'a StreamMode,
-    profile: Option<&'a str>,
-    primary_artifact: Option<&'a str>,
-    task_instruction: Option<&'a str>,
-    requirement_path: Option<&'a str>,
-    requirement_text: Option<&'a str>,
-    verify_result_path: Option<&'a str>,
-    attachments_dir: Option<&'a str>,
-    cold_artifacts: &'a [ColdFileRef],
-    cold_attachments: &'a [ColdFileRef],
-    system_prompt: &'a str,
-    user_prompt: &'a str,
+    pub prompt_id: Option<String>,
 }
 
 pub trait ProviderAdapter: Send + Sync {
@@ -135,183 +175,167 @@ pub trait ProviderAdapter: Send + Sync {
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
 }
 
-pub struct ClaudeCodeProvider;
+pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
+    if let Some(options) = capabilities
+        .and_then(find_mode_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+    {
+        return options
+            .iter()
+            .filter_map(|option| {
+                let id = option.get("value").and_then(Value::as_str)?.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                Some(AcpModeOption {
+                    id: id.to_string(),
+                    name: option
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                })
+            })
+            .collect();
+    }
 
-impl ProviderAdapter for ClaudeCodeProvider {
+    capabilities
+        .and_then(|value| value.get("modes"))
+        .and_then(|value| value.get("availableModes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mode| {
+            let id = mode.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            Some(AcpModeOption {
+                id: id.to_string(),
+                name: mode
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {
+    capabilities
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some("mode")
+                    || option.get("category").and_then(Value::as_str) == Some("mode")
+            })
+        })
+}
+
+pub struct AcpProvider {
+    adapter_config: AcpAdapterConfig,
+}
+
+impl AcpProvider {
+    pub fn new(adapter_config: AcpAdapterConfig) -> Self {
+        Self { adapter_config }
+    }
+}
+
+impl ProviderAdapter for AcpProvider {
     fn describe_provider(&self) -> ProviderInfo {
         ProviderInfo {
-            provider_id: "claude-code".to_string(),
-            display_name: "Claude Code".to_string(),
+            provider_id: DEFAULT_PROVIDER.to_string(),
+            display_name: self.adapter_config.display_name.clone(),
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
-                supports_raw_stream: true,
+                supports_raw_stream: false,
             },
             is_default: true,
         }
     }
 
     fn doctor(&self) -> DoctorResult {
-        let result = Command::new("claude").arg("--version").output();
-        match result {
-            Ok(output) if output.status.success() => DoctorResult {
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+            .unwrap_or_else(|| Utf8PathBuf::from("."));
+        match client::doctor(&self.adapter_config, cwd) {
+            Ok(capabilities) => DoctorResult {
                 available: true,
                 reason: None,
-            },
-            Ok(output) => DoctorResult {
-                available: false,
-                reason: Some(format!(
-                    "claude --version failed with status {:?}",
-                    output.status.code()
-                )),
+                capabilities: Some(capabilities),
             },
             Err(err) => DoctorResult {
                 available: false,
                 reason: Some(err.to_string()),
+                capabilities: None,
             },
         }
     }
 
     fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
-        let mut command = Command::new("claude");
-        debug!(invocation_kind = ?req.invocation_kind, attempt_dir = %req.attempt_dir, session_mode = ?req.session_mode, stream_mode = ?req.stream_mode, "starting claude provider invocation");
-        command.current_dir(req.workspace_dir.as_std_path());
-        command.arg("--bare").arg("-p");
-        command.arg(format!(
-            "{}\n\n{}",
-            prompt.system_prompt, prompt.user_prompt
-        ));
-
-        let raw_stream_path = matches!(req.stream_mode, StreamMode::Raw | StreamMode::StreamJson)
-            .then(|| req.attempt_dir.join("raw.stream.jsonl"));
-
-        match req.stream_mode {
-            StreamMode::None | StreamMode::Raw => {
-                command.arg("--output-format").arg("json");
-            }
-            StreamMode::StreamJson => {
-                command.arg("--output-format").arg("stream-json");
-                command.arg("--verbose");
-                command.arg("--include-partial-messages");
-            }
-        }
-
-        match req.session_mode {
-            SessionMode::New => {}
-            SessionMode::Continue => {
-                let continue_ref = req
-                    .continue_ref
-                    .clone()
-                    .ok_or_else(|| anyhow!("sessionMode=continue requires continueRef"))?;
-                let session_id = continue_ref
-                    .get("sessionId")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| anyhow!("continueRef is missing sessionId"))?;
-                command.arg("--resume").arg(session_id);
-            }
-        }
-
-        if req.log_provider_command {
-            debug!(cwd = %req.workspace_dir, argv = ?provider_command_summary(&command), "provider command summary");
-        }
         log_prompt_bundle(
             &prompt,
             req.invocation_kind,
             req.profile.as_deref(),
             req.primary_artifact.as_deref(),
-            req.feedback_summary.is_some(),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
         );
-        if matches!(req.stream_mode, StreamMode::StreamJson) {
-            write_provider_input_progress_event(&req, &prompt)?;
-        }
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        if let Some(path) = raw_stream_path.as_ref() {
-            ensure_parent_dir(path)?;
-            let _ = std::fs::File::options()
-                .create(true)
-                .append(true)
-                .open(path.as_std_path())?;
-            debug!(path = %path, "prepared raw stream file");
-        }
-        let mut child = command.spawn().map_err(|err| provider_spawn_error(err))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture claude stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture claude stderr"))?;
-        let stderr_path = raw_stream_path.clone();
-        let stderr_handle = thread::spawn(move || read_stream(stderr, "stderr", stderr_path));
-        let stream_path = raw_stream_path.clone();
-
-        let run_result = match req.stream_mode {
-            StreamMode::StreamJson => read_stream_json(stdout, &req, raw_stream_path.clone())?,
-            StreamMode::None | StreamMode::Raw => {
-                let stdout = read_stream(stdout, "stdout", raw_stream_path.clone());
-                let stdout = stdout.trim().to_string();
-                let response: ClaudeJsonResponse =
-                    serde_json::from_str(&stdout).map_err(|err| {
-                        anyhow!("failed to parse Claude Code JSON output: {err}; stdout={stdout}")
-                    })?;
-                let worker_ref_seed = response.session_id.as_ref().map(|session_id| SessionRef {
-                    provider: "claude-code".to_string(),
-                    mode: req.session_mode,
-                    supports_open_session: true,
-                    supports_continue_session: true,
-                    continue_ref: Some(serde_json::json!({ "sessionId": session_id })),
-                    open_command: Some(format!("claude -c {session_id}")),
-                });
-                let result_payload =
-                    req.primary_artifact
-                        .as_ref()
-                        .map(|primary_artifact| ProviderResultPayload {
-                            primary_artifact: Some(PrimaryArtifactPayload {
-                                name: primary_artifact.clone(),
-                                content: response.result,
-                            }),
-                        });
-                ProviderRunResult {
-                    status: ProviderRunStatus::Success,
-                    exit_code: None,
-                    result_payload,
-                    worker_ref_seed,
-                    stream_path: stream_path.clone(),
-                }
+        let run = client::run_prompt(
+            &self.adapter_config,
+            req.workspace_dir.clone(),
+            req.attempt_dir.clone(),
+            &prompt,
+            req.session_mode,
+            req.permission_mode.clone(),
+            req.continue_ref.clone(),
+        )?;
+        let status = match run.stop_reason.as_deref() {
+            Some("cancelled" | "interrupted" | "max_turn_requests") => {
+                ProviderRunStatus::Interrupted
             }
+            Some("waiting_for_user_input" | "user_input_required") => {
+                ProviderRunStatus::WaitingForUserInput
+            }
+            Some("permission_requested") => ProviderRunStatus::PermissionRequested,
+            Some("refusal" | "error") => ProviderRunStatus::Failure,
+            _ => ProviderRunStatus::Success,
         };
-
-        let status = child.wait()?;
-        let exit_code = status.code();
-        let stderr_text = stderr_handle
-            .join()
-            .map_err(|_| anyhow!("stderr reader thread panicked"))?;
-        debug!(
-            ?exit_code,
-            stderr_len = stderr_text.len(),
-            "claude provider finished"
-        );
-
-        if !status.success() {
-            warn!(
-                ?exit_code,
-                stderr_len = stderr_text.len(),
-                "claude provider returned failure status"
-            );
-            bail!(format_provider_failure(exit_code, &stderr_text));
-        }
-
+        let result_payload = req.primary_artifact.as_ref().map(|primary_artifact| {
+            let uses_json_output = req
+                .output_contract
+                .as_ref()
+                .is_some_and(|contract| contract.kind == "json")
+                || artifact_uses_json_output(primary_artifact);
+            let content = if uses_json_output {
+                json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
+                    .unwrap_or_else(|| run.final_text.clone())
+            } else {
+                run.final_text.clone()
+            };
+            ProviderResultPayload {
+                primary_artifact: Some(PrimaryArtifactPayload {
+                    name: primary_artifact.clone(),
+                    content,
+                }),
+            }
+        });
         Ok(ProviderRunResult {
-            exit_code,
-            stream_path,
-            ..run_result
+            status,
+            exit_code: None,
+            result_payload,
+            worker_ref_seed: None,
+            stream_path: None,
         })
     }
 
@@ -322,285 +346,22 @@ impl ProviderAdapter for ClaudeCodeProvider {
         Ok(())
     }
 
-    fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>> {
-        Ok(worker_ref.open_command.clone())
+    fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ClaudeJsonResponse {
-    result: String,
-    #[serde(default)]
-    session_id: Option<String>,
-}
-
-#[derive(Debug, Default)]
-struct StreamAccumulator {
-    session_id: Option<String>,
-    final_result: Option<String>,
-}
-
-fn current_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    format!("{secs}Z")
-}
-
-fn provider_spawn_error(err: std::io::Error) -> anyhow::Error {
-    let mut message = format!("failed to start Claude Code provider: {err}");
-    if cfg!(windows) {
-        let lower = message.to_ascii_lowercase();
-        if lower.contains("git-bash")
-            || lower.contains("bash.exe")
-            || lower.contains("claude_code_git_bash_path")
-        {
-            message.push_str(". ");
-            message.push_str(WINDOWS_GIT_BASH_HINT);
-        }
-    }
-    anyhow!(message)
-}
-
-fn format_provider_failure(exit_code: Option<i32>, stderr_text: &str) -> String {
-    let mut message = format!("Claude Code provider exited with status {:?}", exit_code);
-    let stderr_trimmed = stderr_text.trim();
-    if !stderr_trimmed.is_empty() {
-        message.push_str(": ");
-        message.push_str(stderr_trimmed);
-    }
-    if cfg!(windows) {
-        let lower = stderr_trimmed.to_ascii_lowercase();
-        if lower.contains("git-bash")
-            || lower.contains("bash.exe")
-            || lower.contains("claude_code_git_bash_path")
-        {
-            message.push_str(". ");
-            message.push_str(WINDOWS_GIT_BASH_HINT);
-        }
-    }
-    message
-}
-
-fn read_stream<R: Read>(reader: R, stream: &'static str, path: Option<Utf8PathBuf>) -> String {
-    let mut collected = String::new();
-    let mut reader = BufReader::new(reader);
-    let mut buffer = [0_u8; 4096];
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read_len) => {
-                let chunk = String::from_utf8_lossy(&buffer[..read_len]);
-                if let Some(path) = path.as_ref() {
-                    append_raw_stream_best_effort(path, &current_timestamp(), stream, &chunk);
-                }
-                collected.push_str(&chunk);
-            }
-            Err(err) => {
-                warn!(stream, error = %err, "failed reading provider stream");
-                break;
-            }
-        }
-    }
-    collected
-}
-
-fn read_stream_json<R: Read>(
-    reader: R,
-    req: &WorkerInvocation,
-    path: Option<Utf8PathBuf>,
-) -> Result<ProviderRunResult> {
-    let mut accumulator = StreamAccumulator::default();
-    sanitize_progress_events_file(req)?;
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    while reader.read_line(&mut line)? > 0 {
-        let raw_line = line.trim_end_matches(['\r', '\n']).to_string();
-        if !raw_line.is_empty() {
-            let timestamp = current_timestamp();
-            if let Some(path) = path.as_ref() {
-                append_raw_stream_best_effort(path, &timestamp, "stdout", &raw_line);
-            }
-            collect_stream_json_line(&raw_line, &mut accumulator);
-        }
-        line.clear();
-    }
-
-    let worker_ref_seed = accumulator
-        .session_id
-        .as_ref()
-        .map(|session_id| SessionRef {
-            provider: "claude-code".to_string(),
-            mode: req.session_mode,
-            supports_open_session: true,
-            supports_continue_session: true,
-            continue_ref: Some(serde_json::json!({ "sessionId": session_id })),
-            open_command: Some(format!("claude -c {session_id}")),
-        });
-
-    let result_payload =
-        req.primary_artifact
-            .as_ref()
-            .map(|primary_artifact| ProviderResultPayload {
-                primary_artifact: Some(PrimaryArtifactPayload {
-                    name: primary_artifact.clone(),
-                    content: accumulator.final_result.clone().unwrap_or_default(),
-                }),
+pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
+    if matches!(req.session_mode, SessionMode::Continue) {
+        if let Some(resume_prompt) = req.resume_prompt.as_ref() {
+            return Ok(PromptBundle {
+                system_prompt: String::new(),
+                user_prompt: resume_prompt.clone(),
+                prompt_id: req.resume_prompt_id.clone(),
             });
-
-    Ok(ProviderRunResult {
-        status: ProviderRunStatus::Success,
-        exit_code: None,
-        result_payload,
-        worker_ref_seed,
-        stream_path: path,
-    })
-}
-
-fn write_provider_input_progress_event(
-    req: &WorkerInvocation,
-    prompt: &PromptBundle,
-) -> Result<()> {
-    let path = progress_events_path(req);
-    ensure_parent_dir(&path)?;
-    let _ = std::fs::File::options()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path.as_std_path())?;
-    let event = ProviderInputProgressEvent {
-        version: crate::domain::VERSION,
-        event_type: "provider_input",
-        invocation_kind: &req.invocation_kind,
-        session_mode: &req.session_mode,
-        stream_mode: &req.stream_mode,
-        profile: req.profile.as_deref(),
-        primary_artifact: req.primary_artifact.as_deref(),
-        task_instruction: req.task_instruction.as_deref(),
-        requirement_path: req.requirement_path.as_ref().map(|path| path.as_str()),
-        requirement_text: req.requirement_text.as_deref(),
-        verify_result_path: req.verify_result_path.as_ref().map(|path| path.as_str()),
-        attachments_dir: req.attachments_dir.as_ref().map(|path| path.as_str()),
-        cold_artifacts: &req.cold_artifacts,
-        cold_attachments: &req.cold_attachments,
-        system_prompt: &prompt.system_prompt,
-        user_prompt: &prompt.user_prompt,
-    };
-    append_jsonl(&path, &event)?;
-    Ok(())
-}
-
-fn progress_events_path(req: &WorkerInvocation) -> Utf8PathBuf {
-    let paths = crate::storage::GoldBandPaths::new(req.workspace_dir.clone());
-    paths.progress_events_file(
-        task_id_from_attempt_dir(&req.attempt_dir),
-        run_id_from_attempt_dir(&req.attempt_dir),
-        round_id_from_attempt_dir(&req.attempt_dir),
-        node_id_from_attempt_dir(&req.attempt_dir),
-        attempt_id_from_attempt_dir(&req.attempt_dir),
-    )
-}
-
-fn sanitize_progress_events_file(req: &WorkerInvocation) -> Result<()> {
-    let path = progress_events_path(req);
-    if !path.exists() {
-        return Ok(());
-    }
-    let content = std::fs::read_to_string(path.as_std_path())?;
-    let first_line = content
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
-    if first_line.contains("\"type\":\"provider_input\"") {
-        return Ok(());
-    }
-    let _ = std::fs::File::options()
-        .write(true)
-        .truncate(true)
-        .open(path.as_std_path())?;
-    Ok(())
-}
-
-fn collect_stream_json_line(raw_line: &str, accumulator: &mut StreamAccumulator) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw_line) else {
-        return;
-    };
-    let raw_event_type = value
-        .get("type")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-
-    if accumulator.session_id.is_none() {
-        accumulator.session_id = find_string_field(&value, &["session_id", "sessionId"]);
-    }
-
-    if let Some(text) = find_string_field(&value, &["delta", "text", "result"]) {
-        accumulator.final_result = Some(match accumulator.final_result.take() {
-            Some(existing) if raw_event_type.as_deref() != Some("result") => {
-                format!("{existing}{text}")
-            }
-            _ => text,
-        });
-    }
-}
-
-fn find_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        if let Some(found) = value.get(*key).and_then(|item| item.as_str()) {
-            return Some(found.to_string());
         }
     }
-    for item in value.as_array().into_iter().flatten() {
-        if let Some(found) = find_string_field(item, keys) {
-            return Some(found);
-        }
-    }
-    for item in value
-        .as_object()
-        .into_iter()
-        .flat_map(|object| object.values())
-    {
-        if let Some(found) = find_string_field(item, keys) {
-            return Some(found);
-        }
-    }
-    None
-}
 
-fn task_id_from_attempt_dir(path: &Utf8PathBuf) -> &str {
-    path.components()
-        .nth_back(7)
-        .map(|part| part.as_str())
-        .unwrap_or("")
-}
-
-fn run_id_from_attempt_dir(path: &Utf8PathBuf) -> &str {
-    path.components()
-        .nth_back(5)
-        .map(|part| part.as_str())
-        .unwrap_or("")
-}
-
-fn round_id_from_attempt_dir(path: &Utf8PathBuf) -> &str {
-    path.components()
-        .nth_back(3)
-        .map(|part| part.as_str())
-        .unwrap_or("")
-}
-
-fn node_id_from_attempt_dir(path: &Utf8PathBuf) -> &str {
-    path.components()
-        .nth_back(1)
-        .map(|part| part.as_str())
-        .unwrap_or("")
-}
-
-fn attempt_id_from_attempt_dir(path: &Utf8PathBuf) -> &str {
-    path.file_name().unwrap_or("")
-}
-
-fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     ensure!(
         req.requirement_path.is_some() || req.requirement_text.is_some(),
         "worker invocation requires requirementPath or requirementText"
@@ -612,48 +373,8 @@ fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         (None, None) => unreachable!(),
     };
 
-    let output_contract = req.primary_artifact.as_ref().map(|primary_artifact| {
-        format!(
-            "- Output contract: return exactly one valid `{}` artifact as the final answer content with no extra prose.{}{}\n",
-            primary_artifact,
-            if primary_artifact == "exec-plan" {
-                " For `exec-plan`, output valid JSON with shape `{\"version\":\"0.1\",\"commands\":[{\"id\":string,\"run\":string,\"purpose\":string,\"cwd\"?:string,\"timeoutSec\"?:number}]}` and ensure `commands` is non-empty."
-            } else {
-                ""
-            },
-            if primary_artifact == "verify-result" {
-                " For `verify-result`, output valid JSON with shape `{\"version\":\"0.1\",\"status\":\"success|failure\",\"summary\":string,\"unmet_requirements\":string[],\"validation_gaps\":string[]}`. `summary` must be non-empty. If `status` is `success`, both arrays must be empty. If `status` is `failure`, at least one of the arrays must be non-empty. A malformed `verify-result` blocks the run; a valid `verify-result` with `status=\"failure\"` allows the runtime acceptance policy to continue."
-            } else {
-                ""
-            }
-        )
-    }).unwrap_or_default();
-
-    let system_prompt = format!(
-        "You are running inside Gold Band runtime.\n\nCurrent location:\n- Invocation kind: {:?}\n- Attempt directory: {}\n- Workspace directory: {}\n{}{}{}{}",
-        req.invocation_kind,
-        req.attempt_dir,
-        req.workspace_dir,
-        req.profile
-            .as_ref()
-            .map(|profile| format!("- Profile: {profile}\n"))
-            .unwrap_or_default(),
-        req.primary_artifact
-            .as_ref()
-            .map(|artifact| format!("- Required primary artifact: {artifact}\n"))
-            .unwrap_or_default(),
-        req.attachments_dir
-            .as_ref()
-            .map(|path| format!("- Free-form attachments may only be written under: {path}\n"))
-            .unwrap_or_default(),
-        output_contract,
-    );
-
+    let system_prompt = render_system_prompt(req);
     let mut user_sections = vec![format!("# Requirement\n{}", requirement_text.trim())];
-
-    if let Some(feedback_summary) = &req.feedback_summary {
-        user_sections.push(format!("# Current Feedback\n{}", feedback_summary.trim()));
-    }
 
     if let Some(task_instruction) = &req.task_instruction {
         user_sections.push(format!("# Task\n{}", task_instruction.trim()));
@@ -685,28 +406,176 @@ fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt: user_sections.join("\n\n"),
+        prompt_id: None,
     })
 }
 
-fn provider_command_summary(command: &Command) -> Vec<String> {
-    let mut argv = Vec::new();
-    argv.push(command.get_program().to_string_lossy().to_string());
-    let mut skip_next_prompt = false;
-    for arg in command.get_args() {
-        let arg = arg.to_string_lossy().to_string();
-        if skip_next_prompt {
-            argv.push("<prompt-redacted>".to_string());
-            skip_next_prompt = false;
-            continue;
-        }
-        if arg == "-p" {
-            argv.push(arg);
-            skip_next_prompt = true;
-            continue;
-        }
-        argv.push(arg);
+fn render_system_prompt(req: &WorkerInvocation) -> String {
+    [
+        render_current_location(&req.runtime_context),
+        render_predecessor_chain(&req.predecessors, &req.runtime_context),
+        render_predecessor_reasons(&req.predecessors),
+        render_directory_rules(&req.runtime_context),
+        render_role_section(req.profile.as_deref(), req.profile_content.as_deref()),
+        render_artifact_constraints(
+            req.primary_artifact.as_deref(),
+            req.output_contract.as_ref(),
+        ),
+    ]
+    .into_iter()
+    .filter(|section| !section.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn render_current_location(ctx: &PromptRuntimeContext) -> String {
+    format!(
+        "你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: {}\n- Task: {}\n- Run: {}\n- Round: {}\n- Node: {}\n- Attempt: {}",
+        ctx.project_id, ctx.task_id, ctx.run_id, ctx.round_id, ctx.node_id, ctx.attempt_id
+    )
+}
+
+fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
+    format!(
+        "{}/{}/{}",
+        predecessor.round_id, predecessor.node_id, predecessor.attempt_id
+    )
+}
+
+fn render_predecessor_chain(
+    predecessors: &[PromptPredecessorContext],
+    ctx: &PromptRuntimeContext,
+) -> String {
+    if predecessors.is_empty() {
+        return "当前节点的前序运行节点：无，当前节点是本轮入口节点。".to_string();
     }
-    argv
+
+    let mut chain = String::from("当前节点的前序运行节点：\n");
+    for (index, predecessor) in predecessors.iter().enumerate() {
+        chain.push_str(&format!("{} ", predecessor_ref(predecessor)));
+        let next_round = predecessors
+            .get(index + 1)
+            .map(|next| next.round_id.as_str())
+            .unwrap_or(ctx.round_id.as_str());
+        if predecessor.round_id != next_round {
+            chain.push_str("-$new-round-> ");
+        } else if let Some(direction) = predecessor.branch_direction.as_deref() {
+            chain.push_str(&format!("-{direction}-> "));
+        } else {
+            chain.push_str("-> ");
+        }
+    }
+    chain.push_str(&format!(
+        "当前节点({}/{}/{})",
+        ctx.round_id, ctx.node_id, ctx.attempt_id
+    ));
+    chain
+}
+
+fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> String {
+    if predecessors.is_empty() {
+        return "当前节点前序节点的分支执行原因：无。".to_string();
+    }
+
+    let lines = predecessors
+        .iter()
+        .filter_map(|predecessor| {
+            let is_ordinary = predecessor.branch_kind == "普通"
+                && predecessor.branch_reason.is_none()
+                && predecessor.output_artifact.is_none();
+            if is_ordinary {
+                return None;
+            }
+
+            let mut parts = vec![format!(
+                "{}；节点类型={}；结果={}；分支方向={}",
+                predecessor.branch_kind,
+                predecessor.node_type,
+                predecessor.outcome.as_deref().unwrap_or("unknown"),
+                predecessor.branch_direction.as_deref().unwrap_or("unknown")
+            )];
+            if let Some(reason) = predecessor.branch_reason.as_deref() {
+                parts.push(reason.to_string());
+            }
+            if let Some(artifact) = &predecessor.output_artifact {
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
+                if let Some(preview) = artifact.preview.as_deref() {
+                    parts.push(format!(
+                        "输出预览={}{}",
+                        preview.trim(),
+                        if preview.ends_with('\n') { "" } else { "" }
+                    ));
+                }
+            }
+            Some(format!(
+                "- {}：{}。",
+                predecessor_ref(predecessor),
+                parts.join("；")
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        "当前节点前序节点的分支执行原因：前序节点均为普通节点，按节点结果进入当前分支。".to_string()
+    } else {
+        format!("当前节点前序节点的分支执行原因：\n{}", lines.join("\n"))
+    }
+}
+
+fn render_directory_rules(ctx: &PromptRuntimeContext) -> String {
+    format!(
+        "Gold Band 文件规则：\n- 本节点运行产物目录：{}\n- 本次节点运行中，你创建的自由文件必须写入：{}\n- 不要把自由文件写到 attachments 之外。\n- 当前节点所需上下文已在本 prompt 中给出。\n- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。\n- 当前 run 目录仅作为这些已给出路径的父级上下文：{}\n- 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。\n- 当前 node 目录可写入：{}\n- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。",
+        ctx.attempt_dir, ctx.attachments_dir, ctx.run_dir, ctx.node_dir
+    )
+}
+
+fn render_role_section(profile: Option<&str>, profile_content: Option<&str>) -> String {
+    let Some(profile) = profile else {
+        return "当前节点角色：\n- 未配置 profile。".to_string();
+    };
+    let content = profile_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match content {
+        Some(content) => format!("当前节点角色：\n- Profile ID: {profile}\n\n{content}"),
+        None => format!("当前节点角色：\n- Profile ID: {profile}\n- 未找到 profile 正文。"),
+    }
+}
+
+fn render_artifact_constraints(
+    primary_artifact: Option<&str>,
+    contract: Option<&PromptOutputContract>,
+) -> String {
+    let Some(contract) = contract else {
+        return match primary_artifact {
+            Some(primary_artifact) => format!(
+                "当前节点 artifact 规则：\n- primary artifact: {primary_artifact}\n- 当前节点未声明结构化 output DSL；不要自行推断 JSON/schema 输出格式。"
+            ),
+            None => "当前节点 artifact 规则：\n- 当前节点未声明 primary_artifact / output DSL，不需要产出 canonical artifact。\n- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。".to_string(),
+        };
+    };
+
+    let mut section = format!(
+        "当前节点输出约束：\n- 输出 artifact: {}\n- 输出类型: {}\n\n你必须在最后一步按照以下格式输出你的结果：",
+        contract.artifact, contract.kind
+    );
+    if let Some(schema) = &contract.schema {
+        section.push_str(&format!(
+            "\n{}",
+            serde_json::to_string_pretty(schema).expect("serialize output schema")
+        ));
+    } else {
+        section.push_str("\n当前节点未声明结构化 schema。");
+    }
+    if let Some(condition) = contract.success_condition.as_deref() {
+        section.push_str(&format!(
+            "\n\nruntime 将使用以下条件判断节点结果：\n{condition}"
+        ));
+    }
+    section
 }
 
 fn log_prompt_bundle(
@@ -714,7 +583,6 @@ fn log_prompt_bundle(
     invocation_kind: InvocationKind,
     profile: Option<&str>,
     primary_artifact: Option<&str>,
-    has_feedback: bool,
     cold_artifacts: usize,
     cold_attachments: usize,
     log_prompts: bool,
@@ -725,7 +593,6 @@ fn log_prompt_bundle(
         primary_artifact = ?primary_artifact,
         system_prompt_len = prompt.system_prompt.len(),
         user_prompt_len = prompt.user_prompt.len(),
-        has_feedback,
         cold_artifacts,
         cold_attachments,
         "provider prompt bundle summary"
@@ -736,9 +603,18 @@ fn log_prompt_bundle(
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
-    match provider_id {
-        DEFAULT_PROVIDER => Ok(ClaudeCodeProvider.describe_provider().capabilities),
-        _ => bail!("unsupported provider: {provider_id}"),
+    let agent_type = ManagedAgentType::from_str(provider_id)?;
+    provider_capabilities_for_type(agent_type)
+}
+
+pub fn provider_capabilities_for_type(
+    agent_type: ManagedAgentType,
+) -> Result<ProviderCapabilities> {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => Ok(AcpProvider::new(AcpAdapterConfig::default())
+            .describe_provider()
+            .capabilities),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
     }
 }
 
@@ -746,11 +622,23 @@ pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
     Ok(provider_capabilities(provider_id)?.supports_continue_session)
 }
 
-pub fn provider_from_id(provider_id: &str) -> Result<Box<dyn ProviderAdapter>> {
-    match provider_id {
-        DEFAULT_PROVIDER => Ok(Box::new(ClaudeCodeProvider)),
-        _ => bail!("unsupported provider: {provider_id}"),
+pub fn provider_from_agent(
+    agent_type: ManagedAgentType,
+    config: &ManagedAgentConfig,
+) -> Result<Box<dyn ProviderAdapter>> {
+    match agent_type {
+        ManagedAgentType::ClaudeCode => Ok(Box::new(AcpProvider::new(config.adapter.clone()))),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
     }
+}
+
+pub fn provider_from_id(provider_id: &str) -> Result<Box<dyn ProviderAdapter>> {
+    let agent_type = ManagedAgentType::from_str(provider_id)?;
+    let config = match agent_type {
+        ManagedAgentType::ClaudeCode => ManagedAgentConfig::new(AcpAdapterConfig::default()),
+        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
+    };
+    provider_from_agent(agent_type, &config)
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
@@ -760,127 +648,59 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
-    fn render_prompt_bundle_includes_verify_result_output_contract() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    fn render_prompt_bundle_does_not_add_builtin_output_contracts() {
+        let runtime_context = PromptRuntimeContext {
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            run_dir: Utf8PathBuf::from("/run"),
+            round_dir: Utf8PathBuf::from("/run/rounds/round-001"),
+            node_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev"),
+            attempt_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev/attempt-001"),
+            attachments_dir: Utf8PathBuf::from(
+                "/run/rounds/round-001/nodes/dev/attempt-001/attachments",
+            ),
+        };
         let req = WorkerInvocation {
-            invocation_kind: InvocationKind::VerifyAcceptance,
-            profile: Some("verifier".to_string()),
+            invocation_kind: InvocationKind::WorkerGeneric,
+            profile: None,
+            profile_content: None,
             requirement_path: None,
-            requirement_text: Some("Check whether hello-world exists".to_string()),
-            workspace_dir: repo_root.clone(),
-            attempt_dir: repo_root.join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/accept/attempt-001"),
-            primary_artifact: Some("verify-result".to_string()),
-            task_instruction: Some("Evaluate whether the requirement is satisfied based only on the provided evidence and produce a verify-result.".to_string()),
+            requirement_text: Some("Need a structured result".to_string()),
+            workspace_dir: Utf8PathBuf::from("/repo"),
+            attempt_dir: runtime_context.attempt_dir.clone(),
+            primary_artifact: Some("analysis-result".to_string()),
+            output_contract: None,
+            runtime_context,
+            predecessors: Vec::new(),
+            task_instruction: Some("Create a structured result".to_string()),
             session_mode: SessionMode::New,
+            permission_mode: None,
             continue_ref: None,
+            resume_prompt: None,
+            resume_prompt_id: None,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
             log_provider_command: false,
-            feedback_summary: None,
-            verify_result_path: None,
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();
-        assert!(
-            prompt
-                .system_prompt
-                .contains("Required primary artifact: verify-result")
-        );
-        assert!(prompt.system_prompt.contains("unmet_requirements"));
-        assert!(prompt.system_prompt.contains("validation_gaps"));
-        assert!(prompt.system_prompt.contains("status=\"failure\""));
+        assert!(!prompt.system_prompt.contains("Output contract"));
     }
 
     #[test]
-    fn render_prompt_bundle_includes_exec_plan_output_contract() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let req = WorkerInvocation {
-            invocation_kind: InvocationKind::WorkerGeneric,
-            profile: Some("developer".to_string()),
-            requirement_path: None,
-            requirement_text: Some("Need an execution plan".to_string()),
-            workspace_dir: repo_root.clone(),
-            attempt_dir: repo_root.join(
-                ".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
-            ),
-            primary_artifact: Some("exec-plan".to_string()),
-            task_instruction: Some("Create an exec plan".to_string()),
-            session_mode: SessionMode::New,
-            continue_ref: None,
-            stream_mode: StreamMode::StreamJson,
-            log_prompts: false,
-            log_provider_command: false,
-            feedback_summary: None,
-            verify_result_path: None,
-            attachments_dir: None,
-            cold_artifacts: Vec::new(),
-            cold_attachments: Vec::new(),
-        };
-
-        let prompt = render_prompt_bundle(&req).unwrap();
-        assert!(prompt.system_prompt.contains("Output contract"));
-        assert!(
-            prompt
-                .system_prompt
-                .contains("return exactly one valid `exec-plan` artifact")
-        );
-        assert!(prompt.system_prompt.contains("\"commands\""));
-        assert!(prompt.system_prompt.contains("non-empty"));
-    }
-
-    #[test]
-    fn write_provider_input_progress_event_records_invocation_input() {
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let attempt_dir = repo_root
-            .join(".gold-band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001");
-        let req = WorkerInvocation {
-            invocation_kind: InvocationKind::WorkerGeneric,
-            profile: Some("developer".to_string()),
-            requirement_path: Some(
-                repo_root.join(".gold-band/tasks/task-001/authoring/requirement.md"),
-            ),
-            requirement_text: None,
-            workspace_dir: repo_root.clone(),
-            attempt_dir,
-            primary_artifact: Some("exec-plan".to_string()),
-            task_instruction: Some("Create an exec plan".to_string()),
-            session_mode: SessionMode::New,
-            continue_ref: None,
-            stream_mode: StreamMode::StreamJson,
-            log_prompts: false,
-            log_provider_command: false,
-            feedback_summary: None,
-            verify_result_path: None,
-            attachments_dir: Some(repo_root.join("attachments")),
-            cold_artifacts: vec![ColdFileRef {
-                name: Some("exec-result".to_string()),
-                path: repo_root.join("artifacts/exec-result.json"),
-            }],
-            cold_attachments: vec![ColdFileRef {
-                name: None,
-                path: repo_root.join("attachments/report.md"),
-            }],
-        };
-        let prompt = PromptBundle {
-            system_prompt: "system prompt".to_string(),
-            user_prompt: "user prompt".to_string(),
-        };
-
-        write_provider_input_progress_event(&req, &prompt).unwrap();
-
-        let progress = std::fs::read_to_string(progress_events_path(&req).as_std_path()).unwrap();
-        assert!(progress.contains("\"type\":\"provider_input\""));
-        assert!(progress.contains("\"systemPrompt\":\"system prompt\""));
-        assert!(progress.contains("\"userPrompt\":\"user prompt\""));
-        assert!(progress.contains("\"primaryArtifact\":\"exec-plan\""));
+    fn default_provider_is_acp_only() {
+        let info = default_provider().describe_provider();
+        assert_eq!(info.provider_id, "claude-code");
+        assert!(info.capabilities.supports_continue_session);
+        assert!(!info.capabilities.supports_raw_stream);
     }
 }

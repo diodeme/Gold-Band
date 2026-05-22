@@ -1,9 +1,14 @@
 import { cn } from '@/lib/utils';
 
-const runningTones = ['running', 'paused', 'resumable', 'in_progress', 'active'];
+const runningTones = ['running', 'in_progress', 'active'];
 const successTones = ['completed', 'complete', 'success', 'succeeded', 'valid', 'passed'];
-const warningTones = ['warning', 'pending', 'missing', 'missing-workflow', 'skipped'];
-const dangerTones = ['failed', 'failure', 'error', 'invalid', 'killed', 'cancelled', 'canceled'];
+const warningTones = ['warning', 'pending', 'paused', 'resumable', 'missing', 'missing-workflow', 'skipped'];
+const dangerTones = ['failed', 'failure', 'error', 'error-blocked', 'invalid', 'killed', 'cancelled', 'canceled'];
+const stoppableRunStatuses = ['running', 'paused'];
+
+export function isRunStoppable(status?: string | null) {
+  return stoppableRunStatuses.includes((status ?? '').toLowerCase());
+}
 
 export function normalizeTone(value?: string | null, explicitTone?: string | null) {
   const tone = (explicitTone ?? value ?? 'neutral').toLowerCase();
@@ -17,7 +22,7 @@ export function normalizeTone(value?: string | null, explicitTone?: string | nul
 export function statusBadgeClass(value?: string | null, explicitTone?: string | null) {
   const tone = normalizeTone(value, explicitTone);
   return cn(
-    'font-mono uppercase tracking-[0.12em]',
+    'font-semibold uppercase tracking-[0.12em]',
     tone === 'running' && 'border-gold-running/35 bg-gold-running/10 text-gold-running',
     tone === 'success' && 'border-gold-success/35 bg-gold-success/10 text-gold-success',
     tone === 'warning' && 'border-gold-warning/35 bg-gold-warning/10 text-gold-warning',

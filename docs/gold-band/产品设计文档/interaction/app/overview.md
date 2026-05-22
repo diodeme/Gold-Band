@@ -26,7 +26,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 ├───────────────┬──────────────────────────────────────────────┤
 │ 左侧一级功能区 │ 右侧当前功能区                                │
 │               │                                              │
-│ Logo          │ 任务编排 / 知识库 / 模型管理 / 设置             │
+│ Logo          │ 任务编排 / Agent 管理 / 知识库 / 模型管理 / 设置 │
 │ 一级菜单       │                                              │
 │ Settings      │                                              │
 └───────────────┴──────────────────────────────────────────────┘
@@ -36,7 +36,9 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 
 当前 MVP 只实现：
 - 任务编排
+- Agent 管理
 - 设置中的主题切换
+- 设置中的字体选择
 - 设置中的语言选择
 - 工作空间选择、切换与最近 workspace 记忆
 
@@ -74,6 +76,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [任务详情页（已并入任务工作流页）](task-detail.md)
 - [任务工作流页](task-workflow.md)
 - [Round 详情页](round-detail.md)
+- [Agent 管理页](agent-management.md)
 - [设置页](settings.md)
 
 ---
@@ -118,6 +121,16 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - validation 是否通过
 - 失败时可从哪里恢复
 
+### 5.5 工作台优先于数据看板
+任务编排首页是任务工作台入口，不是运行态 KPI dashboard。
+
+状态聚合能力应进入：
+- 任务表格内的快捷筛选
+- 状态筛选和关键字搜索
+- 具体任务、run、round 的上下文信息
+
+不在首页首屏展示页面级任务状态统计气泡或大数字 summary cards。
+
 ---
 
 ## 6. Tauri 2.x MVP 实现说明
@@ -130,7 +143,9 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 启动命令为 `npm run dev`，构建命令为 `npm run build`。
 
 MVP 范围：
-- 实现任务列表、任务工作流、Round 详情和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
+- 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
+- Agent 管理负责维护已配置 agent type、执行命令、环境变量与诊断状态。
+- Worker / Verify 节点必须显式声明 `provider`，当前语义为 managed agent type；运行时不提供默认 Claude 兜底。
 - 知识库、模型管理保持一级导航占位。
 - 不提供 command bar、slash command、terminal input 或 chat input。
 
@@ -215,9 +230,9 @@ MVP 范围：
 
 ## 14. 2026-05-07 工作流蓝图默认折叠记录
 
-本轮将任务工作流页的原始 workflow 全貌图改为默认折叠：
+本轮将任务工作流页的工作流改为默认折叠：
 - 首屏优先展示 task 摘要、关键指标和运行记录，蓝图不再默认占据大块高度。
-- 折叠态保留“原始 workflow 全貌图”标题与展开按钮，用户需要检查 authoring workflow 时再展开。
+- 折叠态保留“工作流”标题与展开按钮，用户需要检查 authoring workflow 时再展开。
 - 展开后仍显示 control 规则条与只读节点-边画布，不改变 Tauri command、view model 或 canonical state 契约。
 
 ---
@@ -228,6 +243,46 @@ MVP 范围：
 - 左侧应用壳品牌区使用 `web/public/logo.svg`，保持 Gold Band 产品名和 AI Orchestrator 副标题不变。
 - 浏览器调试 favicon 与 Web 侧品牌图共用同一 SVG，减少多份前端 Logo 资源漂移。
 - Tauri 图标资源由同一 Logo 生成正方形源图与平台图标，Windows `.ico`、macOS `.icns` 和 PNG 图标使用一致品牌来源。
+
+---
+
+## 16. 2026-05-07 任务列表工作台化记录
+
+本轮将任务编排首页从状态 summary cards 收敛为表格工作台：
+- 移除页面级任务状态统计气泡，避免首页变成数据看板。
+- `全部任务 / 运行中 / 已完成` 从 ModuleBar 移入任务表格工具条。
+- 可恢复、失败、配置异常作为状态筛选出现，关键字搜索支持 ID、标题、需求和最新 Run。
+- Workflow 和 Round 页面保留必要上下文摘要，但不把首页设计成 KPI dashboard。
+
+---
+
+## 17. 2026-05-07 UI 框架层级收敛记录
+
+本轮将桌面端 UI 从多卡片、多色块拼贴收敛为更克制的工作台层级：
+- 页面主体优先采用一个主工作面，内部用 section、低对比分隔线和留白组织内容。
+- 卡片只用于真正独立的对象；设置项、字体选项、主题摘要和指标项不默认做成完整卡片。
+- 所有主题共享同一套布局层级，主题 token 只负责换色，不改变页面结构。
+- AppCard 与 Metric 默认弱化边框和阴影，减少浅黑色方块堆叠。
+
+---
+
+## 18. 2026-05-07 设置页主题选择器记录
+
+本轮将设置页主题选择从 segmented Light / Dark / System 升级为 `Sync with OS` 开关 + 条件化主题摘要 + 抽屉式主题选择：
+- `Sync with OS` 开启时保存 `desktopTheme = system`，并随操作系统浅色/深色变化自动解析到用户最近选择的对应模式主题。
+- Light 分组提供白蓝默认浅色和暖色浅色；白蓝配色成为新的浅色默认。
+- Dark 分组提供石墨香槟 Gold Band 深色和新增终端黑主题。
+- 主题和字体 token 继续沿用 Tailwind CSS v4 + shadcn/ui 的 semantic CSS variables；字体模型收敛为一个内置默认字体 `app-default`（MiSans）加一个本机字体下拉列表，不引入 command bar、terminal input 或聊天入口。
+
+---
+
+## 19. 2026-05-08 工作流入口抽屉化记录
+
+本轮将任务工作流页的页面内“工作流”折叠条升级为顶部指标区的“工作流”生命周期卡片：
+- 主页面只保留工作流状态与动作入口，状态包括未创建、有效、无效/校验失败等。
+- 有效状态提供查看 / 修改，未创建状态提供新建工作流，无效或校验失败状态提供修复 / 修改。
+- 点击动作打开右侧非模态工作流抽屉，抽屉内展示 workflow control 规则条与只读 workflow 图。
+- 运行记录直接跟随 Header 下方展示，不再被工作流蓝图折叠条打断。
 
 ---
 
@@ -245,7 +300,7 @@ MVP 范围：
 
 本轮桌面端任务编排主导航收敛为三页：
 - 任务列表：展示 requirement 摘要、当前状态和 Task Preview，双击或按钮进入任务工作流。
-- 任务工作流：承载 task context、原始 workflow 全貌图，以及按 run -> round 展开的执行历史；run 只作为分组行，不再打开独立详情页。
+- 任务工作流：承载 task context、工作流，以及按 run -> round 展开的执行历史；run 只作为分组行，不再打开独立详情页。
 - Round 详情：保持左上实际工作图、左下全局信息流、右侧 Detail Viewer；日志、会话、artifact、attachment 都在右侧查看。
 
 任务详情页面合并到任务工作流页顶部上下文，run 详情页面合并到工作流页的 run 分组与 Round 详情上下文。

@@ -1,7 +1,0 @@
-{
-  "version": "0.1",
-  "status": "success",
-  "summary": "已验证 web/hello.py 存在 Python 类 HelloWorld，其 say 方法输出 \"hello-world\"，满足在 web 目录下输出一个 Python 类并输出 hello-world 的要求。",
-  "unmet_requirements": [],
-  "validation_gaps": []
-}

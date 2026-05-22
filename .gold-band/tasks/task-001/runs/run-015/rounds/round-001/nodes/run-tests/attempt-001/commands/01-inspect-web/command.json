@@ -1,7 +1,0 @@
-{
-  "id": "inspect-web",
-  "run": "ls",
-  "purpose": "查看 web 目录当前结构并确认可集成位置",
-  "cwd": "D:\\Projects\\code\\ai\\Gold Band\\web",
-  "timeout_sec": null
-}

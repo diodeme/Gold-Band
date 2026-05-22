@@ -1,10 +1,14 @@
-use std::sync::Mutex;
+use std::{collections::BTreeMap, sync::Mutex};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{RuntimeConfig, UserConfig};
-use gold_band::storage::{GoldBandPaths, read_json};
+use gold_band::config::{ManagedAgentType, RuntimeConfig, UserConfig};
+use gold_band::process::kill_process_tree;
+use gold_band::provider::DoctorResult;
+use gold_band::storage::{GoldBandPaths, read_json, write_json};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -25,7 +29,7 @@ impl DesktopContext {
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
         let repo_root = resolve_configured_workspace(&user_config)
-            .or_else(|| find_gold_band_workspace(&repo_root))
+            .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
@@ -43,14 +47,25 @@ impl DesktopContext {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDiagnosticState {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+    pub capabilities: Option<serde_json::Value>,
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
+    agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
 }
 
 impl DesktopState {
     pub fn new(context: DesktopContext) -> Self {
+        let persisted_diagnostics = load_persisted_agent_diagnostics(&context);
         Self {
             context: Mutex::new(context),
+            agent_diagnostics: Mutex::new(persisted_diagnostics),
         }
     }
 
@@ -75,27 +90,143 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .config = config;
+        self.clear_agent_diagnostics()?;
         Ok(())
     }
 
-    pub fn set_workspace(&self, repo_root: Utf8PathBuf) -> Result<DesktopContext> {
-        let mut guard = self
-            .context
+    pub fn agent_diagnostics(&self) -> Result<BTreeMap<ManagedAgentType, AgentDiagnosticState>> {
+        Ok(self
+            .agent_diagnostics
             .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-        let repo_root = find_gold_band_workspace(&repo_root).unwrap_or(repo_root);
-        let app = App::with_config(repo_root.clone(), guard.config.clone());
-        let workspace = repo_root.to_string();
-        let user_config = app.set_user_desktop_workspace(&workspace)?;
-        guard.repo_root = repo_root;
-        guard.config = RuntimeConfig::default().apply_user_config(&user_config);
-        guard.recent_workspaces = recent_workspaces(&user_config, &guard.repo_root);
-        Ok(guard.clone())
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clone())
+    }
+
+    pub fn clear_agent_diagnostics(&self) -> Result<()> {
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            diagnostics.clear();
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)
+    }
+
+    pub fn clear_agent_diagnostic(&self, agent_type: ManagedAgentType) -> Result<()> {
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            diagnostics.remove(&agent_type);
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)
+    }
+
+    pub fn cleanup_agent_diagnostic_processes(&self) -> Result<()> {
+        let repo_root = self.context()?.repo_root;
+        let pid_path = GoldBandPaths::new(repo_root)
+            .runtime_root
+            .join("doctor/acp/provider.pid");
+        let Some(pid) = std::fs::read_to_string(pid_path.as_std_path())
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+        else {
+            return Ok(());
+        };
+        let _ = kill_process_tree(pid);
+        let _ = std::fs::remove_file(pid_path.as_std_path());
+        Ok(())
+    }
+
+    pub fn refresh_agent_diagnostic(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> Result<AgentDiagnosticState> {
+        let app = self.app()?;
+        let doctor = app.provider_doctor(agent_type.as_str())?;
+        let diagnostic = diagnostic_state_from_result(doctor);
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            diagnostics.insert(agent_type, diagnostic.clone());
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)?;
+        Ok(diagnostic)
+    }
+
+    pub fn refresh_all_agent_diagnostics(&self) -> Result<()> {
+        let app = self.app()?;
+        let agent_types = app.managed_agents().keys().copied().collect::<Vec<_>>();
+        let mut diagnostics = BTreeMap::new();
+        for agent_type in agent_types {
+            let doctor = app.provider_doctor(agent_type.as_str())?;
+            diagnostics.insert(agent_type, diagnostic_state_from_result(doctor));
+        }
+        *self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = diagnostics.clone();
+        self.persist_agent_diagnostics(&diagnostics)
+    }
+
+    pub fn set_workspace(&self, repo_root: Utf8PathBuf) -> Result<DesktopContext> {
+        let next_context = {
+            let mut guard = self
+                .context
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let repo_root = find_workspace_root(&repo_root).unwrap_or(repo_root);
+            let app = App::with_config(repo_root.clone(), guard.config.clone());
+            let workspace = repo_root.to_string();
+            let user_config = app.set_user_desktop_workspace(&workspace)?;
+            guard.repo_root = repo_root;
+            guard.config = RuntimeConfig::default().apply_user_config(&user_config);
+            guard.recent_workspaces = recent_workspaces(&user_config, &guard.repo_root);
+            guard.clone()
+        };
+        let persisted_diagnostics = load_persisted_agent_diagnostics(&next_context);
+        *self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = persisted_diagnostics;
+        Ok(next_context)
+    }
+
+    fn persist_agent_diagnostics(
+        &self,
+        diagnostics: &BTreeMap<ManagedAgentType, AgentDiagnosticState>,
+    ) -> Result<()> {
+        let repo_root = self.context()?.repo_root;
+        let path = GoldBandPaths::new(repo_root).agent_diagnostics_file();
+        write_json(&path, diagnostics)
     }
 }
 
+fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
+    AgentDiagnosticState {
+        available: result.available,
+        reason: result.reason,
+        checked_at: current_timestamp(),
+        capabilities: result.capabilities,
+    }
+}
+
+fn load_persisted_agent_diagnostics(
+    context: &DesktopContext,
+) -> BTreeMap<ManagedAgentType, AgentDiagnosticState> {
+    read_json(&GoldBandPaths::new(context.repo_root.clone()).agent_diagnostics_file())
+        .unwrap_or_default()
+}
+
 fn resolve_initial_workspace(cwd: &Utf8Path) -> Utf8PathBuf {
-    find_gold_band_workspace(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
 fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf> {
@@ -105,13 +236,18 @@ fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf>
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(Utf8PathBuf::from)
-        .filter(|path| path.join(".gold-band").is_dir())
+        .filter(|path| path.is_dir())
 }
 
-fn find_gold_band_workspace(start: &Utf8Path) -> Option<Utf8PathBuf> {
+fn find_workspace_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
+    nearest_parent_containing(start, ".git")
+        .or_else(|| nearest_parent_containing(start, ".gold-band"))
+}
+
+fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathBuf> {
     let mut current = start;
     loop {
-        if current.join(".gold-band").is_dir() {
+        if current.join(marker).is_dir() {
             return Some(current.to_path_buf());
         }
         current = current.parent()?;
@@ -127,10 +263,7 @@ fn recent_workspaces(user_config: &UserConfig, repo_root: &Utf8Path) -> Vec<Stri
     let mut workspaces = vec![current.clone()];
     for workspace in &user_config.recent_desktop_workspaces {
         let workspace = workspace.trim();
-        if !workspace.is_empty()
-            && workspace != current
-            && Utf8Path::new(workspace).join(".gold-band").is_dir()
-        {
+        if !workspace.is_empty() && workspace != current && Utf8Path::new(workspace).is_dir() {
             workspaces.push(workspace.to_string());
         }
     }

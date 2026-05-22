@@ -23,7 +23,9 @@
       "PowerShell(agent-browser *)",
       "Bash(pwsh *)",
       "Bash(Out-String -Stream)",
-      "Bash(Select-Object -First 50)"
+      "Bash(Select-Object -First 50)",
+      "Bash(python \"D:/Projects/code/ai/Gold-Band/.claude/hello_world.py\")",
+      "PowerShell(claude --version)"
     ]
   }
 }

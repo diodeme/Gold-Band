@@ -41,9 +41,6 @@
       "Read(//d/Applications/Rust/cargo/registry/src/rsproxy.cn-e3de039b2554c837/**)",
       "Bash(curl -sSf http://127.0.0.1:1420)",
       "Bash(agent-browser snapshot *)"
-    ],
-    "additionalDirectories": [
-      "D:\\Projects\\code\\ai\\Gold-Band\\.web_bak\\docs\\gold-band\\前端重构计划\\前端重构计划"
     ]
   }
 }

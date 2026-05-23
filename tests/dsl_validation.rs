@@ -16,14 +16,14 @@ fn validates_basic_workflow() {
                 {
                     "id": "dev",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "profile": "developer",
                     "goal": "implement requirement"
                 },
                 {
                     "id": "test",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "profile": "tester",
                     "goal": "Run checks and return JSON with result and reason fields.",
                     "primary_artifact": "test-result",
@@ -33,7 +33,7 @@ fn validates_basic_workflow() {
                 {
                     "id": "accept",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "profile": "acceptance",
                     "goal": "Assess acceptance and return JSON with result and reason fields.",
                     "primary_artifact": "accept-result",
@@ -64,7 +64,7 @@ fn rejects_unknown_node_type() {
             "entry": "custom",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "custom", "type": "custom", "provider": "claude-code" }
+                { "id": "custom", "type": "custom", "provider": "claude-acp" }
             ],
             "edges": []
         }"#,
@@ -82,7 +82,7 @@ fn rejects_reserved_terminal_node_ids() {
             "entry": "$end",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "$end", "type": "worker", "provider": "claude-code" }
+                { "id": "$end", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": []
         }"#,
@@ -100,7 +100,7 @@ fn accepts_missing_loop_limits() {
             "entry": "dev",
             "control": {},
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" }
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": []
         }"#,
@@ -118,7 +118,7 @@ fn rejects_zero_attempt_limit() {
             "entry": "dev",
             "control": { "max_attempts": 0 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" }
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": []
         }"#,
@@ -136,7 +136,7 @@ fn rejects_zero_round_limit() {
             "entry": "dev",
             "control": { "max_rounds": 0 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" }
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": []
         }"#,
@@ -154,8 +154,8 @@ fn rejects_invalid_edges_to_end() {
             "entry": "dev",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" },
-                { "id": "test", "type": "worker", "provider": "claude-code" }
+                { "id": "dev", "type": "worker", "provider": "claude-acp" },
+                { "id": "test", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "dev", "to": "test", "on": "success" },
@@ -176,9 +176,9 @@ fn rejects_duplicate_edge_outcomes_from_same_source() {
             "entry": "dev",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" },
-                { "id": "test", "type": "worker", "provider": "claude-code" },
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
+                { "id": "dev", "type": "worker", "provider": "claude-acp" },
+                { "id": "test", "type": "worker", "provider": "claude-acp" },
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "dev", "to": "test", "on": "success" },
@@ -187,7 +187,8 @@ fn rejects_duplicate_edge_outcomes_from_same_source() {
         }"#,
     );
 
-    let error = validate_workflow(workflow).expect_err("duplicate outcome edges should be rejected");
+    let error =
+        validate_workflow(workflow).expect_err("duplicate outcome edges should be rejected");
     assert!(error.to_string().contains("already has a Success edge"));
 }
 
@@ -200,7 +201,7 @@ fn rejects_continue_edges_to_unsupported_provider() {
             "entry": "dev",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "dev", "type": "worker", "provider": "claude-code" },
+                { "id": "dev", "type": "worker", "provider": "claude-acp" },
                 { "id": "review", "type": "worker", "provider": "other-provider" }
             ],
             "edges": [
@@ -224,7 +225,7 @@ fn accepts_worker_json_output_validation() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": { "kind": "json", "artifact": "review-result" },
                     "success_condition": { "path": "passed", "equals": true }
@@ -232,7 +233,7 @@ fn accepts_worker_json_output_validation() {
                 {
                     "id": "test",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "test-result",
                     "output": { "kind": "json", "artifact": "test-result" },
                     "success_condition": { "path": "passed", "equals": true }
@@ -261,7 +262,7 @@ fn accepts_simplified_output_schema_with_matching_expression() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": {
                         "kind": "json",
@@ -290,7 +291,7 @@ fn rejects_success_expression_missing_from_simplified_schema() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": {
                         "kind": "json",
@@ -319,7 +320,7 @@ fn accepts_nested_simplified_schema_path() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": {
                         "kind": "json",
@@ -348,7 +349,7 @@ fn rejects_malformed_success_expression_path() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": {
                         "kind": "json",
@@ -377,7 +378,7 @@ fn rejects_legacy_json_schema_output_constraint() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": {
                         "kind": "json",
@@ -410,7 +411,7 @@ fn rejects_worker_output_mismatch() {
                 {
                     "id": "review",
                     "type": "worker",
-                    "provider": "claude-code",
+                    "provider": "claude-acp",
                     "primary_artifact": "review-result",
                     "output": { "kind": "json", "artifact": "other-result" },
                     "success_condition": { "path": "passed", "equals": true }
@@ -432,7 +433,7 @@ fn rejects_continue_to_new_round_target() {
             "entry": "review",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "review", "type": "worker", "provider": "claude-code" }
+                { "id": "review", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "review", "to": "$new-round", "on": "failure", "session": "continue" }

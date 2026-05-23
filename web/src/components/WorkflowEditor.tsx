@@ -52,8 +52,17 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 
 function providerToIconKey(provider: string): string | undefined {
-  const mapping: Record<string, string> = { 'claude-code': 'claude', 'codex-cli': 'codex', opencode: 'opencode', 'gemini-cli': 'gemini' };
+  const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode' };
   return mapping[provider];
+}
+
+function workflowIconClass(iconKey: string) {
+  const scale: Record<string, string> = {
+    codex: 'scale-125',
+    gemini: 'scale-110',
+    opencode: 'scale-110',
+  };
+  return cn('size-4 object-contain', scale[iconKey]);
 }
 
 const DEFAULT_PERMISSION_MODE = '__default_permission_mode__';
@@ -89,7 +98,11 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <div className="flex items-center gap-1.5">
-        {data.iconKey ? <img src={`/agent-icons/${data.iconKey}.svg`} alt="" className="size-3.5 shrink-0 rounded-sm" /> : null}
+        {data.iconKey ? (
+          <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border/60 bg-muted/30 shadow-sm">
+            <img src={`/agent-icons/${data.iconKey}.svg`} alt="" className={workflowIconClass(data.iconKey)} />
+          </span>
+        ) : null}
         <span className="text-[13px] font-medium text-foreground">{data.label}</span>
       </div>
       <span className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{data.kind}</span>
@@ -107,9 +120,10 @@ interface WorkflowEditorProps {
   onApplyDefaultTemplate?: (workflow: WorkflowDsl) => void;
   defaultWorkflow?: WorkflowDsl | null;
   saving?: boolean;
+  showSaveAction?: boolean;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, saving }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, saving, showSaveAction = true }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
   const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
@@ -124,7 +138,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [invalidNodeIds, setInvalidNodeIds] = useState<Set<string>>(new Set());
-  const agents = agentRegistry?.agents.filter((agent) => agent.supported) ?? [];
+  const agents = agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [];
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
@@ -332,7 +346,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
               </TabsList>
             </Tabs>
             {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
-            <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button>
+            {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
           </div>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 p-0">
@@ -471,10 +485,7 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
   const resultMode = validationEnabled ? 'ai' : manualCheckEnabled ? 'manual' : 'none';
   const expression = conditionExpression(node.success_condition);
   const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
-  const supportedModes = selectedAgent?.supportedModes ?? [];
-  const permissionModes = node.permission_mode && !supportedModes.some((mode) => mode.id === node.permission_mode)
-    ? [...supportedModes, { id: node.permission_mode, name: node.permission_mode }]
-    : supportedModes;
+  const permissionModes = selectedAgent?.supportedModes ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null, primary_artifact: null };
   const updateOutput = useCallback((patch: Partial<WorkflowOutputContractDsl>) => {
@@ -577,17 +588,18 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
         />
       </Field>
       <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => onUpdate(node.id, { provider })}>
+        <Select value={node.provider ?? ''} onValueChange={(provider) => onUpdate(node.id, { provider, permission_mode: null })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
         </Select>
+        {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
       <Field label={<ProfileLabel t={t} onOpenProfileManagement={onOpenProfileManagement} />} errors={errorsFor('profile')}>
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => onUpdate(node.id, { profile })} t={t} />
       </Field>
-      <Field label={t('workflowEditor.permissionMode')}>
+      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
         <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => onUpdate(node.id, { permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value })}>
-          <SelectTrigger>
+          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
             <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
           </SelectTrigger>
           <SelectContent>
@@ -1101,7 +1113,8 @@ export function validateWorkflowForSave(
   const issues: WorkflowValidationIssue[] = [];
   const fieldErrors: Record<string, string[]> = {};
   const profileIds = new Set(profiles.map((profile) => profile.id));
-  const agentIds = new Set(agents.map((agent) => agent.agentType));
+  const agentById = new Map(agents.map((agent) => [agent.agentType, agent]));
+  const agentIds = new Set(agentById.keys());
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
   const edgeOutcomeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim() && ['success', 'failure', 'invalid'].includes(edge.on)) {
@@ -1143,6 +1156,12 @@ export function validateWorkflowForSave(
 
     if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
     else if (!agentIds.has(node.provider)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (node.permission_mode?.trim()) {
+      const supportedModeIds = new Set((agentById.get(node.provider)?.supportedModes ?? []).map((mode) => mode.id));
+      if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
+        addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
+      }
+    }
     if (!node.profile?.trim()) {
       addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
     } else if (!profileIds.has(node.profile)) {

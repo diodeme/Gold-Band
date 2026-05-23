@@ -22,8 +22,8 @@ use crate::dsl::{
 };
 use crate::process::kill_process_tree;
 use crate::provider::{
-    DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, provider_capabilities,
-    provider_from_agent,
+    DoctorResult, PromptBundle, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+    provider_capabilities, provider_from_agent, render_prompt_bundle,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -73,7 +73,7 @@ fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
     WorkflowTemplate {
         id: "default".to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeCode.as_str(), profiles),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -537,7 +537,9 @@ impl App {
 
         let mut store = self.load_workflow_template_store()?;
         let original_len = store.templates.len();
-        store.templates.retain(|template| template.id != template_id);
+        store
+            .templates
+            .retain(|template| template.id != template_id);
         if store.templates.len() == original_len {
             bail!("workflow template `{template_id}` not found");
         }
@@ -620,22 +622,20 @@ impl App {
 
     pub fn provider_doctor(&self, provider: &str) -> Result<DoctorResult> {
         let (agent_type, config) = self.managed_agent(provider)?;
-        match agent_type {
-            ManagedAgentType::ClaudeCode => {
-                match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
-                    Ok(capabilities) => Ok(DoctorResult {
-                        available: true,
-                        reason: None,
-                        capabilities: Some(capabilities),
-                    }),
-                    Err(err) => Ok(DoctorResult {
-                        available: false,
-                        reason: Some(err.to_string()),
-                        capabilities: None,
-                    }),
-                }
-            }
-            _ => bail!("agent `{provider}` is not supported yet"),
+        if !agent_type.is_supported() {
+            bail!("agent `{provider}` is not supported yet");
+        }
+        match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
+            Ok(capabilities) => Ok(DoctorResult {
+                available: true,
+                reason: None,
+                capabilities: Some(capabilities),
+            }),
+            Err(err) => Ok(DoctorResult {
+                available: false,
+                reason: Some(err.to_string()),
+                capabilities: None,
+            }),
         }
     }
 
@@ -1292,6 +1292,44 @@ impl App {
         self.provider_for_id(&worker_ref.provider)?
             .build_continue_command(&session_ref)?
             .ok_or_else(|| anyhow!("provider did not return an open-session command"))
+    }
+
+    pub fn acp_prompt_bundle_for_attempt(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        prompt: String,
+        prompt_id: Option<String>,
+        continue_ref: Option<serde_json::Value>,
+    ) -> Result<PromptBundle> {
+        let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
+        let validated = validate_workflow(workflow)?;
+        self.validate_workflow_agents(&validated)?;
+        let round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+        let node: NodeState = read_json(
+            &self
+                .paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        )?;
+        validate_round_state(&round)?;
+        validate_node_state(&node)?;
+        let invocation = self::node_executor::build_worker_invocation(
+            self,
+            task_id,
+            run_id,
+            &round,
+            attempt_id,
+            &validated,
+            node_id,
+            SessionMode::Continue,
+            continue_ref,
+            Some(prompt),
+            prompt_id,
+        )?;
+        render_prompt_bundle(&invocation)
     }
 
     pub fn run_continue(

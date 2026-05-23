@@ -92,6 +92,10 @@ pub struct SupportedAgentTypeVm {
     pub icon_key: String,
     pub supported: bool,
     pub configured: bool,
+    pub default_display_name: String,
+    pub default_command: String,
+    pub default_args: Vec<String>,
+    pub default_env: Vec<AgentEnvEntryVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -542,21 +546,27 @@ pub fn agent_registry_vm(
             managed_agent_vm(*agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = [
-        ManagedAgentType::ClaudeCode,
-        ManagedAgentType::CodexCli,
-        ManagedAgentType::OpenCode,
-        ManagedAgentType::GeminiCli,
-    ]
-    .into_iter()
-    .map(|agent_type| SupportedAgentTypeVm {
-        agent_type: agent_type.as_str().to_string(),
-        label: supported_agent_label(agent_type).to_string(),
-        icon_key: agent_icon_key(agent_type).to_string(),
-        supported: agent_type.is_supported(),
-        configured: app.managed_agents().contains_key(&agent_type),
-    })
-    .collect();
+    let supported_types = ManagedAgentType::ALL
+        .into_iter()
+        .map(|agent_type| {
+            let default_config = agent_type.default_adapter_config();
+            SupportedAgentTypeVm {
+                agent_type: agent_type.as_str().to_string(),
+                label: supported_agent_label(agent_type).to_string(),
+                icon_key: agent_icon_key(agent_type).to_string(),
+                supported: agent_type.is_supported(),
+                configured: app.managed_agents().contains_key(&agent_type),
+                default_display_name: default_config.display_name,
+                default_command: default_config.command,
+                default_args: default_config.args,
+                default_env: default_config
+                    .env
+                    .into_iter()
+                    .map(|(key, value)| AgentEnvEntryVm { key, value })
+                    .collect(),
+            }
+        })
+        .collect();
     AgentRegistryVm {
         agents,
         supported_types,
@@ -610,29 +620,32 @@ fn managed_agent_vm(
 
 fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
     match agent_type {
-        ManagedAgentType::ClaudeCode => "claude",
-        ManagedAgentType::CodexCli => "codex",
+        ManagedAgentType::ClaudeAcp => "claude",
+        ManagedAgentType::CodexAcp => "codex",
+        ManagedAgentType::Cursor => "cursor",
+        ManagedAgentType::Gemini => "gemini",
         ManagedAgentType::OpenCode => "opencode",
-        ManagedAgentType::GeminiCli => "gemini",
     }
 }
 
 fn provider_icon_key(provider: &str) -> Option<String> {
     match provider {
-        "claude-code" => Some("claude".to_string()),
-        "codex-cli" => Some("codex".to_string()),
+        "claude-acp" => Some("claude".to_string()),
+        "codex-acp" => Some("codex".to_string()),
+        "cursor" => Some("cursor".to_string()),
+        "gemini" => Some("gemini".to_string()),
         "opencode" => Some("opencode".to_string()),
-        "gemini-cli" => Some("gemini".to_string()),
         _ => None,
     }
 }
 
 fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
     match agent_type {
-        ManagedAgentType::ClaudeCode => "Claude Code",
-        ManagedAgentType::CodexCli => "Codex CLI",
+        ManagedAgentType::ClaudeAcp => "Claude",
+        ManagedAgentType::CodexAcp => "Codex",
+        ManagedAgentType::Cursor => "Cursor",
+        ManagedAgentType::Gemini => "Gemini",
         ManagedAgentType::OpenCode => "OpenCode",
-        ManagedAgentType::GeminiCli => "Gemini CLI",
     }
 }
 
@@ -1242,6 +1255,25 @@ pub fn acp_session_vm(
     } else {
         None
     };
+    let node_provider = if worker_ref.is_none() {
+        let node_path = app
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
+        if node_path.exists() {
+            read_json::<NodeState>(&node_path)
+                .ok()
+                .and_then(|node| {
+                    node.resolved_config
+                        .get("provider")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
@@ -1287,29 +1319,38 @@ pub fn acp_session_vm(
             .collect::<Vec<_>>()
     };
 
+    let provider = worker_ref
+        .as_ref()
+        .map(|state| state.provider.clone())
+        .or(node_provider)
+        .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
+    let adapter_display_name = continue_ref
+        .and_then(|value| value.get("adapterDisplayName"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            session
+                .get("adapterDisplayName")
+                .and_then(|value| value.as_str())
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            app.managed_agent(&provider)
+                .ok()
+                .map(|(_, agent)| agent.adapter.display_name.clone())
+        });
+
     Ok(Some(AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        provider: worker_ref
-            .as_ref()
-            .map(|state| state.provider.clone())
-            .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string()),
+        provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
             .and_then(|value| value.as_str())
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
-        adapter_display_name: continue_ref
-            .and_then(|value| value.get("adapterDisplayName"))
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                session
-                    .get("adapterDisplayName")
-                    .and_then(|value| value.as_str())
-            })
-            .map(str::to_string),
+        adapter_display_name,
         cwd: continue_ref
             .and_then(|value| value.get("cwd"))
             .and_then(|value| value.as_str())

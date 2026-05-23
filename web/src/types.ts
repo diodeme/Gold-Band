@@ -56,6 +56,10 @@ export interface SupportedAgentTypeVm {
   iconKey: string;
   supported: boolean;
   configured: boolean;
+  defaultDisplayName: string;
+  defaultCommand: string;
+  defaultArgs: string[];
+  defaultEnv: AgentEnvEntryVm[];
 }
 
 export interface ManagedAgentInput {

@@ -65,7 +65,7 @@ fn worker_success_to_end_completes_run() {
             "entry": "accept",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "accept", "to": "$end", "on": "success" }
@@ -95,9 +95,9 @@ fn worker_invalid_prefers_explicit_edge() {
             "entry": "test",
             "control": { "max_attempts": 2 },
             "nodes": [
-                { "id": "test", "type": "worker", "provider": "claude-code", "primary_artifact": "test-result", "output": { "kind": "json", "artifact": "test-result" }, "success_condition": { "path": "passed", "equals": true } },
-                { "id": "fix", "type": "worker", "provider": "claude-code" },
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
+                { "id": "test", "type": "worker", "provider": "claude-acp", "primary_artifact": "test-result", "output": { "kind": "json", "artifact": "test-result" }, "success_condition": { "path": "passed", "equals": true } },
+                { "id": "fix", "type": "worker", "provider": "claude-acp" },
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "test", "to": "fix", "on": "invalid", "session": "continue" },
@@ -127,8 +127,8 @@ fn worker_invalid_without_edge_pauses() {
             "entry": "test",
             "control": { "max_attempts": 2 },
             "nodes": [
-                { "id": "test", "type": "worker", "provider": "claude-code" },
-                { "id": "accept", "type": "worker", "provider": "claude-code" }
+                { "id": "test", "type": "worker", "provider": "claude-acp" },
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "test", "to": "accept", "on": "success" }
@@ -158,7 +158,7 @@ fn worker_manual_check_rejects_output_validation() {
             "entry": "review",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "review", "type": "worker", "provider": "claude-code", "manual_check": true, "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } }
+                { "id": "review", "type": "worker", "provider": "claude-acp", "manual_check": true, "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
             "edges": []
         }"#,
@@ -180,8 +180,8 @@ fn worker_failure_uses_explicit_edge() {
             "entry": "review",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "review", "type": "worker", "provider": "claude-code", "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } },
-                { "id": "dev", "type": "worker", "provider": "claude-code" }
+                { "id": "review", "type": "worker", "provider": "claude-acp", "primary_artifact": "review-result", "output": { "kind": "json", "artifact": "review-result" }, "success_condition": { "path": "passed", "equals": true } },
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
                 { "from": "review", "to": "dev", "on": "failure", "session": "continue" }
@@ -210,7 +210,7 @@ fn edge_to_new_round_opens_round() {
             "entry": "accept",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "accept", "type": "worker", "provider": "claude-code", "primary_artifact": "accept-result", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
+                { "id": "accept", "type": "worker", "provider": "claude-acp", "primary_artifact": "accept-result", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
             "edges": [
                 { "from": "accept", "to": "$new-round", "on": "failure" }

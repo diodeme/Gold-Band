@@ -238,26 +238,30 @@ fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {
 }
 
 pub struct AcpProvider {
+    provider_id: String,
     adapter_config: AcpAdapterConfig,
 }
 
 impl AcpProvider {
-    pub fn new(adapter_config: AcpAdapterConfig) -> Self {
-        Self { adapter_config }
+    pub fn new(provider_id: impl Into<String>, adapter_config: AcpAdapterConfig) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            adapter_config,
+        }
     }
 }
 
 impl ProviderAdapter for AcpProvider {
     fn describe_provider(&self) -> ProviderInfo {
         ProviderInfo {
-            provider_id: DEFAULT_PROVIDER.to_string(),
+            provider_id: self.provider_id.clone(),
             display_name: self.adapter_config.display_name.clone(),
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
                 supports_raw_stream: false,
             },
-            is_default: true,
+            is_default: self.provider_id == DEFAULT_PROVIDER,
         }
     }
 
@@ -292,6 +296,7 @@ impl ProviderAdapter for AcpProvider {
             req.log_prompts,
         );
         let run = client::run_prompt(
+            &self.provider_id,
             &self.adapter_config,
             req.workspace_dir.clone(),
             req.attempt_dir.clone(),
@@ -355,7 +360,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     if matches!(req.session_mode, SessionMode::Continue) {
         if let Some(resume_prompt) = req.resume_prompt.as_ref() {
             return Ok(PromptBundle {
-                system_prompt: String::new(),
+                system_prompt: render_system_prompt(req),
                 user_prompt: resume_prompt.clone(),
                 prompt_id: req.resume_prompt_id.clone(),
             });
@@ -610,12 +615,14 @@ pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> 
 pub fn provider_capabilities_for_type(
     agent_type: ManagedAgentType,
 ) -> Result<ProviderCapabilities> {
-    match agent_type {
-        ManagedAgentType::ClaudeCode => Ok(AcpProvider::new(AcpAdapterConfig::default())
-            .describe_provider()
-            .capabilities),
-        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
+    if !agent_type.is_supported() {
+        bail!("unsupported agent type: {}", agent_type.as_str());
     }
+    Ok(
+        AcpProvider::new(agent_type.as_str(), agent_type.default_adapter_config())
+            .describe_provider()
+            .capabilities,
+    )
 }
 
 pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
@@ -626,18 +633,18 @@ pub fn provider_from_agent(
     agent_type: ManagedAgentType,
     config: &ManagedAgentConfig,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    match agent_type {
-        ManagedAgentType::ClaudeCode => Ok(Box::new(AcpProvider::new(config.adapter.clone()))),
-        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
+    if !agent_type.is_supported() {
+        bail!("unsupported agent type: {}", agent_type.as_str());
     }
+    Ok(Box::new(AcpProvider::new(
+        agent_type.as_str(),
+        config.adapter.clone(),
+    )))
 }
 
 pub fn provider_from_id(provider_id: &str) -> Result<Box<dyn ProviderAdapter>> {
     let agent_type = ManagedAgentType::from_str(provider_id)?;
-    let config = match agent_type {
-        ManagedAgentType::ClaudeCode => ManagedAgentConfig::new(AcpAdapterConfig::default()),
-        _ => bail!("unsupported agent type: {}", agent_type.as_str()),
-    };
+    let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
     provider_from_agent(agent_type, &config)
 }
 
@@ -699,7 +706,7 @@ mod tests {
     #[test]
     fn default_provider_is_acp_only() {
         let info = default_provider().describe_provider();
-        assert_eq!(info.provider_id, "claude-code");
+        assert_eq!(info.provider_id, "claude-acp");
         assert!(info.capabilities.supports_continue_session);
         assert!(!info.capabilities.supports_raw_stream);
     }

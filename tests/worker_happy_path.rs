@@ -43,7 +43,7 @@ impl ProviderAdapter for FakeProvider {
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -100,7 +100,7 @@ fn run_start_executes_worker_node() {
             {{
               "id": "dev",
               "type": "worker",
-              "provider": "claude-code",
+              "provider": "claude-acp",
               "profile": "{}",
               "goal": "Create an implementation result",
               "primary_artifact": "implementation-result"

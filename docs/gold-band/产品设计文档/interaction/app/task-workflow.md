@@ -95,23 +95,25 @@
 - 作者态画布右键菜单提供“添加结束节点”和“添加新 Round 节点”；添加后会在画布中出现对应虚拟目标节点，普通节点可拖拽连线到该目标，用于补齐结束流向或开启新 round 的流向。
 - Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
-- 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。
+- 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置且 doctor 成功的 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。
+- 工作流创建、修改和模板保存只允许使用最近一次 doctor 成功的 managed agent；未诊断、诊断失败或诊断缓存缺失的 agent 不出现在下拉框中，保存时也视为不可用。
 - 节点 id 输入框使用本地草稿编辑，中文输入法组合输入期间不更新 workflow DSL；失焦、Enter 或组合输入结束后再提交到节点与关联边。作者态画布普通节点直接展示原始节点 id，不把 `test` 等默认模板节点名翻译成本地化文案。
 - profile 配置使用可搜索选择器，默认加载用户级 `~/.gold-band/context/profiles/` 与当前项目级 `~/.gold-band/projects/{project-id}/context/profiles/` 下的所有 profile；workflow DSL 保存 profile `id`，选项展示名称、ID、摘要、创建时间和更新时间，并提供入口跳转到“上下文管理 / 角色管理”。
-- ACP 权限模式下拉来自 Agent 管理页最近一次诊断缓存的 `supportedModes`；workflow DSL 保存 `permission_mode`，允许留空表示沿用 adapter 默认模式。
+- ACP 权限模式下拉来自 Agent 管理页最近一次诊断缓存的 `supportedModes`；切换节点 Agent 时清空旧权限模式，workflow DSL 只允许保存当前 Agent 支持的 `permission_mode`，留空表示沿用 adapter 默认模式。
 - 所有 worker 节点保存前必须绑定可见角色；如果模板中的角色 ID 已删除或因项目可见性变化不可访问，选择器打开时可显示为空，点击保存时一次性弹窗报告问题，关闭弹窗后清空该节点角色并在字段处红色高亮标注原因。
 - worker 节点结果判定方式支持 AI 输出验证与人工 check 二选一；开启其中一种会自动关闭另一种，避免同一节点同时存在机器判定和人工判定。
 - worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
 - 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。
 - 默认模板来自后端持久化的内置 workflow JSON，前端“默认模板”按钮只应用该模板，不维护独立业务默认 schema/expression，也不会在模板缺失时本地合成默认 workflow；默认模板生成顺序为先同步默认角色，再把生成出的角色 ID 写入默认节点 profile。
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。
-- 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
+- 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
 - AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁提供问号说明指导用户填写。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
-- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 的保存/另存模板按钮触发模板校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。
+- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。
 - 工作流图节点长文本默认优先展示前部内容，尾部截断；鼠标悬浮节点标题或元信息时展示完整全文。
+- 工作流图节点中的 agent icon 使用固定浅色底座，并按 SVG 内部留白做视觉缩放，保证 Claude、Codex、Cursor、Gemini、OpenCode 的图标面积接近。
 
 ---
 

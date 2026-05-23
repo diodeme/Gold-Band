@@ -73,7 +73,7 @@ impl ProviderAdapter for SequencedProvider {
                 primary_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -127,9 +127,9 @@ fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) 
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
-            {{"id":"test","type":"worker","provider":"claude-code","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","primary_artifact":"test-result","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
+            {{"id":"test","type":"worker","provider":"claude-acp","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","primary_artifact":"test-result","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"test","on":"success"}},

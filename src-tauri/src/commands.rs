@@ -7,8 +7,8 @@ use gold_band::app::{
     CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, SessionMode};
-use gold_band::dsl::WorkflowDsl;
-use gold_band::provider::PromptBundle;
+use gold_band::dsl::{NodeDsl, WorkflowDsl};
+use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
 use gold_band::storage::read_json;
 use std::{
@@ -285,6 +285,7 @@ pub fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     let summary = app
         .create_task_from_requirement(CreateTaskInput {
@@ -305,6 +306,7 @@ pub fn save_task_workflow(
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.save_task_workflow(&task_id, input.workflow)
         .map_err(command_error)?;
@@ -330,6 +332,7 @@ pub fn save_workflow_template(
     state: State<'_, DesktopState>,
     input: SaveWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.save_workflow_template(input.name, input.workflow)
         .map_err(command_error)
@@ -341,6 +344,7 @@ pub fn update_workflow_template(
     template_id: String,
     input: UpdateWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.update_workflow_template(&template_id, input.workflow)
         .map_err(command_error)
@@ -539,15 +543,24 @@ pub async fn send_acp_prompt(
         } else {
             (SessionMode::New, None)
         };
+        let prompt_bundle = app
+            .acp_prompt_bundle_for_attempt(
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                prompt,
+                prompt_id,
+                continue_ref.clone(),
+            )
+            .map_err(command_error)?;
         client::run_prompt(
+            provider,
             &agent_config.adapter,
             app.paths.repo_root.clone(),
             attempt_dir,
-            &PromptBundle {
-                system_prompt: String::new(),
-                user_prompt: prompt,
-                prompt_id,
-            },
+            &prompt_bundle,
             session_mode,
             permission_mode,
             continue_ref,
@@ -746,6 +759,63 @@ pub fn save_desktop_preferences(
     let config = RuntimeConfig::default().apply_user_config(&user_config);
     state.update_config(config).map_err(command_error)?;
     Ok(preferences_vm(theme, language, font))
+}
+
+fn ensure_workflow_agents_doctor_ready(
+    state: &DesktopState,
+    workflow: &WorkflowDsl,
+) -> CommandResult<()> {
+    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+    let mut providers = BTreeSet::new();
+    for node in &workflow.nodes {
+        if let Some(provider) = node.provider() {
+            providers.insert(provider.to_string());
+        }
+    }
+    for provider in providers {
+        let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
+        match diagnostics.get(&agent_type) {
+            Some(diagnostic) if diagnostic.available => {}
+            Some(diagnostic) => {
+                return Err(format!(
+                    "agent `{provider}` must pass doctor before it can be used in workflows: {}",
+                    diagnostic.reason.as_deref().unwrap_or("doctor failed")
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "agent `{provider}` must pass doctor before it can be used in workflows"
+                ));
+            }
+        }
+    }
+    for node in &workflow.nodes {
+        let NodeDsl::Worker(worker) = node;
+        let Some(provider) = worker.provider.as_deref() else {
+            continue;
+        };
+        let Some(permission_mode) = worker
+            .permission_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let agent_type = ManagedAgentType::from_str(provider).map_err(command_error)?;
+        let diagnostic = diagnostics.get(&agent_type).ok_or_else(|| {
+            format!("agent `{provider}` must pass doctor before it can be used in workflows")
+        })?;
+        let supported_modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
+        if !supported_modes.is_empty()
+            && !supported_modes.iter().any(|mode| mode.id == permission_mode)
+        {
+            return Err(format!(
+                "agent `{provider}` does not support permission mode `{permission_mode}`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn command_error(error: anyhow::Error) -> String {

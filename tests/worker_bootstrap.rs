@@ -48,7 +48,7 @@ impl ProviderAdapter for RecordingProvider {
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -243,7 +243,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: session_mode,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -306,7 +306,7 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
             {{
               "id": "dev",
               "type": "worker",
-              "provider": "claude-code",
+              "provider": "claude-acp",
               "profile": "{}",
               "goal": "Create an implementation result",
               "primary_artifact": "implementation-result"
@@ -382,7 +382,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
           "entry": "accept",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"accept","to":"$end","on":"success"}}
@@ -407,7 +407,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
             .worker_ref_file(task_id, "run-001", "round-001", "accept", "attempt-001"),
         &WorkerRefState {
             version: gold_band::domain::VERSION.to_string(),
-            provider: "claude-code".to_string(),
+            provider: "claude-acp".to_string(),
             mode: SessionMode::Continue,
             supports_open_session: true,
             supports_continue_session: true,
@@ -416,6 +416,30 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         },
     )
     .unwrap();
+
+    let manual_prompt = app
+        .acp_prompt_bundle_for_attempt(
+            task_id,
+            "run-001",
+            "round-001",
+            "accept",
+            "attempt-001",
+            "手动追问".to_string(),
+            Some("manual-prompt-001".to_string()),
+            Some(serde_json::json!({"acpSessionId":"session-123"})),
+        )
+        .unwrap();
+    assert!(manual_prompt.system_prompt.contains("Run: run-001"));
+    assert!(
+        manual_prompt
+            .system_prompt
+            .contains("你必须在最后一步按照以下格式输出你的结果")
+    );
+    assert_eq!(manual_prompt.user_prompt, "手动追问");
+    assert_eq!(
+        manual_prompt.prompt_id.as_deref(),
+        Some("manual-prompt-001")
+    );
 
     let completed = app
         .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()))
@@ -472,8 +496,8 @@ fn transition_continue_uses_latest_target_attempt_ref() {
           "entry": "dev",
           "control": {{ "max_attempts": 3 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"review","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"review","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"review","on":"success"}},
@@ -552,8 +576,8 @@ fn max_attempts_fails_workflow_when_edge_limit_is_exceeded() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"review","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"review","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"review","on":"success"}},
@@ -614,7 +638,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
           "entry": "accept",
           "control": {{ "max_rounds": 1 }},
           "nodes": [
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"accept","to":"$new-round","on":"failure"}}

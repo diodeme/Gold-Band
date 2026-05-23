@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -103,27 +103,97 @@ pub enum DesktopLanguage {
 
 pub type DesktopFontPreference = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum ManagedAgentType {
-    ClaudeCode,
-    CodexCli,
+    #[serde(rename = "claude-acp")]
+    ClaudeAcp,
+    #[serde(rename = "codex-acp")]
+    CodexAcp,
+    #[serde(rename = "cursor")]
+    Cursor,
+    #[serde(rename = "gemini")]
+    Gemini,
+    #[serde(rename = "opencode")]
     OpenCode,
-    GeminiCli,
 }
 
 impl ManagedAgentType {
+    pub const ALL: [Self; 5] = [
+        Self::ClaudeAcp,
+        Self::CodexAcp,
+        Self::Cursor,
+        Self::Gemini,
+        Self::OpenCode,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "claude-code",
-            Self::CodexCli => "codex-cli",
+            Self::ClaudeAcp => "claude-acp",
+            Self::CodexAcp => "codex-acp",
+            Self::Cursor => "cursor",
+            Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
-            Self::GeminiCli => "gemini-cli",
         }
     }
 
     pub fn is_supported(self) -> bool {
-        matches!(self, Self::ClaudeCode)
+        matches!(
+            self,
+            Self::ClaudeAcp | Self::CodexAcp | Self::Cursor | Self::Gemini | Self::OpenCode
+        )
+    }
+
+    pub fn default_adapter_config(self) -> AcpAdapterConfig {
+        match self {
+            Self::ClaudeAcp => AcpAdapterConfig {
+                command: "npx".to_string(),
+                args: vec![
+                    "-y".to_string(),
+                    "@agentclientprotocol/claude-agent-acp@0.37.0".to_string(),
+                ],
+                display_name: "Claude".to_string(),
+                env: BTreeMap::new(),
+            },
+            Self::CodexAcp => AcpAdapterConfig {
+                command: "npx".to_string(),
+                args: vec![
+                    "-y".to_string(),
+                    "@zed-industries/codex-acp@0.14.0".to_string(),
+                ],
+                display_name: "Codex".to_string(),
+                env: BTreeMap::new(),
+            },
+            Self::Cursor => AcpAdapterConfig {
+                command: if cfg!(windows) {
+                    ".\\dist-package\\cursor-agent.cmd".to_string()
+                } else {
+                    "./dist-package/cursor-agent".to_string()
+                },
+                args: vec!["acp".to_string()],
+                display_name: "Cursor".to_string(),
+                env: BTreeMap::new(),
+            },
+            Self::Gemini => AcpAdapterConfig {
+                command: "npx".to_string(),
+                args: vec![
+                    "-y".to_string(),
+                    "@google/gemini-cli@0.43.0".to_string(),
+                    "--acp".to_string(),
+                ],
+                display_name: "Gemini".to_string(),
+                env: BTreeMap::new(),
+            },
+            Self::OpenCode => AcpAdapterConfig {
+                command: if cfg!(windows) {
+                    ".\\opencode.exe".to_string()
+                } else {
+                    "./opencode".to_string()
+                },
+                args: vec!["acp".to_string()],
+                display_name: "OpenCode".to_string(),
+                env: BTreeMap::new(),
+            },
+        }
     }
 }
 
@@ -132,11 +202,27 @@ impl FromStr for ManagedAgentType {
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
-            "claude-code" => Ok(Self::ClaudeCode),
-            "codex-cli" => Ok(Self::CodexCli),
+            "claude-acp" => Ok(Self::ClaudeAcp),
+            "codex-acp" => Ok(Self::CodexAcp),
+            "cursor" => Ok(Self::Cursor),
+            "gemini" => Ok(Self::Gemini),
             "opencode" => Ok(Self::OpenCode),
-            "gemini-cli" => Ok(Self::GeminiCli),
             _ => Err(anyhow!("unsupported agent type: {value}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ManagedAgentType {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "claude-code" => Ok(Self::ClaudeAcp),
+            "codex-cli" => Ok(Self::CodexAcp),
+            "gemini-cli" => Ok(Self::Gemini),
+            _ => Self::from_str(&value).map_err(serde::de::Error::custom),
         }
     }
 }
@@ -154,15 +240,7 @@ pub struct AcpAdapterConfig {
 
 impl Default for AcpAdapterConfig {
     fn default() -> Self {
-        Self {
-            command: "npx".to_string(),
-            args: vec![
-                "-y".to_string(),
-                "@agentclientprotocol/claude-agent-acp@latest".to_string(),
-            ],
-            display_name: "Claude ACP".to_string(),
-            env: BTreeMap::new(),
-        }
+        ManagedAgentType::ClaudeAcp.default_adapter_config()
     }
 }
 
@@ -224,7 +302,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         let mut agents = BTreeMap::new();
         agents.insert(
-            ManagedAgentType::ClaudeCode,
+            ManagedAgentType::ClaudeAcp,
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
         Self {

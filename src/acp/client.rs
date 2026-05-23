@@ -20,7 +20,7 @@ use crate::acp::permission::{
     wait_for_permission_response, write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
-use crate::domain::{DEFAULT_PROVIDER, SessionMode, VERSION};
+use crate::domain::{SessionMode, VERSION};
 use crate::process::kill_process_tree;
 use crate::provider::PromptBundle;
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
@@ -86,6 +86,7 @@ pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<Value> {
 }
 
 pub fn run_prompt(
+    provider_id: &str,
     config: &AcpAdapterConfig,
     workspace_dir: Utf8PathBuf,
     attempt_dir: Utf8PathBuf,
@@ -109,9 +110,9 @@ pub fn run_prompt(
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
-    runtime.write_worker_ref(&workspace_dir, session_mode, restored, None)?;
+    runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
-    let prompt_result = runtime.prompt(prompt);
+    let prompt_result = runtime.prompt(provider_id, prompt);
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => ("completed", stop_reason),
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -125,6 +126,7 @@ pub fn run_prompt(
                 None,
             )?;
             runtime.write_worker_ref(
+                provider_id,
                 &workspace_dir,
                 session_mode,
                 restored,
@@ -135,7 +137,13 @@ pub fn run_prompt(
             return Err(error);
         }
     };
-    runtime.write_worker_ref(&workspace_dir, session_mode, restored, stop_reason.clone())?;
+    runtime.write_worker_ref(
+        provider_id,
+        &workspace_dir,
+        session_mode,
+        restored,
+        stop_reason.clone(),
+    )?;
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if status != "running" {
         let _ = clear_cancel_request(&runtime.paths.attempt_dir);
@@ -151,6 +159,58 @@ pub fn run_prompt(
     };
     runtime.shutdown();
     Ok(run)
+}
+
+fn session_new_params(cwd: &Utf8Path, system_prompt: &str) -> Value {
+    let mut params = json!({
+        "cwd": cwd.as_str(),
+        "mcpServers": [],
+    });
+    if !system_prompt.trim().is_empty() {
+        params["_meta"] = json!({
+            "systemPrompt": {
+                "append": system_prompt,
+            },
+        });
+    }
+    params
+}
+
+fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) -> Value {
+    let mut params = json!({
+        "cwd": cwd.as_str(),
+        "mcpServers": [],
+        "sessionId": session_id,
+    });
+    if !system_prompt.trim().is_empty() {
+        params["_meta"] = json!({
+            "systemPrompt": {
+                "append": system_prompt,
+            },
+        });
+    }
+    params
+}
+
+fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+    json!({
+        "sessionId": session_id,
+        "prompt": [{
+            "type": "text",
+            "text": session_prompt_text(provider_id, prompt),
+        }]
+    })
+}
+
+fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
+    if provider_id == "codex-acp" && !prompt.system_prompt.trim().is_empty() {
+        return format!(
+            "# Gold Band System Prompt\n{}\n\n# User Prompt\n{}",
+            prompt.system_prompt, prompt.user_prompt
+        );
+    }
+
+    prompt.user_prompt.clone()
 }
 
 impl AcpRuntime {
@@ -314,11 +374,7 @@ impl AcpRuntime {
             self.suppress_session_updates = true;
             let load = self.request(
                 "session/load",
-                json!({
-                    "cwd": cwd.as_str(),
-                    "mcpServers": [],
-                    "sessionId": session_id,
-                }),
+                session_load_params(&cwd, session_id, system_prompt),
             );
             self.suppress_session_updates = false;
             match load {
@@ -350,18 +406,7 @@ impl AcpRuntime {
             bail!("ACP continue requires an existing session id");
         }
 
-        let mut params = json!({
-            "cwd": cwd.as_str(),
-            "mcpServers": [],
-        });
-        if !system_prompt.trim().is_empty() {
-            params["_meta"] = json!({
-                "systemPrompt": {
-                    "append": system_prompt,
-                },
-            });
-        }
-        let result = self.request("session/new", params)?;
+        let result = self.request("session/new", session_new_params(&cwd, system_prompt))?;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")
@@ -391,7 +436,11 @@ impl AcpRuntime {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP permission mode requires a session id"))?;
-        let permission_mode = permission_mode.trim();
+        let permission_mode = resolve_permission_mode(
+            permission_mode,
+            self.config_options.as_ref(),
+            self.modes.as_ref(),
+        )?;
         if permission_mode.is_empty() {
             return Ok(());
         }
@@ -406,7 +455,7 @@ impl AcpRuntime {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_mode(permission_mode);
+            self.set_current_mode(&permission_mode);
             return Ok(());
         }
 
@@ -419,7 +468,7 @@ impl AcpRuntime {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_mode(permission_mode);
+            self.set_current_mode(&permission_mode);
             return Ok(());
         }
 
@@ -500,7 +549,7 @@ impl AcpRuntime {
         Ok(())
     }
 
-    fn prompt(&mut self, prompt: &PromptBundle) -> Result<Option<String>> {
+    fn prompt(&mut self, provider_id: &str, prompt: &PromptBundle) -> Result<Option<String>> {
         let session_id = self
             .session_id
             .clone()
@@ -517,13 +566,7 @@ impl AcpRuntime {
         )?;
         let result = self.request(
             "session/prompt",
-            json!({
-                "sessionId": session_id,
-                "prompt": [{
-                    "type": "text",
-                    "text": prompt.user_prompt.clone(),
-                }]
-            }),
+            session_prompt_params(provider_id, &session_id, prompt),
         )?;
         Ok(result
             .get("stopReason")
@@ -720,6 +763,7 @@ impl AcpRuntime {
 
     fn write_worker_ref(
         &self,
+        provider_id: &str,
         workspace_dir: &Utf8Path,
         session_mode: SessionMode,
         restored: bool,
@@ -731,7 +775,7 @@ impl AcpRuntime {
             .ok_or_else(|| anyhow!("ACP worker-ref requires a session id"))?;
         let worker_ref = WorkerRefState {
             version: VERSION.to_string(),
-            provider: DEFAULT_PROVIDER.to_string(),
+            provider: provider_id.to_string(),
             mode: session_mode,
             supports_open_session: true,
             supports_continue_session: true,
@@ -832,15 +876,66 @@ fn rpc_id_to_string(id: &Value) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-fn has_mode_config_option(config_options: Option<&Value>) -> bool {
-    config_options
+fn resolve_permission_mode(
+    permission_mode: &str,
+    config_options: Option<&Value>,
+    modes: Option<&Value>,
+) -> Result<String> {
+    let permission_mode = permission_mode.trim();
+    if permission_mode.is_empty() {
+        return Ok(String::new());
+    }
+
+    let available = available_mode_ids(config_options, modes);
+    if available.is_empty() || available.iter().any(|mode| mode == permission_mode) {
+        return Ok(permission_mode.to_string());
+    }
+
+    bail!(
+        "ACP permission mode `{}` is not supported by this agent; available modes: {}",
+        permission_mode,
+        available.join(", ")
+    )
+}
+
+fn available_mode_ids(config_options: Option<&Value>, modes: Option<&Value>) -> Vec<String> {
+    if let Some(options) = config_options
+        .and_then(find_mode_config_option)
+        .and_then(|option| option.get("options"))
         .and_then(Value::as_array)
-        .is_some_and(|options| {
-            options.iter().any(|option| {
-                option.get("id").and_then(Value::as_str) == Some("mode")
-                    || option.get("category").and_then(Value::as_str) == Some("mode")
-            })
+    {
+        return options
+            .iter()
+            .filter_map(|option| option.get("value").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+
+    modes
+        .and_then(|value| value.get("availableModes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mode| mode.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn find_mode_config_option(config_options: &Value) -> Option<&Value> {
+    config_options.as_array().and_then(|options| {
+        options.iter().find(|option| {
+            option.get("id").and_then(Value::as_str) == Some("mode")
+                || option.get("category").and_then(Value::as_str) == Some("mode")
         })
+    })
+}
+
+fn has_mode_config_option(config_options: Option<&Value>) -> bool {
+    config_options.and_then(find_mode_config_option).is_some()
 }
 
 fn cancel_notification_frame(session_id: &str) -> Value {
@@ -863,7 +958,11 @@ fn response_matches_request(value: &Value, request_id: u64) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{cancel_notification_frame, contributes_to_final_text, response_matches_request};
+    use super::{
+        PromptBundle, cancel_notification_frame, contributes_to_final_text,
+        resolve_permission_mode, response_matches_request, session_load_params, session_new_params,
+        session_prompt_params, session_prompt_text,
+    };
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
@@ -904,5 +1003,70 @@ mod tests {
 
         assert!(!response_matches_request(&permission_request, 3));
         assert!(response_matches_request(&prompt_response, 3));
+    }
+
+    #[test]
+    fn session_setup_params_append_system_prompt() {
+        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "node constraints");
+        assert_eq!(
+            new_params["_meta"]["systemPrompt"]["append"],
+            "node constraints"
+        );
+
+        let load_params = session_load_params(
+            camino::Utf8Path::new("/repo"),
+            "session-123",
+            "node constraints",
+        );
+        assert_eq!(load_params["sessionId"], "session-123");
+        assert_eq!(
+            load_params["_meta"]["systemPrompt"]["append"],
+            "node constraints"
+        );
+    }
+
+    #[test]
+    fn codex_session_prompt_inlines_system_prompt() {
+        let prompt = PromptBundle {
+            system_prompt: "node constraints".to_string(),
+            user_prompt: "do the task".to_string(),
+            prompt_id: Some("prompt-001".to_string()),
+        };
+
+        let text = session_prompt_text("codex-acp", &prompt);
+        assert!(text.contains("# Gold Band System Prompt\nnode constraints"));
+        assert!(text.contains("# User Prompt\ndo the task"));
+
+        let params = session_prompt_params("codex-acp", "session-123", &prompt);
+        assert_eq!(params["sessionId"], "session-123");
+        assert_eq!(params["prompt"][0]["text"], text);
+    }
+
+    #[test]
+    fn claude_session_prompt_keeps_user_prompt_only() {
+        let prompt = PromptBundle {
+            system_prompt: "node constraints".to_string(),
+            user_prompt: "do the task".to_string(),
+            prompt_id: None,
+        };
+
+        assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");
+    }
+
+    #[test]
+    fn unsupported_permission_mode_reports_available_modes() {
+        let modes = json!({
+            "availableModes": [
+                { "id": "read-only", "name": "Read Only" },
+                { "id": "auto", "name": "Default" }
+            ]
+        });
+
+        let error = resolve_permission_mode("unknown", None, Some(&modes))
+            .expect_err("unknown mode should fail before sending it to the agent")
+            .to_string();
+
+        assert!(error.contains("unknown"));
+        assert!(error.contains("read-only, auto"));
     }
 }

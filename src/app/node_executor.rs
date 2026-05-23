@@ -268,7 +268,7 @@ fn build_predecessor_contexts(
         .collect()
 }
 
-pub(crate) fn execute_ai_node(
+pub(crate) fn build_worker_invocation(
     app: &App,
     task_id: &str,
     run_id: &str,
@@ -276,12 +276,11 @@ pub(crate) fn execute_ai_node(
     attempt_id: &str,
     workflow: &ValidatedWorkflow,
     node_id: &str,
-    node: NodeState,
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
-) -> Result<NodeState> {
+) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
@@ -316,7 +315,7 @@ pub(crate) fn execute_ai_node(
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
 
-    let invocation = WorkerInvocation {
+    Ok(WorkerInvocation {
         invocation_kind,
         profile,
         profile_content,
@@ -343,7 +342,37 @@ pub(crate) fn execute_ai_node(
         }),
         cold_artifacts,
         cold_attachments,
-    };
+    })
+}
+
+pub(crate) fn execute_ai_node(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round: &RoundState,
+    attempt_id: &str,
+    workflow: &ValidatedWorkflow,
+    node_id: &str,
+    node: NodeState,
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+    resume_prompt: Option<String>,
+    resume_prompt_id: Option<String>,
+) -> Result<NodeState> {
+    let round_id = round.id.as_str();
+    let invocation = build_worker_invocation(
+        app,
+        task_id,
+        run_id,
+        round,
+        attempt_id,
+        workflow,
+        node_id,
+        session_mode,
+        continue_ref,
+        resume_prompt,
+        resume_prompt_id,
+    )?;
 
     progress(&format!(
         "calling provider for {}/{}/{}",

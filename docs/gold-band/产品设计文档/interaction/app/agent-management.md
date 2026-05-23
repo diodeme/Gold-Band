@@ -41,15 +41,17 @@ Agent Cards
 ---
 
 ## 4. 新增 Agent
-新增按钮使用下拉菜单：
-- Claude Code：当前可新增
-- Codex CLI：待支持
-- OpenCode：待支持
-- Gemini CLI：待支持
+新增按钮使用下拉菜单，列表来自 ACP registry 固定支持集：
+- Claude：`claude-acp`
+- Codex：`codex-acp`
+- Cursor：`cursor`
+- Gemini：`gemini`
+- OpenCode：`opencode`
 
 限制：
 - 已配置过的 agent type 不可重复新增
-- 当前只允许真正创建 `claude-code`
+- 新增时预填 registry 推荐命令、参数和 display name，用户可按本机安装路径调整
+- agent 图标源文件维护在 `docs\gold-band\资源\icon`，应用实际打包路径为 `web\public\agent-icons`，由 Vite 复制进 `web\dist` 后随 Tauri 应用打包
 
 ---
 
@@ -82,7 +84,8 @@ Agent Cards
 - 桌面端启动后自动执行诊断
 - 后台每 60 秒自动诊断一次当前 workspace 下已配置 agent
 - 手动诊断和自动诊断都必须在诊断结束、初始化失败、超时或客户端关闭时关闭 ACP adapter 进程树
-- 诊断命令 `npx -y @agentclientprotocol/claude-agent-acp@latest` 用于启动 Claude ACP adapter；首次运行可能需要通过 npm 下载包和依赖，耗时可达到 1 分钟以上
+- 诊断对当前已配置的 ACP adapter 通用执行，不再限定 Claude；首次运行 npx 或本地二进制 adapter 可能需要安装依赖，耗时可达到 1 分钟以上
+- 当前固定参考 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` 中的 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`opencode` 五类 registry agent
 - 诊断 initialize 设置 5 分钟超时，超时视为异常诊断并返回页面，不允许阻塞客户端
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断
@@ -94,8 +97,10 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 
 当前约束：
 - workflow 节点中的 `provider` 字段表示 managed agent type
-- 创建任务与工作流编辑器的节点 Agent 下拉来源于 Agent 管理页已配置且当前支持的 agent card
-- 若节点引用的 agent type 未在 Agent 管理页中配置，则 workflow 校验失败
+- 创建任务与工作流编辑器的节点 Agent 下拉只展示已配置、当前支持且最近一次 doctor 成功的 agent card
+- 未运行 doctor、doctor 失败或诊断缓存缺失的 agent 不能被工作流选择，保存工作流时也会被命令入口拦截
+- 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败
+- workflow 节点权限模式必须来自该 agent 最近一次 doctor 缓存的 `supportedModes`；切换 agent 时不继承旧 agent 的权限模式
 - 节点详情页应展示当前节点绑定的 agent type，便于确认执行来源
 
 ---

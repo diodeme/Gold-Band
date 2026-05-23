@@ -448,7 +448,6 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className={cn('flex shrink-0 flex-wrap items-center justify-between gap-3 border-b text-sm text-muted-foreground', compact ? 'px-6 py-2.5' : 'px-5 py-3')}>
-        {!compact ? <span>{t('roundDetail.hotLogHint', { count: data?.hotLimit ?? defaultHotLimit, days: data?.archiveRetentionDays ?? 30 })}</span> : <span>{query.source}</span>}
         <div className="flex items-center gap-2">
           {exportable ? <Button variant="outline" size="sm" onClick={() => exportLogItems(items)}>{t('roundDetail.exportLog')}</Button> : null}
           <span>{t('common.pageSize')}</span>

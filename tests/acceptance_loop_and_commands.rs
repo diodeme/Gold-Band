@@ -60,7 +60,7 @@ impl ProviderAdapter for LoopingProvider {
                 primary_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -123,8 +123,8 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"accept","on":"success"}},

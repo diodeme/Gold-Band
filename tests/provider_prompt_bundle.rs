@@ -237,7 +237,7 @@ fn render_prompt_bundle_renders_predecessor_chain_and_output_dsl() {
 }
 
 #[test]
-fn render_prompt_bundle_continue_keeps_system_prompt_empty() {
+fn render_prompt_bundle_continue_reuses_node_system_prompt() {
     let mut req = invocation();
     req.session_mode = SessionMode::Continue;
     req.resume_prompt = Some("继续".to_string());
@@ -245,7 +245,21 @@ fn render_prompt_bundle_continue_keeps_system_prompt_empty() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert_eq!(prompt.system_prompt, "");
+    assert!(
+        prompt
+            .system_prompt
+            .contains("Project: D--Projects-code-ai-Gold-Band")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("你必须在最后一步按照以下格式输出你的结果")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("JSON field `$.result` equals `true`")
+    );
     assert_eq!(prompt.user_prompt, "继续");
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-001"));
 }

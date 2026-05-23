@@ -60,7 +60,7 @@ impl ProviderAdapter for StartTaskProvider {
                 primary_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -125,7 +125,7 @@ fn developer_profile_id(app: &App) -> String {
 
 fn worker_workflow(app: &App) -> String {
     format!(
-        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}"}}],"edges":[]}}"#,
+        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-acp","profile":"{}"}}],"edges":[]}}"#,
         developer_profile_id(app)
     )
 }
@@ -392,8 +392,8 @@ fn start_selected_task_enters_workspace() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an implementation result","primary_artifact":"implementation-result"}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Create an implementation result","primary_artifact":"implementation-result"}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"accept","on":"success"}},
@@ -485,7 +485,7 @@ fn invalid_task_shows_reason_and_cannot_enter_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_attempts":1,"max_rounds":1},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"missing-profile"}],"edges":[]}"#,
+        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_attempts":1,"max_rounds":1},"nodes":[{"type":"worker","id":"dev","provider":"claude-acp","profile":"missing-profile"}],"edges":[]}"#,
     );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;

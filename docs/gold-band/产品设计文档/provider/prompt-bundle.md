@@ -208,15 +208,19 @@ runtime 将使用以下条件判断节点结果：
 
 ## 7. Continue session 规则
 
-ACP 的 `systemPrompt` 只在 `session/new` 时通过 `_meta.systemPrompt.append` 注入。
+ACP 的 `systemPrompt` 在 `session/new` 和 `session/load` 时都通过 `_meta.systemPrompt.append` 注入。
 
 当 `sessionMode = continue` 且存在 resume prompt 时：
 
-- `systemPrompt` 为空
-- `userPrompt` 为 `Continue` / `继续`
-- 复用已有 ACP session 的上下文
+- `systemPrompt` 仍渲染当前节点的位置、角色、文件规则与 output DSL 约束
+- `userPrompt` 为 `Continue` / `继续`，或桌面 ACP 会话面板中的用户追问正文
+- 复用已有 ACP session 的上下文，并在恢复时重新追加当前节点不可协商约束
 
-如果跨节点需要新的角色、文件规则或输出 DSL 约束，应使用新 session。
+桌面 ACP 会话面板的手动追问也必须复用同一套 prompt bundle 渲染逻辑；不能只把用户输入包装成空 `systemPrompt` 的临时 `PromptBundle`。
+
+说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。
+
+Codex ACP 0.14.0 当前会接收但不消费 `session/new` / `session/load` 中的 `_meta.systemPrompt`；Gold Band 对 `codex-acp` 额外在 `session/prompt` 文本前内联当前节点 system prompt，保证节点角色、文件规则和输出约束首次调用即可生效。
 
 ---
 

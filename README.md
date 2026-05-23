@@ -194,6 +194,12 @@ CLI definitions live in [src/cli/mod.rs](src/cli/mod.rs).
 - [Workflow DSL overview](docs/gold-band/产品设计文档/dsl/overview.md)
 - [MVP development plan](docs/gold-band/开发计划/gold-band-mvp-plan.md)
 
+## License
+
+Gold Band is licensed under the GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE) for the full license text.
+
+You may use, modify, distribute, and provide network access to this project under AGPL-3.0, provided that you comply with its copyleft obligations, including making the corresponding source code available for modified versions that you distribute or run as a network service.
+
 ## Troubleshooting
 
 ### `npm run dev` cannot start the desktop app

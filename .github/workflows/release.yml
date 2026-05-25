@@ -83,6 +83,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Repair npm optional dependencies
+        run: npm install --include=optional --no-audit --no-fund --package-lock=false
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 

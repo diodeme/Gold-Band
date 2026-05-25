@@ -76,8 +76,10 @@ jobs:
             runner: windows-latest
           - name: linux-x64
             runner: ubuntu-22.04
+          - name: macos-x64
+            runner: macos-15-intel
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-15
 
     env:
       RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}

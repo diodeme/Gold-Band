@@ -83,6 +83,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -94,7 +95,13 @@ jobs:
             src-tauri -> src-tauri/target
 
       - name: Generate default Tauri channel config
-        run: node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+        shell: bash
+        run: |
+          node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+          test -f src-tauri/target/channel/tauri.default.conf.json
+
+      - name: Ensure Tauri action npm script
+        run: npm pkg set scripts.tauri=tauri
 
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0

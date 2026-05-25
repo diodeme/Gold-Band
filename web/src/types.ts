@@ -3,6 +3,7 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'error';
 
 export interface PreferencesVm {
   theme: DesktopThemePreference;
@@ -10,10 +11,44 @@ export interface PreferencesVm {
   font: DesktopFontPreference;
 }
 
+export interface UpdaterSettingsVm {
+  channel: string;
+  builtInUrl: string;
+  overrideUrl?: string | null;
+  effectiveUrl: string;
+  pollIntervalMinutes: number;
+}
+
+export interface UpdateInfoVm {
+  version: string;
+  currentVersion: string;
+  notes?: string | null;
+  pubDate?: string | null;
+}
+
+export interface UpdateStatusVm {
+  status: UpdateCheckStatus;
+  checkedAt?: string | null;
+  update?: UpdateInfoVm | null;
+  error?: AppErrorVm | null;
+  background: boolean;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
   preferences: PreferencesVm;
+  updaterSettings: UpdaterSettingsVm;
+  updateStatus: UpdateStatusVm;
+  clientVersion: string;
+  appInfo: AppInfoVm;
+}
+
+export interface AppInfoVm {
+  channel: string;
+  appName: string;
+  appKey: string;
+  configDirName: string;
 }
 
 export interface AgentRegistryVm {

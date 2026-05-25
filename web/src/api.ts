@@ -10,6 +10,8 @@ import {
   mockTaskDetail,
   mockTaskList,
   mockWorkflow,
+  mockUpdateStatus,
+  mockUpdaterSettings,
   mockWorkflowTemplates,
 } from './mockData';
 import type {
@@ -37,6 +39,8 @@ import type {
   RunSummaryVm,
   TaskDetailVm,
   TaskListVm,
+  UpdateStatusVm,
+  UpdaterSettingsVm,
   WorkflowDsl,
   WorkflowTemplateStore,
   WorkflowVm,
@@ -44,6 +48,8 @@ import type {
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 let browserProfileList = { ...mockProfileList, profiles: [...mockProfileList.profiles] };
+let browserUpdaterSettings = { ...mockUpdaterSettings };
+let browserUpdateStatus = { ...mockUpdateStatus };
 const browserFontCandidates = [
   'MiSans',
   'Maple Mono NF CN',
@@ -120,7 +126,12 @@ function browserProfileId() {
 }
 
 export function getAppBootstrap() {
-  return command<AppBootstrapVm>('get_app_bootstrap', undefined, mockBootstrap);
+  return command<AppBootstrapVm>('get_app_bootstrap', undefined, {
+    ...mockBootstrap,
+    updaterSettings: browserUpdaterSettings,
+    updateStatus: browserUpdateStatus,
+    clientVersion: mockBootstrap.clientVersion,
+  });
 }
 
 export async function getSystemFonts() {
@@ -403,4 +414,34 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
 
 export function saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) {
   return command<PreferencesVm>('save_desktop_preferences', { theme, language, font }, { theme, language, font });
+}
+
+export function saveUpdaterSettings(overrideUrl: string | null) {
+  const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
+  browserUpdaterSettings = {
+    ...browserUpdaterSettings,
+    overrideUrl: normalized,
+    effectiveUrl: normalized ?? browserUpdaterSettings.builtInUrl,
+  };
+  return command<UpdaterSettingsVm>('save_updater_settings', { overrideUrl: normalized }, browserUpdaterSettings);
+}
+
+export function getUpdateStatus() {
+  return command<UpdateStatusVm>('get_update_status', undefined, browserUpdateStatus);
+}
+
+export function checkUpdateManual() {
+  browserUpdateStatus = {
+    status: 'error',
+    checkedAt: localTimestamp(),
+    update: null,
+    error: { code: 'updater.check-failed', params: { message: 'Browser preview cannot check desktop updates.' } },
+    background: false,
+  };
+  return command<UpdateStatusVm>('check_update_manual', undefined, browserUpdateStatus);
+}
+
+export function downloadAndInstallUpdate() {
+  if (!isTauri) return Promise.resolve();
+  return invoke<void>('download_and_install_update');
 }

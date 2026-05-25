@@ -23,11 +23,16 @@ use gold_band::config::{
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
 use crate::state::DesktopState;
+use crate::updater::{
+    UpdateStatusVm, UpdaterSettingsVm, check_update,
+    download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
+    updater_settings,
+};
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
@@ -110,9 +115,18 @@ pub fn get_system_fonts() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn get_app_bootstrap(state: State<'_, DesktopState>) -> CommandResult<AppBootstrapVm> {
+pub fn get_app_bootstrap(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+) -> CommandResult<AppBootstrapVm> {
     let context = state.context().map_err(command_error)?;
-    Ok(bootstrap_vm(&context.app(), context.recent_workspaces))
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+    ))
 }
 
 #[tauri::command]
@@ -259,7 +273,7 @@ pub fn update_profile(
 
 #[tauri::command]
 pub fn choose_workspace(
-    app: tauri::AppHandle,
+    app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> CommandResult<Option<AppBootstrapVm>> {
     let current = state.context().map_err(command_error)?.repo_root;
@@ -278,20 +292,30 @@ pub fn choose_workspace(
         CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({}))
     })?;
     let context = state.set_workspace(repo_root).map_err(command_error)?;
+    let update_status = state.update_status().map_err(command_error)?;
     Ok(Some(bootstrap_vm(
         &context.app(),
         context.recent_workspaces,
+        update_status,
+        app.package_info().version.to_string(),
     )))
 }
 
 #[tauri::command]
 pub fn select_recent_workspace(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     workspace: String,
 ) -> CommandResult<AppBootstrapVm> {
     let repo_root = Utf8PathBuf::from(workspace);
     let context = state.set_workspace(repo_root).map_err(command_error)?;
-    Ok(bootstrap_vm(&context.app(), context.recent_workspaces))
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+    ))
 }
 
 #[tauri::command]
@@ -789,6 +813,38 @@ pub fn save_desktop_preferences(
     Ok(preferences_vm(theme, language, font))
 }
 
+#[tauri::command]
+pub fn save_updater_settings(
+    state: State<'_, DesktopState>,
+    override_url: Option<String>,
+) -> CommandResult<UpdaterSettingsVm> {
+    let override_url = normalize_updater_url_override(override_url).map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let user_config = app
+        .set_user_desktop_updater_url_override(override_url)
+        .map_err(command_error)?;
+    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let settings = updater_settings(&config);
+    state.update_config(config).map_err(command_error)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn get_update_status(state: State<'_, DesktopState>) -> CommandResult<UpdateStatusVm> {
+    state.update_status().map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn check_update_manual(app: AppHandle) -> CommandResult<UpdateStatusVm> {
+    Ok(check_update(&app, false).await)
+}
+
+#[tauri::command]
+pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
+    run_download_and_install_update(&app).await.map_err(command_error)
+}
+
 fn ensure_workflow_agents_doctor_ready(
     state: &DesktopState,
     workflow: &WorkflowDsl,
@@ -855,7 +911,25 @@ fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
+    let message = error.to_string();
+    if let Some(code) = updater_command_error_code(&message) {
+        return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
+    }
     CommandErrorVm::new("app.unexpected", serde_json::json!({}))
+}
+
+fn updater_command_error_code(message: &str) -> Option<&'static str> {
+    if message.contains("updater.invalid-url") {
+        Some("updater.invalid-url")
+    } else if message.contains("updater.no-update") {
+        Some("updater.no-update")
+    } else if message.contains("updater.install-failed") {
+        Some("updater.install-failed")
+    } else if message.contains("updater.check-failed") {
+        Some("updater.check-failed")
+    } else {
+        None
+    }
 }
 
 fn workflow_validation_command_error(error: &WorkflowValidationError) -> CommandErrorVm {

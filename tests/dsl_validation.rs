@@ -71,7 +71,11 @@ fn rejects_success_edge_to_new_round() {
     );
 
     let error = validate_workflow(workflow).expect_err("success should not open new round");
-    assert!(error.to_string().contains("cannot target `$new-round` on success"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot target `$new-round` on success")
+    );
 }
 
 #[test]

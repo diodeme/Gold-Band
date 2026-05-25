@@ -279,6 +279,8 @@ pub struct UserConfig {
     pub desktop_theme: Option<DesktopThemePreference>,
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_font: Option<DesktopFontPreference>,
+    pub desktop_updater_url_override: Option<String>,
+    pub desktop_updater_last_checked_at: Option<String>,
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     #[serde(default)]
@@ -295,6 +297,8 @@ pub struct RuntimeConfig {
     pub desktop_theme: DesktopThemePreference,
     pub desktop_language: DesktopLanguage,
     pub desktop_font: DesktopFontPreference,
+    pub desktop_updater_url_override: Option<String>,
+    pub desktop_updater_last_checked_at: Option<String>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
 }
 
@@ -314,6 +318,8 @@ impl Default for RuntimeConfig {
             desktop_theme: DesktopThemePreference::System,
             desktop_language: DesktopLanguage::ZhCn,
             desktop_font: "app-default".to_string(),
+            desktop_updater_url_override: None,
+            desktop_updater_last_checked_at: None,
             agents,
         }
     }
@@ -345,6 +351,8 @@ impl RuntimeConfig {
         if let Some(desktop_font) = &user_config.desktop_font {
             self.desktop_font = desktop_font.clone();
         }
+        self.desktop_updater_url_override = user_config.desktop_updater_url_override.clone();
+        self.desktop_updater_last_checked_at = user_config.desktop_updater_last_checked_at.clone();
         if let Some(agents) = &user_config.agents {
             self.agents = agents.clone();
         }
@@ -443,6 +451,7 @@ mod tests {
             desktop_theme: Some(DesktopThemePreference::Dark),
             desktop_language: Some(DesktopLanguage::En),
             desktop_font: Some("Microsoft YaHei UI".to_string()),
+            desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
             ..UserConfig::default()
         });
@@ -450,6 +459,10 @@ mod tests {
         assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
         assert_eq!(config.desktop_font, "Microsoft YaHei UI");
+        assert_eq!(
+            config.desktop_updater_url_override.as_deref(),
+            Some("https://updates.example/latest.json")
+        );
         assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
     }
 

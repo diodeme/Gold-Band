@@ -305,7 +305,9 @@ impl ProviderAdapter for AcpProvider {
             &prompt,
             req.invocation_kind,
             req.profile.as_deref(),
-            req.output_contract.as_ref().map(|contract| contract.artifact.as_str()),
+            req.output_contract
+                .as_ref()
+                .map(|contract| contract.artifact.as_str()),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
@@ -332,7 +334,8 @@ impl ProviderAdapter for AcpProvider {
             _ => ProviderRunStatus::Success,
         };
         let result_payload = req.output_contract.as_ref().map(|contract| {
-            let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
+            let uses_json_output =
+                contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
             let content = if uses_json_output {
                 json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
                     .unwrap_or_else(|| run.final_text.clone())

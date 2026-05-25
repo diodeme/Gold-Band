@@ -7,8 +7,10 @@ use gold_band::app::App;
 use gold_band::config::{ManagedAgentType, RuntimeConfig, UserConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
-use gold_band::storage::{GoldBandPaths, read_json, write_json};
+use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
+
+use crate::updater::{UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -58,14 +60,17 @@ pub struct AgentDiagnosticState {
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
+    update_status: Mutex<UpdateStatusVm>,
 }
 
 impl DesktopState {
     pub fn new(context: DesktopContext) -> Self {
         let persisted_diagnostics = load_persisted_agent_diagnostics(&context);
+        let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
             agent_diagnostics: Mutex::new(persisted_diagnostics),
+            update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
         }
     }
 
@@ -100,6 +105,33 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone())
+    }
+
+    pub fn update_status(&self) -> Result<UpdateStatusVm> {
+        Ok(self
+            .update_status
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clone())
+    }
+
+    pub fn set_update_status(&self, status: UpdateStatusVm) -> Result<()> {
+        *self
+            .update_status
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = status;
+        Ok(())
+    }
+
+    pub fn persist_updater_last_checked_at(&self, checked_at: Option<String>) -> Result<()> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let user_config = app.set_user_desktop_updater_last_checked_at(checked_at)?;
+        guard.config = RuntimeConfig::default().apply_user_config(&user_config);
+        Ok(())
     }
 
     pub fn clear_agent_diagnostics(&self) -> Result<()> {
@@ -196,6 +228,12 @@ impl DesktopState {
             .agent_diagnostics
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = persisted_diagnostics;
+        *self
+            .update_status
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = initial_update_status(
+            next_context.config.desktop_updater_last_checked_at.clone(),
+        );
         Ok(next_context)
     }
 
@@ -240,8 +278,9 @@ fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf>
 }
 
 fn find_workspace_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
-    nearest_parent_containing(start, ".git")
-        .or_else(|| nearest_parent_containing(start, ".gold-band"))
+    nearest_parent_containing(start, ".git").or_else(|| {
+        nearest_parent_containing(start, active_storage_path_config().config_dir_name)
+    })
 }
 
 fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathBuf> {

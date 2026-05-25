@@ -357,13 +357,25 @@ mod tests {
 
     #[test]
     fn user_prompt_event_omits_prompt_id_when_absent() {
-        let event = user_prompt_event(7, "session-123".to_string(), "继续".to_string(), None, false);
+        let event = user_prompt_event(
+            7,
+            "session-123".to_string(),
+            "继续".to_string(),
+            None,
+            false,
+        );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
 
     #[test]
     fn hidden_user_prompt_event_redacts_content() {
-        let event = user_prompt_event(7, "session-123".to_string(), "repair".to_string(), None, true);
+        let event = user_prompt_event(
+            7,
+            "session-123".to_string(),
+            "repair".to_string(),
+            None,
+            true,
+        );
         assert_eq!(event.content, None);
         assert_eq!(
             event

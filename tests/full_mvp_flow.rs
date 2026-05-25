@@ -42,7 +42,11 @@ impl ProviderAdapter for SequencedProvider {
         *calls += 1;
         self.invocations.lock().unwrap().push(req.clone());
 
-        let payload = match req.output_contract.as_ref().map(|contract| contract.artifact.as_str()) {
+        let payload = match req
+            .output_contract
+            .as_ref()
+            .map(|contract| contract.artifact.as_str())
+        {
             Some("implementation-result") => {
                 std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
                 std::fs::write(
@@ -185,7 +189,11 @@ fn run_start_completes_worker_test_accept_happy_path() {
     let invocations = provider.invocations.lock().unwrap();
     let accept_call = invocations
         .iter()
-        .find(|call| call.output_contract.as_ref().is_some_and(|contract| contract.artifact == "accept-result"))
+        .find(|call| {
+            call.output_contract
+                .as_ref()
+                .is_some_and(|contract| contract.artifact == "accept-result")
+        })
         .unwrap();
     assert!(accept_call.attachments_dir.is_some());
     assert!(accept_call.output_contract.is_some());

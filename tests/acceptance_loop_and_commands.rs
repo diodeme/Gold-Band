@@ -37,7 +37,11 @@ impl ProviderAdapter for LoopingProvider {
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         let mut count = self.call_count.lock().unwrap();
         *count += 1;
-        let payload = match req.output_contract.as_ref().map(|contract| contract.artifact.as_str()) {
+        let payload = match req
+            .output_contract
+            .as_ref()
+            .map(|contract| contract.artifact.as_str())
+        {
             Some("implementation-result") => OutputArtifactPayload {
                 name: "implementation-result".to_string(),
                 content: r#"{"summary":"implemented"}"#.to_string(),

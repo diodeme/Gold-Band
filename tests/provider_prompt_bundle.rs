@@ -130,9 +130,9 @@ fn render_prompt_bundle_guides_nodes_without_artifacts() {
     let prompt = render_prompt_bundle(&req).unwrap();
 
     assert!(
-        prompt.system_prompt.contains(
-            "当前节点未声明 output DSL，不需要产出 canonical artifact"
-        )
+        prompt
+            .system_prompt
+            .contains("当前节点未声明 output DSL，不需要产出 canonical artifact")
     );
     assert!(
         prompt

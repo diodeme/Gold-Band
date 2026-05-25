@@ -16,8 +16,10 @@ use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
+use crate::channel::current_channel_config;
 use crate::i18n::Translator;
 use crate::state::AgentDiagnosticState;
+use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,19 @@ pub struct AppBootstrapVm {
     pub repo_root: String,
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
+    pub updater_settings: UpdaterSettingsVm,
+    pub update_status: UpdateStatusVm,
+    pub client_version: String,
+    pub app_info: AppInfoVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfoVm {
+    pub channel: String,
+    pub app_name: String,
+    pub app_key: String,
+    pub config_dir_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -599,7 +614,13 @@ pub fn preferences_vm(
     }
 }
 
-pub fn bootstrap_vm(app: &App, recent_workspaces: Vec<String>) -> AppBootstrapVm {
+pub fn bootstrap_vm(
+    app: &App,
+    recent_workspaces: Vec<String>,
+    update_status: UpdateStatusVm,
+    client_version: impl Into<String>,
+) -> AppBootstrapVm {
+    let channel_config = current_channel_config();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
@@ -608,6 +629,15 @@ pub fn bootstrap_vm(app: &App, recent_workspaces: Vec<String>) -> AppBootstrapVm
             app.config.desktop_language,
             app.config.desktop_font.clone(),
         ),
+        updater_settings: updater_settings(&app.config),
+        update_status,
+        client_version: client_version.into(),
+        app_info: AppInfoVm {
+            channel: channel_config.channel.to_string(),
+            app_name: channel_config.app_name.to_string(),
+            app_key: channel_config.app_key.to_string(),
+            config_dir_name: channel_config.config_dir_name.to_string(),
+        },
     }
 }
 

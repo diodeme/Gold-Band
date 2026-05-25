@@ -20,6 +20,7 @@ const resources = {
         refresh: '刷新',
         close: '关闭',
         save: '保存',
+        open: '打开',
         export: '导出',
         run: '运行',
         continueRun: '继续运行',
@@ -59,6 +60,12 @@ const resources = {
         workflow: '工作流',
         workflowList: '工作流列表',
       },
+      workspaceSelect: {
+        product: '{{appName}} Desktop',
+        description: '选择包含 {{configDirName}} 配置目录的工作空间后，桌面端会记住该路径并读取对应渠道的本地数据。',
+        recentDescription: '最近打开过的工作空间会保存在本地用户偏好中。',
+        emptyRecent: '暂无最近工作空间',
+      },
       errors: {
         agent: {
           'already-exists': 'Agent {{agentType}} 已存在。',
@@ -84,6 +91,12 @@ const resources = {
         workspace: {
           'path-invalid-utf8': '选择的工作空间路径不是有效 UTF-8。',
           'path-resolve-failed': '无法解析选择的工作空间路径。',
+        },
+        updater: {
+          'invalid-url': '更新地址无效。',
+          'check-failed': '检查更新失败。',
+          'install-failed': '安装更新失败。',
+          'no-update': '当前没有可安装更新。',
         },
       },
       status: {
@@ -593,7 +606,7 @@ const resources = {
       },
       settings: {
         title: '设置',
-        path: 'Gold Band › 设置',
+        path: '{{appName}} › 设置',
         appearance: '外观',
         language: '语言',
         typography: '字体',
@@ -626,6 +639,38 @@ const resources = {
         localFonts: '本机字体',
         chooseLocalFont: '选择本机字体',
         localFontsDescription: '已载入 {{count}} 个本机字体，可在下方选择。',
+        clientVersion: '客户端版本：{{version}}',
+        tabs: {
+          general: '通用',
+          appearance: '外观',
+          advanced: '高级',
+        },
+        updater: {
+          title: '更新',
+          currentUrl: '更新地址',
+          editUrl: '修改地址',
+          channelLabel: '渠道',
+          builtInUrl: '内置更新地址',
+          overrideUrl: '覆盖更新地址',
+          effectiveUrl: '当前更新地址',
+          overridePlaceholder: '留空使用内置地址',
+          saveOverride: '保存地址',
+          resetToBuiltIn: '恢复内置地址',
+          checkNow: '检查更新',
+          install: '下载并安装',
+          lastCheckedAt: '上次检查：{{time}}',
+          channel: {
+            default: '默认',
+            wb: 'WB',
+          },
+          status: {
+            idle: '尚未检查',
+            checking: '正在检查',
+            available: '发现新版本',
+            'not-available': '已是最新版本',
+            error: '检查失败',
+          },
+        },
       },
     },
   },
@@ -646,6 +691,7 @@ const resources = {
         refresh: 'Refresh',
         close: 'Close',
         save: 'Save',
+        open: 'Open',
         export: 'Export',
         run: 'Run',
         continueRun: 'Continue',
@@ -685,6 +731,12 @@ const resources = {
         workflow: 'Workflow',
         workflowList: 'Workflow List',
       },
+      workspaceSelect: {
+        product: '{{appName}} Desktop',
+        description: 'Select a workspace with a {{configDirName}} config directory. The desktop app will remember it and read local data for this channel.',
+        recentDescription: 'Recent workspaces are saved in local user preferences.',
+        emptyRecent: 'No recent workspaces',
+      },
       errors: {
         agent: {
           'already-exists': 'Agent {{agentType}} already exists.',
@@ -710,6 +762,12 @@ const resources = {
         workspace: {
           'path-invalid-utf8': 'Selected workspace path is not valid UTF-8.',
           'path-resolve-failed': 'Failed to resolve selected workspace path.',
+        },
+        updater: {
+          'invalid-url': 'Invalid update URL.',
+          'check-failed': 'Failed to check for updates.',
+          'install-failed': 'Failed to install update.',
+          'no-update': 'No update is available.',
         },
       },
       status: {
@@ -1219,7 +1277,7 @@ const resources = {
       },
       settings: {
         title: 'Settings',
-        path: 'Gold Band › Settings',
+        path: '{{appName}} › Settings',
         appearance: 'Appearance',
         language: 'Language',
         typography: 'Typography',
@@ -1252,6 +1310,38 @@ const resources = {
         localFonts: 'Local fonts',
         chooseLocalFont: 'Choose a local font',
         localFontsDescription: '{{count}} local fonts loaded. Choose one below.',
+        clientVersion: 'Client version: {{version}}',
+        tabs: {
+          general: 'General',
+          appearance: 'Appearance',
+          advanced: 'Advanced',
+        },
+        updater: {
+          title: 'Updates',
+          currentUrl: 'Update URL',
+          editUrl: 'Edit URL',
+          channelLabel: 'Channel',
+          builtInUrl: 'Built-in update URL',
+          overrideUrl: 'Override update URL',
+          effectiveUrl: 'Current update URL',
+          overridePlaceholder: 'Leave empty to use built-in URL',
+          saveOverride: 'Save URL',
+          resetToBuiltIn: 'Use built-in URL',
+          checkNow: 'Check update',
+          install: 'Download and install',
+          lastCheckedAt: 'Last checked: {{time}}',
+          channel: {
+            default: 'Default',
+            wb: 'WB',
+          },
+          status: {
+            idle: 'Not checked yet',
+            checking: 'Checking',
+            available: 'Update available',
+            'not-available': 'Up to date',
+            error: 'Check failed',
+          },
+        },
       },
     },
   },

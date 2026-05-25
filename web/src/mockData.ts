@@ -7,6 +7,8 @@ import type {
   NodeDetailVm,
   PreferencesVm,
   ProfileListVm,
+  UpdateStatusVm,
+  UpdaterSettingsVm,
   RoundDetailVm,
   RoundSelection,
   RunDetailVm,
@@ -19,6 +21,29 @@ import type {
 } from './types';
 
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+export const mockAppInfo = {
+  channel: 'default',
+  appName: 'Gold Band',
+  appKey: 'gold-band',
+  configDirName: '.gold-band',
+};
+
+export const mockUpdaterSettings: UpdaterSettingsVm = {
+  channel: 'default',
+  builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  overrideUrl: null,
+  effectiveUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  pollIntervalMinutes: 240,
+};
+export const mockUpdateStatus: UpdateStatusVm = {
+  status: 'idle',
+  checkedAt: null,
+  update: null,
+  error: null,
+  background: false,
+};
+let browserUpdaterSettings = { ...mockUpdaterSettings };
+let browserUpdateStatus = { ...mockUpdateStatus };
 const profileTimestamp = localTimestamp();
 
 function localTimestamp(date = new Date()) {
@@ -262,6 +287,10 @@ export const mockBootstrap: AppBootstrapVm = {
   repoRoot: 'D:\\Projects\\code\\ai\\Gold-Band',
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
+  updaterSettings: browserUpdaterSettings,
+  updateStatus: browserUpdateStatus,
+  clientVersion: '',
+  appInfo: mockAppInfo,
 };
 
 export const mockAgentRegistry: AgentRegistryVm = {

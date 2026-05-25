@@ -18,13 +18,13 @@ use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
-    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl, WorkflowValidationError,
-    validate_workflow,
+    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
+    WorkflowValidationError, validate_workflow,
 };
 use crate::process::kill_process_tree;
 use crate::provider::{
-    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    provider_capabilities, provider_from_agent, render_prompt_bundle,
+    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
+    ProviderInfo, provider_capabilities, provider_from_agent, render_prompt_bundle,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -401,6 +401,26 @@ impl App {
         Ok(config)
     }
 
+    pub fn set_user_desktop_updater_url_override(
+        &self,
+        override_url: Option<String>,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_updater_url_override = override_url;
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_user_desktop_updater_last_checked_at(
+        &self,
+        checked_at: Option<String>,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_updater_last_checked_at = checked_at;
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
     pub fn set_user_desktop_workspace(&self, workspace: &str) -> Result<UserConfig> {
         let mut config = self.load_user_config()?;
         config.desktop_workspace = Some(workspace.to_string());
@@ -753,7 +773,8 @@ impl App {
     pub fn task_summary(&self, task_id: &str) -> Result<TaskSummary> {
         let task = self.task_show(task_id)?;
         let workflow_exists = self.paths.workflow_file(task_id).exists();
-        let (workflow_error, workflow_validation_error) = self.workflow_validation_error(task_id)?;
+        let (workflow_error, workflow_validation_error) =
+            self.workflow_validation_error(task_id)?;
         let workflow_valid = workflow_exists && workflow_error.is_none();
         let latest_run = self.latest_run(task_id)?;
         let resumable_run_id = self.find_resumable_run_id(task_id)?;
@@ -1514,7 +1535,10 @@ impl App {
         Ok(Some(read_json(path)?))
     }
 
-    fn workflow_validation_error(&self, task_id: &str) -> Result<(Option<String>, Option<WorkflowValidationError>)> {
+    fn workflow_validation_error(
+        &self,
+        task_id: &str,
+    ) -> Result<(Option<String>, Option<WorkflowValidationError>)> {
         let path = self.paths.workflow_file(task_id);
         if !path.exists() {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));

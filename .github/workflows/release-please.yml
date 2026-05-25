@@ -11,12 +11,136 @@ permissions:
 
 jobs:
   release-please:
-    name: Create release PR or tag
+    name: Create release PR or draft release
     runs-on: ubuntu-latest
-
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created || steps.release.outputs['.--release_created'] }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.release.outputs['.--tag_name'] }}
     steps:
       - name: Release Please
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  build:
+    name: Build ${{ matrix.platform.name }}
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.platform.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: windows-x64
+            runner: windows-latest
+          - name: linux-x64
+            runner: ubuntu-22.04
+          - name: macos-x64
+            runner: macos-13
+          - name: macos-arm64
+            runner: macos-14
+
+    env:
+      RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Sync release version from tag
+        shell: bash
+        run: npm run version:sync -- "${RELEASE_TAG#v}"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> src-tauri/target
+
+      - name: Generate default Tauri channel config
+        run: node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOLD_BAND_RELEASE_CHANNEL: default
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --config src-tauri/target/channel/tauri.default.conf.json
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Gold Band ${{ env.RELEASE_TAG }}
+          releaseDraft: true
+          prerelease: false
+
+  updater-json:
+    name: Generate updater manifest
+    runs-on: ubuntu-22.04
+    needs:
+      - release-please
+      - build
+    if: needs.release-please.outputs.release_created == 'true'
+
+    env:
+      RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "${RELEASE_TAG}" --dir release-assets --clobber
+
+      - name: Generate latest.json
+        run: node scripts/generate-updater-json.mjs release-assets latest.json
+
+      - name: Upload latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${RELEASE_TAG}" latest.json --clobber

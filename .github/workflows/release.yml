@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to rebuild, for example v0.1.1
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,17 +29,26 @@ jobs:
           - name: macos-arm64
             runner: macos-14
 
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Ensure tag is on main
         shell: bash
         run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like vX.Y.Z."
+            exit 1
+          fi
           git fetch origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          release_sha=$(git rev-list -n 1 "${RELEASE_TAG}")
+          if ! git merge-base --is-ancestor "${release_sha}" origin/main; then
             echo "Release tags must point to commits on main."
             exit 1
           fi
@@ -66,7 +78,7 @@ jobs:
 
       - name: Sync release version from tag
         shell: bash
-        run: npm run version:sync -- "${GITHUB_REF_NAME#v}"
+        run: npm run version:sync -- "${RELEASE_TAG#v}"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -81,13 +93,51 @@ jobs:
             . -> target
             src-tauri -> src-tauri/target
 
+      - name: Generate default Tauri channel config
+        run: node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOLD_BAND_RELEASE_CHANNEL: default
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Gold Band ${{ github.ref_name }}
-          releaseBody: See attached assets for platform installers.
+          args: --config src-tauri/target/channel/tauri.default.conf.json
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Gold Band ${{ env.RELEASE_TAG }}
           releaseDraft: true
           prerelease: false
+
+  updater-json:
+    name: Generate updater manifest
+    runs-on: ubuntu-22.04
+    needs: build
+
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "${RELEASE_TAG}" --dir release-assets --clobber
+
+      - name: Generate latest.json
+        run: node scripts/generate-updater-json.mjs release-assets latest.json
+
+      - name: Upload latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${RELEASE_TAG}" latest.json --clobber

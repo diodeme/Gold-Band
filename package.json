@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "node scripts/build-channel.mjs default",
+    "build:channel": "node scripts/build-channel.mjs",
+    "build:default": "node scripts/build-channel.mjs default",
+    "build:wb": "node scripts/build-channel.mjs wb",
     "version:sync": "node scripts/sync-version.mjs",
     "release:tag": "node scripts/release-tag.mjs",
     "web:dev": "vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",

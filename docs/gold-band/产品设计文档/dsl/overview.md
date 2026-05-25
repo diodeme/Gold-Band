@@ -6,20 +6,20 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：节点统
 ## 2. 当前主结构
 - 节点：只有 `worker`。
 - 边：顺序、分支、循环，可指向节点、`$end` 或 `$new-round`。
-- 节点能力：`goal`、`provider`、`profile`、`primary_artifact`、`output`、`success_condition`、`manual_check`、`permission_mode`。
+- 节点能力：`goal`、`provider`、`profile`、`output`、`success_condition`、`manual_check`、`permission_mode`。
 - 结果判定：默认 provider 成功即节点成功；开启 AI 输出验证时由 `output` + `success_condition` 判定；开启人工 check 时由用户确认 success/failure。
 
 ## 3. 当前设计原则
 - provider-first：节点只声明使用哪个 agent/provider，不绑定具体实现。
 - 数据优先：节点输出、结果判定和边跳转都显式落在 DSL 中。
 - session 策略属于边，不属于节点；edge 的 `session` 可省略，默认 `new`。
-- AI 决定做什么，runtime 只负责保存产物并把结果归纳为 `success / failure / invalid`。
+- AI 决定做什么，runtime 负责保存产物，并把可路由结果归纳为 `success / failure`；结构化输出不合法时先自动隐藏追问修复。
 
 ## 4. 子文档结构
 - [Control DSL](control.md)
 - [worker 节点](nodes/worker.md)
 
-输出产物不再按内置名称区分；每个 worker 通过 `primary_artifact` 或 `output.artifact` 自定义产物 key。
+输出产物不再按内置名称区分；需要 canonical artifact 的 worker 通过 `output.artifact` 自定义产物 key。
 
 ## 5. canonical workflow 示例
 
@@ -35,8 +35,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：节点统
       "type": "worker",
       "provider": "claude-code",
       "profile": "pf-example-developer",
-      "goal": "实现需求",
-      "primary_artifact": "implementation-result"
+      "goal": "实现需求"
     },
     {
       "id": "test",
@@ -44,7 +43,6 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：节点统
       "provider": "claude-code",
       "profile": "pf-example-tester",
       "goal": "检查实现并输出 JSON 结果",
-      "primary_artifact": "test-result",
       "output": {
         "kind": "json",
         "artifact": "test-result",
@@ -74,17 +72,17 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：节点统
 ## 6. 关键约束
 - `version` 首版固定为 `0.1`。
 - `entry` 必须指向真实 worker 节点。
-- `$end` 只能作为边目标，不能作为节点 id；`invalid -> $end` 非法。
+- `$end` 只能作为边目标，不能作为节点 id；edge `on` 只接受 `success` / `failure`。
 - `session=continue` 只能指向真实 worker 节点，并且目标 provider 必须支持 continue session。
 - `control.max_attempts` / `control.max_rounds` 都是可选正整数；不填表示不限制。
-- `max_attempts` 按当前 round 内的 `来源节点 -> 目标节点` 分别计数，`max_rounds` 只统计 `$new-round` 打开的新 round。
+- `max_attempts` 按当前 round 内 `failure` 触发的修复跳转计数，正常 `success` 前进不消耗次数；`output.schema` 自动隐藏修复不新增 attempt；`max_rounds` 只统计 `$new-round` 打开的新 round。
 - 同一来源节点的同一结果类型只能有一条出边，例如一个节点只能配置一条 `success` 边。
 - `manual_check=true` 与 AI 输出验证互斥。
 - `success_condition` 必须搭配 JSON `output` 使用。
-- `output.artifact` 必须与 `primary_artifact` 一致。
+- `output.artifact` 是当前节点 canonical artifact 的唯一逻辑名来源。
 - `output.schema` 使用简化输出结构，不使用 JSON Schema。
 
 ## 7. 结果语义
 - `success`：节点完成且满足默认成功条件、AI 输出验证或人工 check。
 - `failure`：节点完成但目标未达成，或 AI 输出验证返回 false。
-- `invalid`：节点产物缺失、输出结构不合法，或成功条件无法按声明路径求值。
+- `invalid`：runtime 内部状态，表示声明了 `output.schema` 的节点产物缺失、输出结构不合法，或成功条件无法按声明路径求值；它不作为 edge outcome。

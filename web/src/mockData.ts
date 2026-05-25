@@ -7,6 +7,8 @@ import type {
   NodeDetailVm,
   PreferencesVm,
   ProfileListVm,
+  UpdateStatusVm,
+  UpdaterSettingsVm,
   RoundDetailVm,
   RoundSelection,
   RunDetailVm,
@@ -19,6 +21,29 @@ import type {
 } from './types';
 
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+export const mockAppInfo = {
+  channel: 'default',
+  appName: 'Gold Band',
+  appKey: 'gold-band',
+  configDirName: '.gold-band',
+};
+
+export const mockUpdaterSettings: UpdaterSettingsVm = {
+  channel: 'default',
+  builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  overrideUrl: null,
+  effectiveUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  pollIntervalMinutes: 240,
+};
+export const mockUpdateStatus: UpdateStatusVm = {
+  status: 'idle',
+  checkedAt: null,
+  update: null,
+  error: null,
+  background: false,
+};
+let browserUpdaterSettings = { ...mockUpdaterSettings };
+let browserUpdateStatus = { ...mockUpdateStatus };
 const profileTimestamp = localTimestamp();
 
 function localTimestamp(date = new Date()) {
@@ -48,12 +73,12 @@ const defaultWorkflow: WorkflowDsl = {
   entry: 'plan',
   control: {},
   nodes: [
-    { type: 'worker', id: 'plan', provider: 'claude-code', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.', primary_artifact: null },
-    { type: 'worker', id: 'dev', provider: 'claude-code', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.', primary_artifact: null },
-    { type: 'worker', id: 'review', provider: 'claude-code', profile: 'pf-m9jw0wq3-r2x9p7m5', goal: 'Review the implementation and return JSON with result and reason fields.', primary_artifact: 'review-result', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'test', provider: 'claude-code', profile: 'pf-m9jw0wq4-t3y8r1c6', goal: 'Run or describe verification and return JSON with result and reason fields.', primary_artifact: 'test-result', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'accept', provider: 'claude-code', profile: 'pf-m9jw0wq5-u4z7s2d7', goal: 'Validate acceptance and return JSON with result and reason fields.', primary_artifact: 'accept-result', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'cleanup', provider: 'claude-code', profile: 'pf-m9jw0wq6-v5a8t3e8', goal: 'Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.', primary_artifact: null },
+    { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.' },
+    { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.' },
+    { type: 'worker', id: 'review', provider: 'claude-acp', profile: 'pf-m9jw0wq3-r2x9p7m5', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'test', provider: 'claude-acp', profile: 'pf-m9jw0wq4-t3y8r1c6', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-m9jw0wq5-u4z7s2d7', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'cleanup', provider: 'claude-acp', profile: 'pf-m9jw0wq6-v5a8t3e8', goal: 'Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.' },
   ],
   edges: [
     { from: 'plan', to: 'dev', on: 'success' },
@@ -144,8 +169,8 @@ const mockNodeDetail: NodeDetailVm = {
   sequence: 3,
   label: 'Checking output result...',
   nodeType: 'worker',
-  provider: 'claude-code',
-  providerDisplayName: 'Claude Code ACP',
+  provider: 'claude-acp',
+  providerDisplayName: 'Claude',
   status: 'running',
   outcome: null,
   attemptId: 'att-test-001',
@@ -161,7 +186,7 @@ const mockNodeDetail: NodeDetailVm = {
   manualCheckPending: false,
   acpSession: {
     sessionId: 'acp-session-7f3',
-    provider: 'claude-code',
+    provider: 'claude-acp',
     adapterId: 'claude-agent-acp',
     adapterDisplayName: 'Claude ACP',
     cwd: 'D:\\Projects\\code\\ai\\Gold-Band',
@@ -262,15 +287,19 @@ export const mockBootstrap: AppBootstrapVm = {
   repoRoot: 'D:\\Projects\\code\\ai\\Gold-Band',
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
+  updaterSettings: browserUpdaterSettings,
+  updateStatus: browserUpdateStatus,
+  clientVersion: '',
+  appInfo: mockAppInfo,
 };
 
 export const mockAgentRegistry: AgentRegistryVm = {
   agents: [
     {
-      agentType: 'claude-code',
-      displayName: 'Claude Code ACP',
+      agentType: 'claude-acp',
+      displayName: 'Claude',
       command: 'npx',
-      args: ['-y', '@agentclientprotocol/claude-agent-acp@latest'],
+      args: ['-y', '@agentclientprotocol/claude-agent-acp@0.37.0'],
       env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
       iconKey: 'claude',
       supported: true,
@@ -288,10 +317,11 @@ export const mockAgentRegistry: AgentRegistryVm = {
     },
   ],
   supportedTypes: [
-    { agentType: 'claude-code', label: 'Claude Code', iconKey: 'claude', supported: true, configured: true },
-    { agentType: 'codex-cli', label: 'Codex CLI', iconKey: 'codex', supported: false, configured: false },
-    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', supported: false, configured: false },
-    { agentType: 'gemini-cli', label: 'Gemini CLI', iconKey: 'gemini', supported: false, configured: false },
+    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.37.0'], defaultEnv: [] },
+    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@zed-industries/codex-acp@0.14.0'], defaultEnv: [] },
+    { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
+    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@0.43.0', '--acp'], defaultEnv: [] },
+    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
   ],
 };
 
@@ -306,7 +336,7 @@ export const mockTaskList: TaskListVm = {
   tasks: [
     task,
     { ...task, id: 'task-002', title: '修复 provider 输出', displayStatus: 'resumable', latestRun: { ...latestRun, id: 'run-002', status: 'paused', outcome: 'failure', resumable: true }, resumableRunId: 'run-002', artifactCount: 3, attachmentCount: 1 },
-    { ...task, id: 'task-003', title: '优化文档结构', displayStatus: 'failed', workflowValid: false, workflowError: 'validation failed', latestRun: { ...latestRun, id: 'run-001', status: 'completed', outcome: 'failure', resumable: false }, resumableRunId: null, artifactCount: 1, attachmentCount: 0 },
+    { ...task, id: 'task-003', title: '优化文档结构', displayStatus: 'failed', workflowValid: false, workflowError: { code: 'workflow.invalid', params: {} }, latestRun: { ...latestRun, id: 'run-001', status: 'completed', outcome: 'failure', resumable: false }, resumableRunId: null, artifactCount: 1, attachmentCount: 0 },
     { ...task, id: 'task-004', title: '新增观测索引', requirement: '在web目录下输出一个python类，输出hello-world', requirementPreview: '在web目录下输出一个python类，输出hello-world', displayStatus: 'missing-workflow', workflowExists: false, workflowValid: false, latestRun: null, resumableRunId: null, artifactCount: 0, attachmentCount: 0 },
     ...Array.from({ length: 10 }, (_, index) => ({
       ...task,
@@ -422,7 +452,7 @@ function mockRoundContent(selection?: RoundSelection): ContentVm {
     return {
       title: `Worker Ref ${selection.nodeId}`,
       kind: 'worker-ref',
-      content: JSON.stringify({ provider: 'claude-code', session_id: 'mock-session-7', node_id: selection.nodeId, attempt_id: selection.attemptId }, null, 2),
+      content: JSON.stringify({ provider: 'claude-acp', session_id: 'mock-session-7', node_id: selection.nodeId, attempt_id: selection.attemptId }, null, 2),
       metadata: { nodeId: selection.nodeId, attemptId: selection.attemptId },
     };
   }

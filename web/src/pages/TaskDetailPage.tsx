@@ -1,4 +1,6 @@
+import { useTranslation } from 'react-i18next';
 import type { TaskDetailVm, TaskPage } from '../types';
+import { displayWorkflowError } from '../i18n';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
@@ -16,8 +18,10 @@ interface TaskDetailPageProps {
 }
 
 export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onContinueRun }: TaskDetailPageProps) {
+  const { t } = useTranslation();
   if (!vm) return <Page><EmptyState>Loading…</EmptyState></Page>;
   const resumable = vm.task.resumableRunId;
+  const workflowErrorText = displayWorkflowError(t, vm.task.workflowError);
   return (
     <Page className="space-y-6 p-8">
       <PageHeader
@@ -53,7 +57,7 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
         <AppCard className="gap-0 py-0">
           <CardHeader className="flex-row items-center justify-between border-b px-5 py-3 !pb-3">
             <CardTitle>当前状态</CardTitle>
-            {vm.task.workflowError ? <span className="text-sm text-muted-foreground">{vm.task.workflowError}</span> : null}
+            {workflowErrorText ? <span className="text-sm text-muted-foreground">{workflowErrorText}</span> : null}
           </CardHeader>
           <CardContent className="grid grid-cols-4 gap-3 px-4 py-4">
             <Metric label="workflow 校验" value={vm.task.workflowValid ? 'valid' : vm.task.workflowExists ? 'invalid' : 'missing'} compact />

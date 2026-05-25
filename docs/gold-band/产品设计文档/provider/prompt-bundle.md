@@ -38,7 +38,7 @@
 - 前序节点分支执行原因
 - Gold Band / ACP 文件夹规则
 - 当前节点 profile id 解析出的完整角色说明
-- 当前节点 `primary_artifact` / `output` DSL 派生出的 artifact 规则与输出约束
+- 当前节点 `output` DSL 派生出的 artifact 规则与输出约束
 
 `systemPrompt` 不再承载旧的 `InvocationKind` 语义，也不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则。
 
@@ -106,13 +106,9 @@ Gold Band 文件规则：
 runtime 将使用以下条件判断节点结果：
 {{output_contract.success_condition}}
 {{/if}}
-{{else if primary_artifact}}
-当前节点 artifact 规则：
-- primary artifact: {{primary_artifact}}
-- 当前节点未声明结构化 output DSL；不要自行推断 JSON/schema 输出格式。
 {{else}}
 当前节点 artifact 规则：
-- 当前节点未声明 primary_artifact / output DSL，不需要产出 canonical artifact。
+- 当前节点未声明 output DSL，不需要产出 canonical artifact。
 - 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。
 {{/if}}
 ```
@@ -122,7 +118,7 @@ runtime 将使用以下条件判断节点结果：
 - `predecessor_chain` 以执行路径形式展示，例如 `round-001/A/attempt-001 -success-> round-001/B/attempt-001 -failure-> 当前节点(round-001/C/attempt-001)`；跨 round 时使用 `-$new-round->` 标记进入新轮次。
 - `predecessor_branch_reasons` 对普通节点可省略详细原因；人工 check 展示人工检查结果；节点输出检查只展示前序节点结果、分支方向、artifact 路径和 artifact preview，不展示前序节点自身的 output DSL schema 或 success condition。
 - 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。
-- 若节点没有声明 `primary_artifact`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
+- 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
 - 当前节点所需上下文应在 prompt 中给全；如需查阅前序节点产出，agent 只读取 prompt 明确给出的前序产出路径；`run_dir` 只作为这些路径的父级上下文，不应诱导 agent 为寻找未声明产物或理解当前任务主动扫描 run 目录。
 - 冷数据正文不默认展开，只提供索引。
 
@@ -198,7 +194,6 @@ runtime 将使用以下条件判断节点结果：
 
 - `profile`
 - `profile_content`
-- `primary_artifact`
 - `output_contract.artifact`
 - `output_contract.kind`
 - `output_contract.schema`
@@ -208,15 +203,21 @@ runtime 将使用以下条件判断节点结果：
 
 ## 7. Continue session 规则
 
-ACP 的 `systemPrompt` 只在 `session/new` 时通过 `_meta.systemPrompt.append` 注入。
+ACP 的 `systemPrompt` 在 `session/new` 和 `session/load` 时都通过 `_meta.systemPrompt.append` 注入。
 
 当 `sessionMode = continue` 且存在 resume prompt 时：
 
-- `systemPrompt` 为空
-- `userPrompt` 为 `Continue` / `继续`
-- 复用已有 ACP session 的上下文
+- `systemPrompt` 仍渲染当前节点的位置、角色、文件规则与 output DSL 约束
+- `userPrompt` 为 `Continue` / `继续`，或桌面 ACP 会话面板中的用户追问正文
+- 复用已有 ACP session 的上下文，并在恢复时重新追加当前节点不可协商约束
 
-如果跨节点需要新的角色、文件规则或输出 DSL 约束，应使用新 session。
+桌面 ACP 会话面板的手动追问也必须复用同一套 prompt bundle 渲染逻辑；不能只把用户输入包装成空 `systemPrompt` 的临时 `PromptBundle`。
+
+ACP 会话展示按 Gold Band 的 session 策略聚合：`session=new` 始终创建独立 conversation，即使底层 provider 暴露了相同或临时 session id，也不把两个 new attempt 合并；后续 `session=continue` 且指向已有 ACP session id 时，挂回被继续的 conversation，并以 attempt 分隔行标记新 attempt 进入。会话流中 Gold Band synthetic user prompt 与 provider 回放的同文 user prompt 只展示一条，避免运行中出现重复用户消息。
+
+说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。
+
+Codex ACP 0.14.0 当前会接收但不消费 `session/new` / `session/load` 中的 `_meta.systemPrompt`；Gold Band 对 `codex-acp` 额外在 `session/prompt` 文本前内联当前节点 system prompt，保证节点角色、文件规则和输出约束首次调用即可生效。
 
 ---
 

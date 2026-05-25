@@ -226,6 +226,7 @@ pub fn user_prompt_event(
     session_id: String,
     content: String,
     prompt_id: Option<String>,
+    hidden_from_chat: bool,
 ) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
@@ -234,14 +235,22 @@ pub fn user_prompt_event(
     if let Some(prompt_id) = prompt_id {
         raw["promptId"] = Value::String(prompt_id);
     }
+    if hidden_from_chat {
+        raw["hiddenFromChat"] = Value::Bool(true);
+        raw["reason"] = Value::String("invalidOutputRepair".to_string());
+    }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
         seq,
         timestamp: current_timestamp(),
         kind: "userTextDelta".to_string(),
         session_id: Some(session_id),
-        content: Some(content),
-        title: Some("User prompt".to_string()),
+        content: (!hidden_from_chat).then_some(content),
+        title: Some(if hidden_from_chat {
+            "Hidden prompt".to_string()
+        } else {
+            "User prompt".to_string()
+        }),
         tool_call_id: None,
         status: Some("completed".to_string()),
         raw: Some(raw),
@@ -334,6 +343,7 @@ mod tests {
             "session-123".to_string(),
             "继续".to_string(),
             Some("prompt-123".to_string()),
+            false,
         );
         assert_eq!(
             event
@@ -347,7 +357,33 @@ mod tests {
 
     #[test]
     fn user_prompt_event_omits_prompt_id_when_absent() {
-        let event = user_prompt_event(7, "session-123".to_string(), "继续".to_string(), None);
+        let event = user_prompt_event(
+            7,
+            "session-123".to_string(),
+            "继续".to_string(),
+            None,
+            false,
+        );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
+    }
+
+    #[test]
+    fn hidden_user_prompt_event_redacts_content() {
+        let event = user_prompt_event(
+            7,
+            "session-123".to_string(),
+            "repair".to_string(),
+            None,
+            true,
+        );
+        assert_eq!(event.content, None);
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("hiddenFromChat"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 }

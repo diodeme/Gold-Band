@@ -1,0 +1,13 @@
+{
+  "channel": "wb",
+  "appName": "maling",
+  "appKey": "maling",
+  "configDirName": ".maling",
+  "homeEnvVar": "MALING_HOME",
+  "productName": "maling",
+  "windowTitle": "maling",
+  "identifier": "local.maling.desktop",
+  "updaterEndpoint": "https://gold-band-wb.invalid/updates/latest.json",
+  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjQyQ0JEQUUxMUNFOApSV1RvSE9IYXkwS0NDeS9mS0hhblROeC9yVFNaR01HVUpvTVBQamg4NWVESjI2U3I0OUNzcjRlLwo=",
+  "allowHttpUpdater": true
+}

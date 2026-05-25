@@ -3,7 +3,7 @@ import type { TFunction } from 'i18next';
 import { Check, ChevronDown, Copy, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { displayStatus } from '../i18n';
+import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { deleteWorkflowTemplate, getAgentRegistry, getProfiles, getWorkflowTemplates, saveWorkflowTemplate, updateWorkflowTemplate } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
 import { validateWorkflowForSave, WorkflowEditor } from '../components/WorkflowEditor';
@@ -306,7 +306,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         setSaveTemplateName('');
         if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
       })
-      .catch((err) => setFormError(String(err)));
+      .catch((err) => setFormError(displayAppError(t, err)));
   }, [open]);
 
   const readRequirementFile = async (file: File | undefined) => {
@@ -379,7 +379,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported), t);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -406,7 +406,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowNotice(t('taskList.create.workflowTemplateSaved'));
     } catch (err) {
       setWorkflowNotice(null);
-      setWorkflowError(String(err));
+      setWorkflowError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }
@@ -429,7 +429,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowNotice(t('taskList.create.workflowTemplateUpdated'));
     } catch (err) {
       setWorkflowNotice(null);
-      setWorkflowError(String(err));
+      setWorkflowError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }
@@ -452,7 +452,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowNotice(t('taskList.create.workflowTemplateDeleted'));
     } catch (err) {
       setWorkflowNotice(null);
-      setWorkflowError(String(err));
+      setWorkflowError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }
@@ -491,12 +491,24 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     }
   };
 
+  const saveTaskFromHeader = async () => {
+    if (!workflow) return;
+    const validatedWorkflow = validateTemplateWorkflow(workflow);
+    if (!validatedWorkflow) return;
+    await submit(validatedWorkflow);
+  };
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
-          <SheetTitle>{t('taskList.create.title')}</SheetTitle>
-          <SheetDescription>{t('taskList.create.description')}</SheetDescription>
+          <div className="flex items-start justify-between gap-3 pr-9">
+            <div className="min-w-0 space-y-1">
+              <SheetTitle>{t('taskList.create.title')}</SheetTitle>
+              <SheetDescription>{t('taskList.create.description')}</SheetDescription>
+            </div>
+            {workflow ? <Button type="button" size="sm" className="shrink-0" disabled={saving} onClick={() => void saveTaskFromHeader()}>{saving ? t('taskList.create.savingTask') : t('taskList.create.saveTask')}</Button> : null}
+          </div>
         </SheetHeader>
         <ScrollArea className="h-[calc(100vh-96px)]">
           <div className="space-y-4 p-5">
@@ -654,6 +666,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   }}
                   onApplyDefaultTemplate={applyDefaultWorkflow}
                   onSave={submit}
+                  showSaveAction={false}
                 />
               </div>
             ) : <EmptyState>{templateStore ? t('taskList.create.noWorkflowTemplate') : t('common.loading')}</EmptyState>}
@@ -767,7 +780,7 @@ function taskSearchText(task: TaskRowVm, t: TFunction) {
     task.requirement,
     task.displayStatus,
     displayStatus(t, task.displayStatus),
-    task.workflowError,
+    displayWorkflowError(t, task.workflowError),
     workflowStatus,
     displayStatus(t, workflowStatus),
     task.latestRun?.id,

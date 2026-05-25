@@ -1390,7 +1390,6 @@ fn edge_symbol(outcome: EdgeOutcome) -> &'static str {
     match outcome {
         EdgeOutcome::Success => "✔",
         EdgeOutcome::Failure => "✘",
-        EdgeOutcome::Invalid => "?",
     }
 }
 

@@ -28,7 +28,7 @@ runtime 应在调用前组装标准输入包：
 
 ### 2.3 canonical artifacts 必须结构化返回
 
-凡是会被 runtime 或下游节点程序化消费的内容，必须通过 `primaryArtifact` 归一后落盘到 `artifacts/`。
+凡是会被 runtime 或下游节点程序化消费的内容，必须通过 `outputContract.artifact` 归一后落盘到 `artifacts/`。
 
 ### 2.4 attachments 是自由副作用
 
@@ -45,7 +45,6 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 - `requirementPath` 或 `requirementText`
 - `workspaceDir`
 - `attemptDir`
-- `primaryArtifact`（仅当当前节点声明）
 - `outputContract`（仅当当前节点声明 `output` DSL）
 - `runtimeContext`
 - `predecessors[]`
@@ -66,7 +65,6 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
   "requirementPath": "authoring/requirement.md",
   "workspaceDir": "/repo",
   "attemptDir": "~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001",
-  "primaryArtifact": "dev-result",
   "outputContract": {
     "artifact": "dev-result",
     "kind": "json",
@@ -101,8 +99,7 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 - `requirementPath` / `requirementText`：稳定需求输入。
 - `workspaceDir`：代码工作区根目录。
 - `attemptDir`：当前节点 attempt 私有目录。
-- `primaryArtifact`：当前节点声明的 canonical artifact 逻辑名；仅用于 provider 输出提取和 runtime 落盘。
-- `outputContract`：当前节点 `output` DSL 派生出的输出格式与成功条件；进入 `systemPrompt`。
+- `outputContract`：当前节点 `output` DSL 派生出的输出 artifact、输出格式与成功条件；进入 `systemPrompt`，并提供 runtime 落盘所需的 artifact 逻辑名。
 - `runtimeContext`：project/task/run/round/node/attempt 以及 run/round/node/attempt/attachments 路径。
 - `predecessors[]`：从 round trace 和历史 round 重建出的前序运行链。
 - `taskInstruction`：本次调用的任务说明；对 worker 节点由 `worker.goal` 映射得到，并进入 `userPrompt`。
@@ -131,11 +128,11 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 
 ## 6. 返回结果
 
-当当前节点声明了 `primaryArtifact` 时，provider 返回结果至少应能被归一为：
+当当前节点声明了 `output` 时，provider 返回结果至少应能被归一为：
 
 ```json
 {
-  "primaryArtifact": {
+  "outputArtifact": {
     "name": "dev-result",
     "content": "{ ... }"
   }
@@ -144,10 +141,10 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 
 规则：
 
-- `name` 使用 artifact 逻辑名，不是文件名。
+- `name` 使用 `output.artifact` 逻辑名，不是文件名。
 - `content` 是模型最终输出的 raw string。
 - runtime 根据当前节点配置解析、校验并落盘到 `artifacts/`。
-- 若当前节点没有声明 `primaryArtifact`，provider 可不返回结构化 artifact。
+- 若当前节点没有声明 `output`，provider 可不返回结构化 artifact。
 - attachments 属于执行过程中的自由文件副作用，不进入 canonical artifact contract。
 
 ---

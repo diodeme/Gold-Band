@@ -2,7 +2,7 @@ use camino::Utf8PathBuf;
 use gold_band::app::App;
 use gold_band::domain::SessionMode;
 use gold_band::provider::{
-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use gold_band::runtime::RunState;
@@ -42,7 +42,11 @@ impl ProviderAdapter for SequencedProvider {
         *calls += 1;
         self.invocations.lock().unwrap().push(req.clone());
 
-        let payload = match req.primary_artifact.as_deref() {
+        let payload = match req
+            .output_contract
+            .as_ref()
+            .map(|contract| contract.artifact.as_str())
+        {
             Some("implementation-result") => {
                 std::fs::create_dir_all(req.attempt_dir.join("attachments").as_std_path()).unwrap();
                 std::fs::write(
@@ -50,16 +54,16 @@ impl ProviderAdapter for SequencedProvider {
                     "attachment context",
                 )
                 .unwrap();
-                PrimaryArtifactPayload {
+                OutputArtifactPayload {
                     name: "implementation-result".to_string(),
                     content: r#"{"summary":"implemented"}"#.to_string(),
                 }
             }
-            Some("test-result") => PrimaryArtifactPayload {
+            Some("test-result") => OutputArtifactPayload {
                 name: "test-result".to_string(),
                 content: r#"{"result":true,"reason":"checks passed"}"#.to_string(),
             },
-            Some("accept-result") => PrimaryArtifactPayload {
+            Some("accept-result") => OutputArtifactPayload {
                 name: "accept-result".to_string(),
                 content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
@@ -70,10 +74,10 @@ impl ProviderAdapter for SequencedProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(payload),
+                output_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -127,9 +131,9 @@ fn write_happy_path_fixture(app: &App, _repo_root: &Utf8PathBuf, task_id: &str) 
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
-            {{"id":"test","type":"worker","provider":"claude-code","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","primary_artifact":"test-result","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Implement the requirement","output":{{"kind":"json","artifact":"implementation-result"}}}},
+            {{"id":"test","type":"worker","provider":"claude-acp","profile":"{}","goal":"Check the implementation and return JSON with result and reason fields","output":{{"kind":"json","artifact":"test-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"test","on":"success"}},
@@ -185,7 +189,11 @@ fn run_start_completes_worker_test_accept_happy_path() {
     let invocations = provider.invocations.lock().unwrap();
     let accept_call = invocations
         .iter()
-        .find(|call| call.primary_artifact.as_deref() == Some("accept-result"))
+        .find(|call| {
+            call.output_contract
+                .as_ref()
+                .is_some_and(|contract| contract.artifact == "accept-result")
+        })
         .unwrap();
     assert!(accept_call.attachments_dir.is_some());
     assert!(accept_call.output_contract.is_some());

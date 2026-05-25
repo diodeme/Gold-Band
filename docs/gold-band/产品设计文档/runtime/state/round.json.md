@@ -90,7 +90,7 @@
 - `nodeId`：进入的真实 workflow node id。
 - `attemptId`：该次进入对应的 attempt id。
 - `fromNodeId`：从哪个 node 转入；entry 节点为 null。
-- `edgeOutcome`：触发转移的 outcome，如 `success | failure | invalid | retry | null`。
+- `edgeOutcome`：触发转移的 outcome，如 `success | failure | retry | null`；schema 输出不合法的隐藏修复不新增 trace step。
 - `enteredAt`：进入该 node/attempt 的时间。
 
 兼容规则：旧 `round.json` 可以缺少 `trace`，runtime 反序列化时按空数组处理；桌面端旧数据 fallback 会按 node state 的 `startedAt/attemptId` 推断路径。

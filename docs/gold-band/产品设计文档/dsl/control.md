@@ -6,7 +6,7 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 ## 2. 控制原则
 - 节点统一为 `worker`，控制层不根据节点 id 或历史名称赋予特殊语义。
 - 所有跳转优先由显式 edge 表达。
-- edge 的 `on` 只接受 `success / failure / invalid`。
+- edge 的 `on` 只接受 `success / failure`。
 - edge 的 `to` 可指向真实 worker 节点、`$end` 或 `$new-round`。
 - edge 的 `session` 可选；省略时为 `new`，声明 `continue` 时目标 provider 必须支持 continue session。
 - `$end` 与 `$new-round` 是控制目标，不是节点 id。
@@ -24,7 +24,7 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 
 两个字段均可省略，省略表示不限制。
 
-- `max_attempts`：当前 round 内，同一条 `来源节点 -> 目标节点` transition 可创建的最大 attempt 次数。比如值为 3 时，`A -> B` 在同一个 round 内最多执行 3 次，`C -> B` 也可独立执行 3 次。
+- `max_attempts`：当前 round 内的修复/重试预算，只统计由 `failure` 触发并指向真实 worker 的修复跳转。比如值为 1 时，允许 `test failure -> dev` 修复一次；修复后的 `dev success -> test` 属于正常前进，不消耗次数。`output.schema` 不合法触发的隐藏追问不新增 attempt，也不消耗该预算。
 - `max_rounds`：`$new-round` 可打开的新 round 最大次数，初始 round 不计入。
 
 超过任一限制时，runtime 不再创建新的 attempt / round，当前 workflow 以 failure 结束。
@@ -49,9 +49,9 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 
 | outcome | 有匹配 edge | 无匹配 edge |
 | --- | --- | --- |
-| `success` | 按 edge 跳转；`$end` 完成成功；`$new-round` 打开新 round | 暂停为错误阻塞 |
+| `success` | 按 edge 跳转；`$end` 完成成功；不能指向 `$new-round` | 暂停为错误阻塞 |
 | `failure` | 按 edge 跳转；`$end` 完成失败；`$new-round` 打开新 round | 暂停为错误阻塞 |
-| `invalid` | 按 edge 跳转；不能指向 `$end` | 暂停为错误阻塞 |
+| `invalid` | 不匹配 edge；`output.schema` 不合法时先同 attempt 隐藏追问修复，修复耗尽后 workflow failure | workflow failure |
 | `killed` | 不看 edge | run 完成 killed |
 | `none` | 不看 edge | 暂停，等待外部继续或人工处理 |
 
@@ -67,9 +67,10 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 - `entry` 必须存在。
 - 所有 edge source 必须是真实 worker 节点。
 - edge target 必须是真实 worker 节点、`$end` 或 `$new-round`。
-- `invalid -> $end` 非法。
+- `on=invalid` 非法；invalid 是 runtime 内部输出不合法状态，不是 workflow edge。
+- `success -> $new-round` 非法；作者态目标下拉在 `on=success` 时不展示 `$new-round`。
 - `session=continue` 不能指向 `$end` / `$new-round`。
 - `session=continue` 的目标 provider 必须支持 continue session。
 - `control.max_attempts` 与 `control.max_rounds` 可省略；声明时必须为正整数。
 - 启用 `success_condition` 时必须声明 JSON `output`。
-- `output.artifact` 必须与 `primary_artifact` 一致。
+- `output.artifact` 是当前节点 canonical artifact 的唯一逻辑名来源。

@@ -13,8 +13,9 @@ import { Message, MessageContent } from '@/components/prompt-kit/message';
 import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
 import { cn } from '@/lib/utils';
+import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
 import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
-import { displayStatus } from '@/i18n';
+import { displayAppError, displayStatus } from '@/i18n';
 import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 
 interface ACPChatDialogProps {
@@ -26,6 +27,8 @@ interface ACPChatDialogProps {
   attemptId: string;
   runtimeStatus?: string | null;
   manualCheckPending?: boolean;
+  systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
+  eventIdPrefix?: string;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
@@ -149,9 +152,10 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
+  const sessionIdentity = `${sessionKey}:${eventIdPrefix ?? ''}:${session?.sessionId ?? ''}`;
   const restoredOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
   const restoredPromptEvent = latestSendingOptimisticEvent(restoredOptimisticEvents);
   const restoredPrompt = restoredPromptEvent?.content?.trim() || null;
@@ -242,6 +246,8 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   useEffect(() => {
     const storedOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
     const storedPromptEvent = latestSendingOptimisticEvent(storedOptimisticEvents);
+    setCurrentSession(session ?? null);
+    setLoadedEvents(session?.events ?? []);
     setOptimisticEvents(storedOptimisticEvents);
     setDismissedPermissionIds(new Set());
     setPermissionError(null);
@@ -270,7 +276,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     latestSessionRef.current = session ?? null;
     historyScrollAnchorRef.current = null;
     setCanvasMode('chat');
-  }, [sessionKey]);
+  }, [sessionIdentity]);
 
   const baseSession = currentSession ?? session;
   const visibleSession = useMemo(() => baseSession ? { ...baseSession, events: loadedEvents } : null, [baseSession, loadedEvents]);
@@ -308,14 +314,17 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   };
 
+  const normalizeSessionUpdate = (updated: AcpSessionVm | null) => eventIdPrefix ? normalizeAcpSessionForAttempt(updated, eventIdPrefix) : updated;
+
   const applySessionUpdate = (updated: AcpSessionVm | null) => {
-    latestSessionRef.current = updated;
-    setCurrentSession(updated);
-    if (!updated) return;
+    const normalized = normalizeSessionUpdate(updated);
+    latestSessionRef.current = normalized;
+    setCurrentSession(normalized);
+    if (!normalized) return;
     setHasNewerEvents(false);
-    setHasOlderEvents((current) => current || updated.eventPage.hasOlder);
+    setHasOlderEvents((current) => current || normalized.eventPage.hasOlder);
     setLoadedEvents((events) => {
-      const merged = mergeAcpEvents(events, updated.events);
+      const merged = mergeAcpEvents(events, normalized.events);
       const limited = limitAcpEvents(merged, 'start');
       setFirstItemIndex((current) => current + removedTimelineItemCount(merged, limited));
       return limited;
@@ -437,7 +446,18 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     };
   };
 
-  const preserveScrollPosition = () => {};
+  const preserveScrollPosition = () => {
+    const scroller = scrollerElementRef.current;
+    if (!scroller) return;
+    if (pinToBottomRef.current && !historyBrowsingRef.current && !hasNewerEvents) {
+      window.requestAnimationFrame(scrollChatToBottom);
+      return;
+    }
+    historyScrollAnchorRef.current = {
+      scrollTop: scroller.scrollTop,
+      scrollHeight: scroller.scrollHeight,
+    };
+  };
 
   const handleChatScroll = () => {
     const scroller = scrollerElementRef.current;
@@ -461,7 +481,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setIsAtBottom(false);
     setLoadingOlder(true);
     try {
-      const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession);
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
       if (!updated) return;
       captureHistoryScrollAnchor();
       setCurrentSession(updated);
@@ -485,7 +505,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const newestSeq = loadedEvents[loadedEvents.length - 1].seq;
     loadingNewerRef.current = true;
     try {
-      const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession);
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
       if (!updated) return;
       setCurrentSession(updated);
       setHasNewerEvents(updated.eventPage.hasNewer);
@@ -530,8 +550,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         updateOptimisticEvents((current) => current.filter((event) => event.id !== optimisticEvent.id));
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
-      setSendError(message);
+      setSendError(displayAppError(t, error));
       setAwaitingResponse(false);
       setActiveTurnPrompt(null);
       setActiveTurnPromptId(null);
@@ -565,7 +584,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null);
       applySessionUpdate(updated);
     } catch (error) {
-      setCancelError(error instanceof Error ? error.message : String(error));
+      setCancelError(displayAppError(t, error));
       setCancelling(false);
       cancelRequestedRef.current = false;
     }
@@ -580,7 +599,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       setManualCheckResolved(true);
       onManualCheckSubmitted?.();
     } catch (error) {
-      setManualCheckError(error instanceof Error ? error.message : String(error));
+      setManualCheckError(displayAppError(t, error));
     } finally {
       setManualCheckSubmitting(false);
     }
@@ -599,7 +618,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         return next;
       });
       setQueuedInterventionPrompt(null);
-      setPermissionError(error instanceof Error ? error.message : String(error));
+      setPermissionError(displayAppError(t, error));
     }
   };
 
@@ -649,10 +668,11 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         session={effective}
         rawActive={canvasMode === 'raw'}
         rawLoading={rawLoading}
+        systemPromptAvailable={Boolean(effective.systemPromptAppend?.trim()) || Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))}
         onToggleRaw={toggleRawFrames}
         onOpenSystemPrompt={() => setSystemPromptOpen(true)}
       />
-      <SystemPromptDialog open={systemPromptOpen} prompt={effective.systemPromptAppend} onOpenChange={setSystemPromptOpen} />
+      <SystemPromptDialog open={systemPromptOpen} prompt={effective.systemPromptAppend} options={systemPromptOptions} onOpenChange={setSystemPromptOpen} />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === 'raw' ? (
@@ -854,10 +874,10 @@ function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
   );
 }
 
-export function ACPSessionHeader({ session, rawActive, rawLoading, onToggleRaw, onOpenSystemPrompt }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; onToggleRaw: () => void; onOpenSystemPrompt: () => void }) {
+export function ACPSessionHeader({ session, rawActive, rawLoading, systemPromptAvailable, onToggleRaw, onOpenSystemPrompt }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; systemPromptAvailable?: boolean; onToggleRaw: () => void; onOpenSystemPrompt: () => void }) {
   const { t } = useTranslation();
   const mode = session.config?.currentModeName ?? session.config?.currentModeId;
-  const hasSystemPrompt = Boolean(session.systemPromptAppend?.trim());
+  const hasSystemPrompt = systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
   return (
     <div className="shrink-0 border-b bg-muted/10 px-5 py-3">
       <div className="min-w-0 space-y-1.5">
@@ -886,16 +906,32 @@ export function ACPSessionHeader({ session, rawActive, rawLoading, onToggleRaw, 
   );
 }
 
-function SystemPromptDialog({ open, prompt, onOpenChange }: { open: boolean; prompt?: string | null; onOpenChange: (open: boolean) => void }) {
+function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boolean; prompt?: string | null; options?: Array<{ attemptId: string; prompt?: string | null }>; onOpenChange: (open: boolean) => void }) {
   const { t } = useTranslation();
-  const content = prompt?.trim() || '';
+  const availableOptions = options?.filter((option) => option.prompt?.trim()) ?? [];
+  const latestAttemptId = availableOptions.at(-1)?.attemptId ?? null;
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(latestAttemptId);
+  useEffect(() => {
+    if (!open) return;
+    setSelectedAttemptId(latestAttemptId);
+  }, [open, latestAttemptId]);
+  const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
+  const content = (selectedPrompt ?? prompt)?.trim() || '';
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden p-0">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle className="text-base">{t('acp.systemPromptTitle')}</DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 px-5 pb-5">
+        <div className="min-h-0 space-y-3 px-5 pb-5">
+          {availableOptions.length > 1 ? (
+            <Select value={selectedAttemptId ?? availableOptions[0]?.attemptId} onValueChange={setSelectedAttemptId}>
+              <SelectTrigger className="h-8 w-[220px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {availableOptions.map((option) => <SelectItem value={option.attemptId} key={option.attemptId}>{option.attemptId}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : null}
           {content ? (
             <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-mono text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
           ) : (
@@ -924,8 +960,21 @@ function EmptyAcpState() {
   return <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">{t('acp.noEvents')}</div>;
 }
 
+function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
+  return (
+    <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
+      <span className="h-px flex-1 bg-border/70" />
+      <span className="rounded-full border bg-background/90 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.12em]">
+        {event.title ?? event.content ?? 'attempt'}
+      </span>
+      <span className="h-px flex-1 bg-border/70" />
+    </div>
+  );
+}
+
 export function ACPEventRenderer({ event, onLayoutChange }: { event: AcpTimelineItem; onLayoutChange?: () => void }) {
   if (isChildAgentGroup(event)) return <AssistantTimelineRow><ChildAgentGroupCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
+  if (event.kind === 'attemptSeparator') return <AttemptSeparator event={event} />;
   if (event.kind === 'textDelta' || event.kind === 'userTextDelta') return <MessageBubble event={event} />;
   if (event.kind === 'thoughtDelta') return <AssistantTimelineRow><ThoughtBlock event={event} /></AssistantTimelineRow>;
   if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <AssistantTimelineRow><ToolCallCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
@@ -1443,8 +1492,14 @@ function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
 function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
   const timeline: AcpTimelineEvent[] = [];
   const toolIndex = new Map<string, AcpTimelineEvent>();
+  const seenUserPrompts = new Set<string>();
   for (const event of events) {
     if (!isRenderableEvent(event)) continue;
+    if (event.kind === 'userTextDelta') {
+      const key = userPromptDedupKey(event);
+      if (key && seenUserPrompts.has(key)) continue;
+      if (key) seenUserPrompts.add(key);
+    }
     const previous = timeline[timeline.length - 1];
     if (shouldMergeUserPromptEvents(previous, event)) {
       previous.seq = event.seq;
@@ -1455,22 +1510,14 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       previous.optimistic = previous.optimistic || isOptimisticEvent(event);
       continue;
     }
-    if (previous && previous.kind === event.kind && isMergeableDelta(event.kind)) {
-      if (isSameDeltaStream(previous, event)) {
-        previous.content = event.content ?? previous.content;
-        previous.seq = event.seq;
-        previous.endedSeq = event.seq;
-        previous.endedAt = event.timestamp;
-        previous.status = event.status ?? previous.status;
-        previous.raw = mergeRaw(previous.raw, event.raw);
-        previous.optimistic = previous.optimistic || isOptimisticEvent(event);
-        continue;
-      }
-      previous.content = `${previous.content ?? ''}${event.content ?? ''}`;
+    if (previous && previous.kind === event.kind && isMergeableDelta(event.kind) && isSameDeltaStream(previous, event)) {
+      previous.content = event.content ?? previous.content;
       previous.seq = event.seq;
       previous.endedSeq = event.seq;
       previous.endedAt = event.timestamp;
-      previous.raw = event.raw;
+      previous.status = event.status ?? previous.status;
+      previous.raw = mergeRaw(previous.raw, event.raw);
+      previous.optimistic = previous.optimistic || isOptimisticEvent(event);
       continue;
     }
     if ((event.kind === 'toolCall' || event.kind === 'toolCallUpdate') && event.toolCallId) {
@@ -1577,9 +1624,19 @@ function groupChildAgentTimeline(events: AcpTimelineEvent[]): AcpTimelineItem[] 
 }
 
 function isRenderableEvent(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  if (raw?.hiddenFromChat === true) return false;
   if (hiddenEventKinds.has(event.kind)) return false;
-  const sessionUpdate = rawObject(event.raw)?.sessionUpdate;
+  const sessionUpdate = raw?.sessionUpdate;
   return typeof sessionUpdate !== 'string' || !hiddenSessionUpdates.has(sessionUpdate);
+}
+
+function userPromptDedupKey(event: AcpUiEventVm) {
+  const text = normalizePromptText(event.content);
+  if (!text) return null;
+  const raw = rawObject(event.raw);
+  const attemptId = stringValue(raw?.attemptId) ?? 'current-attempt';
+  return `${attemptId}:${text}`;
 }
 
 function isMergeableDelta(kind: string) {
@@ -1622,10 +1679,37 @@ function mergeRaw(previous: unknown, next: unknown) {
 }
 
 function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
+  const previousByKey = new Map<string, AcpUiEventVm>();
   const byKey = new Map<string, AcpUiEventVm>();
-  for (const event of previous) byKey.set(acpEventKey(event), event);
-  for (const event of next) byKey.set(acpEventKey(event), event);
+  for (const event of previous) {
+    const key = acpEventKey(event);
+    previousByKey.set(key, event);
+    byKey.set(key, event);
+  }
+  for (const event of next) {
+    const key = acpEventKey(event);
+    const existing = previousByKey.get(key);
+    byKey.set(key, { ...event, seq: existing?.seq ?? alignAcpDisplaySeq(event, previous) });
+  }
   return [...byKey.values()].sort((left, right) => left.seq - right.seq);
+}
+
+function alignAcpDisplaySeq(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
+  const attemptId = attemptIdFromAcpEvent(event);
+  if (!attemptId) return event.seq;
+  const originalSeq = originalSeqFromAcpEvent(event);
+  let offset: number | null = null;
+  let separatorSeq: number | null = null;
+  for (const candidate of previous) {
+    if (attemptIdFromAcpEvent(candidate) !== attemptId) continue;
+    if (isAcpAttemptSeparator(candidate)) {
+      separatorSeq = Math.max(separatorSeq ?? candidate.seq, candidate.seq);
+      continue;
+    }
+    const candidateOriginalSeq = originalSeqFromAcpEvent(candidate);
+    offset = Math.max(offset ?? candidate.seq - candidateOriginalSeq, candidate.seq - candidateOriginalSeq);
+  }
+  return originalSeq + (offset ?? separatorSeq ?? 0);
 }
 
 function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end') {
@@ -1634,8 +1718,8 @@ function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end') {
 }
 
 function acpEventKey(event: AcpUiEventVm) {
-  if (isStableDeltaEvent(event)) return `${event.sessionId ?? ''}:${event.kind}:${event.id}`;
-  return `${event.seq}:${event.id}:${event.kind}`;
+  const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? '';
+  return `${attemptId}:${event.kind}:${event.id}`;
 }
 
 function mergeOptimisticSession(session: AcpSessionVm | null | undefined, optimisticEvents: AcpUiEventVm[]): AcpSessionVm | null {
@@ -1679,7 +1763,12 @@ function findMatchingGoldBandUserPrompt(events: AcpUiEventVm[], content?: string
 }
 
 function sameText(left?: string | null, right?: string | null) {
-  return Boolean(left?.trim()) && left?.trim() === right?.trim();
+  const normalizedLeft = normalizePromptText(left);
+  return Boolean(normalizedLeft) && normalizedLeft === normalizePromptText(right);
+}
+
+function normalizePromptText(value?: string | null) {
+  return value?.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim() ?? '';
 }
 
 function toolDetails(event: AcpUiEventVm) {

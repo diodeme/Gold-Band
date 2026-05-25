@@ -39,7 +39,7 @@ impl ProviderAdapter for SuccessProvider {
             exit_code: Some(0),
             result_payload: None,
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,

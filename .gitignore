@@ -6,6 +6,7 @@
 /src-tauri/target
 .external
 .gold-band
+.maling
 /Archive
 *.log
 .env
@@ -19,3 +20,4 @@
 !.claude/skills
 !.claude/CLAUDE.md
 !.claude/settings.json
+draft/*

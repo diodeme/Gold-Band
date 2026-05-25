@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createAgent, deleteAgent, doctorAgent, updateAgent } from '../api';
+import { displayAppError } from '../i18n';
 import type { AgentRegistryVm, ManagedAgentInput, ManagedAgentVm, SupportedAgentTypeVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
@@ -25,6 +26,12 @@ type EditorMode = 'create' | 'edit';
 type Notice = { tone: 'success' | 'error'; message: string };
 
 const defaultForm = (): ManagedAgentInput => ({ displayName: '', command: '', args: [], env: {} });
+const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
+  displayName: agentType.defaultDisplayName,
+  command: agentType.defaultCommand,
+  args: agentType.defaultArgs,
+  env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
+}) : defaultForm();
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
   const { t } = useTranslation();
@@ -58,12 +65,13 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  const openCreate = (agentType: string) => {
+  const openCreate = (agentType: SupportedAgentTypeVm) => {
+    const nextForm = formFromSupportedAgent(agentType);
     setEditorMode('create');
-    setSelectedType(agentType);
-    setForm(defaultForm());
-    setArgsText('');
-    setEnvText('');
+    setSelectedType(agentType.agentType);
+    setForm(nextForm);
+    setArgsText(formatArgs(nextForm.args));
+    setEnvText(formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))));
     setError(null);
     setSheetOpen(true);
   };
@@ -98,7 +106,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       onRegistryChange(next);
       setSheetOpen(false);
     } catch (nextError) {
-      setError(String(nextError));
+      setError(displayAppError(t, nextError));
     } finally {
       setSaving(false);
     }
@@ -116,7 +124,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
         : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic?.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
     } catch (nextError) {
-      setNotice({ tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: String(nextError) }) });
+      setNotice({ tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: displayAppError(t, nextError) }) });
     } finally {
       setDiagnosingType(null);
     }
@@ -128,7 +136,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       onRegistryChange(await deleteAgent(deleteTarget.agentType));
       setDeleteTarget(null);
     } catch (nextError) {
-      setError(String(nextError));
+      setError(displayAppError(t, nextError));
       setDeleteTarget(null);
     }
   };
@@ -157,7 +165,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                   <DropdownMenuItem
                     key={agentType.agentType}
                     disabled={!agentType.supported || agentType.configured}
-                    onClick={() => openCreate(agentType.agentType)}
+                    onClick={() => openCreate(agentType)}
                   >
                     <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
                       <span className="truncate">{agentType.label}</span>
@@ -186,7 +194,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
           </AlertDescription>
         </Alert>
       ) : null}
-      {error ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
+      {error && !sheetOpen ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {vm && vm.agents.length > 0 ? (
         <div className="grid gap-4 xl:grid-cols-2">
@@ -208,12 +216,12 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       )}
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-[720px] max-w-[96vw] overflow-hidden sm:max-w-[720px]">
-          <SheetHeader className="border-b border-border/60 px-6 py-5">
+        <SheetContent className="w-[720px] max-w-[96vw] gap-0 overflow-hidden sm:max-w-[720px]">
+          <SheetHeader className="border-b border-border/60 px-6 py-4">
             <SheetTitle>{editorMode === 'create' ? t('agentManagement.createTitle') : t('agentManagement.editTitle')}</SheetTitle>
             <SheetDescription>{editorMode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
           </SheetHeader>
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
             <Field label={t('agentManagement.agentType')}>
               <TextInput value={selectedType} disabled />
             </Field>
@@ -225,7 +233,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             </Field>
             <Field label={t('agentManagement.args')} description={t('agentManagement.argsDescription')}>
               <ConfigTextarea
-                className="min-h-32"
+                className="min-h-24"
                 value={argsText}
                 placeholder={'-y\n@agentclientprotocol/claude-agent-acp@latest'}
                 onChange={(event) => setArgsText(event.target.value)}
@@ -233,13 +241,14 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             </Field>
             <Field label={t('agentManagement.env')} description={t('agentManagement.envDescription')}>
               <ConfigTextarea
-                className="min-h-44"
+                className="min-h-28"
                 value={envText}
                 placeholder={'ANTHROPIC_API_KEY=...\nNODE_OPTIONS=--max-old-space-size=4096'}
                 onChange={(event) => setEnvText(event.target.value)}
               />
             </Field>
-            <div className="flex justify-end gap-2 pt-2">
+            {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+            <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
               <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim()} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>

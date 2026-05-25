@@ -1,6 +1,6 @@
 import i18n, { type TFunction } from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import type { DesktopLanguage } from './types';
+import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from './types';
 
 const resources = {
   'zh-CN': {
@@ -20,6 +20,7 @@ const resources = {
         refresh: '刷新',
         close: '关闭',
         save: '保存',
+        open: '打开',
         export: '导出',
         run: '运行',
         continueRun: '继续运行',
@@ -58,6 +59,45 @@ const resources = {
         taskList: '任务列表',
         workflow: '工作流',
         workflowList: '工作流列表',
+      },
+      workspaceSelect: {
+        product: '{{appName}} Desktop',
+        description: '选择包含 {{configDirName}} 配置目录的工作空间后，桌面端会记住该路径并读取对应渠道的本地数据。',
+        recentDescription: '最近打开过的工作空间会保存在本地用户偏好中。',
+        emptyRecent: '暂无最近工作空间',
+      },
+      errors: {
+        agent: {
+          'already-exists': 'Agent {{agentType}} 已存在。',
+          'not-configured': 'Agent {{agentType}} 尚未配置。',
+        },
+        acp: {
+          'missing-provider': '当前节点缺少 provider 配置。',
+        },
+        app: {
+          'task-join-failed': '后台任务执行失败。',
+          unexpected: '操作失败，请重试。',
+        },
+        'manual-check': {
+          'invalid-outcome': '人工 check 结果无效。',
+        },
+        workflow: {
+          'agent-doctor-failed': 'Agent {{agentType}} 未通过 doctor。',
+          'agent-doctor-required': 'Agent {{agentType}} 需要先通过 doctor。',
+          'permission-mode-unsupported': 'Agent {{agentType}} 不支持权限模式 {{permissionMode}}。',
+          'success-new-round-target': '{{from}} 的 success 边不能指向 new round。',
+          invalid: '工作流配置无效。',
+        },
+        workspace: {
+          'path-invalid-utf8': '选择的工作空间路径不是有效 UTF-8。',
+          'path-resolve-failed': '无法解析选择的工作空间路径。',
+        },
+        updater: {
+          'invalid-url': '更新地址无效。',
+          'check-failed': '检查更新失败。',
+          'install-failed': '安装更新失败。',
+          'no-update': '当前没有可安装更新。',
+        },
       },
       status: {
         running: '运行中',
@@ -218,6 +258,8 @@ const resources = {
           selectLastUsedWorkflow: '选择上次使用的工作流模板 {{name}}',
           workflowDirty: '有未保存改动',
           workflowTemplateName: '新工作流名称',
+          saveTask: '保存任务',
+          savingTask: '保存中…',
           saveAsWorkflow: '保存为新的工作流',
           saveCurrentWorkflow: '保存修改',
           savingWorkflowTemplate: '保存中…',
@@ -265,6 +307,7 @@ const resources = {
         createWorkflowTitle: '新建工作流',
         editWorkflowTitle: '修改工作流',
         repairWorkflowTitle: '修复工作流',
+        viewErrorReasons: '查看错误原因',
         noWorkflow: '暂无工作流',
         noWorkflowTemplate: '无可用工作流模板，无法新建或修复工作流。',
         expandBlueprint: '展开',
@@ -303,12 +346,13 @@ const resources = {
         addEndTarget: '添加结束节点',
         addNewRoundTarget: '添加新 Round 节点',
         deleteEdge: '删除边',
-        noAgents: '请先在 Agent 管理页配置可用 Agent。',
+        noAgents: '请先在 Agent 管理页配置并通过 doctor 检查。',
+        noDoctorReadyAgents: '暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。',
         selectHint: '选择画布中的节点或边进行配置。',
         workflowControls: '工作流控制',
         workflowControlsHelp: '未填写表示不限制；限制超出后当前工作流失败。',
         maxAttempts: 'Attempt 最大次数',
-        maxAttemptsHelp: '每个 Round 内按来源节点 → 目标节点分别计数。比如 3 表示 A → B 最多执行 3 次，C → B 也可执行 3 次。',
+        maxAttemptsHelp: '每个 Round 内按 failure 触发的修复跳转计数。比如 1 表示允许一次修复循环；修复后的 success 前进不消耗次数。',
         maxRounds: 'Round 最大次数',
         maxRoundsHelp: '限制 $new-round 可打开的新 Round 数；初始 Round 不计入。',
         nodeConfig: '节点配置',
@@ -333,7 +377,7 @@ const resources = {
         enabled: '已开启',
         disabled: '未开启',
         outputValidation: 'AI 输出验证',
-        outputValidationDescription: '要求 AI 按约束输出 JSON，并用成功表达式自动判断该节点是成功、失败还是无效。',
+        outputValidationDescription: '要求 AI 按约束输出 JSON，并用成功表达式自动判断该节点是成功还是失败；schema 不合法会自动隐藏追问修复。',
         outputArtifact: '输出产物 Key',
         outputSchema: 'JSON 输出约束',
         outputSchemaPlaceholder: '示例：{"reason":"String","result":"boolean"}，嵌套输出可使用对象和数组。',
@@ -359,12 +403,12 @@ const resources = {
         validationReservedNodeId: '{{node}} 使用了系统保留节点 ID。',
         validationDuplicateNodeId: '{{node}} 节点 ID 重复。',
         validationNodeProviderRequired: '{{node}} 节点未关联 Agent。',
-        validationNodeProviderUnavailable: '{{node}} 节点关联的 Agent 不可用。',
+        validationNodeProviderUnavailable: '{{node}} 节点关联的 Agent 未通过 doctor。',
+        validationPermissionModeUnavailable: '{{node}} 节点的权限模式不属于当前 Agent。',
         validationNodeProfileRequired: '{{node}} 节点未关联角色。',
         validationNodeProfileVisibilityChanged: '{{node}} 节点关联的角色可见性发生变更，请重新设置。',
         validationNodeGoalRequired: '{{node}} 节点目标不能为空。',
         validationOutputArtifactRequired: '{{node}} 的输出产物 Key 不能为空。',
-        validationOutputArtifactMismatch: '{{node}} 的输出产物 Key 必须和 primary artifact 一致。',
         validationSuccessExpressionRequired: '{{node}} 启用输出验证后必须填写成功表达式。',
         validationResultModeExclusive: '{{node}} 不能同时启用 AI 输出验证和人工 check。',
         validationEdgeSourceRequired: '第 {{index}} 条边缺少来源节点。',
@@ -373,6 +417,7 @@ const resources = {
         validationEdgeTargetMissing: '边的目标节点 {{node}} 不存在。',
         validationEdgeOutcomeRequired: '第 {{index}} 条边类型无效。',
         validationDuplicateEdgeOutcome: '{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。',
+        validationSuccessNewRoundTarget: '{{node}} 的 success 边不能指向 new round。',
         validationTerminalEdgeSource: '终止节点 {{node}} 不能作为边的来源。',
         validationContinueTerminalTarget: '第 {{index}} 条边的 continue session 不能指向终止节点。',
         nodeLabels: {
@@ -387,7 +432,6 @@ const resources = {
         },
         edgeLabels: {
           failure: '失败',
-          invalid: '无效',
         },
         successPath: '成功字段路径',
         successEquals: '期望值',
@@ -449,6 +493,11 @@ const resources = {
         nodeId: '节点 ID',
         sequence: '序号',
         attemptId: 'Attempt ID',
+        attemptCount: 'Attempt 数',
+        viewFailureReason: '查看原因',
+        transition: '跳转',
+        edgeOutcome: '分支',
+        limitUsage: '次数',
         startedAt: '开始时间',
         finishedAt: '结束时间',
         noArtifacts: '暂无产物',
@@ -517,7 +566,7 @@ const resources = {
         stopFailed: '停止失败',
         stopHint: '停止当前 ACP 会话',
         noEvents: '暂无 ACP 事件',
-        launchingClaude: 'Claude 调起中',
+        launchingClaude: 'Agent 调起中',
         processing: '处理中',
         thinkingNow: '思考中',
         toolRunning: '工具调用中',
@@ -557,7 +606,7 @@ const resources = {
       },
       settings: {
         title: '设置',
-        path: 'Gold Band › 设置',
+        path: '{{appName}} › 设置',
         appearance: '外观',
         language: '语言',
         typography: '字体',
@@ -590,6 +639,38 @@ const resources = {
         localFonts: '本机字体',
         chooseLocalFont: '选择本机字体',
         localFontsDescription: '已载入 {{count}} 个本机字体，可在下方选择。',
+        clientVersion: '客户端版本：{{version}}',
+        tabs: {
+          general: '通用',
+          appearance: '外观',
+          advanced: '高级',
+        },
+        updater: {
+          title: '更新',
+          currentUrl: '更新地址',
+          editUrl: '修改地址',
+          channelLabel: '渠道',
+          builtInUrl: '内置更新地址',
+          overrideUrl: '覆盖更新地址',
+          effectiveUrl: '当前更新地址',
+          overridePlaceholder: '留空使用内置地址',
+          saveOverride: '保存地址',
+          resetToBuiltIn: '恢复内置地址',
+          checkNow: '检查更新',
+          install: '下载并安装',
+          lastCheckedAt: '上次检查：{{time}}',
+          channel: {
+            default: '默认',
+            wb: 'WB',
+          },
+          status: {
+            idle: '尚未检查',
+            checking: '正在检查',
+            available: '发现新版本',
+            'not-available': '已是最新版本',
+            error: '检查失败',
+          },
+        },
       },
     },
   },
@@ -610,6 +691,7 @@ const resources = {
         refresh: 'Refresh',
         close: 'Close',
         save: 'Save',
+        open: 'Open',
         export: 'Export',
         run: 'Run',
         continueRun: 'Continue',
@@ -648,6 +730,45 @@ const resources = {
         taskList: 'Task List',
         workflow: 'Workflow',
         workflowList: 'Workflow List',
+      },
+      workspaceSelect: {
+        product: '{{appName}} Desktop',
+        description: 'Select a workspace with a {{configDirName}} config directory. The desktop app will remember it and read local data for this channel.',
+        recentDescription: 'Recent workspaces are saved in local user preferences.',
+        emptyRecent: 'No recent workspaces',
+      },
+      errors: {
+        agent: {
+          'already-exists': 'Agent {{agentType}} already exists.',
+          'not-configured': 'Agent {{agentType}} is not configured.',
+        },
+        acp: {
+          'missing-provider': 'The current node is missing provider configuration.',
+        },
+        app: {
+          'task-join-failed': 'Background task failed.',
+          unexpected: 'The operation failed. Please try again.',
+        },
+        'manual-check': {
+          'invalid-outcome': 'Manual check outcome is invalid.',
+        },
+        workflow: {
+          'agent-doctor-failed': 'Agent {{agentType}} has not passed doctor.',
+          'agent-doctor-required': 'Agent {{agentType}} must pass doctor first.',
+          'permission-mode-unsupported': 'Agent {{agentType}} does not support permission mode {{permissionMode}}.',
+          'success-new-round-target': '{{from}} success edge cannot target new round.',
+          invalid: 'Workflow configuration is invalid.',
+        },
+        workspace: {
+          'path-invalid-utf8': 'Selected workspace path is not valid UTF-8.',
+          'path-resolve-failed': 'Failed to resolve selected workspace path.',
+        },
+        updater: {
+          'invalid-url': 'Invalid update URL.',
+          'check-failed': 'Failed to check for updates.',
+          'install-failed': 'Failed to install update.',
+          'no-update': 'No update is available.',
+        },
       },
       status: {
         running: 'Running',
@@ -808,6 +929,8 @@ const resources = {
           selectLastUsedWorkflow: 'Select last used workflow template {{name}}',
           workflowDirty: 'Unsaved changes',
           workflowTemplateName: 'New workflow name',
+          saveTask: 'Save task',
+          savingTask: 'Saving…',
           saveAsWorkflow: 'Save as new workflow',
           saveCurrentWorkflow: 'Save changes',
           savingWorkflowTemplate: 'Saving…',
@@ -855,6 +978,7 @@ const resources = {
         createWorkflowTitle: 'Create Workflow',
         editWorkflowTitle: 'Edit Workflow',
         repairWorkflowTitle: 'Repair Workflow',
+        viewErrorReasons: 'View error reasons',
         noWorkflow: 'No workflow yet',
         noWorkflowTemplate: 'No workflow template is available, so the workflow cannot be created or repaired.',
         expandBlueprint: 'Expand',
@@ -893,12 +1017,13 @@ const resources = {
         addEndTarget: 'Add End node',
         addNewRoundTarget: 'Add New Round node',
         deleteEdge: 'Delete Edge',
-        noAgents: 'Configure an available agent in Agent Management first.',
+        noAgents: 'Configure an agent and pass doctor in Agent Management first.',
+        noDoctorReadyAgents: 'No doctor-ready agents yet. Run doctor in Agent Management first.',
         selectHint: 'Select a node or edge on the canvas to configure it.',
         workflowControls: 'Workflow Controls',
         workflowControlsHelp: 'Blank means unlimited. The workflow fails when a limit is exceeded.',
         maxAttempts: 'Max Attempts',
-        maxAttemptsHelp: 'Counts each source node → target node separately within a round. For example, 3 allows A → B three times and C → B three times.',
+        maxAttemptsHelp: 'Counts repair transitions caused by failure outcomes within a round. For example, 1 allows one repair loop; success transitions after repair do not consume it.',
         maxRounds: 'Max Rounds',
         maxRoundsHelp: 'Limits how many new rounds $new-round can open. The initial round is not counted.',
         nodeConfig: 'Node Config',
@@ -923,7 +1048,7 @@ const resources = {
         enabled: 'Enabled',
         disabled: 'Disabled',
         outputValidation: 'AI Output Validation',
-        outputValidationDescription: 'Require the AI to return constrained JSON, then use the success expression to automatically decide whether the node succeeded, failed, or is invalid.',
+        outputValidationDescription: 'Require the AI to return constrained JSON, then use the success expression to decide success or failure. Invalid schema output is repaired with hidden follow-ups.',
         outputArtifact: 'Output artifact key',
         outputSchema: 'JSON output constraint',
         outputSchemaPlaceholder: 'Example: {"reason":"String","result":"boolean"}. Use nested objects or arrays for nested output.',
@@ -949,12 +1074,12 @@ const resources = {
         validationReservedNodeId: '{{node}} uses a reserved node ID.',
         validationDuplicateNodeId: '{{node}} node ID is duplicated.',
         validationNodeProviderRequired: '{{node}} node is not associated with an agent.',
-        validationNodeProviderUnavailable: '{{node}} node is associated with an unavailable agent.',
+        validationNodeProviderUnavailable: '{{node}} node agent has not passed doctor.',
+        validationPermissionModeUnavailable: '{{node}} node permission mode does not belong to the current agent.',
         validationNodeProfileRequired: '{{node}} node is not associated with a role.',
         validationNodeProfileVisibilityChanged: '{{node}} node associated role visibility changed; reset it.',
         validationNodeGoalRequired: '{{node}} node goal is required.',
         validationOutputArtifactRequired: '{{node}} output artifact key is required.',
-        validationOutputArtifactMismatch: '{{node}} output artifact key must match primary artifact.',
         validationSuccessExpressionRequired: '{{node}} requires a success expression when output validation is enabled.',
         validationResultModeExclusive: '{{node}} cannot enable AI output validation and manual check at the same time.',
         validationEdgeSourceRequired: 'Edge {{index}} is missing a source node.',
@@ -963,6 +1088,7 @@ const resources = {
         validationEdgeTargetMissing: 'Edge target node {{node}} does not exist.',
         validationEdgeOutcomeRequired: 'Edge {{index}} has an invalid outcome.',
         validationDuplicateEdgeOutcome: '{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.',
+        validationSuccessNewRoundTarget: '{{node}} success edge cannot target new round.',
         validationTerminalEdgeSource: 'Terminal node {{node}} cannot be an edge source.',
         validationContinueTerminalTarget: 'Edge {{index}} continue session cannot target a terminal node.',
         nodeLabels: {
@@ -977,7 +1103,6 @@ const resources = {
         },
         edgeLabels: {
           failure: 'Failure',
-          invalid: 'Invalid',
         },
         successPath: 'Success Field Path',
         successEquals: 'Expected Value',
@@ -1039,6 +1164,11 @@ const resources = {
         nodeId: 'Node ID',
         sequence: 'Sequence',
         attemptId: 'Attempt ID',
+        attemptCount: 'Attempts',
+        viewFailureReason: 'View reason',
+        transition: 'Transition',
+        edgeOutcome: 'Branch',
+        limitUsage: 'Count',
         startedAt: 'Started at',
         finishedAt: 'Finished at',
         noArtifacts: 'No artifacts',
@@ -1107,7 +1237,7 @@ const resources = {
         stopFailed: 'Stop failed',
         stopHint: 'Stop the current ACP session',
         noEvents: 'No ACP events',
-        launchingClaude: 'Launching Claude',
+        launchingClaude: 'Launching agent',
         processing: 'Processing',
         thinkingNow: 'Thinking',
         toolRunning: 'Running tool',
@@ -1147,7 +1277,7 @@ const resources = {
       },
       settings: {
         title: 'Settings',
-        path: 'Gold Band › Settings',
+        path: '{{appName}} › Settings',
         appearance: 'Appearance',
         language: 'Language',
         typography: 'Typography',
@@ -1180,6 +1310,38 @@ const resources = {
         localFonts: 'Local fonts',
         chooseLocalFont: 'Choose a local font',
         localFontsDescription: '{{count}} local fonts loaded. Choose one below.',
+        clientVersion: 'Client version: {{version}}',
+        tabs: {
+          general: 'General',
+          appearance: 'Appearance',
+          advanced: 'Advanced',
+        },
+        updater: {
+          title: 'Updates',
+          currentUrl: 'Update URL',
+          editUrl: 'Edit URL',
+          channelLabel: 'Channel',
+          builtInUrl: 'Built-in update URL',
+          overrideUrl: 'Override update URL',
+          effectiveUrl: 'Current update URL',
+          overridePlaceholder: 'Leave empty to use built-in URL',
+          saveOverride: 'Save URL',
+          resetToBuiltIn: 'Use built-in URL',
+          checkNow: 'Check update',
+          install: 'Download and install',
+          lastCheckedAt: 'Last checked: {{time}}',
+          channel: {
+            default: 'Default',
+            wb: 'WB',
+          },
+          status: {
+            idle: 'Not checked yet',
+            checking: 'Checking',
+            available: 'Update available',
+            'not-available': 'Up to date',
+            error: 'Check failed',
+          },
+        },
       },
     },
   },
@@ -1201,6 +1363,26 @@ export function displayPolicy(t: TFunction, value?: string | null) {
 export function displayNodeType(t: TFunction, value?: string | null) {
   if (!value) return t('nodeType.unknown');
   return t(`nodeType.${value.toLowerCase()}`, { defaultValue: value });
+}
+
+export function displayAppError(t: TFunction, error: unknown) {
+  if (isAppError(error)) {
+    return t(`errors.${error.code}`, { ...error.params, defaultValue: t('errors.app.unexpected') });
+  }
+  return String(error);
+}
+
+export function displayWorkflowError(t: TFunction, error?: WorkflowErrorVm | null) {
+  if (!error) return '';
+  return displayAppError(t, error);
+}
+
+function isAppError(value: unknown): value is AppErrorVm {
+  return Boolean(value)
+    && typeof value === 'object'
+    && typeof (value as Partial<AppErrorVm>).code === 'string'
+    && Boolean((value as Partial<AppErrorVm>).params)
+    && typeof (value as Partial<AppErrorVm>).params === 'object';
 }
 
 if (!i18n.isInitialized) {

@@ -7,7 +7,7 @@
 - `provider`
 - `profile`
 - `goal`
-- `primaryArtifact`
+- `output`
 
 也就是说：
 - `worker` 是节点类型
@@ -16,21 +16,21 @@
 
 ## 2. 当前已知结论
 - `worker` 节点是通用 AI worker 节点
-- 不是所有 `worker` 节点都必须产出 `节点输出产物`
-- 一个 `worker` 节点一次只应有一个 `primaryArtifact`
-- 只有声明 `primaryArtifact` 时，runtime 才要求生成并校验对应 canonical artifact
-- 若未声明 `primaryArtifact`，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
-- 若未声明 `primaryArtifact`，只有 provider adapter 返回包本身不合法时，runtime 才归为 `invalid`
-- 若声明了 `primaryArtifact` 但结果缺失、name 不匹配或 schema 不合法，应归为 `invalid`
+- 不是所有 `worker` 节点都必须产出 canonical artifact
+- 一个 `worker` 节点一次只应有一个 `output.artifact`
+- 只有声明 `output` 时，runtime 才要求生成并校验对应 canonical artifact
+- 若未声明 `output`，runtime 不要求 canonical artifact，而只依据 provider invocation 的完成状态归纳 `success / failure / paused`
+- 若未声明 `output.schema`，runtime 不触发结构化输出自修复
+- 若声明了 `output.schema` 但结果缺失、JSON 非法或 schema 不合法，应先在同 attempt 内隐藏追问修复，修复耗尽后归为 `invalid` 并使 workflow failure
 - provider 执行失败或异常结束应归为 `failure`
 - 新建工作流中，`worker` 不再默认产出 `节点输出产物`；review/test/accept 等验证型 worker 可产出 `*-result` JSON artifact
-- 当声明 `output.kind=json` 与 `successCondition` 时，runtime 按 JSON 字段值把节点归纳为 `success / failure / invalid`
+- 当声明 `output.kind=json` 与 `successCondition` 时，runtime 按 JSON 字段值把节点归纳为 `success / failure`；schema 输出不合法属于内部 `invalid` 状态，不作为 edge outcome
 - AI 输出验证与 `manual_check=true` 是互斥的结果判定方式，同一 worker 不应同时声明两者
 
 ## 3. 当前关注点
 - 如何绑定 `provider`
 - 如何绑定 `profile`
-- 如何表达 `primaryArtifact`
+- 如何表达 `output.artifact`
 - 节点输入契约如何自动组装
 
 ## 3.1 `goal` 的运行时语义
@@ -50,7 +50,6 @@
 
 ```json
 {
-  "primary_artifact": "review-result",
   "output": { "kind": "json", "artifact": "review-result" },
   "success_condition": { "path": "passed", "equals": true }
 }
@@ -58,12 +57,12 @@
 
 规则：
 - JSON 输出验证与人工 check 二选一；声明 `output` / `success_condition` 时不应同时声明 `manual_check=true`。
-- `output.artifact` 必须与 `primary_artifact` 一致。
+- `output.artifact` 是当前节点 canonical artifact 的唯一逻辑名来源。
 - `output` DSL 会进入当前节点追加的 `systemPrompt`，提示 agent 最后一步按 schema 输出结果。
 - 没有 `output` DSL 时，runtime 不因为 artifact 名称自动向 `systemPrompt` 注入结构化输出格式。
-- 没有 `primary_artifact` 时，runtime 会在 `systemPrompt` 明确告知 agent 不需要产出 canonical artifact，也不需要查找、推断或读取 artifact/output 约束。
+- 没有 `output` 时，runtime 会在 `systemPrompt` 明确告知 agent 不需要产出 canonical artifact，也不需要查找、推断或读取 artifact/output 约束。
 - `success_condition.path` 当前是简单 dot path，例如 `passed` 或 `result.passed`。
-- 字段值等于 `equals` 时节点 outcome 为 `success`；不等于时为 `failure`；缺失、JSON 非法或 path 非法时为 `invalid`。
+- 字段值等于 `equals` 时节点 outcome 为 `success`；不等于时为 `failure`；声明了 `output.schema` 且缺失、JSON 非法或 path 非法时触发隐藏追问修复，修复耗尽后 workflow failure。
 
 ## 4. `provider` 与 `profile` 的解析规则
 当前建议：

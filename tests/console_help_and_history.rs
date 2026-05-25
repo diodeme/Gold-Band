@@ -10,7 +10,7 @@ use gold_band::console::view_models::build_view_model;
 use gold_band::domain::SessionMode;
 use gold_band::inspect::render_console_banner;
 use gold_band::provider::{
-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use tempfile::tempdir;
@@ -41,12 +41,12 @@ impl ProviderAdapter for StartTaskProvider {
     }
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
-        let payload = match req.primary_artifact.as_deref() {
-            Some("implementation-result") => PrimaryArtifactPayload {
+        let payload = match req.output_contract.as_ref().map(|contract| contract.artifact.as_str()) {
+            Some("implementation-result") => OutputArtifactPayload {
                 name: "implementation-result".to_string(),
                 content: r#"{"version":"0.1","commands":[{"id":"ok","run":"echo ok","purpose":"run checks"}]}"#.to_string(),
             },
-            Some("accept-result") => PrimaryArtifactPayload {
+            Some("accept-result") => OutputArtifactPayload {
                 name: "accept-result".to_string(),
                 content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
@@ -57,10 +57,10 @@ impl ProviderAdapter for StartTaskProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(payload),
+                output_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -125,7 +125,7 @@ fn developer_profile_id(app: &App) -> String {
 
 fn worker_workflow(app: &App) -> String {
     format!(
-        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-code","profile":"{}"}}],"edges":[]}}"#,
+        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-acp","profile":"{}"}}],"edges":[]}}"#,
         developer_profile_id(app)
     )
 }
@@ -227,7 +227,7 @@ fn task_picker_selection_with_active_run_enters_attempt_detail() {
         app.paths
             .node_file("task-001", "run-001", "round-001", "dev", "attempt-001")
             .as_std_path(),
-        r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{"primaryArtifact":"implementation-result"}}"#,
+        r#"{"version":"0.1","node_id":"dev","node_type":"worker","run_id":"run-001","round_id":"round-001","attempt_id":"attempt-001","status":"running","outcome":null,"started_at":"2026-03-30T10:00:00Z","finished_at":null,"resolved_config":{"outputArtifact":"implementation-result"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -392,8 +392,8 @@ fn start_selected_task_enters_workspace() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Create an implementation result","primary_artifact":"implementation-result"}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Create an implementation result","output":{{"kind":"json","artifact":"implementation-result"}}}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"accept","on":"success"}},
@@ -485,7 +485,7 @@ fn invalid_task_shows_reason_and_cannot_enter_workspace() {
         &app,
         "task-001",
         r#"{"version":"0.1","id":"task-001","description":"demo task"}"#,
-        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_attempts":1,"max_rounds":1},"nodes":[{"type":"worker","id":"dev","provider":"claude-code","profile":"missing-profile"}],"edges":[]}"#,
+        r#"{"version":"0.1","id":"full-flow","entry":"dev","control":{"max_attempts":1,"max_rounds":1},"nodes":[{"type":"worker","id":"dev","provider":"claude-acp","profile":"missing-profile"}],"edges":[]}"#,
     );
     let mut state = ConsoleState::default();
     state.welcome_action = WelcomeAction::SelectTask;

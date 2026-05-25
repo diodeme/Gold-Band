@@ -3,12 +3,16 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
+  getSmoothStepPath,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
   type Viewport,
@@ -18,6 +22,7 @@ import {
   NODE_WIDTH,
   NODE_HEIGHT,
   runtimeNodeOrder,
+  computeBackwardLanes,
   layoutSuccessPath,
   runtimeEdgeColor,
   topLeft,
@@ -69,6 +74,10 @@ interface GraphViewProps {
 
 const nodeTypes = {
   workflowNode: WorkflowNode,
+};
+
+const edgeTypes = {
+  runtimeEdge: RuntimeEdge,
 };
 
 export function GraphView({ graph, selectedNodeId, activeNodeId, activeStatus, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
@@ -164,6 +173,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, activeStatus, o
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         viewport={viewport}
         onViewportChange={setViewport}
         minZoom={MIN_ZOOM}
@@ -269,26 +279,66 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
     };
   });
 
+  const backwardLanes = computeBackwardLanes(
+    graph.edges.map((edge) => ({ from: edge.from, to: edge.to, on: edge.label?.toLowerCase() ?? '' })),
+    nodeOrder,
+  );
   const edges: Edge[] = graph.edges.map((edge, index) => {
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
+    const label = edge.blockedReason
+      ? `${edge.label || ''} · ${edge.blockedReason.proposedCount ?? '-'}/${edge.blockedReason.limit ?? '-'}`
+      : edge.traversalCount && edge.traversalCount > 1
+        ? `${edge.label || ''} ×${edge.traversalCount}`
+        : edge.label || undefined;
     return {
       id: `${edge.from}-${edge.to}-${index}`,
       source: edge.from,
       target: edge.to,
-      label: edge.label || undefined,
-      type: 'smoothstep',
+      label,
+      type: 'runtimeEdge',
       markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color },
       style: { stroke: color, strokeWidth: activeEdge ? 2.4 : 1.8 },
       className: activeEdge ? 'workflow-edge-running' : undefined,
-      labelStyle: { fill: color, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.04em' },
-      labelBgStyle: { fill: 'var(--card)', fillOpacity: 0.92 },
-      labelBgPadding: [8, 4],
-      labelBgBorderRadius: 999,
+      data: {
+        color,
+        label,
+        lane: backwardLanes.get(index),
+      },
     };
   });
 
   return { nodes, edges };
+}
+
+function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data }: EdgeProps) {
+  const lane = typeof data?.lane === 'number' ? data.lane : null;
+  const color = typeof data?.color === 'string' ? data.color : style?.stroke;
+  const label = typeof data?.label === 'string' ? data.label : null;
+  const [smoothPath, smoothLabelX, smoothLabelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const laneY = lane === null ? null : Math.min(sourceY, targetY) - 88 - lane * 38;
+  const sourceOffsetX = sourceX + 34;
+  const targetOffsetX = targetX - 34;
+  const path = laneY === null
+    ? smoothPath
+    : `M ${sourceX},${sourceY} L ${sourceOffsetX},${sourceY} L ${sourceOffsetX},${laneY} L ${targetOffsetX},${laneY} L ${targetOffsetX},${targetY} L ${targetX},${targetY}`;
+  const labelX = laneY === null ? smoothLabelX : (sourceOffsetX + targetOffsetX) / 2;
+  const labelY = laneY === null ? smoothLabelY : laneY;
+  return (
+    <>
+      <BaseEdge path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
+      {label ? (
+        <EdgeLabelRenderer>
+          <span
+            className="pointer-events-none absolute rounded-full border bg-background/95 px-2 py-0.5 font-mono text-[11px] shadow-sm"
+            style={{ color, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+          >
+            {label}
+          </span>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
 }
 
 function matchesNodeId(node: GraphNodeVm, id?: string | null) {
@@ -324,6 +374,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       <div className="pointer-events-none absolute left-3 right-3 top-2 z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {iconKey ? <img src={`/agent-icons/${iconKey}.svg`} alt="" className="size-4 shrink-0 rounded-sm" /> : null}
+          {node.attemptCount && node.attemptCount > 1 ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">attempt ×{node.attemptCount}</Badge> : null}
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}
         </div>

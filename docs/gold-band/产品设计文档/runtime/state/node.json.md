@@ -28,7 +28,7 @@
   "resolvedConfig": {
     "provider": "claude-code",
     "profile": "developer",
-    "primaryArtifact": "节点输出产物",
+    "outputArtifact": "dev-result",
     "sessionMode": "new"
   }
 }
@@ -84,7 +84,7 @@
 建议至少可包含：
 - `provider`
 - `profile`
-- `primaryArtifact`
+- `outputArtifact`
 - `sessionMode`（例如 `new | continue`）
 
 #### 对 `worker`
@@ -95,8 +95,8 @@
 建议至少可包含：
 - `provider`
 - `profile`
-- `primaryArtifact`（固定为 `验收输出产物`）
-- `failure/invalid 边`
+- `outputArtifact`（固定为 `验收输出产物`）
+- `failure 边`
 - `evidenceScope`（首版固定为 `current-round`）
 
 说明：

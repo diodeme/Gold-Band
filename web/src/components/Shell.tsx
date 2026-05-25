@@ -8,13 +8,14 @@ import { cn } from '@/lib/utils';
 
 interface ShellProps {
   active: PrimaryModule;
+  appName: string;
   repoRoot?: string;
   onSelect: (module: PrimaryModule) => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-export function Shell({ active, repoRoot, onSelect, onChooseWorkspace, children }: ShellProps) {
+export function Shell({ active, appName, repoRoot, onSelect, onChooseWorkspace, children }: ShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -26,7 +27,7 @@ export function Shell({ active, repoRoot, onSelect, onChooseWorkspace, children 
                 <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
               </span>
               <span className="text-left">
-                <strong className="block text-xl leading-none text-primary">Gold Band</strong>
+                <strong className="block text-xl leading-none text-primary">{appName}</strong>
                 <small className="mt-1 block text-[11px] uppercase tracking-[0.18em] text-muted-foreground">AI Orchestrator</small>
               </span>
             </a>

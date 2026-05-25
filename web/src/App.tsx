@@ -1,8 +1,11 @@
+import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  checkUpdateManual,
   chooseWorkspace,
   continueRun,
   createTask,
+  downloadAndInstallUpdate,
   getAgentRegistry,
   getAppBootstrap,
   getRoundDetail,
@@ -10,6 +13,7 @@ import {
   getWorkflow,
   killRun,
   saveDesktopPreferences,
+  saveUpdaterSettings,
   saveTaskWorkflow,
   selectRecentWorkspace,
   startRun,
@@ -17,7 +21,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Shell } from './components/Shell';
-import i18n, { i18nLanguage } from './i18n';
+import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
@@ -31,6 +35,7 @@ import { applyFont, applyTheme } from './theme';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
+  AppInfoVm,
   CreateTaskInput,
   DesktopFontPreference,
   DesktopLanguage,
@@ -41,11 +46,33 @@ import type {
   RoundSelection,
   TaskListVm,
   TaskPage,
+  UpdateStatusVm,
+  UpdaterSettingsVm,
   WorkflowDsl,
   WorkflowVm,
 } from './types';
 
 const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+const defaultUpdaterSettings: UpdaterSettingsVm = {
+  channel: 'default',
+  builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  overrideUrl: null,
+  effectiveUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
+  pollIntervalMinutes: 240,
+};
+const defaultUpdateStatus: UpdateStatusVm = {
+  status: 'idle',
+  checkedAt: null,
+  update: null,
+  error: null,
+  background: false,
+};
+const defaultAppInfo: AppInfoVm = {
+  channel: 'default',
+  appName: 'Gold Band',
+  appKey: 'gold-band',
+  configDirName: '.gold-band',
+};
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
@@ -66,6 +93,9 @@ export function App() {
   const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
+  const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
+  const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
+  const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const { t } = useTranslation();
 
   useEffect(() => {
@@ -104,7 +134,27 @@ export function App() {
   useEffect(() => {
     getAppBootstrap()
       .then(setBootstrap)
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(displayAppError(t, err)));
+  }, [t]);
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
+      if (!active) return;
+      setBootstrap((current) => current ? { ...current, updateStatus: event.payload } : current);
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, []);
 
   const resetWorkspaceViews = () => {
@@ -150,7 +200,7 @@ export function App() {
         setRoundDetail(await getRoundDetail(taskPage.taskId, taskPage.runId, taskPage.roundId, roundSelection));
       }
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
     } finally {
       if (mode === 'background') {
         backgroundRefreshInFlightRef.current = false;
@@ -158,7 +208,7 @@ export function App() {
         setLoading(null);
       }
     }
-  }, [bootstrap, primaryModule, roundSelection, taskPage]);
+  }, [bootstrap, primaryModule, roundSelection, t, taskPage]);
 
   useEffect(() => {
     void refresh(hasPageData ? 'background' : 'initial');
@@ -192,7 +242,7 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
       return undefined;
     } finally {
       setBusy(false);
@@ -232,7 +282,7 @@ export function App() {
         applyWorkspace(nextBootstrap);
       }
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
     } finally {
       setBusy(false);
     }
@@ -244,7 +294,7 @@ export function App() {
     try {
       applyWorkspace(await selectRecentWorkspace(workspace));
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
     } finally {
       setBusy(false);
     }
@@ -254,12 +304,59 @@ export function App() {
     setBusy(true);
     try {
       const saved = await saveDesktopPreferences(theme, language, font);
-      setBootstrap((current) => current ? { ...current, preferences: saved } : { repoRoot: '', recentWorkspaces: [], preferences: saved });
+      setBootstrap((current) => current ? { ...current, preferences: saved } : {
+        repoRoot: '',
+        recentWorkspaces: [],
+        preferences: saved,
+        updaterSettings: defaultUpdaterSettings,
+        updateStatus: defaultUpdateStatus,
+        clientVersion: '',
+        appInfo: defaultAppInfo,
+      });
       setTaskList(null);
       setWorkflow(null);
       setRoundDetail(null);
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
+    setBusy(true);
+    try {
+      const saved = await saveUpdaterSettings(overrideUrl);
+      setBootstrap((current) => current ? { ...current, updaterSettings: saved } : current);
+      return saved;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCheckUpdate = async () => {
+    setBusy(true);
+    try {
+      const status = await checkUpdateManual();
+      setBootstrap((current) => current ? { ...current, updateStatus: status } : current);
+      return status;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onInstallUpdate = async () => {
+    setBusy(true);
+    try {
+      await downloadAndInstallUpdate();
+    } catch (err) {
+      setError(displayAppError(t, err));
     } finally {
       setBusy(false);
     }
@@ -269,13 +366,27 @@ export function App() {
     ? (
       <WorkspaceSelectPage
         bootstrap={bootstrap}
+        appInfo={appInfo}
         busy={busy}
         onChooseWorkspace={onChooseWorkspace}
         onSelectRecentWorkspace={onSelectRecentWorkspace}
       />
     )
     : primaryModule === 'settings'
-      ? <SettingsPage preferences={preferences} onSave={onSavePreferences} />
+      ? (
+        <SettingsPage
+          preferences={preferences}
+          appInfo={appInfo}
+          updaterSettings={updaterSettings}
+          updateStatus={updateStatus}
+          clientVersion={bootstrap?.clientVersion ?? ''}
+          busy={busy}
+          onSave={onSavePreferences}
+          onSaveUpdaterSettings={onSaveUpdaterSettings}
+          onCheckUpdate={onCheckUpdate}
+          onInstallUpdate={onInstallUpdate}
+        />
+      )
       : primaryModule === 'agent-management'
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
         : primaryModule === 'knowledge-base'
@@ -285,6 +396,7 @@ export function App() {
   return (
     <Shell
       active={primaryModule}
+      appName={appInfo.appName}
       repoRoot={bootstrap?.repoRoot}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;

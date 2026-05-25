@@ -56,7 +56,6 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `requirementPath` 或 `requirementText`
 - `workspaceDir`
 - `attemptDir`
-- `primaryArtifact`
 - `outputContract`（来自当前节点 `output` DSL）
 - `runtimeContext`
 - `predecessors[]`
@@ -80,12 +79,12 @@ provider adapter 是 provider-specific 差异的隔离层。
 
 说明：
 - `resultPayload` 不要求顶层携带 `version`
-- 若当前节点声明了 `primaryArtifact`，则 `resultPayload.primaryArtifact` 必须存在
-- `primaryArtifact.content` 固定为字符串，表示模型按 output structure 返回的原始内容
-- provider 不负责把 `primaryArtifact.content` parse 成语义对象
+- 若当前节点声明了 `output`，则 `resultPayload.outputArtifact` 必须存在
+- `outputArtifact.content` 固定为字符串，表示模型按 output structure 返回的原始内容
+- provider 不负责把 `outputArtifact.content` parse 成语义对象
 - `sessionEvents` 保持 ACP session event 语义，用于会话详情可视化，不再转换为 Gold Band 自研 `progress.events.jsonl`
 - `rawSession` 只用于 raw viewer / 排障，不作为 UI 主协议
-- 若当前节点未声明 `primaryArtifact`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
+- 若当前节点未声明 `output`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
 
 ### `openSession(ref)`
 根据 `worker-ref` 打开某个 provider 的原始会话。

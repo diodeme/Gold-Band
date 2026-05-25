@@ -1,6 +1,8 @@
+mod channel;
 mod commands;
 mod i18n;
 mod state;
+mod updater;
 mod view_models;
 
 use anyhow::Context;
@@ -8,25 +10,30 @@ use commands::{
     cancel_acp_session, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
-    get_run_detail, get_system_fonts, get_task_detail, get_task_list, get_workflow,
-    get_workflow_templates, kill_run, respond_acp_permission, retry_run, save_desktop_preferences,
-    save_task_workflow, save_workflow_template, select_recent_workspace, send_acp_prompt,
+    check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
+    get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
+    kill_run, respond_acp_permission, retry_run, save_desktop_preferences, save_task_workflow,
+    save_updater_settings, save_workflow_template, select_recent_workspace, send_acp_prompt,
     show_artifact, show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
     update_profile, update_workflow_template,
 };
+use gold_band::storage::configure_storage_paths;
 use state::{DesktopContext, DesktopState};
+use updater::start_update_polling;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("failed to start Gold Band desktop: {error:?}");
+        eprintln!("failed to start {} desktop: {error:?}", channel::current_channel_config().app_name);
     }
 }
 
 fn run() -> anyhow::Result<()> {
+    configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
         .setup(|app| {
             let state = app.state::<DesktopState>();
@@ -39,6 +46,7 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            start_update_polling(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -90,6 +98,10 @@ fn run() -> anyhow::Result<()> {
             show_attachment,
             show_worker_ref,
             save_desktop_preferences,
+            save_updater_settings,
+            get_update_status,
+            check_update_manual,
+            download_and_install_update,
         ])
         .run(tauri::generate_context!())
         .context("tauri runtime failed")?;

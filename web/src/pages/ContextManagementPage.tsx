@@ -3,6 +3,7 @@ import { Check, ChevronsUpDown, Edit, Eye, Plus, RefreshCw, Search } from 'lucid
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { createProfile, getProfiles, updateProfile } from '../api';
+import { displayAppError } from '../i18n';
 import type { ProfileInput, ProfileListVm, ProfileScope, ProfileVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
@@ -44,7 +45,7 @@ export function ContextManagementPage() {
     try {
       setVm(await getProfiles());
     } catch (err) {
-      setError(String(err));
+      setError(displayAppError(t, err));
     } finally {
       setLoading(false);
     }
@@ -204,7 +205,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave }: { mode: ProfileSh
     try {
       await onSave({ ...input, name: input.name.trim(), summary: input.summary.trim() });
     } catch (err) {
-      setSubmitError(String(err));
+      setSubmitError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }

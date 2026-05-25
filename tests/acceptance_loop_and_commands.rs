@@ -2,7 +2,7 @@ use camino::Utf8PathBuf;
 use gold_band::app::App;
 use gold_band::domain::SessionMode;
 use gold_band::provider::{
-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use tempfile::tempdir;
@@ -37,16 +37,20 @@ impl ProviderAdapter for LoopingProvider {
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         let mut count = self.call_count.lock().unwrap();
         *count += 1;
-        let payload = match req.primary_artifact.as_deref() {
-            Some("implementation-result") => PrimaryArtifactPayload {
+        let payload = match req
+            .output_contract
+            .as_ref()
+            .map(|contract| contract.artifact.as_str())
+        {
+            Some("implementation-result") => OutputArtifactPayload {
                 name: "implementation-result".to_string(),
                 content: r#"{"summary":"implemented"}"#.to_string(),
             },
-            Some("accept-result") if *count < 4 => PrimaryArtifactPayload {
+            Some("accept-result") if *count < 4 => OutputArtifactPayload {
                 name: "accept-result".to_string(),
                 content: r#"{"result":false,"reason":"not yet"}"#.to_string(),
             },
-            Some("accept-result") => PrimaryArtifactPayload {
+            Some("accept-result") => OutputArtifactPayload {
                 name: "accept-result".to_string(),
                 content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
             },
@@ -57,10 +61,10 @@ impl ProviderAdapter for LoopingProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(payload),
+                output_artifact: Some(payload),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -123,8 +127,8 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","goal":"Implement the requirement","primary_artifact":"implementation-result"}},
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","goal":"Implement the requirement","output":{{"kind":"json","artifact":"implementation-result"}}}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"accept","on":"success"}},

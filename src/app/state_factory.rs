@@ -67,12 +67,6 @@ pub(crate) fn resolved_config_for_node(
                     serde_json::Value::String(profile.path.clone()),
                 );
             }
-            if let Some(primary_artifact) = &worker.primary_artifact {
-                config.insert(
-                    "primaryArtifact".to_string(),
-                    serde_json::Value::String(primary_artifact.clone()),
-                );
-            }
             if let Some(output) = &worker.output {
                 config.insert(
                     "outputKind".to_string(),

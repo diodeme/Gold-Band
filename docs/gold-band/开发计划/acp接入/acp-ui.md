@@ -142,7 +142,8 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 ### 6.2 文本流
 
 - 合并连续 text delta，避免一 token 一行。
-- 实时轮询收到后端已归一化的 delta 快照时，按 session、kind、event id 稳定身份替换同一流的旧快照，不能因为 `seq` 随最新 raw frame 前进就追加成多条消息。
+- 实时轮询收到后端已归一化的 delta 快照时，按 attempt-scoped session、kind、event id 稳定身份替换同一流的旧快照，不能因为 `seq` 随最新 raw frame 前进就追加成多条消息。
+- 前端只合并同一 stable delta stream；不同 event id 的相邻 text / thought delta 不做跨流拼接，避免实时轮询把消息边界压成一个气泡。
 - 保留原始时间顺序。
 - 与 tool call / plan block 同处一个会话流。
 - 文本输出以 agent message bubble 呈现，不以 stdout/stderr 日志呈现。
@@ -168,7 +169,7 @@ Tool call 卡片展示：
 - terminal metadata
 - raw input / raw output 展开入口
 
-Tool call update 应按 `toolCallId` 更新同一张卡片，而不是生成重复卡片。terminal / file 细节挂载到对应 tool call，不应成为主会话输出。工具卡片使用 prompt-kit `Tool` 承载折叠和状态展示，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；展开后展示路径、查询等关键参数块与输出摘要；不展示 tool call id、kind、input 或 raw details。工具卡展开/收起属于阅读动作，必须保留当前滚动位置，不能触发会话容器自动滑到底部；长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽抽屉。
+Tool call update 应按 attempt-scoped `toolCallId` 更新同一张卡片，而不是生成重复卡片。多 attempt 会话和实时轮询必须共用同一套事件归一化 helper，同时作用到 `event.id`、`toolCallId` 和子 Agent `_meta.claudeCode.parentToolUseId`；实时轮询返回的 attempt-local `seq` 需要映射为会话内 display `seq`，merge key 不得依赖会变化的 `seq`。terminal / file 细节挂载到对应 tool call，不应成为主会话输出。工具卡片使用 prompt-kit `Tool` 承载折叠和状态展示，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；展开后展示路径、查询等关键参数块与输出摘要；不展示 tool call id、kind、input 或 raw details。工具卡展开/收起属于阅读动作，必须保留当前滚动位置，不能触发会话容器自动滑到底部；长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽抽屉。
 
 `Agent` 工具调用不按普通工具卡扁平展示子过程，而是由 `ChildAgentGroupCard` 聚合其生命周期窗口内的子 Agent transcript：普通工具仍使用 prompt-kit `Tool`；`Agent` 工具 header 显示子 Agent 类型、任务说明、状态和子事件数量；展开后内部继续复用 `ACPEventRenderer` 渲染文本、thought、tool call 和 plan；并发发起的多个 `Agent` 工具保持同层并列，不互相嵌套；子 Agent 内部工具优先按 `_meta.claudeCode.parentToolUseId` 归属到对应 Agent，只有缺少该元数据时才回退到 seq 生命周期窗口；如果当前历史窗口缺少 Agent opener，则暂时保持扁平展示，避免误把半截历史归入错误分组。
 

@@ -7,7 +7,7 @@ Runtime Control 是运行时状态机：它读取当前 worker 节点的 `NodeOu
 当前 runtime 只执行 `worker` 节点。节点 outcome 来自三种路径：
 
 1. provider 成功且无需产物校验：`success`。
-2. AI 输出验证：读取 `output.artifact`，按 `success_condition` 得到 `success / failure / invalid`。
+2. AI 输出验证：读取 `output.artifact`，按 `success_condition` 得到 `success / failure`；声明了 `output.schema` 且输出不合法时进入内部 `invalid` 修复流程。
 3. 人工 check：会话结束后暂停，用户提交成功或失败。
 
 ## 3. 控制决策
@@ -16,7 +16,7 @@ Runtime Control 是运行时状态机：它读取当前 worker 节点的 `NodeOu
 | --- | --- |
 | `success` | 查找 `on=success` edge；无 edge 则错误阻塞 |
 | `failure` | 查找 `on=failure` edge；无 edge 则错误阻塞 |
-| `invalid` | 查找 `on=invalid` edge；无 edge 则错误阻塞 |
+| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则同 attempt 隐藏追问修复，最多 3 次；修复耗尽后 run failure |
 | `killed` | run 完成 killed |
 | `None` | run 暂停，保留当前节点与 attempt |
 
@@ -24,7 +24,7 @@ edge target 规则：
 
 - 指向 worker：创建目标节点的新 attempt 并继续执行。
 - 指向 `$end`：根据 edge outcome 完成 run。
-- 指向 `$new-round`：关闭当前 round，创建新 round，并从 workflow entry 重新开始。
+- 指向 `$new-round`：关闭当前 round，创建新 round，并从 workflow entry 重新开始；`success -> $new-round` 在 DSL 校验阶段被拒绝。
 
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
@@ -39,7 +39,7 @@ edge target 规则：
 { "from": "test", "to": "dev", "on": "failure", "session": "continue" }
 ```
 
-当 edge 指向真实 worker 节点时，runtime 在当前 round 内按 `来源节点 -> 目标节点` 计数。若 workflow 声明了 `control.max_attempts`，准备创建第 `max_attempts + 1` 个同源同目标 attempt 时，runtime 不再跳转，当前 run / round 以 failure 结束。没有声明 `max_attempts` 时不限制。
+`control.max_attempts` 表示当前 round 内的修复/重试预算，只统计由 `failure` 触发、且 edge 指向真实 worker 节点的修复跳转。正常 `success` 前进不消耗该预算；`output.schema` 不合法触发的隐藏追问不新增 attempt，也不消耗该预算。例如 `max_attempts = 1` 时，`test failure -> dev` 可修复一次，修复后的 `dev success -> test` 仍应继续执行。超过预算时 runtime 不再创建新的 attempt，当前 run / round 以 failure 结束，并写入结构化 `workflow_control_limit_exceeded` 事件用于 UI 展示停止原因。没有声明 `max_attempts` 时不限制。
 
 ## 6. 新 round
 `$new-round` 用于表达验收类 worker 未通过后的下一轮执行：

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
-import { displayStatus } from '../i18n';
+import type { AcpSessionVm, AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
+import { displayAppError, displayStatus } from '../i18n';
 import { getLogPage, showArtifact, showAttachment } from '../api';
 import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
@@ -20,6 +20,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, MoreVertical, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { normalizeAcpEventForAttempt } from '@/lib/acp-event-normalization';
 import { formatCurrentNode } from '@/lib/nodes';
 import { normalizeTone } from '@/lib/status';
 
@@ -58,10 +59,10 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
     const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
     loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name)
       .then((content) => { if (!cancelled) setAssetContent(content); })
-      .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: String(error), metadata: {} }); })
+      .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: displayAppError(t, error), metadata: {} }); })
       .finally(() => { if (!cancelled) setAssetLoading(false); });
     return () => { cancelled = true; };
-  }, [asset, vm]);
+  }, [asset, t, vm]);
 
   if (!vm) return <Page><EmptyState>{t('common.loading')}</EmptyState></Page>;
 
@@ -76,7 +77,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
 
   const openNodeDrawer = (node: GraphNodeVm, tab: NodeDrawerTab = 'detail') => {
     const nodeId = canonicalNodeId(node);
-    onSelect({ kind: 'node', nodeId });
+    onSelect({ kind: 'node', nodeId, attemptId: node.attemptId ?? undefined });
     setNodeDrawerTab(tab);
     setNodeDrawerOpen(true);
     setAsset(null);
@@ -84,7 +85,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   };
 
   const openGraphNodeLog = (node: GraphNodeVm) => {
-    onSelect({ kind: 'node', nodeId: canonicalNodeId(node) });
+    onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined });
     setLogDrawerOpen(true);
   };
 
@@ -155,8 +156,29 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
           </MetricsBar>
         )}
       />
-      <div className="min-h-0 flex-1 overflow-hidden p-4 xl:p-5">
-        <AppCard className="flex h-full min-h-[420px] min-w-0 flex-col gap-0 overflow-hidden py-0">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4 xl:p-5">
+        {vm.controlFailure ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/8 px-4 py-3 text-sm">
+            <div className="min-w-0 space-y-1">
+              <div className="font-medium text-foreground">{vm.controlFailure.title}</div>
+              <div className="min-w-0 truncate text-muted-foreground">{vm.controlFailure.message}</div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const nodeId = vm.controlFailure?.toNodeId ?? vm.controlFailure?.nodeId ?? vm.controlFailure?.fromNodeId;
+                if (!nodeId) return;
+                onSelect({ kind: 'node', nodeId, attemptId: vm.controlFailure?.attemptId ?? undefined });
+                setNodeDrawerTab('detail');
+                setNodeDrawerOpen(true);
+              }}
+            >
+              {t('roundDetail.viewFailureReason')}
+            </Button>
+          </div>
+        ) : null}
+        <AppCard className="flex min-h-[420px] min-w-0 flex-1 flex-col gap-0 overflow-hidden py-0">
           <CardHeader className="border-b px-4 py-2.5">
             <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="shrink-0 whitespace-nowrap">{t('roundDetail.graph')}</CardTitle>
@@ -170,7 +192,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
               selectedNodeId={selectedNodeId}
               activeNodeId={vm.round.currentNode ?? vm.run.currentNode}
               activeStatus={roundDisplayStatus}
-              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node) })}
+              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined })}
               onNodeOpenDetail={(node) => openNodeDrawer(node, 'detail')}
               onNodeOpenSession={(node) => openNodeDrawer(node, 'session')}
               onNodeOpenLog={openGraphNodeLog}
@@ -270,7 +292,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
           <TabsContent value="detail" className="min-h-0 flex-1 overflow-hidden">
             <ScrollArea className="h-full">
               <div className="space-y-5 p-6">
-                {nodeDetail ? <NodeDetailContent detail={nodeDetail} runPauseReason={vm.run.pauseReason} onOpenAsset={onOpenAsset} /> : <EmptyState>{t('roundDetail.selectNodeForDetail')}</EmptyState>}
+                {nodeDetail ? <NodeDetailContent detail={nodeDetail} controlFailure={vm.controlFailure} runPauseReason={vm.run.pauseReason} onOpenAsset={onOpenAsset} /> : <EmptyState>{t('roundDetail.selectNodeForDetail')}</EmptyState>}
               </div>
             </ScrollArea>
           </TabsContent>
@@ -283,7 +305,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
   );
 }
 
-function NodeDetailContent({ detail, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
+function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; controlFailure?: RoundDetailVm['controlFailure']; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   const detailDisplayStatus = displayPausedRuntimeStatus(detail.outcome ?? detail.status, detail.current ? runPauseReason : null);
   return (
@@ -299,15 +321,32 @@ function NodeDetailContent({ detail, runPauseReason, onOpenAsset }: { detail: No
         [t('agentManagement.agentType'), detail.provider ?? '-'],
         [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
         [t('roundDetail.attemptId'), detail.attemptId],
+        [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
         [t('roundDetail.startedAt'), detail.startedAt || '-'],
         [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
         [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
         [t('common.artifacts'), detail.artifactCount],
         [t('common.attachments'), detail.attachmentCount],
       ]} />
+      {controlFailure ? <ControlFailureDetail failure={controlFailure} /> : null}
       <AssetList title={t('common.artifacts')} items={detail.artifacts} emptyLabel={t('roundDetail.noArtifacts')} onOpenAsset={onOpenAsset} />
       <AssetList title={t('common.attachments')} items={detail.attachments} emptyLabel={t('roundDetail.noAttachments')} onOpenAsset={onOpenAsset} />
     </div>
+  );
+}
+
+function ControlFailureDetail({ failure }: { failure: NonNullable<RoundDetailVm['controlFailure']> }) {
+  const { t } = useTranslation();
+  return (
+    <section className="rounded-xl border border-destructive/25 bg-destructive/8 p-4 text-sm">
+      <div className="font-medium text-foreground">{failure.title}</div>
+      <div className="mt-1 text-muted-foreground">{failure.message}</div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div><span className="text-muted-foreground">{t('roundDetail.transition')}</span><div className="font-mono text-xs">{failure.fromNodeId ?? '-'} → {failure.toNodeId ?? failure.target ?? '-'}</div></div>
+        <div><span className="text-muted-foreground">{t('roundDetail.edgeOutcome')}</span><div className="font-mono text-xs">{failure.edgeOutcome ?? '-'}</div></div>
+        <div><span className="text-muted-foreground">{t('roundDetail.limitUsage')}</span><div className="font-mono text-xs">{failure.proposedCount ?? '-'} / {failure.limit ?? '-'}</div></div>
+      </div>
+    </section>
   );
 }
 
@@ -378,22 +417,115 @@ function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId
 }
 
 function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
-  const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, detail.attemptId);
-  return (
-    <ACPChatDialog
-      session={detail.acpSession}
-      taskId={vm.run.taskId}
-      runId={vm.run.id}
-      roundId={vm.round.id}
-      nodeId={detail.nodeId}
-      attemptId={detail.attemptId}
-      runtimeStatus={detail.status}
-      manualCheckPending={detail.manualCheckPending}
-      optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
-      onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
-      onManualCheckSubmitted={onRefresh}
-    />
+  const { t } = useTranslation();
+  const conversations = detail.acpConversations?.length ? detail.acpConversations : [];
+  const initialKey = detail.selectedConversationKey ?? conversations[0]?.key ?? 'current';
+  const [conversationKey, setConversationKey] = useState(initialKey);
+  useEffect(() => setConversationKey(initialKey), [initialKey]);
+  const selectedConversation = conversations.find((conversation) => conversation.key === conversationKey) ?? conversations[0];
+  const selectedAttempt = selectedConversation?.attempts.find((attempt) => attempt.attemptId === detail.attemptId);
+  const activeAttempt = selectedAttempt
+    ?? selectedConversation?.attempts.find((attempt) => attempt.attemptId === selectedConversation.activeAttemptId)
+    ?? selectedConversation?.attempts.at(-1);
+  const session = useMemo(
+    () => selectedConversation ? mergedConversationSession(selectedConversation, detail.acpSession) : detail.acpSession,
+    [detail.acpSession, selectedConversation],
   );
+  const attemptId = activeAttempt?.attemptId ?? detail.attemptId;
+  const runtimeStatus = activeAttempt?.status ?? detail.status;
+  const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, attemptId);
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {conversations.length > 1 ? (
+        <div className="shrink-0 border-b bg-muted/10 px-4 py-3">
+          <Select value={selectedConversation?.key ?? conversationKey} onValueChange={setConversationKey}>
+            <SelectTrigger className="h-8 w-[280px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {conversations.map((conversation) => <SelectItem value={conversation.key} key={conversation.key}>{conversation.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <SessionErrorBoundary>
+          <ACPChatDialog
+          key={`${selectedConversation?.key ?? 'current'}:${attemptId}:${session?.sessionId ?? ''}`}
+          session={session}
+          systemPromptOptions={selectedConversation?.attempts.map((attempt) => ({ attemptId: attempt.attemptId, prompt: attempt.acpSession?.systemPromptAppend }))}
+          eventIdPrefix={selectedConversation ? attemptId : undefined}
+          taskId={vm.run.taskId}
+          runId={vm.run.id}
+          roundId={vm.round.id}
+          nodeId={detail.nodeId}
+          attemptId={attemptId}
+          runtimeStatus={runtimeStatus}
+          manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
+          optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
+          onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
+          onManualCheckSubmitted={onRefresh}
+          />
+        </SessionErrorBoundary>
+      </div>
+    </div>
+  );
+}
+
+class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  render() {
+    if (this.state.error) {
+      return <div className="m-4 rounded-xl border border-destructive/25 bg-destructive/8 p-4 text-sm text-destructive">{this.state.error}</div>;
+    }
+    return this.props.children;
+  }
+}
+
+function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpConversations']>[number], fallback?: AcpSessionVm | null): AcpSessionVm | null {
+  const base = conversation.attempts.find((attempt) => attempt.attemptId === conversation.activeAttemptId)?.acpSession
+    ?? conversation.attempts.at(-1)?.acpSession
+    ?? fallback
+    ?? null;
+  if (!base) return null;
+  let seq = 1;
+  const events: AcpUiEventVm[] = [];
+  conversation.attempts.forEach((attempt, index) => {
+    if (index > 0) {
+      events.push({
+        id: `separator:${attempt.attemptId}`,
+        seq: seq++,
+        timestamp: attempt.acpSession?.sessionStartedAt ?? base.sessionStartedAt ?? '',
+        kind: 'attemptSeparator',
+        sessionId: conversation.sessionId ?? attempt.acpSessionId ?? null,
+        title: attempt.attemptId,
+        content: null,
+        toolCallId: null,
+        status: attempt.status,
+        raw: { attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
+      });
+    }
+    for (const event of attempt.acpSession?.events ?? []) {
+      events.push(normalizeAcpEventForAttempt(event, attempt.attemptId, seq++));
+    }
+  });
+  return {
+    ...base,
+    sessionId: conversation.sessionId ?? base.sessionId,
+    restored: conversation.attempts.some((attempt) => attempt.acpSession?.restored),
+    events,
+    eventPage: {
+      loadedCount: events.length,
+      total: events.length,
+      oldestSeq: events[0]?.seq ?? null,
+      newestSeq: events.at(-1)?.seq ?? null,
+      hasOlder: false,
+      hasNewer: false,
+    },
+  };
 }
 
 function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -436,10 +568,15 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
     setLoading(true);
     getLogPage(effectiveQuery)
       .then((result) => { if (!cancelled) setData(result); })
-      .catch((error) => { if (!cancelled) setData({ items: [{ id: 'error', timestamp: '', entryType: 'error', summary: String(error), source: effectiveQuery.source ?? 'system', raw: String(error) }], page, pageSize, total: 1, hasPrevious: false, hasNext: false, tier: 'hot', hotLimit: effectiveQuery.hotLimit ?? defaultHotLimit, archiveRetentionDays: 30 }); })
+      .catch((error) => {
+        if (!cancelled) {
+          const message = displayAppError(t, error);
+          setData({ items: [{ id: 'error', timestamp: '', entryType: 'error', summary: message, source: effectiveQuery.source ?? 'system', raw: message }], page, pageSize, total: 1, hasPrevious: false, hasNext: false, tier: 'hot', hotLimit: effectiveQuery.hotLimit ?? defaultHotLimit, archiveRetentionDays: 30 });
+        }
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [effectiveQuery, page, pageSize]);
+  }, [effectiveQuery, page, pageSize, t]);
 
   const items = data?.items ?? [];
   const start = data && data.total > 0 ? data.page * data.pageSize + 1 : 0;
@@ -448,7 +585,6 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className={cn('flex shrink-0 flex-wrap items-center justify-between gap-3 border-b text-sm text-muted-foreground', compact ? 'px-6 py-2.5' : 'px-5 py-3')}>
-        {!compact ? <span>{t('roundDetail.hotLogHint', { count: data?.hotLimit ?? defaultHotLimit, days: data?.archiveRetentionDays ?? 30 })}</span> : <span>{query.source}</span>}
         <div className="flex items-center gap-2">
           {exportable ? <Button variant="outline" size="sm" onClick={() => exportLogItems(items)}>{t('roundDetail.exportLog')}</Button> : null}
           <span>{t('common.pageSize')}</span>

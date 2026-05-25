@@ -2,7 +2,7 @@ use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
 use gold_band::provider::{
-    DoctorResult, PrimaryArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
+    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
@@ -42,13 +42,13 @@ impl ProviderAdapter for RecordingProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(PrimaryArtifactPayload {
+                output_artifact: Some(OutputArtifactPayload {
                     name: "implementation-result".to_string(),
                     content: r#"{"version":"0.1","commands":[{"id":"build","run":"cargo test","purpose":"validate"}]}"#.to_string(),
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -111,7 +111,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             status,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(PrimaryArtifactPayload {
+                output_artifact: Some(OutputArtifactPayload {
                     name: "accept-result".to_string(),
                     content: r#"{"result":true,"reason":"accepted"}"#.to_string(),
                 }),
@@ -166,7 +166,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(PrimaryArtifactPayload {
+                output_artifact: Some(OutputArtifactPayload {
                     name: "accept-result".to_string(),
                     content: r#"{"result":false,"reason":"needs another round"}"#.to_string(),
                 }),
@@ -237,13 +237,80 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             status: ProviderRunStatus::Success,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload {
-                primary_artifact: Some(PrimaryArtifactPayload {
+                output_artifact: Some(OutputArtifactPayload {
                     name: format!("{node_id}-result"),
                     content: format!(r#"{{"result":{success},"reason":"{node_id} {attempt_id}"}}"#),
                 }),
             }),
             worker_ref_seed: Some(SessionRef {
-                provider: "claude-code".to_string(),
+                provider: "claude-acp".to_string(),
+                mode: session_mode,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(
+                    serde_json::json!({"sessionId": format!("{node_id}-{attempt_id}")}),
+                ),
+                open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
+            }),
+            stream_path: None,
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(
+        &self,
+        worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(worker_ref.open_command.clone())
+    }
+}
+
+#[derive(Clone, Default)]
+struct OneRepairProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+impl ProviderAdapter for OneRepairProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        MultiAttemptContinueProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        MultiAttemptContinueProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let node_id = req.runtime_context.node_id.clone();
+        let attempt_id = req.runtime_context.attempt_id.clone();
+        let session_mode = req.session_mode;
+        let review_count = if node_id == "review" {
+            self.invocations
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|invocation| invocation.runtime_context.node_id == "review")
+                .count()
+                + 1
+        } else {
+            0
+        };
+        self.invocations.lock().unwrap().push(req);
+        let success = node_id != "review" || review_count >= 2;
+
+        Ok(ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: Some(0),
+            result_payload: Some(ProviderResultPayload {
+                output_artifact: Some(OutputArtifactPayload {
+                    name: format!("{node_id}-result"),
+                    content: format!(r#"{{"result":{success},"reason":"{node_id} {attempt_id}"}}"#),
+                }),
+            }),
+            worker_ref_seed: Some(SessionRef {
+                provider: "claude-acp".to_string(),
                 mode: session_mode,
                 supports_open_session: true,
                 supports_continue_session: true,
@@ -306,10 +373,10 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
             {{
               "id": "dev",
               "type": "worker",
-              "provider": "claude-code",
+              "provider": "claude-acp",
               "profile": "{}",
               "goal": "Create an implementation result",
-              "primary_artifact": "implementation-result"
+              "output": {{ "kind": "json", "artifact": "implementation-result" }}
             }}
           ],
           "edges": []
@@ -382,7 +449,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
           "entry": "accept",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"accept","to":"$end","on":"success"}}
@@ -407,7 +474,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
             .worker_ref_file(task_id, "run-001", "round-001", "accept", "attempt-001"),
         &WorkerRefState {
             version: gold_band::domain::VERSION.to_string(),
-            provider: "claude-code".to_string(),
+            provider: "claude-acp".to_string(),
             mode: SessionMode::Continue,
             supports_open_session: true,
             supports_continue_session: true,
@@ -416,6 +483,30 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         },
     )
     .unwrap();
+
+    let manual_prompt = app
+        .acp_prompt_bundle_for_attempt(
+            task_id,
+            "run-001",
+            "round-001",
+            "accept",
+            "attempt-001",
+            "手动追问".to_string(),
+            Some("manual-prompt-001".to_string()),
+            Some(serde_json::json!({"acpSessionId":"session-123"})),
+        )
+        .unwrap();
+    assert!(manual_prompt.system_prompt.contains("Run: run-001"));
+    assert!(
+        manual_prompt
+            .system_prompt
+            .contains("你必须在最后一步按照以下格式输出你的结果")
+    );
+    assert_eq!(manual_prompt.user_prompt, "手动追问");
+    assert_eq!(
+        manual_prompt.prompt_id.as_deref(),
+        Some("manual-prompt-001")
+    );
 
     let completed = app
         .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()))
@@ -472,8 +563,8 @@ fn transition_continue_uses_latest_target_attempt_ref() {
           "entry": "dev",
           "control": {{ "max_attempts": 3 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"review","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"review","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"review","on":"success"}},
@@ -521,7 +612,70 @@ fn transition_continue_uses_latest_target_attempt_ref() {
 }
 
 #[test]
-fn max_attempts_fails_workflow_when_edge_limit_is_exceeded() {
+fn max_attempts_allows_one_repair_loop_then_forward_success() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-max-attempts-success";
+
+    let provider = OneRepairProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let dev_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Exercise one repair loop",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "attempt-limit-success-flow",
+          "entry": "dev",
+          "control": {{ "max_attempts": 1 }},
+          "nodes": [
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"review","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"dev","to":"review","on":"success"}},
+            {{"from":"review","to":"dev","on":"failure","session":"continue"}},
+            {{"from":"review","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            dev_profile, dev_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-max-attempts-success"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 4);
+    assert_eq!(invocations[0].runtime_context.node_id, "dev");
+    assert_eq!(invocations[1].runtime_context.node_id, "review");
+    assert_eq!(invocations[2].runtime_context.node_id, "dev");
+    assert_eq!(invocations[3].runtime_context.node_id, "review");
+}
+
+#[test]
+fn max_attempts_fails_when_repair_budget_is_exceeded() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-max-attempts";
@@ -552,8 +706,8 @@ fn max_attempts_fails_workflow_when_edge_limit_is_exceeded() {
           "entry": "dev",
           "control": {{ "max_attempts": 1 }},
           "nodes": [
-            {{"id":"dev","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"dev-result","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
-            {{"id":"review","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"review-result","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"dev-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"review","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"review-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"dev","to":"review","on":"success"}},
@@ -576,10 +730,11 @@ fn max_attempts_fails_workflow_when_edge_limit_is_exceeded() {
     assert_eq!(run.outcome, Some(RunOutcome::Failure));
 
     let invocations = provider.invocations.lock().unwrap();
-    assert_eq!(invocations.len(), 3);
+    assert_eq!(invocations.len(), 4);
     assert_eq!(invocations[0].runtime_context.node_id, "dev");
     assert_eq!(invocations[1].runtime_context.node_id, "review");
     assert_eq!(invocations[2].runtime_context.node_id, "dev");
+    assert_eq!(invocations[3].runtime_context.node_id, "review");
 }
 
 #[test]
@@ -614,7 +769,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
           "entry": "accept",
           "control": {{ "max_rounds": 1 }},
           "nodes": [
-            {{"id":"accept","type":"worker","provider":"claude-code","profile":"{}","primary_artifact":"accept-result","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
             {{"from":"accept","to":"$new-round","on":"failure"}}

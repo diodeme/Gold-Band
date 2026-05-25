@@ -1,0 +1,13 @@
+{
+  "channel": "default",
+  "appName": "Gold Band",
+  "appKey": "gold-band",
+  "configDirName": ".gold-band",
+  "homeEnvVar": "GOLD_BAND_HOME",
+  "productName": "Gold Band",
+  "windowTitle": "Gold Band",
+  "identifier": "local.gold-band.desktop",
+  "updaterEndpoint": "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json",
+  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwQkQwNjYyMTA0MjdDQ0IKUldUTGZFSVFZZ2E5OEN3QnY2eHRkM0xVRnlreC9UMFNpSWdXSC9oK0ZWMlpsWXpuZ0hhbEFnWGQK",
+  "allowHttpUpdater": false
+}

@@ -1,6 +1,6 @@
 import { FolderOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AppBootstrapVm } from '../types';
+import type { AppBootstrapVm, AppInfoVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
@@ -9,12 +9,13 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface WorkspaceSelectPageProps {
   bootstrap: AppBootstrapVm | null;
+  appInfo: AppInfoVm;
   busy: boolean;
   onChooseWorkspace: () => void;
   onSelectRecentWorkspace: (workspace: string) => void;
 }
 
-export function WorkspaceSelectPage({ bootstrap, busy, onChooseWorkspace, onSelectRecentWorkspace }: WorkspaceSelectPageProps) {
+export function WorkspaceSelectPage({ bootstrap, appInfo, busy, onChooseWorkspace, onSelectRecentWorkspace }: WorkspaceSelectPageProps) {
   const { t } = useTranslation();
   const recent = bootstrap?.recentWorkspaces ?? [];
 
@@ -26,9 +27,9 @@ export function WorkspaceSelectPage({ bootstrap, busy, onChooseWorkspace, onSele
             <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
           </span>
           <div className="space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">Gold Band Desktop</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">{t('workspaceSelect.product', { appName: appInfo.appName })}</p>
             <h1 className="text-4xl font-semibold tracking-tight">{t('common.selectWorkspace')}</h1>
-            <p className="text-sm leading-7 text-muted-foreground">选择包含 .gold-band 目录的工作空间后，桌面端会读取该目录下的 tasks、runs 与 artifacts，并在下次启动时自动恢复。</p>
+            <p className="text-sm leading-7 text-muted-foreground">{t('workspaceSelect.description', { configDirName: appInfo.configDirName })}</p>
           </div>
           <Button size="lg" disabled={busy} onClick={onChooseWorkspace}>
             <FolderOpen />
@@ -40,16 +41,16 @@ export function WorkspaceSelectPage({ bootstrap, busy, onChooseWorkspace, onSele
       <AppCard className="min-h-0 gap-0 py-0">
         <CardHeader className="border-b px-5 py-3 !pb-3">
           <CardTitle>{t('common.recentWorkspaces')}</CardTitle>
-          <CardDescription>最近打开过的工作空间会保存在本地用户偏好中。</CardDescription>
+          <CardDescription>{t('workspaceSelect.recentDescription')}</CardDescription>
         </CardHeader>
         <CardContent className="min-h-0 px-0 py-0">
-          {recent.length === 0 ? <div className="p-3"><EmptyState>暂无最近工作空间</EmptyState></div> : null}
+          {recent.length === 0 ? <div className="p-3"><EmptyState>{t('workspaceSelect.emptyRecent')}</EmptyState></div> : null}
           <ScrollArea className="h-[calc(100vh-190px)]">
             <div className="space-y-2 p-3">
               {recent.map((workspace) => (
                 <Button className="h-auto w-full justify-between gap-4 p-4" variant="outline" key={workspace} onClick={() => onSelectRecentWorkspace(workspace)} disabled={busy}>
                   <span className="truncate text-xs text-muted-foreground">{workspace}</span>
-                  <small className="shrink-0 text-primary">打开</small>
+                  <small className="shrink-0 text-primary">{t('common.open')}</small>
                 </Button>
               ))}
             </div>

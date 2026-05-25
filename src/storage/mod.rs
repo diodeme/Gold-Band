@@ -4,6 +4,38 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::{OnceLock, RwLock};
+
+#[derive(Debug, Clone, Copy)]
+pub struct StoragePathConfig {
+    pub app_key: &'static str,
+    pub config_dir_name: &'static str,
+    pub home_env_var: &'static str,
+}
+
+const DEFAULT_STORAGE_PATH_CONFIG: StoragePathConfig = StoragePathConfig {
+    app_key: "gold-band",
+    config_dir_name: ".gold-band",
+    home_env_var: "GOLD_BAND_HOME",
+};
+
+static STORAGE_PATH_CONFIG: OnceLock<RwLock<StoragePathConfig>> = OnceLock::new();
+
+pub fn configure_storage_paths(config: StoragePathConfig) {
+    *storage_path_config_lock()
+        .write()
+        .expect("storage path config lock poisoned") = config;
+}
+
+pub fn active_storage_path_config() -> StoragePathConfig {
+    *storage_path_config_lock()
+        .read()
+        .expect("storage path config lock poisoned")
+}
+
+fn storage_path_config_lock() -> &'static RwLock<StoragePathConfig> {
+    STORAGE_PATH_CONFIG.get_or_init(|| RwLock::new(DEFAULT_STORAGE_PATH_CONFIG))
+}
 
 #[derive(Debug, Clone)]
 pub struct GoldBandPaths {
@@ -26,11 +58,18 @@ pub struct ProjectManifest {
 
 impl GoldBandPaths {
     pub fn new(repo_root: impl Into<Utf8PathBuf>) -> Self {
+        Self::new_with_path_config(repo_root, active_storage_path_config())
+    }
+
+    pub fn new_with_path_config(
+        repo_root: impl Into<Utf8PathBuf>,
+        path_config: StoragePathConfig,
+    ) -> Self {
         let repo_root = repo_root.into();
         let normalized_repo_root = normalized_repo_root(&repo_root);
         let project_id = project_id(&repo_root);
-        let repo_gold_band_root = repo_root.join(".gold-band");
-        let user_gold_band_root = user_gold_band_root(&repo_root);
+        let repo_gold_band_root = repo_root.join(path_config.config_dir_name);
+        let user_gold_band_root = user_gold_band_root(&repo_root, path_config);
         let runtime_root = user_gold_band_root.join("projects").join(&project_id);
         Self {
             repo_root,
@@ -357,16 +396,18 @@ impl GoldBandPaths {
     }
 }
 
-fn user_gold_band_root(repo_root: &Utf8Path) -> Utf8PathBuf {
-    if let Some(home) = std::env::var("GOLD_BAND_HOME")
+fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> Utf8PathBuf {
+    if let Some(home) = std::env::var(path_config.home_env_var)
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
-        return Utf8PathBuf::from(home).join(".gold-band");
+        return Utf8PathBuf::from(home).join(path_config.config_dir_name);
     }
 
     if is_under_system_temp(repo_root) {
-        return repo_root.join("gold-band-home/.gold-band");
+        return repo_root
+            .join(format!("{}-home", path_config.app_key))
+            .join(path_config.config_dir_name);
     }
 
     let home = std::env::var("HOME")
@@ -378,7 +419,7 @@ fn user_gold_band_root(repo_root: &Utf8Path) -> Utf8PathBuf {
                 .filter(|value| !value.trim().is_empty())
         })
         .unwrap_or_else(|| ".".to_string());
-    Utf8PathBuf::from(home).join(".gold-band")
+    Utf8PathBuf::from(home).join(path_config.config_dir_name)
 }
 
 fn is_under_system_temp(path: &Utf8Path) -> bool {
@@ -459,7 +500,10 @@ mod tests {
 
     #[test]
     fn project_paths_split_repo_config_and_user_runtime() {
-        let paths = GoldBandPaths::new(Utf8PathBuf::from("D:/Projects/Example App"));
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Example App"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
 
         assert_eq!(
             paths.repo_presets_dir(),
@@ -483,10 +527,40 @@ mod tests {
 
     #[test]
     fn project_id_is_stable_for_same_input() {
-        let first = GoldBandPaths::new(Utf8PathBuf::from("D:/Projects/Gold-Band"));
-        let second = GoldBandPaths::new(Utf8PathBuf::from("D:/Projects/Gold-Band"));
+        let first = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Gold-Band"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
+        let second = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Gold-Band"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
 
         assert_eq!(first.project_id, second.project_id);
+    }
+
+    #[test]
+    fn supports_custom_config_directory_names() {
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Example App"),
+            StoragePathConfig {
+                app_key: "maling",
+                config_dir_name: ".maling",
+                home_env_var: "MALING_HOME",
+            },
+        );
+
+        assert_eq!(
+            paths.repo_presets_dir(),
+            Utf8PathBuf::from("D:/Projects/Example App/.maling/presets")
+        );
+        assert!(
+            paths
+                .task_file("task-001")
+                .to_string()
+                .replace('\\', "/")
+                .contains("/.maling/projects/D--Projects-Example-App/")
+        );
     }
 
     #[test]

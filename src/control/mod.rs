@@ -32,9 +32,7 @@ pub fn decide_next_step(
             })
         }
         Some(crate::domain::NodeOutcome::Invalid) => {
-            match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Invalid, || {
-                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
-            })
+            ControlDecision::CompleteRun(RunOutcome::Failure)
         }
         Some(crate::domain::NodeOutcome::Killed) => {
             ControlDecision::CompleteRun(RunOutcome::Killed)
@@ -69,7 +67,7 @@ fn find_edge_decision(
             if edge.to == END_NODE {
                 ControlDecision::CompleteRun(match outcome {
                     EdgeOutcome::Success => RunOutcome::Success,
-                    EdgeOutcome::Failure | EdgeOutcome::Invalid => RunOutcome::Failure,
+                    EdgeOutcome::Failure => RunOutcome::Failure,
                 })
             } else if edge.to == NEW_ROUND_NODE {
                 ControlDecision::OpenNewRound

@@ -12,12 +12,14 @@ use gold_band::config::{
     ManagedAgentType,
 };
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus};
-use gold_band::dsl::{NodeDsl, WorkflowDsl};
+use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
+use crate::channel::current_channel_config;
 use crate::i18n::Translator;
 use crate::state::AgentDiagnosticState;
+use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,19 @@ pub struct AppBootstrapVm {
     pub repo_root: String,
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
+    pub updater_settings: UpdaterSettingsVm,
+    pub update_status: UpdateStatusVm,
+    pub client_version: String,
+    pub app_info: AppInfoVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfoVm {
+    pub channel: String,
+    pub app_name: String,
+    pub app_key: String,
+    pub config_dir_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +107,10 @@ pub struct SupportedAgentTypeVm {
     pub icon_key: String,
     pub supported: bool,
     pub configured: bool,
+    pub default_display_name: String,
+    pub default_command: String,
+    pub default_args: Vec<String>,
+    pub default_env: Vec<AgentEnvEntryVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,7 +140,7 @@ pub struct TaskRowVm {
     pub display_status: String,
     pub workflow_exists: bool,
     pub workflow_valid: bool,
-    pub workflow_error: Option<String>,
+    pub workflow_error: Option<WorkflowErrorVm>,
     pub latest_run: Option<RunSummaryVm>,
     pub resumable_run_id: Option<String>,
     pub artifact_count: usize,
@@ -148,9 +167,34 @@ pub struct WorkflowVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkflowErrorVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowControlVm {
     pub max_attempts: Option<u32>,
     pub max_rounds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlFailureVm {
+    pub reason_kind: String,
+    pub title: String,
+    pub message: String,
+    pub from_node_id: Option<String>,
+    pub to_node_id: Option<String>,
+    pub target: Option<String>,
+    pub edge_outcome: Option<String>,
+    pub proposed_count: Option<u32>,
+    pub limit: Option<u32>,
+    pub timestamp: Option<String>,
+    pub round_id: Option<String>,
+    pub node_id: Option<String>,
+    pub attempt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +213,7 @@ pub struct RoundDetailVm {
     pub round: RoundSummaryVm,
     pub graph: GraphVm,
     pub control: Option<WorkflowControlVm>,
+    pub control_failure: Option<ControlFailureVm>,
     pub requirement: String,
     pub selected_node_detail: Option<NodeDetailVm>,
 }
@@ -229,6 +274,8 @@ pub struct GraphNodeVm {
     pub status: Option<String>,
     pub outcome: Option<String>,
     pub attempt_id: Option<String>,
+    pub attempt_count: usize,
+    pub attempts: Vec<GraphAttemptVm>,
     pub artifact_count: usize,
     pub attachment_count: usize,
     pub current: bool,
@@ -237,10 +284,25 @@ pub struct GraphNodeVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GraphAttemptVm {
+    pub attempt_id: String,
+    pub sequence: Option<u32>,
+    pub status: String,
+    pub outcome: Option<String>,
+    pub session_mode: Option<String>,
+    pub acp_session_id: Option<String>,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphEdgeVm {
     pub from: String,
     pub to: String,
     pub label: String,
+    pub traversal_count: usize,
+    pub last_outcome: Option<String>,
+    pub blocked_reason: Option<ControlFailureVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -268,6 +330,33 @@ pub struct NodeDetailVm {
     pub has_worker_ref: bool,
     pub manual_check_enabled: bool,
     pub manual_check_pending: bool,
+    pub acp_session: Option<AcpSessionVm>,
+    pub acp_conversations: Vec<AcpConversationVm>,
+    pub selected_conversation_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpConversationVm {
+    pub key: String,
+    pub label: String,
+    pub session_id: Option<String>,
+    pub session_mode: String,
+    pub active_attempt_id: String,
+    pub attempts: Vec<AcpAttemptSessionVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAttemptSessionVm {
+    pub node_id: String,
+    pub attempt_id: String,
+    pub sequence: Option<u32>,
+    pub status: String,
+    pub outcome: Option<String>,
+    pub current: bool,
+    pub session_mode: Option<String>,
+    pub acp_session_id: Option<String>,
     pub acp_session: Option<AcpSessionVm>,
 }
 
@@ -487,22 +576,28 @@ pub enum RoundSelectionInput {
     },
     Node {
         node_id: String,
+        attempt_id: Option<String>,
     },
     Artifact {
         node_id: String,
+        attempt_id: Option<String>,
     },
     Attachment {
         node_id: String,
+        attempt_id: Option<String>,
     },
     WorkerRef {
         node_id: String,
+        attempt_id: Option<String>,
     },
     Event {
         node_id: Option<String>,
+        attempt_id: Option<String>,
         context_node_id: Option<String>,
     },
     Log {
         node_id: Option<String>,
+        attempt_id: Option<String>,
         context_node_id: Option<String>,
     },
 }
@@ -519,7 +614,13 @@ pub fn preferences_vm(
     }
 }
 
-pub fn bootstrap_vm(app: &App, recent_workspaces: Vec<String>) -> AppBootstrapVm {
+pub fn bootstrap_vm(
+    app: &App,
+    recent_workspaces: Vec<String>,
+    update_status: UpdateStatusVm,
+    client_version: impl Into<String>,
+) -> AppBootstrapVm {
+    let channel_config = current_channel_config();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
@@ -528,6 +629,15 @@ pub fn bootstrap_vm(app: &App, recent_workspaces: Vec<String>) -> AppBootstrapVm
             app.config.desktop_language,
             app.config.desktop_font.clone(),
         ),
+        updater_settings: updater_settings(&app.config),
+        update_status,
+        client_version: client_version.into(),
+        app_info: AppInfoVm {
+            channel: channel_config.channel.to_string(),
+            app_name: channel_config.app_name.to_string(),
+            app_key: channel_config.app_key.to_string(),
+            config_dir_name: channel_config.config_dir_name.to_string(),
+        },
     }
 }
 
@@ -542,21 +652,27 @@ pub fn agent_registry_vm(
             managed_agent_vm(*agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = [
-        ManagedAgentType::ClaudeCode,
-        ManagedAgentType::CodexCli,
-        ManagedAgentType::OpenCode,
-        ManagedAgentType::GeminiCli,
-    ]
-    .into_iter()
-    .map(|agent_type| SupportedAgentTypeVm {
-        agent_type: agent_type.as_str().to_string(),
-        label: supported_agent_label(agent_type).to_string(),
-        icon_key: agent_icon_key(agent_type).to_string(),
-        supported: agent_type.is_supported(),
-        configured: app.managed_agents().contains_key(&agent_type),
-    })
-    .collect();
+    let supported_types = ManagedAgentType::ALL
+        .into_iter()
+        .map(|agent_type| {
+            let default_config = agent_type.default_adapter_config();
+            SupportedAgentTypeVm {
+                agent_type: agent_type.as_str().to_string(),
+                label: supported_agent_label(agent_type).to_string(),
+                icon_key: agent_icon_key(agent_type).to_string(),
+                supported: agent_type.is_supported(),
+                configured: app.managed_agents().contains_key(&agent_type),
+                default_display_name: default_config.display_name,
+                default_command: default_config.command,
+                default_args: default_config.args,
+                default_env: default_config
+                    .env
+                    .into_iter()
+                    .map(|(key, value)| AgentEnvEntryVm { key, value })
+                    .collect(),
+            }
+        })
+        .collect();
     AgentRegistryVm {
         agents,
         supported_types,
@@ -610,29 +726,32 @@ fn managed_agent_vm(
 
 fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
     match agent_type {
-        ManagedAgentType::ClaudeCode => "claude",
-        ManagedAgentType::CodexCli => "codex",
+        ManagedAgentType::ClaudeAcp => "claude",
+        ManagedAgentType::CodexAcp => "codex",
+        ManagedAgentType::Cursor => "cursor",
+        ManagedAgentType::Gemini => "gemini",
         ManagedAgentType::OpenCode => "opencode",
-        ManagedAgentType::GeminiCli => "gemini",
     }
 }
 
 fn provider_icon_key(provider: &str) -> Option<String> {
     match provider {
-        "claude-code" => Some("claude".to_string()),
-        "codex-cli" => Some("codex".to_string()),
+        "claude-acp" => Some("claude".to_string()),
+        "codex-acp" => Some("codex".to_string()),
+        "cursor" => Some("cursor".to_string()),
+        "gemini" => Some("gemini".to_string()),
         "opencode" => Some("opencode".to_string()),
-        "gemini-cli" => Some("gemini".to_string()),
         _ => None,
     }
 }
 
 fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
     match agent_type {
-        ManagedAgentType::ClaudeCode => "Claude Code",
-        ManagedAgentType::CodexCli => "Codex CLI",
+        ManagedAgentType::ClaudeAcp => "Claude",
+        ManagedAgentType::CodexAcp => "Codex",
+        ManagedAgentType::Cursor => "Cursor",
+        ManagedAgentType::Gemini => "Gemini",
         ManagedAgentType::OpenCode => "OpenCode",
-        ManagedAgentType::GeminiCli => "Gemini CLI",
     }
 }
 
@@ -746,8 +865,9 @@ pub fn round_detail_vm(
         .into_iter()
         .find(|round| round.id == round_id)
         .ok_or_else(|| anyhow::anyhow!("round not found: {round_id}"))?;
-    let nodes = app.node_list(task_id, run_id, round_id)?;
-    let graph = round_graph_vm(app, task_id, &run, &round, &nodes)?;
+    let nodes = round_attempt_nodes(app, task_id, run_id, &round)?;
+    let control_failure = latest_control_failure_vm(app, task_id, run_id)?;
+    let graph = round_graph_vm(app, task_id, &run, &round, &nodes, control_failure.as_ref())?;
     let selection = selection.unwrap_or(RoundSelectionInput::Round {
         context_node_id: None,
     });
@@ -764,6 +884,7 @@ pub fn round_detail_vm(
         round: round_summary_vm(app, task_id, &run, round)?,
         graph,
         control,
+        control_failure,
         requirement,
         selected_node_detail,
     })
@@ -804,12 +925,26 @@ fn task_row_vm(app: &App, summary: &TaskSummary) -> Result<TaskRowVm> {
         display_status: display_status(summary),
         workflow_exists: summary.workflow_exists,
         workflow_valid: summary.workflow_valid,
-        workflow_error: summary.workflow_error.clone(),
+        workflow_error: workflow_error_vm(summary),
         latest_run: summary.latest_run.clone().map(run_summary_vm),
         resumable_run_id: summary.resumable_run_id.clone(),
         artifact_count,
         attachment_count,
     })
+}
+
+fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
+    match &summary.workflow_validation_error {
+        Some(WorkflowValidationError::SuccessNewRoundTarget { from }) => Some(WorkflowErrorVm {
+            code: "workflow.success-new-round-target".to_string(),
+            params: serde_json::json!({ "from": from }),
+        }),
+        None if summary.workflow_error.is_some() => Some(WorkflowErrorVm {
+            code: "workflow.invalid".to_string(),
+            params: serde_json::json!({}),
+        }),
+        None => None,
+    }
 }
 
 fn display_status(summary: &TaskSummary) -> String {
@@ -874,6 +1009,188 @@ fn workflow_control_vm(workflow: &WorkflowDsl) -> WorkflowControlVm {
     }
 }
 
+fn latest_control_failure_vm(app: &App, task_id: &str, run_id: &str) -> Result<Option<ControlFailureVm>> {
+    let mut latest = None;
+    let events = app.run_events(task_id, run_id)?.unwrap_or_default();
+    for line in events.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if event.get("type").and_then(|value| value.as_str())
+            != Some("workflow_control_limit_exceeded")
+        {
+            continue;
+        }
+        let data = event.get("data").unwrap_or(&serde_json::Value::Null);
+        let summary = data.get("summary").and_then(|value| value.as_str());
+        latest = data
+            .get("controlFailure")
+            .or_else(|| data.get("control_failure"))
+            .map(|failure| control_failure_from_value(failure, data, &event, summary))
+            .or_else(|| summary.and_then(|summary| control_failure_from_summary(summary, data, &event)));
+    }
+    if latest.is_none() {
+        if let Some(progress) = app.run_progress(task_id, run_id)? {
+            if let Some(summary) = progress.get("summary").and_then(|value| value.as_str()) {
+                latest = control_failure_from_summary(summary, &progress, &serde_json::Value::Null);
+            }
+        }
+    }
+    Ok(latest)
+}
+
+fn control_failure_from_value(
+    failure: &serde_json::Value,
+    data: &serde_json::Value,
+    event: &serde_json::Value,
+    summary: Option<&str>,
+) -> ControlFailureVm {
+    let reason_kind = failure
+        .get("reasonKind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("workflow_control_limit_exceeded")
+        .to_string();
+    let message = failure
+        .get("message")
+        .and_then(|value| value.as_str())
+        .or(summary)
+        .unwrap_or("workflow control limit exceeded")
+        .to_string();
+    ControlFailureVm {
+        title: control_failure_title(&reason_kind),
+        reason_kind,
+        message,
+        from_node_id: failure
+            .get("fromNodeId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        to_node_id: failure
+            .get("toNodeId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        target: failure
+            .get("target")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        edge_outcome: failure
+            .get("edgeOutcome")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        proposed_count: failure
+            .get("proposedCount")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32),
+        limit: failure
+            .get("limit")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32),
+        timestamp: event
+            .get("timestamp")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        round_id: data
+            .get("roundId")
+            .or_else(|| data.get("currentRoundId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        node_id: data
+            .get("nodeId")
+            .or_else(|| data.get("currentNodeId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        attempt_id: data
+            .get("attemptId")
+            .or_else(|| data.get("currentAttemptId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    }
+}
+
+fn control_failure_from_summary(
+    summary: &str,
+    data: &serde_json::Value,
+    event: &serde_json::Value,
+) -> Option<ControlFailureVm> {
+    let (reason_kind, rest) = summary
+        .strip_prefix("max repair attempts exceeded for ")
+        .map(|rest| ("max_repair_attempts_exceeded", rest))
+        .or_else(|| summary.strip_prefix("max attempts exceeded for ").map(|rest| ("max_repair_attempts_exceeded", rest)))
+        .or_else(|| summary.strip_prefix("max rounds exceeded for ").map(|rest| ("max_rounds_exceeded", rest)))?;
+    let (transition, counts) = rest.split_once(": ").unwrap_or((rest, ""));
+    let (from_node_id, to_node_id, target) = if reason_kind == "max_rounds_exceeded" {
+        (None, None, Some(transition.to_string()))
+    } else {
+        let (from, to) = transition.split_once(" -> ").unwrap_or((transition, ""));
+        (Some(from.to_string()), Some(to.to_string()), Some(to.to_string()))
+    };
+    let (proposed_count, limit) = counts
+        .split_once(" > ")
+        .map(|(left, right)| (left.parse::<u32>().ok(), right.parse::<u32>().ok()))
+        .unwrap_or((None, None));
+    Some(ControlFailureVm {
+        title: control_failure_title(reason_kind),
+        reason_kind: reason_kind.to_string(),
+        message: summary.to_string(),
+        from_node_id,
+        to_node_id,
+        target,
+        edge_outcome: None,
+        proposed_count,
+        limit,
+        timestamp: event
+            .get("timestamp")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        round_id: data
+            .get("roundId")
+            .or_else(|| data.get("currentRoundId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        node_id: data
+            .get("nodeId")
+            .or_else(|| data.get("currentNodeId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        attempt_id: data
+            .get("attemptId")
+            .or_else(|| data.get("currentAttemptId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn control_failure_title(reason_kind: &str) -> String {
+    match reason_kind {
+        "max_repair_attempts_exceeded" => "修复次数已达上限".to_string(),
+        "max_rounds_exceeded" => "Round 数已达上限".to_string(),
+        _ => "工作流已停止".to_string(),
+    }
+}
+
+fn round_attempt_nodes(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round: &RoundState,
+) -> Result<Vec<NodeState>> {
+    if round.trace.is_empty() {
+        return app.node_list(task_id, run_id, &round.id);
+    }
+
+    let mut node_ids = Vec::<String>::new();
+    for step in &round.trace {
+        if !node_ids.iter().any(|node_id| node_id == &step.node_id) {
+            node_ids.push(step.node_id.clone());
+        }
+    }
+
+    let mut nodes = Vec::new();
+    for node_id in node_ids {
+        nodes.extend(app.attempt_list(task_id, run_id, &round.id, &node_id)?);
+    }
+    Ok(nodes)
+}
+
 fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
     GraphVm {
         nodes: workflow
@@ -888,6 +1205,8 @@ fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 status: None,
                 outcome: None,
                 attempt_id: None,
+                attempt_count: 0,
+                attempts: Vec::new(),
                 artifact_count: 0,
                 attachment_count: 0,
                 current: false,
@@ -901,6 +1220,9 @@ fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 from: edge.from.clone(),
                 to: edge.to.clone(),
                 label: enum_label(&edge.on),
+                traversal_count: 0,
+                last_outcome: None,
+                blocked_reason: None,
             })
             .collect(),
     }
@@ -912,10 +1234,11 @@ fn round_graph_vm(
     run: &RunState,
     round: &RoundState,
     nodes: &[NodeState],
+    control_failure: Option<&ControlFailureVm>,
 ) -> Result<GraphVm> {
     let node_labels = workflow_node_labels(app, task_id, &run.id);
     if !round.trace.is_empty() {
-        return round_trace_graph_vm(app, task_id, run, round, nodes, &node_labels);
+        return round_trace_graph_vm(app, task_id, run, round, nodes, &node_labels, control_failure);
     }
 
     let mut ordered_nodes = nodes.to_vec();
@@ -945,6 +1268,9 @@ fn round_graph_vm(
             from: pair[0].id.clone(),
             to: pair[1].id.clone(),
             label: "observed".to_string(),
+            traversal_count: 1,
+            last_outcome: None,
+            blocked_reason: None,
         })
         .collect();
 
@@ -961,73 +1287,182 @@ fn round_trace_graph_vm(
     round: &RoundState,
     nodes: &[NodeState],
     node_labels: &HashMap<String, String>,
+    control_failure: Option<&ControlFailureVm>,
 ) -> Result<GraphVm> {
     let mut steps = round.trace.clone();
     steps.sort_by_key(|step| step.sequence);
-    let graph_nodes = steps
-        .iter()
-        .map(|step| {
-            let node = nodes
+
+    let mut graph_nodes = Vec::new();
+    for node_id in steps.iter().map(|step| step.node_id.as_str()) {
+        if graph_nodes
+            .iter()
+            .any(|node: &GraphNodeVm| node.node_id.as_deref() == Some(node_id))
+        {
+            continue;
+        }
+        let node_steps = steps
+            .iter()
+            .filter(|step| step.node_id == node_id)
+            .collect::<Vec<_>>();
+        let latest_step = node_steps
+            .last()
+            .expect("node_steps is non-empty because it is built from current node_id");
+        let latest_node = nodes.iter().find(|node| {
+            node.node_id == latest_step.node_id && node.attempt_id == latest_step.attempt_id
+        });
+        let first_sequence = node_steps.first().map(|step| step.sequence);
+        let mut attempts = Vec::new();
+        for step in &node_steps {
+            if let Some(node) = nodes
                 .iter()
-                .find(|node| node.node_id == step.node_id && node.attempt_id == step.attempt_id);
-            trace_step_graph_vm(app, task_id, run, round, step, node, node_labels)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let edges = graph_nodes
-        .windows(2)
-        .enumerate()
-        .map(|(index, pair)| GraphEdgeVm {
-            from: pair[0].id.clone(),
-            to: pair[1].id.clone(),
-            label: steps[index + 1].edge_outcome.clone().unwrap_or_default(),
-        })
-        .collect();
-    Ok(GraphVm {
-        nodes: graph_nodes,
-        edges,
-    })
+                .find(|node| node.node_id == step.node_id && node.attempt_id == step.attempt_id)
+            {
+                attempts.push(graph_attempt_vm(app, task_id, run, round, step, node)?);
+            }
+        }
+        let artifacts = app
+            .artifact_list(
+                task_id,
+                &run.id,
+                &round.id,
+                &latest_step.node_id,
+                &latest_step.attempt_id,
+            )?
+            .len();
+        let attachments = app
+            .attachment_list(
+                task_id,
+                &run.id,
+                &round.id,
+                &latest_step.node_id,
+                &latest_step.attempt_id,
+            )?
+            .len();
+        graph_nodes.push(GraphNodeVm {
+            id: latest_step.node_id.clone(),
+            node_id: Some(latest_step.node_id.clone()),
+            sequence: first_sequence,
+            label: node_labels
+                .get(&latest_step.node_id)
+                .cloned()
+                .unwrap_or_else(|| latest_step.node_id.clone()),
+            node_type: latest_node
+                .map(|node| enum_label(&node.node_type))
+                .unwrap_or_else(|| "unknown".to_string()),
+            status: latest_node.map(|node| enum_label(&node.status)),
+            outcome: latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome))),
+            attempt_id: Some(latest_step.attempt_id.clone()),
+            attempt_count: attempts.len(),
+            attempts,
+            artifact_count: artifacts,
+            attachment_count: attachments,
+            current: run.current_round.as_deref() == Some(&round.id)
+                && run.current_node.as_deref() == Some(&latest_step.node_id),
+            icon_key: latest_node.and_then(|n| {
+                n.resolved_config
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .and_then(provider_icon_key)
+            }),
+        });
+    }
+
+    let mut edges = Vec::<GraphEdgeVm>::new();
+    for pair in steps.windows(2) {
+        let from = pair[0].node_id.clone();
+        let to = pair[1].node_id.clone();
+        let label = pair[1].edge_outcome.clone().unwrap_or_default();
+        if let Some(edge) = edges
+            .iter_mut()
+            .find(|edge| edge.from == from && edge.to == to && edge.label == label)
+        {
+            edge.traversal_count += 1;
+            edge.last_outcome = Some(label.clone());
+            continue;
+        }
+        let blocked_reason = control_failure.and_then(|failure| {
+            let from_match = failure.from_node_id.as_deref() == Some(from.as_str());
+            let to_match = failure.to_node_id.as_deref() == Some(to.as_str())
+                || failure.target.as_deref() == Some(to.as_str());
+            let outcome_match = failure.edge_outcome.as_deref().map_or(true, |outcome| outcome == label);
+            (from_match && to_match && outcome_match).then(|| failure.clone())
+        });
+        edges.push(GraphEdgeVm {
+            from,
+            to,
+            label: label.clone(),
+            traversal_count: 1,
+            last_outcome: Some(label),
+            blocked_reason,
+        });
+    }
+
+    Ok(GraphVm { nodes: graph_nodes, edges })
 }
 
-fn trace_step_graph_vm(
+fn read_worker_ref_optional(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Option<WorkerRefState> {
+    let path = app
+        .paths
+        .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
+    path.exists().then(|| read_json::<WorkerRefState>(&path).ok()).flatten()
+}
+
+fn worker_ref_session_mode(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Option<String> {
+    read_worker_ref_optional(app, task_id, run_id, round_id, node_id, attempt_id)
+        .map(|worker_ref| enum_label(&worker_ref.mode))
+}
+
+fn worker_ref_acp_session_id(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Option<String> {
+    read_worker_ref_optional(app, task_id, run_id, round_id, node_id, attempt_id)
+        .and_then(|worker_ref| worker_ref.continue_ref)
+        .and_then(|value| {
+            value
+                .get("acpSessionId")
+                .or_else(|| value.get("sessionId"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn graph_attempt_vm(
     app: &App,
     task_id: &str,
     run: &RunState,
     round: &RoundState,
     step: &RoundTraceStep,
-    node: Option<&NodeState>,
-    node_labels: &HashMap<String, String>,
-) -> Result<GraphNodeVm> {
-    let artifacts = app
-        .artifact_list(task_id, &run.id, &round.id, &step.node_id, &step.attempt_id)?
-        .len();
-    let attachments = app
-        .attachment_list(task_id, &run.id, &round.id, &step.node_id, &step.attempt_id)?
-        .len();
-    Ok(GraphNodeVm {
-        id: format!("{}:{}:{}", step.sequence, step.node_id, step.attempt_id),
-        node_id: Some(step.node_id.clone()),
+    node: &NodeState,
+) -> Result<GraphAttemptVm> {
+    Ok(GraphAttemptVm {
+        attempt_id: step.attempt_id.clone(),
         sequence: Some(step.sequence),
-        label: node_labels
-            .get(&step.node_id)
-            .cloned()
-            .unwrap_or_else(|| step.node_id.clone()),
-        node_type: node
-            .map(|node| enum_label(&node.node_type))
-            .unwrap_or_else(|| "unknown".to_string()),
-        status: node.map(|node| enum_label(&node.status)),
-        outcome: node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome))),
-        attempt_id: Some(step.attempt_id.clone()),
-        artifact_count: artifacts,
-        attachment_count: attachments,
+        status: enum_label(&node.status),
+        outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+        session_mode: worker_ref_session_mode(app, task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
+        acp_session_id: worker_ref_acp_session_id(app, task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
         current: run.current_round.as_deref() == Some(&round.id)
-            && run.current_node.as_deref() == Some(&step.node_id)
-            && run.current_attempt.as_deref() == Some(&step.attempt_id),
-        icon_key: node.and_then(|n| {
-            n.resolved_config
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .and_then(provider_icon_key)
-        }),
+            && run.current_node.as_deref() == Some(&node.node_id)
+            && run.current_attempt.as_deref() == Some(&node.attempt_id),
     })
 }
 
@@ -1058,6 +1493,18 @@ fn round_node_graph_vm(
         status: Some(enum_label(&node.status)),
         outcome: node.outcome.map(|outcome| enum_label(&outcome)),
         attempt_id: Some(node.attempt_id.clone()),
+        attempt_count: 1,
+        attempts: vec![GraphAttemptVm {
+            attempt_id: node.attempt_id.clone(),
+            sequence: Some(sequence),
+            status: enum_label(&node.status),
+            outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+            session_mode: worker_ref_session_mode(app, task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
+            acp_session_id: worker_ref_acp_session_id(app, task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
+            current: run.current_round.as_deref() == Some(&round.id)
+                && run.current_node.as_deref() == Some(&node.node_id)
+                && run.current_attempt.as_deref() == Some(&node.attempt_id),
+        }],
         artifact_count: artifacts,
         attachment_count: attachments,
         current: run.current_round.as_deref() == Some(&round.id)
@@ -1095,6 +1542,18 @@ fn selected_node_id(selection: &RoundSelectionInput) -> Option<&str> {
     }
 }
 
+fn selected_attempt_id(selection: &RoundSelectionInput) -> Option<&str> {
+    match selection {
+        RoundSelectionInput::Node { attempt_id, .. }
+        | RoundSelectionInput::Artifact { attempt_id, .. }
+        | RoundSelectionInput::Attachment { attempt_id, .. }
+        | RoundSelectionInput::WorkerRef { attempt_id, .. }
+        | RoundSelectionInput::Event { attempt_id, .. }
+        | RoundSelectionInput::Log { attempt_id, .. } => attempt_id.as_deref(),
+        RoundSelectionInput::Round { .. } | RoundSelectionInput::Requirement { .. } => None,
+    }
+}
+
 fn selected_node_detail_vm(
     app: &App,
     task_id: &str,
@@ -1109,7 +1568,26 @@ fn selected_node_detail_vm(
     let Some(node_id) = selected_node_id(selection) else {
         return Ok(None);
     };
-    let Some(node) = nodes.iter().find(|node| node.node_id == node_id) else {
+    let node_attempts = nodes
+        .iter()
+        .filter(|node| node.node_id == node_id)
+        .collect::<Vec<_>>();
+    let Some(node) = selected_attempt_id(selection)
+        .and_then(|attempt_id| {
+            node_attempts
+                .iter()
+                .copied()
+                .find(|node| node.attempt_id == attempt_id)
+        })
+        .or_else(|| {
+            node_attempts.iter().copied().find(|node| {
+                run.current_round.as_deref() == Some(&round.id)
+                    && run.current_node.as_deref() == Some(node_id)
+                    && run.current_attempt.as_deref() == Some(&node.attempt_id)
+            })
+        })
+        .or_else(|| node_attempts.iter().copied().max_by(|left, right| left.attempt_id.cmp(&right.attempt_id)))
+    else {
         return Ok(None);
     };
     let graph_node = graph
@@ -1144,6 +1622,25 @@ fn selected_node_detail_vm(
         .get("manualCheck")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    let acp_session = acp_session_vm(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        &node.attempt_id,
+        None,
+    )?;
+    let acp_conversations = acp_conversations_vm(app, task_id, run_id, round, node_id, nodes)?;
+    let selected_conversation_key = acp_conversations
+        .iter()
+        .find(|conversation| {
+            conversation
+                .attempts
+                .iter()
+                .any(|attempt| attempt.attempt_id == node.attempt_id)
+        })
+        .map(|conversation| conversation.key.clone());
 
     Ok(Some(NodeDetailVm {
         id: graph_node
@@ -1188,16 +1685,127 @@ fn selected_node_detail_vm(
         has_worker_ref: worker_ref_exists,
         manual_check_enabled,
         manual_check_pending: node.manual_check_pending,
-        acp_session: acp_session_vm(
+        acp_session,
+        acp_conversations,
+        selected_conversation_key,
+    }))
+}
+
+fn trace_sequence_for_attempt(round: &RoundState, node_id: &str, attempt_id: &str) -> Option<u32> {
+    round
+        .trace
+        .iter()
+        .find(|step| step.node_id == node_id && step.attempt_id == attempt_id)
+        .map(|step| step.sequence)
+}
+
+fn acp_conversations_vm(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round: &RoundState,
+    node_id: &str,
+    nodes: &[NodeState],
+) -> Result<Vec<AcpConversationVm>> {
+    let mut attempts = nodes
+        .iter()
+        .filter(|node| node.node_id == node_id)
+        .collect::<Vec<_>>();
+    attempts.sort_by(|left, right| {
+        trace_sequence_for_attempt(round, node_id, &left.attempt_id)
+            .cmp(&trace_sequence_for_attempt(round, node_id, &right.attempt_id))
+            .then_with(|| left.attempt_id.cmp(&right.attempt_id))
+    });
+
+    let mut conversations = Vec::<AcpConversationVm>::new();
+    let mut session_conversation_keys = HashMap::<String, String>::new();
+    for node in attempts {
+        let sequence = trace_sequence_for_attempt(round, node_id, &node.attempt_id);
+        let session_mode = worker_ref_session_mode(app, task_id, run_id, &round.id, node_id, &node.attempt_id);
+        let worker_acp_session_id = worker_ref_acp_session_id(app, task_id, run_id, &round.id, node_id, &node.attempt_id);
+        let acp_session = acp_session_vm(
             app,
             task_id,
             run_id,
-            round_id,
+            &round.id,
             node_id,
             &node.attempt_id,
             None,
-        )?,
-    }))
+        )?;
+        let acp_session_id = worker_acp_session_id.or_else(|| {
+            acp_session
+                .as_ref()
+                .and_then(|session| session.session_id.clone())
+        });
+        let attempt = AcpAttemptSessionVm {
+            node_id: node_id.to_string(),
+            attempt_id: node.attempt_id.clone(),
+            sequence,
+            status: enum_label(&node.status),
+            outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+            current: false,
+            session_mode: session_mode.clone(),
+            acp_session_id: acp_session_id.clone(),
+            acp_session,
+        };
+        let key = match (session_mode.as_deref(), acp_session_id.as_deref()) {
+            (Some("continue"), Some(session_id)) => session_conversation_keys
+                .get(session_id)
+                .cloned()
+                .unwrap_or_else(|| format!("session:{session_id}")),
+            (Some("new"), _) => format!("attempt:{}", node.attempt_id),
+            (_, Some(session_id)) => session_conversation_keys
+                .get(session_id)
+                .cloned()
+                .unwrap_or_else(|| format!("session:{session_id}")),
+            _ => format!("attempt:{}", node.attempt_id),
+        };
+        if let Some(session_id) = acp_session_id.as_deref() {
+            session_conversation_keys.insert(session_id.to_string(), key.clone());
+        }
+        if let Some(conversation) = conversations.iter_mut().find(|item| item.key == key) {
+            conversation.active_attempt_id = node.attempt_id.clone();
+            if session_mode.as_deref() == Some("continue") {
+                conversation.session_mode = "continue".to_string();
+                conversation.label = conversation_label(&key, Some("continue"), conversation.session_id.as_deref(), &node.attempt_id);
+            }
+            conversation.attempts.push(attempt);
+        } else {
+            conversations.push(AcpConversationVm {
+                key: key.clone(),
+                label: conversation_label(&key, session_mode.as_deref(), acp_session_id.as_deref(), &node.attempt_id),
+                session_id: acp_session_id,
+                session_mode: session_mode.unwrap_or_else(|| "unknown".to_string()),
+                active_attempt_id: node.attempt_id.clone(),
+                attempts: vec![attempt],
+            });
+        }
+    }
+
+    for conversation in &mut conversations {
+        if let Some(active_attempt) = conversation.attempts.last() {
+            conversation.active_attempt_id = active_attempt.attempt_id.clone();
+        }
+    }
+    Ok(conversations)
+}
+
+fn conversation_label(
+    key: &str,
+    session_mode: Option<&str>,
+    acp_session_id: Option<&str>,
+    attempt_id: &str,
+) -> String {
+    match session_mode {
+        Some("continue") => acp_session_id
+            .map(|session_id| format!("continued session {session_id}"))
+            .unwrap_or_else(|| format!("continued {attempt_id}")),
+        Some("new") => format!("{attempt_id} · new session"),
+        _ if key.starts_with("session:") => acp_session_id
+            .map(|session_id| format!("session {session_id}"))
+            .unwrap_or_else(|| attempt_id.to_string()),
+        _ => attempt_id.to_string(),
+    }
 }
 
 pub fn acp_session_vm(
@@ -1239,6 +1847,25 @@ pub fn acp_session_vm(
         .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
+    } else {
+        None
+    };
+    let node_provider = if worker_ref.is_none() {
+        let node_path = app
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
+        if node_path.exists() {
+            read_json::<NodeState>(&node_path)
+                .ok()
+                .and_then(|node| {
+                    node.resolved_config
+                        .get("provider")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1287,29 +1914,44 @@ pub fn acp_session_vm(
             .collect::<Vec<_>>()
     };
 
+    let provider = worker_ref
+        .as_ref()
+        .map(|state| state.provider.clone())
+        .or(node_provider)
+        .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
+    let adapter_display_name = continue_ref
+        .and_then(|value| value.get("adapterDisplayName"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            session
+                .get("adapterDisplayName")
+                .and_then(|value| value.as_str())
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            app.managed_agent(&provider)
+                .ok()
+                .map(|(_, agent)| agent.adapter.display_name.clone())
+        });
+
     Ok(Some(AcpSessionVm {
         session_id: continue_ref
-            .and_then(|value| value.get("acpSessionId"))
+            .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
+            .or_else(|| {
+                session
+                    .get("acpSessionId")
+                    .or_else(|| session.get("sessionId"))
+                    .and_then(|value| value.as_str())
+            })
             .map(str::to_string),
-        provider: worker_ref
-            .as_ref()
-            .map(|state| state.provider.clone())
-            .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string()),
+        provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
             .and_then(|value| value.as_str())
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
-        adapter_display_name: continue_ref
-            .and_then(|value| value.get("adapterDisplayName"))
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                session
-                    .get("adapterDisplayName")
-                    .and_then(|value| value.as_str())
-            })
-            .map(str::to_string),
+        adapter_display_name,
         cwd: continue_ref
             .and_then(|value| value.get("cwd"))
             .and_then(|value| value.as_str())
@@ -1428,6 +2070,20 @@ fn scan_acp_events(
                 } else if is_session_update(&event, "usage_update") {
                     usage = Some(compact_raw_value(raw.clone()));
                 }
+            }
+            if is_hidden_from_chat(&event) {
+                flush_normalized_event(
+                    pending_delta.take(),
+                    before_seq,
+                    after_seq,
+                    limit,
+                    &mut window,
+                    &mut after_window,
+                    &mut normalized_event_count,
+                    &mut first_seq,
+                    &mut last_seq,
+                );
+                continue;
             }
             if !is_session_timeline_event(&event) {
                 continue;
@@ -1797,6 +2453,15 @@ fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm)
 
 fn is_delta_event(event: &AcpUiEventVm) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta")
+}
+
+fn is_hidden_from_chat(event: &AcpUiEventVm) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("hiddenFromChat"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
@@ -2176,11 +2841,10 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Result<Option<String
         if value.get("direction").and_then(|item| item.as_str()) != Some("outbound") {
             continue;
         }
-        if value
+        let method = value
             .pointer("/frame/method")
-            .and_then(|item| item.as_str())
-            != Some("session/new")
-        {
+            .and_then(|item| item.as_str());
+        if !matches!(method, Some("session/new" | "session/load")) {
             continue;
         }
         let prompt = value

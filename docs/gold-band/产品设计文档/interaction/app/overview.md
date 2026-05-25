@@ -40,6 +40,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - 设置中的主题切换
 - 设置中的字体选择
 - 设置中的语言选择
+- 设置高级页中的更新地址覆盖、后台检查与手动检查更新
 - 工作空间选择、切换与最近 workspace 记忆
 
 以下一级功能仅占位：
@@ -140,7 +141,8 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 前端位于 `web/`，只负责桌面应用壳、页面栈、图形展示与直接操作。
 - 前后端通过 Tauri commands 交换 view model，终局状态仍以 canonical state 为准。
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
-- 启动命令为 `npm run dev`，构建命令为 `npm run build`。
+- 启动命令为 `npm run dev`，默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
+- Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 附加桌面安装包、签名和 `latest.json`，release publish 后客户端才会从 latest 地址看到更新。
 
 MVP 范围：
 - 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。

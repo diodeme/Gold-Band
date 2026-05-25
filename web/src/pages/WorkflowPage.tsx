@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { displayStatus } from '../i18n';
+import { displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
@@ -67,6 +67,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
+  const [validationRequestId, setValidationRequestId] = useState(0);
 
   const toggleRun = (runId: string, expanded: boolean) => {
     setExpandedRunId(expanded ? null : runId);
@@ -110,6 +111,8 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const emptyMessage = vm.runs.length === 0 ? t('workflow.noRuns') : t('workflow.noRunsForFilter');
   const requirement = fullRequirementText(vm.task.requirement, vm.task.requirementPreview || vm.task.description, t('common.empty'));
   const workflowLifecycle = workflowLifecycleFor(vm.task);
+  const workflowErrorText = displayWorkflowError(t, vm.task.workflowError);
+  const showWorkflowErrorLink = !vm.task.workflowValid && vm.task.workflowExists;
   const workflowDrawerOpen = workflowDrawerMode !== null;
   const editingWorkflow = workflowDrawerMode === 'create' || workflowDrawerMode === 'edit' || workflowDrawerMode === 'repair';
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
@@ -120,6 +123,19 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     const seed = parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow ?? null;
     if (seed) setWorkflowDraft(seed);
   }
+
+  const showValidationIssues = async () => {
+    const workflow = workflowDraft ?? parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow;
+    if (workflow) setWorkflowDraft(workflow);
+    if (workflowDrawerMode === 'view' || workflowDrawerMode === null) setWorkflowDrawerMode('repair');
+    const [registry, profiles] = await Promise.all([
+      agentRegistry ? Promise.resolve(agentRegistry) : getAgentRegistry(),
+      profileList ? Promise.resolve(profileList) : getProfiles(),
+    ]);
+    if (!agentRegistry) setAgentRegistry(registry);
+    if (!profileList) setProfileList(profiles);
+    setValidationRequestId((value) => value + 1);
+  };
 
   const saveWorkflow = async (workflow: WorkflowDsl) => {
     setSavingWorkflow(true);
@@ -245,7 +261,11 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               <SheetTitle className="break-words text-xl">{workflowDrawerMode ? t(`workflow.${workflowDrawerMode}WorkflowTitle`) : t('common.workflow')}</SheetTitle>
               <StatusBadge value={workflowLifecycle.status} label={displayStatus(t, workflowLifecycle.status)} />
             </div>
-            {vm.task.workflowError ? <p className="text-sm text-muted-foreground">{vm.task.workflowError}</p> : null}
+            {showWorkflowErrorLink ? (
+              <Button type="button" variant="link" size="sm" className="h-auto justify-start px-0 text-sm text-primary underline-offset-4 hover:underline" onClick={() => void showValidationIssues()}>
+                {t('workflow.viewErrorReasons')}
+              </Button>
+            ) : null}
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-4 p-5">
@@ -257,7 +277,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               ) : null}
               {editingWorkflow ? (
                 workflowDraft ? (
-                  <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} onSave={saveWorkflow} onChange={setWorkflowDraft} />
+                  <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={setWorkflowDraft} />
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (
                 <>

@@ -9,7 +9,7 @@ use crate::dsl::{
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
     PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
-    ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
+    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -268,7 +268,7 @@ fn build_predecessor_contexts(
         .collect()
 }
 
-pub(crate) fn execute_ai_node(
+pub(crate) fn build_worker_invocation(
     app: &App,
     task_id: &str,
     run_id: &str,
@@ -276,18 +276,17 @@ pub(crate) fn execute_ai_node(
     attempt_id: &str,
     workflow: &ValidatedWorkflow,
     node_id: &str,
-    node: NodeState,
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
-) -> Result<NodeState> {
+    resume_prompt_visibility: PromptVisibility,
+) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
         profile,
         permission_mode,
-        primary_artifact,
         output_contract,
         task_instruction,
         invocation_kind,
@@ -297,7 +296,6 @@ pub(crate) fn execute_ai_node(
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
             worker.permission_mode.clone(),
-            worker.primary_artifact.clone(),
             worker_output_contract(worker),
             worker_task_instruction(worker),
             InvocationKind::WorkerGeneric,
@@ -316,7 +314,7 @@ pub(crate) fn execute_ai_node(
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
 
-    let invocation = WorkerInvocation {
+    Ok(WorkerInvocation {
         invocation_kind,
         profile,
         profile_content,
@@ -324,7 +322,6 @@ pub(crate) fn execute_ai_node(
         requirement_text: None,
         workspace_dir: app.paths.repo_root.clone(),
         attempt_dir: runtime_context.attempt_dir.clone(),
-        primary_artifact,
         output_contract,
         runtime_context,
         predecessors,
@@ -334,6 +331,7 @@ pub(crate) fn execute_ai_node(
         continue_ref,
         resume_prompt,
         resume_prompt_id,
+        resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
         log_provider_command: app.config.log_provider_command,
@@ -343,7 +341,39 @@ pub(crate) fn execute_ai_node(
         }),
         cold_artifacts,
         cold_attachments,
-    };
+    })
+}
+
+pub(crate) fn execute_ai_node(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round: &RoundState,
+    attempt_id: &str,
+    workflow: &ValidatedWorkflow,
+    node_id: &str,
+    node: NodeState,
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+    resume_prompt: Option<String>,
+    resume_prompt_id: Option<String>,
+    resume_prompt_visibility: PromptVisibility,
+) -> Result<NodeState> {
+    let round_id = round.id.as_str();
+    let invocation = build_worker_invocation(
+        app,
+        task_id,
+        run_id,
+        round,
+        attempt_id,
+        workflow,
+        node_id,
+        session_mode,
+        continue_ref,
+        resume_prompt,
+        resume_prompt_id,
+        resume_prompt_visibility,
+    )?;
 
     progress(&format!(
         "calling provider for {}/{}/{}",
@@ -388,7 +418,9 @@ fn evaluate_json_success_condition(
         artifact_name,
     );
     let content = std::fs::read_to_string(artifact_path.as_std_path())?;
-    let value: serde_json::Value = parse_json_artifact(&content)?;
+    let Ok(value) = parse_json_artifact(&content) else {
+        return Ok(Some(NodeOutcome::Invalid));
+    };
 
     if let Some(schema) = node.resolved_config.get("outputSchema") {
         if !matches_simple_schema(&value, schema)? {
@@ -578,21 +610,21 @@ pub(crate) fn finalize_ai_attempt(
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
-                if let Some(primary_artifact) = payload.primary_artifact {
+                if let Some(output_artifact) = payload.output_artifact {
                     let artifact_path = app.paths.artifact_file(
                         task_id,
                         run_id,
                         round_id,
                         node_id,
                         attempt_id,
-                        &primary_artifact.name,
+                        &output_artifact.name,
                     );
                     std::fs::create_dir_all(
                         app.paths
                             .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
                             .as_std_path(),
                     )?;
-                    std::fs::write(artifact_path.as_std_path(), primary_artifact.content)?;
+                    std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
                 }
             }
 
@@ -614,10 +646,10 @@ pub(crate) fn finalize_ai_attempt(
                 )?;
             }
 
-            let needs_primary_artifact = node.resolved_config.contains_key("primaryArtifact");
+            let needs_output_artifact = node.resolved_config.contains_key("outputArtifact");
             let expected_artifact = node
                 .resolved_config
-                .get("primaryArtifact")
+                .get("outputArtifact")
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
             let has_artifact = expected_artifact.as_ref().is_some_and(|artifact| {
@@ -626,7 +658,7 @@ pub(crate) fn finalize_ai_attempt(
                     .exists()
             });
             node.status = RunStatus::Completed;
-            node.outcome = Some(if needs_primary_artifact && !has_artifact {
+            node.outcome = Some(if needs_output_artifact && !has_artifact {
                 NodeOutcome::Invalid
             } else {
                 expected_artifact
@@ -665,7 +697,7 @@ pub(crate) fn re_evaluate_attempt(
 ) -> Result<NodeState> {
     let artifact_name = node
         .resolved_config
-        .get("primaryArtifact")
+        .get("outputArtifact")
         .and_then(|value| value.as_str())
         .map(str::to_string);
 

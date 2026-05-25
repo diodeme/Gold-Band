@@ -7,8 +7,8 @@ use gold_band::app::{
     CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, SessionMode};
-use gold_band::dsl::WorkflowDsl;
-use gold_band::provider::PromptBundle;
+use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
+use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
 use gold_band::storage::read_json;
 use std::{
@@ -22,12 +22,17 @@ use gold_band::config::{
     AcpAdapterConfig, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
 };
-use serde::Deserialize;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
 use crate::state::DesktopState;
+use crate::updater::{
+    UpdateStatusVm, UpdaterSettingsVm, check_update,
+    download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
+    updater_settings,
+};
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
@@ -37,7 +42,23 @@ use crate::view_models::{
     workflow_vm,
 };
 
-pub type CommandResult<T> = Result<T, String>;
+pub type CommandResult<T> = Result<T, CommandErrorVm>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandErrorVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+impl CommandErrorVm {
+    fn new(code: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            code: code.into(),
+            params,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,9 +115,18 @@ pub fn get_system_fonts() -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn get_app_bootstrap(state: State<'_, DesktopState>) -> CommandResult<AppBootstrapVm> {
+pub fn get_app_bootstrap(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+) -> CommandResult<AppBootstrapVm> {
     let context = state.context().map_err(command_error)?;
-    Ok(bootstrap_vm(&context.app(), context.recent_workspaces))
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+    ))
 }
 
 #[tauri::command]
@@ -115,7 +145,10 @@ pub fn create_agent(
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
     if app.managed_agents().contains_key(&agent_type) {
-        return Err(format!("agent `{}` already exists", agent_type.as_str()));
+        return Err(CommandErrorVm::new(
+            "agent.already-exists",
+            serde_json::json!({ "agentType": agent_type.as_str() }),
+        ));
     }
     let user_config = app
         .save_managed_agent(
@@ -144,7 +177,10 @@ pub fn update_agent(
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
     if !app.managed_agents().contains_key(&agent_type) {
-        return Err(format!("agent `{}` is not configured", agent_type.as_str()));
+        return Err(CommandErrorVm::new(
+            "agent.not-configured",
+            serde_json::json!({ "agentType": agent_type.as_str() }),
+        ));
     }
     let user_config = app
         .save_managed_agent(
@@ -237,7 +273,7 @@ pub fn update_profile(
 
 #[tauri::command]
 pub fn choose_workspace(
-    app: tauri::AppHandle,
+    app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> CommandResult<Option<AppBootstrapVm>> {
     let current = state.context().map_err(command_error)?.repo_root;
@@ -249,26 +285,37 @@ pub fn choose_workspace(
     else {
         return Ok(None);
     };
-    let path = path
-        .into_path()
-        .map_err(|error| format!("failed to resolve selected workspace path: {error}"))?;
-    let repo_root = Utf8PathBuf::from_path_buf(path)
-        .map_err(|_| "selected workspace path is not valid UTF-8".to_string())?;
+    let path = path.into_path().map_err(|_| {
+        CommandErrorVm::new("workspace.path-resolve-failed", serde_json::json!({}))
+    })?;
+    let repo_root = Utf8PathBuf::from_path_buf(path).map_err(|_| {
+        CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({}))
+    })?;
     let context = state.set_workspace(repo_root).map_err(command_error)?;
+    let update_status = state.update_status().map_err(command_error)?;
     Ok(Some(bootstrap_vm(
         &context.app(),
         context.recent_workspaces,
+        update_status,
+        app.package_info().version.to_string(),
     )))
 }
 
 #[tauri::command]
 pub fn select_recent_workspace(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     workspace: String,
 ) -> CommandResult<AppBootstrapVm> {
     let repo_root = Utf8PathBuf::from(workspace);
     let context = state.set_workspace(repo_root).map_err(command_error)?;
-    Ok(bootstrap_vm(&context.app(), context.recent_workspaces))
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+    ))
 }
 
 #[tauri::command]
@@ -285,6 +332,7 @@ pub fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     let summary = app
         .create_task_from_requirement(CreateTaskInput {
@@ -305,6 +353,7 @@ pub fn save_task_workflow(
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.save_task_workflow(&task_id, input.workflow)
         .map_err(command_error)?;
@@ -330,6 +379,7 @@ pub fn save_workflow_template(
     state: State<'_, DesktopState>,
     input: SaveWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.save_workflow_template(input.name, input.workflow)
         .map_err(command_error)
@@ -341,6 +391,7 @@ pub fn update_workflow_template(
     template_id: String,
     input: UpdateWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
+    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     app.update_workflow_template(&template_id, input.workflow)
         .map_err(command_error)
@@ -413,7 +464,12 @@ pub fn submit_manual_check(
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
-        _ => return Err("manual check outcome must be success or failure".to_string()),
+        _ => {
+            return Err(CommandErrorVm::new(
+                "manual-check.invalid-outcome",
+                serde_json::json!({ "outcome": outcome }),
+            ));
+        }
     };
     app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
         .map(run_summary_vm)
@@ -525,7 +581,7 @@ pub async fn send_acp_prompt(
             .resolved_config
             .get("provider")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| "node is missing resolved provider".to_string())?;
+            .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
         let permission_mode = node
             .resolved_config
@@ -539,15 +595,24 @@ pub async fn send_acp_prompt(
         } else {
             (SessionMode::New, None)
         };
+        let prompt_bundle = app
+            .acp_prompt_bundle_for_attempt(
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                prompt,
+                prompt_id,
+                continue_ref.clone(),
+            )
+            .map_err(command_error)?;
         client::run_prompt(
+            provider,
             &agent_config.adapter,
             app.paths.repo_root.clone(),
             attempt_dir,
-            &PromptBundle {
-                system_prompt: String::new(),
-                user_prompt: prompt,
-                prompt_id,
-            },
+            &prompt_bundle,
             session_mode,
             permission_mode,
             continue_ref,
@@ -565,7 +630,7 @@ pub async fn send_acp_prompt(
         .map_err(command_error)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
 
 #[tauri::command]
@@ -685,7 +750,7 @@ pub async fn get_acp_raw_frames(
         .map_err(command_error)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
 
 #[tauri::command]
@@ -748,6 +813,130 @@ pub fn save_desktop_preferences(
     Ok(preferences_vm(theme, language, font))
 }
 
-fn command_error(error: anyhow::Error) -> String {
-    error.to_string()
+#[tauri::command]
+pub fn save_updater_settings(
+    state: State<'_, DesktopState>,
+    override_url: Option<String>,
+) -> CommandResult<UpdaterSettingsVm> {
+    let override_url = normalize_updater_url_override(override_url).map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let user_config = app
+        .set_user_desktop_updater_url_override(override_url)
+        .map_err(command_error)?;
+    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let settings = updater_settings(&config);
+    state.update_config(config).map_err(command_error)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn get_update_status(state: State<'_, DesktopState>) -> CommandResult<UpdateStatusVm> {
+    state.update_status().map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn check_update_manual(app: AppHandle) -> CommandResult<UpdateStatusVm> {
+    Ok(check_update(&app, false).await)
+}
+
+#[tauri::command]
+pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
+    run_download_and_install_update(&app).await.map_err(command_error)
+}
+
+fn ensure_workflow_agents_doctor_ready(
+    state: &DesktopState,
+    workflow: &WorkflowDsl,
+) -> CommandResult<()> {
+    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+    let mut providers = BTreeSet::new();
+    for node in &workflow.nodes {
+        if let Some(provider) = node.provider() {
+            providers.insert(provider.to_string());
+        }
+    }
+    for provider in providers {
+        let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
+        match diagnostics.get(&agent_type) {
+            Some(diagnostic) if diagnostic.available => {}
+            Some(diagnostic) => {
+                return Err(CommandErrorVm::new(
+                    "workflow.agent-doctor-failed",
+                    serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
+                ));
+            }
+            None => {
+                return Err(CommandErrorVm::new(
+                    "workflow.agent-doctor-required",
+                    serde_json::json!({ "agentType": provider }),
+                ));
+            }
+        }
+    }
+    for node in &workflow.nodes {
+        let NodeDsl::Worker(worker) = node;
+        let Some(provider) = worker.provider.as_deref() else {
+            continue;
+        };
+        let Some(permission_mode) = worker
+            .permission_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let agent_type = ManagedAgentType::from_str(provider).map_err(command_error)?;
+        let diagnostic = diagnostics.get(&agent_type).ok_or_else(|| {
+            CommandErrorVm::new(
+                "workflow.agent-doctor-required",
+                serde_json::json!({ "agentType": provider }),
+            )
+        })?;
+        let supported_modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
+        if !supported_modes.is_empty()
+            && !supported_modes.iter().any(|mode| mode.id == permission_mode)
+        {
+            return Err(CommandErrorVm::new(
+                "workflow.permission-mode-unsupported",
+                serde_json::json!({ "agentType": provider, "permissionMode": permission_mode }),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
+        return workflow_validation_command_error(error);
+    }
+    let message = error.to_string();
+    if let Some(code) = updater_command_error_code(&message) {
+        return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
+    }
+    CommandErrorVm::new("app.unexpected", serde_json::json!({}))
+}
+
+fn updater_command_error_code(message: &str) -> Option<&'static str> {
+    if message.contains("updater.invalid-url") {
+        Some("updater.invalid-url")
+    } else if message.contains("updater.no-update") {
+        Some("updater.no-update")
+    } else if message.contains("updater.install-failed") {
+        Some("updater.install-failed")
+    } else if message.contains("updater.check-failed") {
+        Some("updater.check-failed")
+    } else {
+        None
+    }
+}
+
+fn workflow_validation_command_error(error: &WorkflowValidationError) -> CommandErrorVm {
+    match error {
+        WorkflowValidationError::SuccessNewRoundTarget { from } => CommandErrorVm::new(
+            "workflow.success-new-round-target",
+            serde_json::json!({ "from": from }),
+        ),
+    }
 }

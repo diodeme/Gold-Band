@@ -28,7 +28,7 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 - 节点规范
   - [worker 节点](dsl/nodes/worker.md)
 - 输出与结果判定
-  - worker 节点通过 `output` 声明输出 DSL，通过 `success_condition` 判断 success / failure / invalid
+  - worker 节点通过 `output` 声明输出 DSL，通过 `success_condition` 判断 success / failure；schema 输出不合法时自动隐藏追问修复
   - 人工 check 通过 `manual_check` 声明，且与 AI 输出验证互斥
 
 ## 5. Runtime / Layout

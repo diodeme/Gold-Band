@@ -117,7 +117,6 @@ export function workflowNodeOrder(workflow: WorkflowDsl): Map<string, number> {
 /** Edge color CSS variable for authoring edges. */
 export function authoringEdgeColor(outcome: WorkflowEdgeDsl['on']): string {
   if (outcome === 'failure') return 'var(--destructive)';
-  if (outcome === 'invalid') return 'var(--muted-foreground)';
   return 'var(--muted-foreground)';
 }
 

@@ -18,12 +18,13 @@ use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
-    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl, validate_workflow,
+    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
+    WorkflowValidationError, validate_workflow,
 };
 use crate::process::kill_process_tree;
 use crate::provider::{
-    DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, provider_capabilities,
-    provider_from_agent,
+    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
+    ProviderInfo, provider_capabilities, provider_from_agent, render_prompt_bundle,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -73,7 +74,7 @@ fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
     WorkflowTemplate {
         id: "default".to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeCode.as_str(), profiles),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -99,7 +100,6 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                     .to_string(),
             ),
             goal: Some(goal.to_string()),
-            primary_artifact: artifact.clone(),
             output: artifact.clone().map(|artifact| OutputContractDsl {
                 kind: OutputKind::Json,
                 artifact,
@@ -302,6 +302,7 @@ pub struct TaskSummary {
     pub workflow_exists: bool,
     pub workflow_valid: bool,
     pub workflow_error: Option<String>,
+    pub workflow_validation_error: Option<WorkflowValidationError>,
     pub latest_run: Option<RunState>,
     pub resumable_run_id: Option<String>,
     pub suggested_run_id: Option<String>,
@@ -396,6 +397,26 @@ impl App {
         config.desktop_theme = Some(theme);
         config.desktop_language = Some(language);
         config.desktop_font = Some(font);
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_user_desktop_updater_url_override(
+        &self,
+        override_url: Option<String>,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_updater_url_override = override_url;
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_user_desktop_updater_last_checked_at(
+        &self,
+        checked_at: Option<String>,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_updater_last_checked_at = checked_at;
         self.save_user_config(&config)?;
         Ok(config)
     }
@@ -537,7 +558,9 @@ impl App {
 
         let mut store = self.load_workflow_template_store()?;
         let original_len = store.templates.len();
-        store.templates.retain(|template| template.id != template_id);
+        store
+            .templates
+            .retain(|template| template.id != template_id);
         if store.templates.len() == original_len {
             bail!("workflow template `{template_id}` not found");
         }
@@ -620,22 +643,20 @@ impl App {
 
     pub fn provider_doctor(&self, provider: &str) -> Result<DoctorResult> {
         let (agent_type, config) = self.managed_agent(provider)?;
-        match agent_type {
-            ManagedAgentType::ClaudeCode => {
-                match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
-                    Ok(capabilities) => Ok(DoctorResult {
-                        available: true,
-                        reason: None,
-                        capabilities: Some(capabilities),
-                    }),
-                    Err(err) => Ok(DoctorResult {
-                        available: false,
-                        reason: Some(err.to_string()),
-                        capabilities: None,
-                    }),
-                }
-            }
-            _ => bail!("agent `{provider}` is not supported yet"),
+        if !agent_type.is_supported() {
+            bail!("agent `{provider}` is not supported yet");
+        }
+        match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
+            Ok(capabilities) => Ok(DoctorResult {
+                available: true,
+                reason: None,
+                capabilities: Some(capabilities),
+            }),
+            Err(err) => Ok(DoctorResult {
+                available: false,
+                reason: Some(err.to_string()),
+                capabilities: None,
+            }),
         }
     }
 
@@ -752,7 +773,8 @@ impl App {
     pub fn task_summary(&self, task_id: &str) -> Result<TaskSummary> {
         let task = self.task_show(task_id)?;
         let workflow_exists = self.paths.workflow_file(task_id).exists();
-        let workflow_error = self.workflow_validation_error(task_id)?;
+        let (workflow_error, workflow_validation_error) =
+            self.workflow_validation_error(task_id)?;
         let workflow_valid = workflow_exists && workflow_error.is_none();
         let latest_run = self.latest_run(task_id)?;
         let resumable_run_id = self.find_resumable_run_id(task_id)?;
@@ -762,6 +784,7 @@ impl App {
             workflow_exists,
             workflow_valid,
             workflow_error,
+            workflow_validation_error,
             latest_run,
             resumable_run_id,
             suggested_run_id,
@@ -1294,6 +1317,45 @@ impl App {
             .ok_or_else(|| anyhow!("provider did not return an open-session command"))
     }
 
+    pub fn acp_prompt_bundle_for_attempt(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        prompt: String,
+        prompt_id: Option<String>,
+        continue_ref: Option<serde_json::Value>,
+    ) -> Result<PromptBundle> {
+        let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
+        let validated = validate_workflow(workflow)?;
+        self.validate_workflow_agents(&validated)?;
+        let round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+        let node: NodeState = read_json(
+            &self
+                .paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        )?;
+        validate_round_state(&round)?;
+        validate_node_state(&node)?;
+        let invocation = self::node_executor::build_worker_invocation(
+            self,
+            task_id,
+            run_id,
+            &round,
+            attempt_id,
+            &validated,
+            node_id,
+            SessionMode::Continue,
+            continue_ref,
+            Some(prompt),
+            prompt_id,
+            PromptVisibility::Visible,
+        )?;
+        render_prompt_bundle(&invocation)
+    }
+
     pub fn run_continue(
         &self,
         task_id: &str,
@@ -1473,29 +1535,35 @@ impl App {
         Ok(Some(read_json(path)?))
     }
 
-    fn workflow_validation_error(&self, task_id: &str) -> Result<Option<String>> {
+    fn workflow_validation_error(
+        &self,
+        task_id: &str,
+    ) -> Result<(Option<String>, Option<WorkflowValidationError>)> {
         let path = self.paths.workflow_file(task_id);
         if !path.exists() {
-            return Ok(Some("missing authoring/workflow.json".to_string()));
+            return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
         let workflow: WorkflowDsl = match read_json(&path) {
             Ok(workflow) => workflow,
-            Err(err) => return Ok(Some(err.to_string())),
+            Err(err) => return Ok((Some(err.to_string()), None)),
         };
 
         let validated = match validate_workflow(workflow.clone()) {
             Ok(validated) => validated,
-            Err(err) => return Ok(Some(err.to_string())),
+            Err(err) => {
+                let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
+                return Ok((Some(err.to_string()), validation_error));
+            }
         };
 
         if let Err(err) = self.validate_workflow_agents(&validated) {
-            return Ok(Some(err.to_string()));
+            return Ok((Some(err.to_string()), None));
         }
 
         match resolve_workflow_profiles(&self.paths, &validated.raw) {
-            Ok(_) => Ok(None),
-            Err(err) => Ok(Some(err.to_string())),
+            Ok(_) => Ok((None, None)),
+            Err(err) => Ok((Some(err.to_string()), None)),
         }
     }
 

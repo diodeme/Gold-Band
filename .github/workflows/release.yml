@@ -96,6 +96,9 @@ jobs:
       - name: Generate default Tauri channel config
         run: node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
 
+      - name: Ensure Tauri action npm script
+        run: npm pkg set scripts.tauri=tauri
+
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -104,7 +107,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          args: --config src-tauri/target/channel/tauri.default.conf.json
+          args: --config target/channel/tauri.default.conf.json
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: Gold Band ${{ env.RELEASE_TAG }}
           releaseDraft: true

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/diodeme/Gold-Band/compare/v0.3.0...v0.3.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **agent-management:** surface ACP registry help ([eb70f0d](https://github.com/diodeme/Gold-Band/commit/eb70f0d718dce30691963ea2d877e69b72cb5eda))
+* **desktop:** prefer setup.exe in updater manifest, hide ACP child console, surface updater errors ([11a50a2](https://github.com/diodeme/Gold-Band/commit/11a50a2bc38870ac3df70082c4963ce828a23697))
+
 ## [0.3.0](https://github.com/diodeme/Gold-Band/compare/v0.2.0...v0.3.0) (2026-05-26)
 
 

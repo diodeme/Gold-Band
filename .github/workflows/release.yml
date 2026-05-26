@@ -42,6 +42,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Checkout release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: release-tools
+
       - name: Ensure tag is on main
         shell: bash
         run: |
@@ -100,7 +106,7 @@ jobs:
       - name: Generate default Tauri channel config
         shell: bash
         run: |
-          node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+          node release-tools/scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
           test -f src-tauri/target/channel/tauri.default.conf.json
 
       - name: Ensure Tauri action npm script
@@ -129,10 +135,10 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
 
     steps:
-      - name: Checkout release tag
+      - name: Checkout release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

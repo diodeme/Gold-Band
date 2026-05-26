@@ -14,23 +14,8 @@
         },
         {
           "type": "toml",
-          "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name=='gold-band')].version"
-        },
-        {
-          "type": "toml",
           "path": "src-tauri/Cargo.toml",
           "jsonpath": "$.package.version"
-        },
-        {
-          "type": "toml",
-          "path": "src-tauri/Cargo.lock",
-          "jsonpath": "$.package[?(@.name=='gold-band')].version"
-        },
-        {
-          "type": "toml",
-          "path": "src-tauri/Cargo.lock",
-          "jsonpath": "$.package[?(@.name=='gold-band-desktop')].version"
         },
         {
           "type": "json",

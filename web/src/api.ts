@@ -26,6 +26,7 @@ import type {
   DesktopLanguage,
   DesktopFontPreference,
   DesktopThemePreference,
+  LocalClaudeStatusVm,
   LogPageVm,
   LogQueryInput,
   ManagedAgentInput,
@@ -123,6 +124,13 @@ function localTimestamp(date = new Date()) {
 
 function browserProfileId() {
   return `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function checkLocalClaude() {
+  if (isTauri) {
+    return invoke<LocalClaudeStatusVm>('check_local_claude');
+  }
+  return Promise.resolve({ found: false, path: null });
 }
 
 export function getAppBootstrap() {
@@ -412,8 +420,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return command<ContentVm>('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId }, { ...mockContent, title: attemptId, kind: 'worker-ref' });
 }
 
-export function saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) {
-  return command<PreferencesVm>('save_desktop_preferences', { theme, language, font }, { theme, language, font });
+export function saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) {
+  return command<PreferencesVm>('save_desktop_preferences', { theme, language, font, useLocalClaude }, { theme, language, font, useLocalClaude: false });
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {

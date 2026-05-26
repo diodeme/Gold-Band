@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -22,8 +22,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { ChevronDown, Pencil, RotateCcw, Save } from 'lucide-react';
-import { getSystemFonts } from '../api';
+import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
+import { checkLocalClaude, getSystemFonts } from '../api';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
@@ -33,19 +34,21 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => void;
+  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => void;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
   const [font, setFont] = useState(preferences.font);
+  const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
@@ -56,16 +59,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   useEffect(() => setTheme(preferences.theme), [preferences.theme]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setFont(preferences.font), [preferences.font]);
+  useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
+
+  const [localClaudeStatus, setLocalClaudeStatus] = useState<LocalClaudeStatusVm | null>(null);
 
   useEffect(() => {
     getSystemFonts().then(setSystemFonts).catch(() => setSystemFonts([]));
   }, []);
 
+  useEffect(() => {
+    checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
+  }, [useLocalClaude]);
+
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
     setTheme(value);
-    onSave(value, language, font);
+    onSave(value, language, font, useLocalClaude);
   };
 
   const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
@@ -74,23 +84,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
     if (theme === 'system') {
       applyTheme('system');
       setTheme('system');
-      onSave('system', language, font);
+      onSave('system', language, font, useLocalClaude);
     } else {
       setTheme(value);
-      onSave(value, language, font);
+      onSave(value, language, font, useLocalClaude);
     }
     setThemeSheetOpen(false);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font);
+    onSave(theme, value, font, useLocalClaude);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
     setFont(value);
     applyFont(value);
-    onSave(theme, language, value);
+    onSave(theme, language, value, useLocalClaude);
   };
 
   const openThemeDrawer = (mode: ThemeDrawerMode) => {
@@ -283,8 +293,47 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
 
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
+            <SettingsSection title={t('settings.advanced')}>
+              <div className="flex items-center gap-3 py-2">
+                <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <CircleHelp className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-64 text-xs">
+                    {t('settings.useLocalClaude.tooltip')}
+                  </TooltipContent>
+                </Tooltip>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={useLocalClaude}
+                  className={cn(
+                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                    useLocalClaude ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
+                  )}
+                  onClick={() => {
+                    const next = !useLocalClaude;
+                    setUseLocalClaude(next);
+                    onSave(theme, language, font, next);
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
+                      useLocalClaude && 'translate-x-5',
+                    )}
+                  />
+                </button>
+                {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
+                  <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
+                ) : null}
+              </div>
+            </SettingsSection>
             <SettingsSection title={t('settings.updater.title')}>
-              <div className="max-w-4xl space-y-4">
+              <div className="max-w-4xl space-y-3">
                 <div className="flex items-center gap-3">
                   <div className="w-28 shrink-0 text-sm font-medium text-muted-foreground">{t('settings.updater.currentUrl')}</div>
                   {editingUpdaterUrl ? (
@@ -295,32 +344,34 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                       onChange={(event) => setUpdaterOverrideUrl(event.target.value)}
                     />
                   ) : (
-                    <div className="min-w-0 flex-1 break-all font-mono text-xs text-foreground">{updaterSettings.effectiveUrl}</div>
+                    <div className="min-w-0 break-all font-mono text-xs text-foreground">{updaterSettings.effectiveUrl}</div>
                   )}
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-8 shrink-0"
-                    title={editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}
-                    disabled={busy}
-                    onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
-                  >
-                    {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-8 shrink-0"
-                    title={t('settings.updater.resetToBuiltIn')}
-                    disabled={busy}
-                    onClick={() => void resetUpdaterOverride()}
-                  >
-                    <RotateCcw className="size-4" />
-                  </Button>
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      title={editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}
+                      disabled={busy}
+                      onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
+                    >
+                      {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      title={t('settings.updater.resetToBuiltIn')}
+                      disabled={busy}
+                      onClick={() => void resetUpdaterOverride()}
+                    >
+                      <RotateCcw className="size-4" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button size="sm" variant="secondary" onClick={() => void onCheckUpdate()} disabled={busy || updateStatus.status === 'checking'}>{t('settings.updater.checkNow')}</Button>
-                  <UpdateStatusInline status={updateStatus} busy={busy} onInstallUpdate={onInstallUpdate} />
+                <div className="flex">
+                  <div className="w-28 shrink-0" />
+                  <UpdateStatusInline status={updateStatus} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
                 </div>
               </div>
             </SettingsSection>
@@ -333,25 +384,58 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   );
 }
 
-function UpdateStatusInline({ status, busy, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; onInstallUpdate: () => Promise<void> }) {
+function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
   const { t } = useTranslation();
-  const statusClass = status.status === 'available'
+  const downloading = status.status === 'downloading';
+  const statusClass = status.status === 'available' || status.status === 'downloading'
     ? 'text-gold-success'
     : status.status === 'error'
       ? 'text-destructive'
       : 'text-muted-foreground';
-  const showStatusText = status.status !== 'idle' || !status.checkedAt;
+  const progressPct = downloadProgress && downloadProgress.total ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)) : 0;
+  const hasProgress = downloadProgress && downloadProgress.downloaded > 0;
+  const hasTotal = downloadProgress && downloadProgress.total != null;
+  const hasResultRow = status.status !== 'idle' || !!status.error;
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-      {showStatusText ? <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span> : null}
-      {status.checkedAt ? <span className="text-muted-foreground">{t('settings.updater.lastCheckedAt', { time: formatCheckedAt(status.checkedAt) })}</span> : null}
-      {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → {status.update.version}</span> : null}
-      {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
-      {status.status === 'available' ? (
-        <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
+    <div className="min-w-0 flex-1 space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+        <Button size="sm" variant="secondary" onClick={() => void onCheckUpdate()} disabled={busy || status.status === 'checking'}>{status.status === 'checking' ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}{t('settings.updater.checkNow')}</Button>
+        {status.checkedAt ? <span className="text-xs text-muted-foreground">{t('settings.updater.lastCheckedAt', { time: formatCheckedAt(status.checkedAt) })}</span> : null}
+      </div>
+      {hasResultRow ? (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span>
+          {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → <span className="text-destructive">{status.update.version}</span></span> : null}
+          {downloading ? (
+            <Button size="sm" disabled><Loader2 className="mr-1.5 size-3.5 animate-spin" />{t('settings.updater.status.downloading')}</Button>
+          ) : status.status === 'available' ? (
+            <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
+          ) : null}
+          {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
+        </div>
+      ) : null}
+      {downloading && hasProgress ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {hasTotal ? (
+            <>
+              <div className="h-1.5 max-w-80 flex-1 rounded-full bg-secondary">
+                <div className="h-full rounded-full bg-gold-success transition-all duration-300" style={{ width: `${progressPct}%` }} />
+              </div>
+              <span className="shrink-0 tabular-nums">{formatBytes(downloadProgress!.downloaded)} / {formatBytes(downloadProgress!.total!)}</span>
+            </>
+          ) : (
+            <span className="tabular-nums">{formatBytes(downloadProgress!.downloaded)} downloaded</span>
+          )}
+        </div>
       ) : null}
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatCheckedAt(value: string) {

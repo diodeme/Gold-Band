@@ -10,12 +10,13 @@ interface ShellProps {
   active: PrimaryModule;
   appName: string;
   repoRoot?: string;
+  needsWorkspace?: boolean;
   onSelect: (module: PrimaryModule) => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-export function Shell({ active, appName, repoRoot, onSelect, onChooseWorkspace, children }: ShellProps) {
+export function Shell({ active, appName, repoRoot, needsWorkspace, onSelect, onChooseWorkspace, children }: ShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -33,10 +34,10 @@ export function Shell({ active, appName, repoRoot, onSelect, onChooseWorkspace, 
             </a>
           </Button>
 
-          <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace} title={repoRoot ?? t('common.switchWorkspace')}>
+          <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace} title={needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}>
             <span className="min-w-0">
-              <span className="block truncate text-xs text-muted-foreground">{repoRoot ?? t('common.workspace')}</span>
-              <small className="mt-1 block text-xs font-semibold text-primary">{t('common.switchWorkspace')}</small>
+              <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
+              <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
             </span>
             <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
           </Button>

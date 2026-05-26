@@ -275,6 +275,7 @@ pub struct UserConfig {
     pub desktop_updater_last_checked_at: Option<String>,
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
+    pub use_local_claude: Option<bool>,
     #[serde(default)]
     pub recent_desktop_workspaces: Vec<String>,
 }
@@ -292,6 +293,7 @@ pub struct RuntimeConfig {
     pub desktop_updater_url_override: Option<String>,
     pub desktop_updater_last_checked_at: Option<String>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    pub use_local_claude: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -313,6 +315,7 @@ impl Default for RuntimeConfig {
             desktop_updater_url_override: None,
             desktop_updater_last_checked_at: None,
             agents,
+            use_local_claude: false,
         }
     }
 }
@@ -347,6 +350,9 @@ impl RuntimeConfig {
         self.desktop_updater_last_checked_at = user_config.desktop_updater_last_checked_at.clone();
         if let Some(agents) = &user_config.agents {
             self.agents = agents.clone();
+        }
+        if let Some(use_local_claude) = user_config.use_local_claude {
+            self.use_local_claude = use_local_claude;
         }
         self
     }

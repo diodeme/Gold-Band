@@ -62,8 +62,6 @@ const resources = {
       },
       workspaceSelect: {
         product: '{{appName}} Desktop',
-        description: '选择包含 {{configDirName}} 配置目录的工作空间后，桌面端会记住该路径并读取对应渠道的本地数据。',
-        recentDescription: '最近打开过的工作空间会保存在本地用户偏好中。',
         emptyRecent: '暂无最近工作空间',
       },
       errors: {
@@ -613,6 +611,7 @@ const resources = {
         appearance: '外观',
         language: '语言',
         typography: '字体',
+        advanced: '高级',
         light: '浅色',
         dark: '深色',
         system: '跟随系统',
@@ -648,6 +647,11 @@ const resources = {
           appearance: '外观',
           advanced: '高级',
         },
+        useLocalClaude: {
+          label: '使用本地 Claude',
+          tooltip: '如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude',
+          notFound: '未找到本地 Claude，将使用 SDK 内置版本',
+        },
         updater: {
           title: '更新',
           currentUrl: '更新地址',
@@ -670,6 +674,7 @@ const resources = {
             idle: '尚未检查',
             checking: '正在检查',
             available: '发现新版本',
+            downloading: '正在下载更新...',
             'not-available': '已是最新版本',
             error: '检查失败',
           },
@@ -736,8 +741,6 @@ const resources = {
       },
       workspaceSelect: {
         product: '{{appName}} Desktop',
-        description: 'Select a workspace with a {{configDirName}} config directory. The desktop app will remember it and read local data for this channel.',
-        recentDescription: 'Recent workspaces are saved in local user preferences.',
         emptyRecent: 'No recent workspaces',
       },
       errors: {
@@ -1287,6 +1290,7 @@ const resources = {
         appearance: 'Appearance',
         language: 'Language',
         typography: 'Typography',
+        advanced: 'Advanced',
         light: 'Light',
         dark: 'Dark',
         system: 'System',
@@ -1322,6 +1326,11 @@ const resources = {
           appearance: 'Appearance',
           advanced: 'Advanced',
         },
+        useLocalClaude: {
+          label: 'Use local Claude',
+          tooltip: 'If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.',
+          notFound: 'Local Claude not found, using SDK bundled version',
+        },
         updater: {
           title: 'Updates',
           currentUrl: 'Update URL',
@@ -1344,6 +1353,7 @@ const resources = {
             idle: 'Not checked yet',
             checking: 'Checking',
             available: 'Update available',
+            downloading: 'Downloading update...',
             'not-available': 'Up to date',
             error: 'Check failed',
           },

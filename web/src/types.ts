@@ -3,12 +3,18 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
-export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'error';
+export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
   theme: DesktopThemePreference;
   language: DesktopLanguage;
   font: DesktopFontPreference;
+  useLocalClaude: boolean;
+}
+
+export interface LocalClaudeStatusVm {
+  found: boolean;
+  path?: string | null;
 }
 
 export interface UpdaterSettingsVm {
@@ -42,6 +48,7 @@ export interface AppBootstrapVm {
   updateStatus: UpdateStatusVm;
   clientVersion: string;
   appInfo: AppInfoVm;
+  needsWorkspace: boolean;
 }
 
 export interface AppInfoVm {

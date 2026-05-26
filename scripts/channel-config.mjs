@@ -24,8 +24,8 @@ export function channelEnvPrefix(channel) {
   return channel.toUpperCase().replace(/[^A-Z0-9]/g, '_');
 }
 
-export function tauriConfigOverlay(config) {
-  return {
+export function tauriConfigOverlay(config, version) {
+  const overlay = {
     productName: config.productName,
     identifier: config.identifier,
     app: {
@@ -53,18 +53,29 @@ export function tauriConfigOverlay(config) {
       },
     },
   };
+
+  if (version) {
+    overlay.version = version;
+  }
+
+  if (config.bundleTargets) {
+    overlay.bundle = { targets: config.bundleTargets };
+  }
+
+  return overlay;
 }
 
-export function writeTauriConfigOverlay(config, outputPath) {
+export function writeTauriConfigOverlay(config, outputPath, version) {
   mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, `${JSON.stringify(tauriConfigOverlay(config), null, 2)}\n`);
+  writeFileSync(outputPath, `${JSON.stringify(tauriConfigOverlay(config, version), null, 2)}\n`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const channel = process.argv[2] ?? 'default';
   const outputPath = process.argv[3] ?? join(repoRoot, 'src-tauri', 'target', 'channel', `tauri.${channel}.conf.json`);
+  const version = process.argv[4] || undefined;
   try {
-    writeTauriConfigOverlay(readChannelConfig(channel), outputPath);
+    writeTauriConfigOverlay(readChannelConfig(channel), outputPath, version);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

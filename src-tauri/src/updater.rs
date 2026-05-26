@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -27,6 +28,7 @@ pub enum UpdateCheckStatus {
     Idle,
     Checking,
     Available,
+    Downloading,
     NotAvailable,
     Error,
 }
@@ -158,13 +160,35 @@ pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> U
     status
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgress {
+    downloaded: usize,
+    total: Option<u64>,
+}
+
 pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {
         return Err(anyhow!("updater.no-update"));
     };
+    let app_handle = app.clone();
+    let cumulative = Arc::new(Mutex::new(0usize));
     update
-        .download_and_install(|_, _| {}, || {})
+        .download_and_install(
+            {
+                let cumulative = cumulative.clone();
+                move |chunk_size, total| {
+                    let mut acc = cumulative.lock().unwrap();
+                    *acc += chunk_size;
+                    let _ = app_handle.emit(
+                        "gold-band://update-download-progress",
+                        UpdateDownloadProgress { downloaded: *acc, total },
+                    );
+                }
+            },
+            || {},
+        )
         .await
         .context("updater.install-failed")?;
     app.request_restart();

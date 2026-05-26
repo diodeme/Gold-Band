@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
 
@@ -25,9 +28,9 @@ jobs:
           - name: linux-x64
             runner: ubuntu-22.04
           - name: macos-x64
-            runner: macos-13
+            runner: macos-15-intel
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-15
 
     env:
       RELEASE_TAG: ${{ inputs.tag }}
@@ -38,6 +41,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Checkout release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: release-tools
 
       - name: Ensure tag is on main
         shell: bash
@@ -97,7 +106,7 @@ jobs:
       - name: Generate default Tauri channel config
         shell: bash
         run: |
-          node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
+          node release-tools/scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
           test -f src-tauri/target/channel/tauri.default.conf.json
 
       - name: Ensure Tauri action npm script
@@ -126,10 +135,10 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
 
     steps:
-      - name: Checkout release tag
+      - name: Checkout release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

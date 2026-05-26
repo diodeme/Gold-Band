@@ -430,6 +430,7 @@ export function App() {
       active={primaryModule}
       appName={appInfo.appName}
       repoRoot={bootstrap?.repoRoot}
+      needsWorkspace={bootstrap?.needsWorkspace}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);

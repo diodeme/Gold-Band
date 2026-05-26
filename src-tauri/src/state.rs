@@ -39,7 +39,10 @@ impl DesktopContext {
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
         let config = RuntimeConfig::default().apply_user_config(&user_config);
-        let recent_workspaces = recent_workspaces(&user_config, &repo_root);
+        let mut recent_workspaces = recent_workspaces(&user_config, &repo_root);
+        if needs_workspace {
+            recent_workspaces.retain(|w| w != repo_root.as_str());
+        }
         Ok(Self {
             repo_root,
             config,

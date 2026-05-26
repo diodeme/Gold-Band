@@ -5,7 +5,7 @@ const [assetDirArg, outputArg] = process.argv.slice(2);
 const assetDir = assetDirArg ?? 'release-assets';
 const outputPath = outputArg ?? 'latest.json';
 const repository = process.env.GITHUB_REPOSITORY;
-const tag = process.env.GITHUB_REF_NAME ?? process.env.RELEASE_TAG;
+const tag = process.env.RELEASE_TAG ?? process.env.GITHUB_REF_NAME;
 const version = (process.env.RELEASE_VERSION ?? tag ?? '').replace(/^v/, '');
 
 if (!repository) {
@@ -18,6 +18,10 @@ if (!tag) {
 }
 if (!version) {
   console.error('Could not infer release version.');
+  process.exit(1);
+}
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  console.error(`Invalid release version: ${version}. Set RELEASE_TAG to a semver tag such as v0.2.0.`);
   process.exit(1);
 }
 

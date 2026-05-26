@@ -9,6 +9,12 @@ export interface PreferencesVm {
   theme: DesktopThemePreference;
   language: DesktopLanguage;
   font: DesktopFontPreference;
+  useLocalClaude: boolean;
+}
+
+export interface LocalClaudeStatusVm {
+  found: boolean;
+  path?: string | null;
 }
 
 export interface UpdaterSettingsVm {

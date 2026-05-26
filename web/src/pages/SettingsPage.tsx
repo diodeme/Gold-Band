@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -22,8 +22,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { ChevronDown, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
-import { getSystemFonts } from '../api';
+import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
+import { checkLocalClaude, getSystemFonts } from '../api';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
@@ -36,7 +37,7 @@ interface SettingsPageProps {
   downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => void;
+  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => void;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
@@ -47,6 +48,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
   const [font, setFont] = useState(preferences.font);
+  const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
@@ -57,16 +59,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   useEffect(() => setTheme(preferences.theme), [preferences.theme]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setFont(preferences.font), [preferences.font]);
+  useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
+
+  const [localClaudeStatus, setLocalClaudeStatus] = useState<LocalClaudeStatusVm | null>(null);
 
   useEffect(() => {
     getSystemFonts().then(setSystemFonts).catch(() => setSystemFonts([]));
   }, []);
 
+  useEffect(() => {
+    checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
+  }, [useLocalClaude]);
+
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
     setTheme(value);
-    onSave(value, language, font);
+    onSave(value, language, font, useLocalClaude);
   };
 
   const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
@@ -75,23 +84,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
     if (theme === 'system') {
       applyTheme('system');
       setTheme('system');
-      onSave('system', language, font);
+      onSave('system', language, font, useLocalClaude);
     } else {
       setTheme(value);
-      onSave(value, language, font);
+      onSave(value, language, font, useLocalClaude);
     }
     setThemeSheetOpen(false);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font);
+    onSave(theme, value, font, useLocalClaude);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
     setFont(value);
     applyFont(value);
-    onSave(theme, language, value);
+    onSave(theme, language, value, useLocalClaude);
   };
 
   const openThemeDrawer = (mode: ThemeDrawerMode) => {
@@ -284,6 +293,45 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
 
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
+            <SettingsSection title={t('settings.advanced')}>
+              <div className="flex items-center gap-3 py-2">
+                <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <CircleHelp className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-64 text-xs">
+                    {t('settings.useLocalClaude.tooltip')}
+                  </TooltipContent>
+                </Tooltip>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={useLocalClaude}
+                  className={cn(
+                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                    useLocalClaude ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
+                  )}
+                  onClick={() => {
+                    const next = !useLocalClaude;
+                    setUseLocalClaude(next);
+                    onSave(theme, language, font, next);
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
+                      useLocalClaude && 'translate-x-5',
+                    )}
+                  />
+                </button>
+                {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
+                  <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
+                ) : null}
+              </div>
+            </SettingsSection>
             <SettingsSection title={t('settings.updater.title')}>
               <div className="max-w-4xl space-y-3">
                 <div className="flex items-center gap-3">

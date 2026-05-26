@@ -611,6 +611,7 @@ const resources = {
         appearance: '外观',
         language: '语言',
         typography: '字体',
+        advanced: '高级',
         light: '浅色',
         dark: '深色',
         system: '跟随系统',
@@ -645,6 +646,11 @@ const resources = {
           general: '通用',
           appearance: '外观',
           advanced: '高级',
+        },
+        useLocalClaude: {
+          label: '使用本地 Claude',
+          tooltip: '如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude',
+          notFound: '未找到本地 Claude，将使用 SDK 内置版本',
         },
         updater: {
           title: '更新',
@@ -1284,6 +1290,7 @@ const resources = {
         appearance: 'Appearance',
         language: 'Language',
         typography: 'Typography',
+        advanced: 'Advanced',
         light: 'Light',
         dark: 'Dark',
         system: 'System',
@@ -1318,6 +1325,11 @@ const resources = {
           general: 'General',
           appearance: 'Appearance',
           advanced: 'Advanced',
+        },
+        useLocalClaude: {
+          label: 'Use local Claude',
+          tooltip: 'If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.',
+          notFound: 'Local Claude not found, using SDK bundled version',
         },
         updater: {
           title: 'Updates',

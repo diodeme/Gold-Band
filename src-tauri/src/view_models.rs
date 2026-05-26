@@ -32,6 +32,14 @@ pub struct PreferencesVm {
     pub theme: DesktopThemePreference,
     pub language: DesktopLanguage,
     pub font: DesktopFontPreference,
+    pub use_local_claude: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalClaudeStatusVm {
+    pub found: bool,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -607,11 +615,13 @@ pub fn preferences_vm(
     theme: DesktopThemePreference,
     language: DesktopLanguage,
     font: DesktopFontPreference,
+    use_local_claude: bool,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
         language,
         font,
+        use_local_claude,
     }
 }
 
@@ -630,6 +640,7 @@ pub fn bootstrap_vm(
             app.config.desktop_theme,
             app.config.desktop_language,
             app.config.desktop_font.clone(),
+            app.config.use_local_claude,
         ),
         updater_settings: updater_settings(&app.config),
         update_status,

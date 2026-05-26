@@ -35,7 +35,7 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
-    AppBootstrapVm, ContentVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
+    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
     RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, WorkflowVm,
     acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
     preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm,
@@ -112,6 +112,20 @@ pub fn get_system_fonts() -> Vec<String> {
         }
     }
     families.into_iter().collect()
+}
+
+#[tauri::command]
+pub fn check_local_claude() -> LocalClaudeStatusVm {
+    match gold_band::process::find_executable_in_path("claude") {
+        Some(path) => LocalClaudeStatusVm {
+            found: true,
+            path: Some(path.to_string_lossy().into_owned()),
+        },
+        None => LocalClaudeStatusVm {
+            found: false,
+            path: None,
+        },
+    }
 }
 
 #[tauri::command]
@@ -619,6 +633,7 @@ pub async fn send_acp_prompt(
             session_mode,
             permission_mode,
             continue_ref,
+            app.config.use_local_claude,
         )
         .map_err(command_error)?;
         acp_session_vm(
@@ -805,15 +820,18 @@ pub fn save_desktop_preferences(
     theme: DesktopThemePreference,
     language: DesktopLanguage,
     font: DesktopFontPreference,
+    use_local_claude: bool,
 ) -> CommandResult<PreferencesVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    app.set_user_desktop_preferences(theme, language, font.clone())
+        .map_err(command_error)?;
     let user_config = app
-        .set_user_desktop_preferences(theme, language, font.clone())
+        .set_user_use_local_claude(use_local_claude)
         .map_err(command_error)?;
     let config = RuntimeConfig::default().apply_user_config(&user_config);
     state.update_config(config).map_err(command_error)?;
-    Ok(preferences_vm(theme, language, font))
+    Ok(preferences_vm(theme, language, font, use_local_claude))
 }
 
 #[tauri::command]

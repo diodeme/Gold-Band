@@ -1,10 +1,10 @@
 {
   "channel": "wb",
-  "appName": "maling",
+  "appName": "MALING",
   "appKey": "maling",
   "configDirName": ".maling",
   "homeEnvVar": "MALING_HOME",
-  "productName": "maling",
+  "productName": "MALING",
   "windowTitle": "maling",
   "identifier": "local.maling.desktop",
   "updaterEndpoint": "https://gold-band-wb.invalid/updates/latest.json",

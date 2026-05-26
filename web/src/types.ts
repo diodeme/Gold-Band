@@ -3,7 +3,7 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
-export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'error';
+export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
   theme: DesktopThemePreference;

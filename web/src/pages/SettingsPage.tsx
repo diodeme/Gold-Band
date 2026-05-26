@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { ChevronDown, Pencil, RotateCcw, Save } from 'lucide-react';
+import { ChevronDown, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { getSystemFonts } from '../api';
 import { cn } from '@/lib/utils';
 
@@ -33,6 +33,7 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
   onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => void;
@@ -41,7 +42,7 @@ interface SettingsPageProps {
   onInstallUpdate: () => Promise<void>;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -284,7 +285,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.updater.title')}>
-              <div className="max-w-4xl space-y-4">
+              <div className="max-w-4xl space-y-3">
                 <div className="flex items-center gap-3">
                   <div className="w-28 shrink-0 text-sm font-medium text-muted-foreground">{t('settings.updater.currentUrl')}</div>
                   {editingUpdaterUrl ? (
@@ -295,32 +296,34 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                       onChange={(event) => setUpdaterOverrideUrl(event.target.value)}
                     />
                   ) : (
-                    <div className="min-w-0 flex-1 break-all font-mono text-xs text-foreground">{updaterSettings.effectiveUrl}</div>
+                    <div className="min-w-0 break-all font-mono text-xs text-foreground">{updaterSettings.effectiveUrl}</div>
                   )}
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-8 shrink-0"
-                    title={editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}
-                    disabled={busy}
-                    onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
-                  >
-                    {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-8 shrink-0"
-                    title={t('settings.updater.resetToBuiltIn')}
-                    disabled={busy}
-                    onClick={() => void resetUpdaterOverride()}
-                  >
-                    <RotateCcw className="size-4" />
-                  </Button>
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      title={editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}
+                      disabled={busy}
+                      onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
+                    >
+                      {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      title={t('settings.updater.resetToBuiltIn')}
+                      disabled={busy}
+                      onClick={() => void resetUpdaterOverride()}
+                    >
+                      <RotateCcw className="size-4" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button size="sm" variant="secondary" onClick={() => void onCheckUpdate()} disabled={busy || updateStatus.status === 'checking'}>{t('settings.updater.checkNow')}</Button>
-                  <UpdateStatusInline status={updateStatus} busy={busy} onInstallUpdate={onInstallUpdate} />
+                <div className="flex">
+                  <div className="w-28 shrink-0" />
+                  <UpdateStatusInline status={updateStatus} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
                 </div>
               </div>
             </SettingsSection>
@@ -333,25 +336,58 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   );
 }
 
-function UpdateStatusInline({ status, busy, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; onInstallUpdate: () => Promise<void> }) {
+function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
   const { t } = useTranslation();
-  const statusClass = status.status === 'available'
+  const downloading = status.status === 'downloading';
+  const statusClass = status.status === 'available' || status.status === 'downloading'
     ? 'text-gold-success'
     : status.status === 'error'
       ? 'text-destructive'
       : 'text-muted-foreground';
-  const showStatusText = status.status !== 'idle' || !status.checkedAt;
+  const progressPct = downloadProgress && downloadProgress.total ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)) : 0;
+  const hasProgress = downloadProgress && downloadProgress.downloaded > 0;
+  const hasTotal = downloadProgress && downloadProgress.total != null;
+  const hasResultRow = status.status !== 'idle' || !!status.error;
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-      {showStatusText ? <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span> : null}
-      {status.checkedAt ? <span className="text-muted-foreground">{t('settings.updater.lastCheckedAt', { time: formatCheckedAt(status.checkedAt) })}</span> : null}
-      {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → {status.update.version}</span> : null}
-      {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
-      {status.status === 'available' ? (
-        <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
+    <div className="min-w-0 flex-1 space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+        <Button size="sm" variant="secondary" onClick={() => void onCheckUpdate()} disabled={busy || status.status === 'checking'}>{status.status === 'checking' ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}{t('settings.updater.checkNow')}</Button>
+        {status.checkedAt ? <span className="text-xs text-muted-foreground">{t('settings.updater.lastCheckedAt', { time: formatCheckedAt(status.checkedAt) })}</span> : null}
+      </div>
+      {hasResultRow ? (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span>
+          {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → <span className="text-destructive">{status.update.version}</span></span> : null}
+          {downloading ? (
+            <Button size="sm" disabled><Loader2 className="mr-1.5 size-3.5 animate-spin" />{t('settings.updater.status.downloading')}</Button>
+          ) : status.status === 'available' ? (
+            <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
+          ) : null}
+          {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
+        </div>
+      ) : null}
+      {downloading && hasProgress ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {hasTotal ? (
+            <>
+              <div className="h-1.5 max-w-80 flex-1 rounded-full bg-secondary">
+                <div className="h-full rounded-full bg-gold-success transition-all duration-300" style={{ width: `${progressPct}%` }} />
+              </div>
+              <span className="shrink-0 tabular-nums">{formatBytes(downloadProgress!.downloaded)} / {formatBytes(downloadProgress!.total!)}</span>
+            </>
+          ) : (
+            <span className="tabular-nums">{formatBytes(downloadProgress!.downloaded)} downloaded</span>
+          )}
+        </div>
       ) : null}
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatCheckedAt(value: string) {

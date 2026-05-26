@@ -184,7 +184,7 @@ async fn check_update_inner<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Upd
 
 fn build_updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater::Updater> {
     let state = app.state::<DesktopState>();
-    let context = state.context()?;
+    let context = state.context().context("updater.context-unavailable")?;
     let config = context.config;
     let settings = updater_settings(&config);
     validate_updater_url(&settings.effective_url)?;
@@ -201,6 +201,8 @@ fn updater_error_code(error: &anyhow::Error) -> String {
     let message = error.to_string();
     if message.contains("updater.invalid-url") {
         "updater.invalid-url".to_string()
+    } else if message.contains("updater.context-unavailable") {
+        "updater.context-unavailable".to_string()
     } else if message.contains("updater.no-update") {
         "updater.no-update".to_string()
     } else if message.contains("updater.install-failed") {

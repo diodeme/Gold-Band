@@ -69,10 +69,11 @@ function platformKey(file) {
 
 function score(file) {
   const lower = file.toLowerCase();
-  if (lower.endsWith('.msi')) return 40;
-  if (lower.endsWith('.app.tar.gz')) return 35;
-  if (lower.endsWith('.appimage')) return 30;
-  if (lower.endsWith('.exe')) return 20;
+  if (lower.endsWith('-setup.exe') || lower.endsWith('_setup.exe')) return 50;
+  if (lower.endsWith('.app.tar.gz')) return 40;
+  if (lower.endsWith('.appimage')) return 35;
+  if (lower.endsWith('.msi')) return 30;
+  if (lower.endsWith('.exe')) return 25;
   if (lower.endsWith('.dmg')) return 10;
   return 0;
 }

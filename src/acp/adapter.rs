@@ -1,8 +1,9 @@
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 
 use anyhow::{Context, Result, ensure};
 
 use crate::config::AcpAdapterConfig;
+use crate::process::background_command;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
@@ -31,7 +32,7 @@ pub fn spawn_adapter(
 ) -> Result<(ResolvedAcpAdapter, Child)> {
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
-    let mut command = Command::new(&executable);
+    let mut command = background_command(&executable);
     command
         .args(&adapter.args)
         .current_dir(cwd)

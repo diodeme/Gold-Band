@@ -149,7 +149,7 @@ impl ManagedAgentType {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
-                    "@agentclientprotocol/claude-agent-acp@0.37.0".to_string(),
+                    "@agentclientprotocol/claude-agent-acp@latest".to_string(),
                 ],
                 display_name: "Claude".to_string(),
                 env: BTreeMap::new(),
@@ -158,17 +158,13 @@ impl ManagedAgentType {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
-                    "@zed-industries/codex-acp@0.14.0".to_string(),
+                    "@zed-industries/codex-acp@latest".to_string(),
                 ],
                 display_name: "Codex".to_string(),
                 env: BTreeMap::new(),
             },
             Self::Cursor => AcpAdapterConfig {
-                command: if cfg!(windows) {
-                    ".\\dist-package\\cursor-agent.cmd".to_string()
-                } else {
-                    "./dist-package/cursor-agent".to_string()
-                },
+                command: "cursor-agent".to_string(),
                 args: vec!["acp".to_string()],
                 display_name: "Cursor".to_string(),
                 env: BTreeMap::new(),
@@ -177,18 +173,14 @@ impl ManagedAgentType {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
-                    "@google/gemini-cli@0.43.0".to_string(),
+                    "@google/gemini-cli@latest".to_string(),
                     "--acp".to_string(),
                 ],
                 display_name: "Gemini".to_string(),
                 env: BTreeMap::new(),
             },
             Self::OpenCode => AcpAdapterConfig {
-                command: if cfg!(windows) {
-                    ".\\opencode.exe".to_string()
-                } else {
-                    "./opencode".to_string()
-                },
+                command: "opencode".to_string(),
                 args: vec!["acp".to_string()],
                 display_name: "OpenCode".to_string(),
                 env: BTreeMap::new(),

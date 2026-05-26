@@ -50,7 +50,7 @@ Agent Cards
 
 限制：
 - 已配置过的 agent type 不可重复新增
-- 新增时预填 registry 推荐命令、参数和 display name，用户可按本机安装路径调整
+- 新增时预填 registry 推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 agent 使用 registry package，Cursor/OpenCode 默认走 PATH 中的 `cursor-agent acp` / `opencode acp`
 - agent 图标源文件维护在 `docs\gold-band\资源\icon`，应用实际打包路径为 `web\public\agent-icons`，由 Vite 复制进 `web\dist` 后随 Tauri 应用打包
 
 ---
@@ -76,6 +76,7 @@ Agent Cards
 - 诊断状态图标
 - 最近检测时间（展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`）
 - 错误原因（如果有）
+- doctor 失败时在诊断状态旁显示问号帮助入口；悬浮或聚焦后仅提示参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，点击问号或提示内链接时通过系统默认浏览器打开，不在卡片内展开具体下载步骤
 - 诊断运行中按钮展示圆形加载动效
 - 诊断完成后根据结果显示数秒横幅：正常为成功横幅，异常为异常横幅并展示原因
 - 横幅在浅色模式下必须保证文案可读性，成功态文案与图标应复用主题语义成功色 token，不允许在页面里硬编码浅绿色并导致低对比度问题

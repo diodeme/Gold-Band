@@ -27,6 +27,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: ${{ contains(github.event.head_commit.message, 'release-please--branches--main') }}
 
       - name: Checkout release commit
         if: steps.release.outputs.release_created == 'true' || steps.release.outputs['.--release_created'] == 'true'

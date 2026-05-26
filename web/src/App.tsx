@@ -52,7 +52,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -89,6 +89,7 @@ export function App() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const backgroundRefreshInFlightRef = useRef(false);
 
@@ -133,7 +134,12 @@ export function App() {
 
   useEffect(() => {
     getAppBootstrap()
-      .then(setBootstrap)
+      .then((bootstrap) => {
+        setBootstrap(bootstrap);
+        if (bootstrap.needsWorkspace) {
+          setWorkspacePickerOpen(true);
+        }
+      })
       .catch((err) => setError(displayAppError(t, err)));
   }, [t]);
 
@@ -144,6 +150,26 @@ export function App() {
     void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
       if (!active) return;
       setBootstrap((current) => current ? { ...current, updateStatus: event.payload } : current);
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
+      if (!active) return;
+      setDownloadProgress(event.payload);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -300,10 +326,10 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => {
+  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => {
     setBusy(true);
     try {
-      const saved = await saveDesktopPreferences(theme, language, font);
+      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude);
       setBootstrap((current) => current ? { ...current, preferences: saved } : {
         repoRoot: '',
         recentWorkspaces: [],
@@ -312,6 +338,7 @@ export function App() {
         updateStatus: defaultUpdateStatus,
         clientVersion: '',
         appInfo: defaultAppInfo,
+        needsWorkspace: false,
       });
       setTaskList(null);
       setWorkflow(null);
@@ -353,9 +380,13 @@ export function App() {
 
   const onInstallUpdate = async () => {
     setBusy(true);
+    setDownloadProgress(null);
+    setBootstrap((current) => current ? { ...current, updateStatus: { ...current.updateStatus, status: 'downloading', error: null } } : current);
     try {
       await downloadAndInstallUpdate();
     } catch (err) {
+      setDownloadProgress(null);
+      setBootstrap((current) => current ? { ...current, updateStatus: { ...current.updateStatus, status: 'available', error: { code: 'updater.install-failed', params: { message: String(err) } } } } : current);
       setError(displayAppError(t, err));
     } finally {
       setBusy(false);
@@ -379,6 +410,7 @@ export function App() {
           appInfo={appInfo}
           updaterSettings={updaterSettings}
           updateStatus={updateStatus}
+          downloadProgress={downloadProgress}
           clientVersion={bootstrap?.clientVersion ?? ''}
           busy={busy}
           onSave={onSavePreferences}
@@ -398,6 +430,7 @@ export function App() {
       active={primaryModule}
       appName={appInfo.appName}
       repoRoot={bootstrap?.repoRoot}
+      needsWorkspace={bootstrap?.needsWorkspace}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);

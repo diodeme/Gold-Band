@@ -1,62 +1,136 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const [assetDirArg, outputArg] = process.argv.slice(2);
+const [assetDirArg, outputArg, ...rest] = process.argv.slice(2);
 const assetDir = assetDirArg ?? 'release-assets';
 const outputPath = outputArg ?? 'latest.json';
-const repository = process.env.GITHUB_REPOSITORY;
-const tag = process.env.RELEASE_TAG ?? process.env.GITHUB_REF_NAME;
-const version = (process.env.RELEASE_VERSION ?? tag ?? '').replace(/^v/, '');
 
-if (!repository) {
-  console.error('GITHUB_REPOSITORY is required.');
-  process.exit(1);
-}
-if (!tag) {
-  console.error('GITHUB_REF_NAME or RELEASE_TAG is required.');
-  process.exit(1);
-}
-if (!version) {
-  console.error('Could not infer release version.');
-  process.exit(1);
-}
-if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-  console.error(`Invalid release version: ${version}. Set RELEASE_TAG to a semver tag such as v0.2.0.`);
-  process.exit(1);
+// ── local mode (--base-url + --version) ──
+const baseUrlFlagIdx = rest.indexOf('--base-url');
+const versionFlagIdx = rest.indexOf('--version');
+const baseUrl = baseUrlFlagIdx >= 0 ? rest[baseUrlFlagIdx + 1] : process.env.RELEASE_BASE_URL;
+const version = versionFlagIdx >= 0 ? rest[versionFlagIdx + 1] : process.env.RELEASE_VERSION;
+
+if (baseUrl) {
+  // local mode: use custom base URL, skip GitHub deps
+  if (!version) {
+    console.error('--version is required in local mode.');
+    process.exit(1);
+  }
+  await generateLocal(baseUrl, version, assetDir, outputPath);
+} else {
+  // CI mode: GitHub Releases
+  await generateGitHub(assetDir, outputPath);
 }
 
-const files = await readdir(assetDir);
-const signatures = new Map(files.filter((file) => file.endsWith('.sig')).map((file) => [file.slice(0, -4), file]));
-const candidates = files
-  .filter((file) => signatures.has(file))
-  .map((file) => ({ file, platform: platformKey(file) }))
-  .filter((item) => item.platform)
-  .sort((left, right) => score(right.file) - score(left.file));
+async function generateLocal(baseUrl, version, assetDir, outputPath) {
+  const normalizedBase = baseUrl.replace(/\/+$/, '');
+  const files = await readdir(assetDir);
+  const signatures = new Map(
+    files.filter((f) => f.endsWith('.sig')).map((f) => [f.slice(0, -4), f]),
+  );
 
-const platforms = {};
-for (const candidate of candidates) {
-  if (platforms[candidate.platform]) continue;
-  const signature = await readFile(path.join(assetDir, signatures.get(candidate.file)), 'utf8');
-  platforms[candidate.platform] = {
-    url: `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(candidate.file)}`,
-    signature: signature.trim(),
+  const platforms = {};
+  for (const file of files) {
+    if (!signatures.has(file)) continue;
+    const plat = platformKey(file);
+    if (!plat) continue;
+    if (platforms[plat]) {
+      const existingScore = score(findExisting(platforms, plat, files));
+      if (score(file) <= existingScore) continue;
+    }
+
+    const sig = await readFile(path.join(assetDir, signatures.get(file)), 'utf8');
+    platforms[plat] = {
+      url: `${normalizedBase}/${encodeURIComponent(file)}`,
+      signature: sig.trim(),
+    };
+  }
+
+  if (Object.keys(platforms).length === 0) {
+    console.error(`No updater artifacts with .sig files found in ${assetDir}.`);
+    process.exit(1);
+  }
+
+  const latest = {
+    version,
+    notes: `Gold Band ${version}`,
+    pub_date: new Date().toISOString(),
+    platforms,
   };
+
+  await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
+  console.log(`Wrote ${outputPath} (base: ${normalizedBase}) platforms: ${Object.keys(platforms).join(', ')}`);
 }
 
-if (Object.keys(platforms).length === 0) {
-  console.error(`No updater artifacts with .sig files found in ${assetDir}.`);
-  process.exit(1);
+async function generateGitHub(assetDir, outputPath) {
+  const repository = process.env.GITHUB_REPOSITORY;
+  const tag = process.env.RELEASE_TAG ?? process.env.GITHUB_REF_NAME;
+  const version = (process.env.RELEASE_VERSION ?? tag ?? '').replace(/^v/, '');
+
+  if (!repository) {
+    console.error('GITHUB_REPOSITORY is required.');
+    process.exit(1);
+  }
+  if (!tag) {
+    console.error('GITHUB_REF_NAME or RELEASE_TAG is required.');
+    process.exit(1);
+  }
+  if (!version) {
+    console.error('Could not infer release version.');
+    process.exit(1);
+  }
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+    console.error(`Invalid release version: ${version}. Set RELEASE_TAG to a semver tag such as v0.2.0.`);
+    process.exit(1);
+  }
+
+  const files = await readdir(assetDir);
+  const signatures = new Map(files.filter((file) => file.endsWith('.sig')).map((file) => [file.slice(0, -4), file]));
+  const candidates = files
+    .filter((file) => signatures.has(file))
+    .map((file) => ({ file, platform: platformKey(file) }))
+    .filter((item) => item.platform)
+    .sort((left, right) => score(right.file) - score(left.file));
+
+  const platforms = {};
+  for (const candidate of candidates) {
+    if (platforms[candidate.platform]) continue;
+    const signature = await readFile(path.join(assetDir, signatures.get(candidate.file)), 'utf8');
+    platforms[candidate.platform] = {
+      url: `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(candidate.file)}`,
+      signature: signature.trim(),
+    };
+  }
+
+  if (Object.keys(platforms).length === 0) {
+    console.error(`No updater artifacts with .sig files found in ${assetDir}.`);
+    process.exit(1);
+  }
+
+  const latest = {
+    version,
+    notes: `Gold Band ${tag}`,
+    pub_date: new Date().toISOString(),
+    platforms,
+  };
+
+  await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
+  console.log(`Wrote ${outputPath} with platforms: ${Object.keys(platforms).join(', ')}`);
 }
 
-const latest = {
-  version,
-  notes: `Gold Band ${tag}`,
-  pub_date: new Date().toISOString(),
-  platforms,
-};
-
-await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
-console.log(`Wrote ${outputPath} with platforms: ${Object.keys(platforms).join(', ')}`);
+function findExisting(platforms, plat, files) {
+  for (const f of files) {
+    if (platformKey(f) === plat && platforms[plat]) {
+      const existingUrl = platforms[plat].url;
+      if (existingUrl) {
+        const lastPart = existingUrl.split('/').pop();
+        if (lastPart) return decodeURIComponent(lastPart);
+      }
+    }
+  }
+  return '';
+}
 
 function platformKey(file) {
   const lower = file.toLowerCase();

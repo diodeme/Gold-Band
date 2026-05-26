@@ -9,7 +9,7 @@ mod view_models;
 
 use anyhow::Context;
 use commands::{
-    cancel_acp_session, choose_workspace, continue_run, create_agent, create_profile, create_task,
+    cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
     check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
@@ -64,6 +64,7 @@ fn run() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
             get_system_fonts,
+            check_local_claude,
             get_agent_registry,
             create_agent,
             update_agent,

@@ -32,6 +32,14 @@ pub struct PreferencesVm {
     pub theme: DesktopThemePreference,
     pub language: DesktopLanguage,
     pub font: DesktopFontPreference,
+    pub use_local_claude: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalClaudeStatusVm {
+    pub found: bool,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +52,7 @@ pub struct AppBootstrapVm {
     pub update_status: UpdateStatusVm,
     pub client_version: String,
     pub app_info: AppInfoVm,
+    pub needs_workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -606,11 +615,13 @@ pub fn preferences_vm(
     theme: DesktopThemePreference,
     language: DesktopLanguage,
     font: DesktopFontPreference,
+    use_local_claude: bool,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
         language,
         font,
+        use_local_claude,
     }
 }
 
@@ -619,6 +630,7 @@ pub fn bootstrap_vm(
     recent_workspaces: Vec<String>,
     update_status: UpdateStatusVm,
     client_version: impl Into<String>,
+    needs_workspace: bool,
 ) -> AppBootstrapVm {
     let channel_config = current_channel_config();
     AppBootstrapVm {
@@ -628,6 +640,7 @@ pub fn bootstrap_vm(
             app.config.desktop_theme,
             app.config.desktop_language,
             app.config.desktop_font.clone(),
+            app.config.use_local_claude,
         ),
         updater_settings: updater_settings(&app.config),
         update_status,
@@ -638,6 +651,7 @@ pub fn bootstrap_vm(
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
         },
+        needs_workspace,
     }
 }
 

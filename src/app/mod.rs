@@ -401,6 +401,13 @@ impl App {
         Ok(config)
     }
 
+    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.use_local_claude = Some(use_local_claude);
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
     pub fn set_user_desktop_updater_url_override(
         &self,
         override_url: Option<String>,
@@ -634,7 +641,7 @@ impl App {
             return Ok(provider_override.clone());
         }
         let (agent_type, config) = self.managed_agent(provider)?;
-        Ok(Arc::from(provider_from_agent(agent_type, config)?))
+        Ok(Arc::from(provider_from_agent(agent_type, config, self.config.use_local_claude)?))
     }
 
     pub fn provider_info(&self, provider: &str) -> Result<ProviderInfo> {
@@ -646,7 +653,7 @@ impl App {
         if !agent_type.is_supported() {
             bail!("agent `{provider}` is not supported yet");
         }
-        match acp_client::doctor(&config.adapter, self.paths.repo_root.clone()) {
+        match acp_client::doctor(&config.adapter, self.paths.repo_root.clone(), self.config.use_local_claude) {
             Ok(capabilities) => Ok(DoctorResult {
                 available: true,
                 reason: None,

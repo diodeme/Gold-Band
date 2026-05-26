@@ -255,13 +255,15 @@ fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {
 pub struct AcpProvider {
     provider_id: String,
     adapter_config: AcpAdapterConfig,
+    use_local_claude: bool,
 }
 
 impl AcpProvider {
-    pub fn new(provider_id: impl Into<String>, adapter_config: AcpAdapterConfig) -> Self {
+    pub fn new(provider_id: impl Into<String>, adapter_config: AcpAdapterConfig, use_local_claude: bool) -> Self {
         Self {
             provider_id: provider_id.into(),
             adapter_config,
+            use_local_claude,
         }
     }
 }
@@ -285,7 +287,7 @@ impl ProviderAdapter for AcpProvider {
             .ok()
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
-        match client::doctor(&self.adapter_config, cwd) {
+        match client::doctor(&self.adapter_config, cwd, self.use_local_claude) {
             Ok(capabilities) => DoctorResult {
                 available: true,
                 reason: None,
@@ -321,6 +323,7 @@ impl ProviderAdapter for AcpProvider {
             req.session_mode,
             req.permission_mode.clone(),
             req.continue_ref.clone(),
+            self.use_local_claude,
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {
@@ -624,7 +627,7 @@ pub fn provider_capabilities_for_type(
         bail!("unsupported agent type: {}", agent_type.as_str());
     }
     Ok(
-        AcpProvider::new(agent_type.as_str(), agent_type.default_adapter_config())
+        AcpProvider::new(agent_type.as_str(), agent_type.default_adapter_config(), false)
             .describe_provider()
             .capabilities,
     )
@@ -637,6 +640,7 @@ pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
 pub fn provider_from_agent(
     agent_type: ManagedAgentType,
     config: &ManagedAgentConfig,
+    use_local_claude: bool,
 ) -> Result<Box<dyn ProviderAdapter>> {
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
@@ -644,17 +648,18 @@ pub fn provider_from_agent(
     Ok(Box::new(AcpProvider::new(
         agent_type.as_str(),
         config.adapter.clone(),
+        use_local_claude,
     )))
 }
 
-pub fn provider_from_id(provider_id: &str) -> Result<Box<dyn ProviderAdapter>> {
+pub fn provider_from_id(provider_id: &str, use_local_claude: bool) -> Result<Box<dyn ProviderAdapter>> {
     let agent_type = ManagedAgentType::from_str(provider_id)?;
     let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
-    provider_from_agent(agent_type, &config)
+    provider_from_agent(agent_type, &config, use_local_claude)
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
-    provider_from_id(DEFAULT_PROVIDER).expect("default provider must be supported")
+    provider_from_id(DEFAULT_PROVIDER, false).expect("default provider must be supported")
 }
 
 #[cfg(test)]

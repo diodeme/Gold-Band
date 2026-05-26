@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { createAgent, deleteAgent, doctorAgent, updateAgent } from '../api';
 import { displayAppError } from '../i18n';
 import type { AgentRegistryVm, ManagedAgentInput, ManagedAgentVm, SupportedAgentTypeVm } from '../types';
@@ -12,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, CheckCircle2, CircleHelp, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +26,8 @@ interface AgentManagementPageProps {
 
 type EditorMode = 'create' | 'edit';
 type Notice = { tone: 'success' | 'error'; message: string };
+
+const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 
 const defaultForm = (): ManagedAgentInput => ({ displayName: '', command: '', args: [], env: {} });
 const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
@@ -290,7 +294,10 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
             <div className="font-mono text-xs text-muted-foreground">{agent.command} {agent.args.join(' ')}</div>
           </div>
         </div>
-        <DiagnosticBadge diagnostic={diagnostic} />
+        <div className="flex shrink-0 items-center gap-2">
+          <DiagnosticBadge diagnostic={diagnostic} />
+          {diagnostic?.status === 'unhealthy' ? <RegistryHelp /> : null}
+        </div>
       </div>
       <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
         <Info label={t('agentManagement.command')} value={agent.command} mono />
@@ -308,6 +315,46 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         <Button variant="outline" onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
+  );
+}
+
+function RegistryHelp() {
+  const { t } = useTranslation();
+  const openRegistry = async () => {
+    try {
+      await openUrl(ACP_REGISTRY_URL);
+    } catch {
+      window.open(ACP_REGISTRY_URL, '_blank', 'noopener,noreferrer');
+    }
+  };
+  const openRegistryLink = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    void openRegistry();
+  };
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" variant="ghost" size="icon" className="size-7 rounded-full text-muted-foreground hover:text-foreground" aria-label={t('agentManagement.registryHelpLabel')} onClick={() => void openRegistry()}>
+            <CircleHelp className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-72 text-sm leading-5">
+          <Trans
+            i18nKey="agentManagement.registryHelp"
+            components={{
+              registry: (
+                <a
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                  href={ACP_REGISTRY_URL}
+                  onClick={openRegistryLink}
+                />
+              ),
+            }}
+          />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

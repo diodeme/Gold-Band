@@ -317,10 +317,10 @@ export const mockAgentRegistry: AgentRegistryVm = {
     },
   ],
   supportedTypes: [
-    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.37.0'], defaultEnv: [] },
-    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@zed-industries/codex-acp@0.14.0'], defaultEnv: [] },
+    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@latest'], defaultEnv: [] },
+    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@zed-industries/codex-acp@latest'], defaultEnv: [] },
     { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
-    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@0.43.0', '--acp'], defaultEnv: [] },
+    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@latest', '--acp'], defaultEnv: [] },
     { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
   ],
 };

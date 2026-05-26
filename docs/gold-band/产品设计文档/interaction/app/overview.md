@@ -143,6 +143,7 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
 - 启动命令为 `npm run dev`，默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
 - Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。
+- Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试。
 
 MVP 范围：
 - 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。

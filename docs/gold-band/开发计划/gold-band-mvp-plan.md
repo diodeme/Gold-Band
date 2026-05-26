@@ -121,6 +121,7 @@
 - 2026-05-21：AI 输出验证的 JSON 输出约束输入改为本地草稿 + 延迟校验，停止输入约 2 秒或失焦后再写入 DSL；自动 beautify 改为输入框右上角手动美化按钮，避免编辑半截 JSON 时被重排。
 - 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON。
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 2026-05-26：Windows release 桌面包使用 GUI subsystem，安装后双击启动不再附带 cmd 窗口；debug/dev 构建仍保留控制台输出。Windows 进程树清理通过隐藏窗口并丢弃 `taskkill` stdout/stderr，避免清理诊断进程时把 taskkill 输出暴露给用户。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 
 ---

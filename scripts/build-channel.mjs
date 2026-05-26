@@ -1,6 +1,6 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { basename, join, relative } from 'node:path';
 
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
@@ -94,4 +94,47 @@ if (result.status === 0 && !isDefaultChannel) {
   console.error('Build failed — tag skipped.');
 }
 
+// ── post-build: collect artifacts & generate latest.json ──
+if (result.status === 0 && config.releaseBaseUrl) {
+  const bundleDir = join(repoRoot, 'src-tauri', 'target', 'release', 'bundle');
+  const releaseDir = join(repoRoot, 'release', channel);
+  mkdirSync(releaseDir, { recursive: true });
+
+  // Find all .sig files recursively and copy artifact + signature
+  const sigFiles = [];
+  if (existsSync(bundleDir)) {
+    walkDir(bundleDir, (filePath) => {
+      if (filePath.endsWith('.sig')) sigFiles.push(filePath);
+    });
+  }
+
+  for (const sigPath of sigFiles) {
+    const artifactPath = sigPath.slice(0, -4); // remove .sig
+    if (existsSync(artifactPath)) {
+      copyFileSync(artifactPath, join(releaseDir, basename(artifactPath)));
+      copyFileSync(sigPath, join(releaseDir, basename(sigPath)));
+    }
+  }
+
+  // Generate latest.json
+  const version = isDefaultChannel ? baseVersion : channelVersion;
+  execSync(
+    `node scripts/generate-updater-json.mjs "${releaseDir}" "${join(releaseDir, 'latest.json')}" --base-url "${config.releaseBaseUrl}" --version "${version}"`,
+    { stdio: 'inherit', cwd: repoRoot },
+  );
+
+  console.log(`Release artifacts ready: ${relative(repoRoot, releaseDir)}`);
+}
+
 process.exit(result.status ?? 1);
+
+function walkDir(dir, fn) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkDir(full, fn);
+    } else {
+      fn(full);
+    }
+  }
+}

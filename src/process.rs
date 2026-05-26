@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 
 #[cfg(windows)]
@@ -7,6 +8,29 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+pub fn find_executable_in_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var("PATH").ok()?;
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    for dir in path_var.split(separator) {
+        let candidate = PathBuf::from(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate_exe = PathBuf::from(dir).join(format!("{name}.exe"));
+            if candidate_exe.is_file() {
+                return Some(candidate_exe);
+            }
+            let candidate_cmd = PathBuf::from(dir).join(format!("{name}.cmd"));
+            if candidate_cmd.is_file() {
+                return Some(candidate_cmd);
+            }
+        }
+    }
+    None
+}
 
 pub fn background_command(program: impl AsRef<OsStr>) -> ProcessCommand {
     let mut command = ProcessCommand::new(program);

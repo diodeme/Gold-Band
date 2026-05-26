@@ -52,7 +52,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -326,10 +326,10 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference) => {
+  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => {
     setBusy(true);
     try {
-      const saved = await saveDesktopPreferences(theme, language, font);
+      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude);
       setBootstrap((current) => current ? { ...current, preferences: saved } : {
         repoRoot: '',
         recentWorkspaces: [],

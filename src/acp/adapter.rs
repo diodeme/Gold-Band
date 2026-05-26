@@ -3,7 +3,7 @@ use std::process::{Child, Stdio};
 use anyhow::{Context, Result, ensure};
 
 use crate::config::AcpAdapterConfig;
-use crate::process::background_command;
+use crate::process::{background_command, find_executable_in_path};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
@@ -29,6 +29,7 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
 pub fn spawn_adapter(
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
+    use_local_claude: bool,
 ) -> Result<(ResolvedAcpAdapter, Child)> {
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
@@ -41,6 +42,11 @@ pub fn spawn_adapter(
         .stderr(Stdio::piped());
     for (key, value) in &config.env {
         command.env(key, value);
+    }
+    if use_local_claude && !config.env.contains_key("CLAUDE_CODE_EXECUTABLE") {
+        if let Some(claude_path) = find_executable_in_path("claude") {
+            command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+        }
     }
     let child = command
         .spawn()

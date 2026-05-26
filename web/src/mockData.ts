@@ -20,7 +20,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default' };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
 export const mockAppInfo = {
   channel: 'default',
   appName: 'Gold Band',

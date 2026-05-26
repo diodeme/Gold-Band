@@ -70,10 +70,10 @@ struct AcpRuntime {
     config_options: Option<Value>,
 }
 
-pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf) -> Result<Value> {
+pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: bool) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
     let mut runtime =
-        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"))?;
+        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude)?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
         runtime.setup_session(cwd, None, None, "", false)?;
@@ -94,9 +94,10 @@ pub fn run_prompt(
     session_mode: SessionMode,
     permission_mode: Option<String>,
     continue_ref: Option<Value>,
+    use_local_claude: bool,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
-    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir)?;
+    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude)?;
     let capabilities = runtime.initialize()?;
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = runtime.setup_session(
@@ -218,11 +219,12 @@ impl AcpRuntime {
         config: &AcpAdapterConfig,
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
+        use_local_claude: bool,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path()) {
+        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude) {
             Ok(result) => result,
             Err(error) => {
                 append_diagnostic(

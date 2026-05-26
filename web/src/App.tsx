@@ -134,7 +134,12 @@ export function App() {
 
   useEffect(() => {
     getAppBootstrap()
-      .then(setBootstrap)
+      .then((bootstrap) => {
+        setBootstrap(bootstrap);
+        if (bootstrap.needsWorkspace) {
+          setWorkspacePickerOpen(true);
+        }
+      })
       .catch((err) => setError(displayAppError(t, err)));
   }, [t]);
 
@@ -333,6 +338,7 @@ export function App() {
         updateStatus: defaultUpdateStatus,
         clientVersion: '',
         appInfo: defaultAppInfo,
+        needsWorkspace: false,
       });
       setTaskList(null);
       setWorkflow(null);

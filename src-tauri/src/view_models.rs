@@ -44,6 +44,7 @@ pub struct AppBootstrapVm {
     pub update_status: UpdateStatusVm,
     pub client_version: String,
     pub app_info: AppInfoVm,
+    pub needs_workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -619,6 +620,7 @@ pub fn bootstrap_vm(
     recent_workspaces: Vec<String>,
     update_status: UpdateStatusVm,
     client_version: impl Into<String>,
+    needs_workspace: bool,
 ) -> AppBootstrapVm {
     let channel_config = current_channel_config();
     AppBootstrapVm {
@@ -638,6 +640,7 @@ pub fn bootstrap_vm(
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
         },
+        needs_workspace,
     }
 }
 

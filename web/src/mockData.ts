@@ -291,6 +291,7 @@ export const mockBootstrap: AppBootstrapVm = {
   updateStatus: browserUpdateStatus,
   clientVersion: '',
   appInfo: mockAppInfo,
+  needsWorkspace: false,
 };
 
 export const mockAgentRegistry: AgentRegistryVm = {

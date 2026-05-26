@@ -42,6 +42,7 @@ export interface AppBootstrapVm {
   updateStatus: UpdateStatusVm;
   clientVersion: string;
   appInfo: AppInfoVm;
+  needsWorkspace: boolean;
 }
 
 export interface AppInfoVm {

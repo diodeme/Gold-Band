@@ -17,6 +17,7 @@ pub struct DesktopContext {
     pub repo_root: Utf8PathBuf,
     pub config: RuntimeConfig,
     pub recent_workspaces: Vec<String>,
+    pub needs_workspace: bool,
 }
 
 impl DesktopContext {
@@ -30,6 +31,8 @@ impl DesktopContext {
     pub fn from_workspace(repo_root: Utf8PathBuf) -> Result<Self> {
         let paths = GoldBandPaths::new(repo_root.clone());
         let user_config = load_user_config(&paths);
+        let needs_workspace = resolve_configured_workspace(&user_config).is_none()
+            && find_workspace_root(&repo_root).is_none();
         let repo_root = resolve_configured_workspace(&user_config)
             .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
@@ -41,6 +44,7 @@ impl DesktopContext {
             repo_root,
             config,
             recent_workspaces,
+            needs_workspace,
         })
     }
 
@@ -221,6 +225,7 @@ impl DesktopState {
             guard.repo_root = repo_root;
             guard.config = RuntimeConfig::default().apply_user_config(&user_config);
             guard.recent_workspaces = recent_workspaces(&user_config, &guard.repo_root);
+            guard.needs_workspace = false;
             guard.clone()
         };
         let persisted_diagnostics = load_persisted_agent_diagnostics(&next_context);

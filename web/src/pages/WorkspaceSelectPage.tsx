@@ -4,7 +4,7 @@ import type { AppBootstrapVm, AppInfoVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
-import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface WorkspaceSelectPageProps {
@@ -29,7 +29,6 @@ export function WorkspaceSelectPage({ bootstrap, appInfo, busy, onChooseWorkspac
           <div className="space-y-3">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">{t('workspaceSelect.product', { appName: appInfo.appName })}</p>
             <h1 className="text-4xl font-semibold tracking-tight">{t('common.selectWorkspace')}</h1>
-            <p className="text-sm leading-7 text-muted-foreground">{t('workspaceSelect.description', { configDirName: appInfo.configDirName })}</p>
           </div>
           <Button size="lg" disabled={busy} onClick={onChooseWorkspace}>
             <FolderOpen />
@@ -41,7 +40,6 @@ export function WorkspaceSelectPage({ bootstrap, appInfo, busy, onChooseWorkspac
       <AppCard className="min-h-0 gap-0 py-0">
         <CardHeader className="border-b px-5 py-3 !pb-3">
           <CardTitle>{t('common.recentWorkspaces')}</CardTitle>
-          <CardDescription>{t('workspaceSelect.recentDescription')}</CardDescription>
         </CardHeader>
         <CardContent className="min-h-0 px-0 py-0">
           {recent.length === 0 ? <div className="p-3"><EmptyState>{t('workspaceSelect.emptyRecent')}</EmptyState></div> : null}

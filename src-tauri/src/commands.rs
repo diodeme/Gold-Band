@@ -126,6 +126,7 @@ pub fn get_app_bootstrap(
         context.recent_workspaces,
         update_status,
         app_handle.package_info().version.to_string(),
+        context.needs_workspace,
     ))
 }
 
@@ -298,6 +299,7 @@ pub fn choose_workspace(
         context.recent_workspaces,
         update_status,
         app.package_info().version.to_string(),
+        false,
     )))
 }
 
@@ -315,6 +317,7 @@ pub fn select_recent_workspace(
         context.recent_workspaces,
         update_status,
         app_handle.package_info().version.to_string(),
+        false,
     ))
 }
 

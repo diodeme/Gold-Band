@@ -62,8 +62,6 @@ const resources = {
       },
       workspaceSelect: {
         product: '{{appName}} Desktop',
-        description: '选择包含 {{configDirName}} 配置目录的工作空间后，桌面端会记住该路径并读取对应渠道的本地数据。',
-        recentDescription: '最近打开过的工作空间会保存在本地用户偏好中。',
         emptyRecent: '暂无最近工作空间',
       },
       errors: {
@@ -737,8 +735,6 @@ const resources = {
       },
       workspaceSelect: {
         product: '{{appName}} Desktop',
-        description: 'Select a workspace with a {{configDirName}} config directory. The desktop app will remember it and read local data for this channel.',
-        recentDescription: 'Recent workspaces are saved in local user preferences.',
         emptyRecent: 'No recent workspaces',
       },
       errors: {

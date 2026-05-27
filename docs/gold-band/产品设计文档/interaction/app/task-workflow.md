@@ -102,7 +102,7 @@
 - profile 配置使用可搜索选择器，默认加载客户端内建角色、用户级 `~/.gold-band/context/profiles/` 与当前项目级 `~/.gold-band/projects/{project-id}/context/profiles/` 下的所有 profile；workflow DSL 保存 profile `id`，选项展示名称、ID、scope、摘要、创建时间和更新时间，并提供入口跳转到“上下文管理 / 角色管理”。
 - ACP 权限模式下拉来自 Agent 管理页最近一次诊断缓存的 `supportedModes`；切换节点 Agent 时清空旧权限模式，workflow DSL 只允许保存当前 Agent 支持的 `permission_mode`，留空表示沿用 adapter 默认模式。
 - 所有 worker 节点保存前必须绑定可见角色；如果模板中的角色 ID 已删除或因项目可见性变化不可访问，选择器打开时可显示为空，点击保存时一次性弹窗报告问题，关闭弹窗后清空该节点角色并在字段处红色高亮标注原因。
-- 内置角色可打开并编辑草稿，但不能直接保存覆盖，只能另存为新的普通角色；删除角色时若仍被 workflow 模板、任务 workflow 或可继续运行快照引用，必须阻止删除，避免制造新的悬空 profile id。
+- 内置角色可打开并编辑草稿，但不能直接保存覆盖，只能另存为新的普通角色；删除角色时若仍被 workflow 模板、任务 workflow 或可继续运行快照引用，首次点击删除时在确认弹窗内提示影响范围与后续修复成本，二次确认后仍允许删除；删除后被引用的 workflow 会进入需要重新选择角色的修复态，可继续运行快照也可能无法继续，需人工修复。
 - worker 节点结果判定方式支持 AI 输出验证与人工 check 二选一；开启其中一种会自动关闭另一种，避免同一节点同时存在机器判定和人工判定。
 - worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
 - 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。

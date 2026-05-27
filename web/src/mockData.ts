@@ -48,8 +48,6 @@ export const mockUpdateBadges: UpdateBadgeStateVm = {
   settingsAdvancedSeenVersion: null,
   announcementClosedVersion: null,
 };
-let browserUpdaterSettings = { ...mockUpdaterSettings };
-let browserUpdateStatus = { ...mockUpdateStatus };
 const profileTimestamp = localTimestamp();
 
 function localTimestamp(date = new Date()) {
@@ -293,8 +291,8 @@ export const mockBootstrap: AppBootstrapVm = {
   repoRoot: 'D:\\Projects\\code\\ai\\Gold-Band',
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
-  updaterSettings: browserUpdaterSettings,
-  updateStatus: browserUpdateStatus,
+  updaterSettings: mockUpdaterSettings,
+  updateStatus: mockUpdateStatus,
   updateBadges: mockUpdateBadges,
   persistedAvailableUpdate: null,
   clientVersion: '',

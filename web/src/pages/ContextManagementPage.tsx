@@ -46,6 +46,7 @@ export function ContextManagementPage() {
   const [selectedProfile, setSelectedProfile] = useState<ProfileVm | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProfileVm | null>(null);
   const [deleteError, setDeleteError] = useState<unknown>(null);
+  const [deleteConfirmationError, setDeleteConfirmationError] = useState<AppErrorVm | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const refresh = async () => {
@@ -98,6 +99,7 @@ export function ContextManagementPage() {
   const openDeleteDialog = (profile: ProfileVm) => {
     setDeleteTarget(profile);
     setDeleteError(null);
+    setDeleteConfirmationError(null);
   };
 
   const saveProfile = async (input: ProfileInput) => {
@@ -123,10 +125,15 @@ export function ContextManagementPage() {
     setDeleting(true);
     setDeleteError(null);
     try {
-      await deleteProfile(deleteTarget.id);
+      await deleteProfile(deleteTarget.id, Boolean(deleteConfirmationError));
       setDeleteTarget(null);
+      setDeleteConfirmationError(null);
       await refresh();
     } catch (err) {
+      if (isDeleteConfirmationRequiredError(err)) {
+        setDeleteConfirmationError(err);
+        return;
+      }
       setDeleteError(err);
     } finally {
       setDeleting(false);
@@ -148,34 +155,36 @@ export function ContextManagementPage() {
       <PageHeader title={<span className="text-title">{t('contextManagement.title')}</span>} />
       <div className="min-h-0 flex-1 p-5 xl:p-6">
         <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-          <CardHeader className="border-b px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
-                <TabsList>
-                  <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
+          <CardHeader className="border-b px-4 pt-2 pb-1">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
+                  <TabsList>
+                    <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {activeTab === 'profiles' ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
+                      <RefreshCw className={cn(loading && 'animate-spin')} />
+                      {t('common.refresh')}
+                    </Button>
+                    <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
+                  </div>
+                ) : null}
+              </div>
               {activeTab === 'profiles' ? (
-                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
-                    <RefreshCw className={cn(loading && 'animate-spin')} />
-                    {t('common.refresh')}
-                  </Button>
-                  <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
-                </div>
+                <Tabs value={profileListTab} onValueChange={(value) => setProfileListTab(value as ProfileListTab)}>
+                  <TabsList variant="line">
+                    <TabsTrigger value="custom">{t('contextManagement.customSectionTitle')}</TabsTrigger>
+                    <TabsTrigger value="built-in">{t('contextManagement.builtInSectionTitle')}</TabsTrigger>
+                  </TabsList>
+                </Tabs>
               ) : null}
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-            <div className="border-b px-4 pt-4">
-              <Tabs value={profileListTab} onValueChange={(value) => setProfileListTab(value as ProfileListTab)}>
-                <TabsList>
-                  <TabsTrigger value="custom">{t('contextManagement.customSectionTitle')}</TabsTrigger>
-                  <TabsTrigger value="built-in">{t('contextManagement.builtInSectionTitle')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-            <div className="flex flex-col gap-2 border-b p-4 lg:flex-row lg:items-center">
+            <div className="flex flex-col gap-2 border-b px-4 py-1.5 lg:flex-row lg:items-center">
               <div className="relative min-w-[240px] flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -262,14 +271,24 @@ export function ContextManagementPage() {
           if (!open) {
             setDeleteTarget(null);
             setDeleteError(null);
+            setDeleteConfirmationError(null);
           }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('contextManagement.deleteProfileTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('contextManagement.deleteProfileDescription', { name: deleteTarget?.name ?? '' })}</AlertDialogDescription>
+            {!deleteConfirmationError ? (
+              <AlertDialogDescription>
+                {t('contextManagement.deleteProfileDescription', { name: deleteTarget?.name ?? '' })}
+              </AlertDialogDescription>
+            ) : null}
           </AlertDialogHeader>
+          {deleteConfirmationError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {deleteConfirmationMessage(t, deleteConfirmationError)}
+            </div>
+          ) : null}
           {deleteError ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {deleteDialogError(t, deleteError)}
@@ -278,7 +297,7 @@ export function ContextManagementPage() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleting}>{t('common.close')}</AlertDialogCancel>
             <AlertDialogAction disabled={deleting || deleteTarget?.isBuiltIn} onClick={(event) => { event.preventDefault(); void confirmDeleteProfile(); }}>
-              {t('contextManagement.deleteProfileAction')}
+              {deleteConfirmationError ? t('contextManagement.confirmDeleteProfileAction') : t('contextManagement.deleteProfileAction')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -637,20 +656,6 @@ function profileScopeLabel(t: (key: string) => string, scope: ProfileScope) {
 }
 
 function deleteDialogError(t: TFunction, error: unknown) {
-  if (isAppErrorVm(error) && error.code === 'profile.in-use') {
-    const params = error.params ?? {};
-    const templateCount = numericParam(params.templateCount);
-    const taskCount = numericParam(params.taskCount);
-    const runCount = numericParam(params.runCount);
-    const targets = [
-      templateCount > 0 ? t('contextManagement.profileUsageTemplateCount', { count: templateCount }) : null,
-      taskCount > 0 ? t('contextManagement.profileUsageTaskCount', { count: taskCount }) : null,
-      runCount > 0 ? t('contextManagement.profileUsageRunCount', { count: runCount }) : null,
-    ].filter(Boolean).join('、');
-    if (targets) {
-      return t('contextManagement.deleteProfileBlockedByReferences', { targets });
-    }
-  }
   if (isAppErrorVm(error) && error.code === 'app.unexpected' && typeof error.params.message === 'string' && error.params.message.trim()) {
     return error.params.message;
   }
@@ -659,6 +664,22 @@ function deleteDialogError(t: TFunction, error: unknown) {
     return message;
   }
   return rawErrorText(error) || message;
+}
+
+function deleteConfirmationMessage(t: TFunction, error: AppErrorVm) {
+  const targets = profileUsageTargets(t, error.params ?? {});
+  if (targets) {
+    return t('contextManagement.deleteProfileBlockedByReferences', { targets });
+  }
+  return t('contextManagement.deleteProfileConfirmationDescription');
+}
+
+function profileUsageTargets(t: TFunction, params: Record<string, unknown>) {
+  return [
+    numericParam(params.templateCount) > 0 ? t('contextManagement.profileUsageTemplateCount', { count: numericParam(params.templateCount) }) : null,
+    numericParam(params.taskCount) > 0 ? t('contextManagement.profileUsageTaskCount', { count: numericParam(params.taskCount) }) : null,
+    numericParam(params.runCount) > 0 ? t('contextManagement.profileUsageRunCount', { count: numericParam(params.runCount) }) : null,
+  ].filter(Boolean).join('、');
 }
 
 function rawErrorText(error: unknown) {
@@ -688,6 +709,10 @@ function isAppErrorVm(value: unknown): value is AppErrorVm {
     && typeof (value as Partial<AppErrorVm>).code === 'string'
     && typeof (value as Partial<AppErrorVm>).params === 'object'
     && (value as Partial<AppErrorVm>).params !== null;
+}
+
+function isDeleteConfirmationRequiredError(value: unknown): value is AppErrorVm {
+  return isAppErrorVm(value) && value.code === 'profile.delete-confirmation-required';
 }
 
 function profileSearchText(profile: ProfileVm) {

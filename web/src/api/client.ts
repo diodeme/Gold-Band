@@ -1,0 +1,91 @@
+import type {
+  AcpRawFramePageVm,
+  AcpRawFrameQueryInput,
+  AcpSessionQueryInput,
+  AcpSessionVm,
+  AgentRegistryVm,
+  AppBootstrapVm,
+  ContentVm,
+  CreateTaskInput,
+  DesktopFontPreference,
+  DesktopLanguage,
+  DesktopThemePreference,
+  LocalClaudeStatusVm,
+  LogPageVm,
+  LogQueryInput,
+  ManagedAgentInput,
+  PreferencesVm,
+  ProfileInput,
+  ProfileListVm,
+  ProfileVm,
+  RoundDetailVm,
+  RoundSelection,
+  RunDetailVm,
+  RunSummaryVm,
+  TaskDetailVm,
+  TaskListVm,
+  UpdateBadgeStateVm,
+  UpdateStatusVm,
+  UpdaterSettingsVm,
+  WorkflowDsl,
+  WorkflowTemplateStore,
+  WorkflowVm,
+} from '../types';
+import { browserApi } from './browser';
+import { desktopApi } from './desktop';
+import { isTauriRuntime } from './shared';
+
+export interface RuntimeApi {
+  checkLocalClaude(): Promise<LocalClaudeStatusVm>;
+  getAppBootstrap(): Promise<AppBootstrapVm>;
+  getSystemFonts(): Promise<string[]>;
+  getAgentRegistry(): Promise<AgentRegistryVm>;
+  createAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
+  updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
+  deleteAgent(agentType: string): Promise<AgentRegistryVm>;
+  doctorAgent(agentType: string): Promise<AgentRegistryVm>;
+  getTaskList(): Promise<TaskListVm>;
+  getProfiles(): Promise<ProfileListVm>;
+  getProfile(id: string): Promise<ProfileVm>;
+  createProfile(input: ProfileInput): Promise<ProfileVm>;
+  updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
+  deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
+  chooseWorkspace(): Promise<AppBootstrapVm | null>;
+  selectRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
+  getTaskDetail(taskId: string): Promise<TaskDetailVm>;
+  getWorkflow(taskId: string): Promise<WorkflowVm>;
+  createTask(input: CreateTaskInput): Promise<WorkflowVm>;
+  saveTaskWorkflow(taskId: string, workflow: WorkflowDsl): Promise<WorkflowVm>;
+  getWorkflowTemplates(): Promise<WorkflowTemplateStore>;
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
+  deleteWorkflowTemplate(templateId: string): Promise<WorkflowTemplateStore>;
+  getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
+  getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
+  startRun(taskId: string): Promise<RunSummaryVm>;
+  continueRun(taskId: string, runId: string, promptId?: string | null): Promise<RunSummaryVm>;
+  submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
+  retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  killRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  getLogPage(query: LogQueryInput): Promise<LogPageVm>;
+  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
+  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
+  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
+  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
+  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput): Promise<AcpRawFramePageVm>;
+  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string): Promise<ContentVm>;
+  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string): Promise<ContentVm>;
+  showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string): Promise<ContentVm>;
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean): Promise<PreferencesVm>;
+  saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
+  getUpdateStatus(): Promise<UpdateStatusVm>;
+  markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
+  markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
+  dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
+  checkUpdateManual(): Promise<UpdateStatusVm>;
+  downloadAndInstallUpdate(): Promise<void>;
+}
+
+export function getRuntimeApi(): RuntimeApi {
+  return isTauriRuntime() ? desktopApi : browserApi;
+}

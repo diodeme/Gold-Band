@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
-use gold_band::app::{App, CreateTaskInput, ProfileInput, ProfileScope};
-use gold_band::domain::SessionMode;
+use gold_band::app::{App, CreateTaskInput, ProfileCommandError, ProfileInput, ProfileScope, is_run_continuable};
+use gold_band::domain::{RunStatus, SessionMode};
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderRunResult,
@@ -10,6 +10,19 @@ use tempfile::tempdir;
 
 #[derive(Clone)]
 struct SuccessProvider;
+
+#[derive(Clone)]
+struct InterruptThenSuccessProvider {
+    interrupted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl InterruptThenSuccessProvider {
+    fn new() -> Self {
+        Self {
+            interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
 
 impl ProviderAdapter for SuccessProvider {
     fn describe_provider(&self) -> ProviderInfo {
@@ -41,6 +54,59 @@ impl ProviderAdapter for SuccessProvider {
             worker_ref_seed: Some(SessionRef {
                 provider: "claude-acp".to_string(),
                 mode: SessionMode::New,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(serde_json::json!({"sessionId":"session-1"})),
+                open_command: Some("claude -c session-1".to_string()),
+            }),
+            stream_path: None,
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(&self, _worker_ref: &SessionRef) -> anyhow::Result<Option<String>> {
+        Ok(Some("claude -c session-1".to_string()))
+    }
+}
+
+impl ProviderAdapter for InterruptThenSuccessProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        ProviderInfo {
+            provider_id: "fake".to_string(),
+            display_name: "Fake".to_string(),
+            capabilities: ProviderCapabilities {
+                supports_open_session: true,
+                supports_continue_session: true,
+                supports_raw_stream: false,
+            },
+            is_default: false,
+        }
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        DoctorResult {
+            available: true,
+            reason: None,
+            capabilities: None,
+        }
+    }
+
+    fn run_worker(&self, _req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let status = if self.interrupted.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            ProviderRunStatus::Success
+        } else {
+            ProviderRunStatus::Interrupted
+        };
+        Ok(ProviderRunResult {
+            status,
+            exit_code: Some(0),
+            result_payload: None,
+            worker_ref_seed: Some(SessionRef {
+                provider: "claude-acp".to_string(),
+                mode: SessionMode::Continue,
                 supports_open_session: true,
                 supports_continue_session: true,
                 continue_ref: Some(serde_json::json!({"sessionId":"session-1"})),
@@ -194,7 +260,7 @@ fn default_workflow_template_binds_seeded_profile_ids() {
 }
 
 #[test]
-fn default_workflow_uses_project_role_override_by_name() {
+fn default_workflow_keeps_seeded_profile_ids_when_project_role_has_same_name() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::new(repo_root);
@@ -222,7 +288,8 @@ fn default_workflow_uses_project_role_override_by_name() {
     let gold_band::dsl::NodeDsl::Worker(plan) = plan else {
         panic!("plan should be a worker node");
     };
-    assert_eq!(plan.profile.as_deref(), Some(project_profile.id.as_str()));
+    assert_ne!(project_profile.id, "pf-builtin-plan");
+    assert_eq!(plan.profile.as_deref(), Some("pf-builtin-plan"));
 }
 
 #[test]
@@ -266,6 +333,208 @@ fn saving_workflow_requires_visible_profile() {
         err.to_string()
             .contains("node `plan` associated role visibility changed; reset it")
     );
+}
+
+#[test]
+fn deleting_unreferenced_profile_succeeds_without_force() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let created = app
+        .create_profile(ProfileInput {
+            scope: ProfileScope::User,
+            name: "未引用角色".to_string(),
+            summary: "可直接删除".to_string(),
+            content: "role body".to_string(),
+        })
+        .unwrap();
+
+    let profiles = app.delete_profile(&created.id, false).unwrap();
+    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+}
+
+#[test]
+fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let created = app
+        .create_profile(ProfileInput {
+            scope: ProfileScope::User,
+            name: "被引用角色".to_string(),
+            summary: "template/task reference".to_string(),
+            content: "role body".to_string(),
+        })
+        .unwrap();
+
+    let mut template_workflow = workflow(&app, "plan");
+    let gold_band::dsl::NodeDsl::Worker(plan) = template_workflow
+        .nodes
+        .iter_mut()
+        .find(|node| node.id() == "plan")
+        .unwrap()
+    else {
+        panic!("plan should be a worker node");
+    };
+    plan.profile = Some(created.id.clone());
+    app.save_workflow_template("Delete referenced profile".to_string(), template_workflow.clone())
+        .unwrap();
+
+    app.create_task_from_requirement(CreateTaskInput {
+        title: Some("Referenced task".to_string()),
+        description: None,
+        requirement_file_name: None,
+        requirement_content: "Task workflow uses custom profile".to_string(),
+        workflow: template_workflow,
+        workflow_template_id: None,
+    })
+    .unwrap();
+
+    let err = app.delete_profile(&created.id, false).unwrap_err();
+    let typed = err.downcast_ref::<ProfileCommandError>().unwrap();
+    assert_eq!(typed.code(), "profile.delete-confirmation-required");
+    assert_eq!(typed.params()["templateCount"], 1);
+    assert_eq!(typed.params()["taskCount"], 1);
+    assert_eq!(typed.params()["runCount"], 0);
+}
+
+#[test]
+fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let created = app
+        .create_profile(ProfileInput {
+            scope: ProfileScope::User,
+            name: "可恢复运行角色".to_string(),
+            summary: "run snapshot reference".to_string(),
+            content: "role body".to_string(),
+        })
+        .unwrap();
+
+    let mut run_workflow = workflow(&app, "plan");
+    let gold_band::dsl::NodeDsl::Worker(plan) = run_workflow
+        .nodes
+        .iter_mut()
+        .find(|node| node.id() == "plan")
+        .unwrap()
+    else {
+        panic!("plan should be a worker node");
+    };
+    plan.profile = Some(created.id.clone());
+
+    app.create_task_from_requirement(CreateTaskInput {
+        title: Some("Actionable run".to_string()),
+        description: None,
+        requirement_file_name: None,
+        requirement_content: "Task workflow uses resumable role".to_string(),
+        workflow: run_workflow,
+        workflow_template_id: None,
+    })
+    .unwrap();
+
+    let paused = app.run_start("task-001", None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert!(is_run_continuable(&paused));
+
+    let err = app.delete_profile(&created.id, false).unwrap_err();
+    let typed = err.downcast_ref::<ProfileCommandError>().unwrap();
+    assert_eq!(typed.code(), "profile.delete-confirmation-required");
+    assert_eq!(typed.params()["runCount"], 1);
+}
+
+#[test]
+fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let created = app
+        .create_profile(ProfileInput {
+            scope: ProfileScope::User,
+            name: "强制删除角色".to_string(),
+            summary: "force delete".to_string(),
+            content: "role body".to_string(),
+        })
+        .unwrap();
+
+    let mut template_workflow = workflow(&app, "plan");
+    let gold_band::dsl::NodeDsl::Worker(plan) = template_workflow
+        .nodes
+        .iter_mut()
+        .find(|node| node.id() == "plan")
+        .unwrap()
+    else {
+        panic!("plan should be a worker node");
+    };
+    plan.profile = Some(created.id.clone());
+    app.create_task_from_requirement(CreateTaskInput {
+        title: Some("Force delete task".to_string()),
+        description: None,
+        requirement_file_name: None,
+        requirement_content: "Task workflow uses profile".to_string(),
+        workflow: template_workflow,
+        workflow_template_id: None,
+    })
+    .unwrap();
+
+    let persisted_workflow: WorkflowDsl =
+        gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
+
+    let profiles = app.delete_profile(&created.id, true).unwrap();
+    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+
+    let err = app.save_task_workflow("task-001", persisted_workflow).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("associated role visibility changed; reset it"));
+}
+
+#[test]
+fn force_deleting_referenced_profile_breaks_run_continue() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let created = app
+        .create_profile(ProfileInput {
+            scope: ProfileScope::User,
+            name: "继续运行删除角色".to_string(),
+            summary: "break continue".to_string(),
+            content: "role body".to_string(),
+        })
+        .unwrap();
+
+    let mut run_workflow = workflow(&app, "plan");
+    let gold_band::dsl::NodeDsl::Worker(plan) = run_workflow
+        .nodes
+        .iter_mut()
+        .find(|node| node.id() == "plan")
+        .unwrap()
+    else {
+        panic!("plan should be a worker node");
+    };
+    plan.profile = Some(created.id.clone());
+
+    app.create_task_from_requirement(CreateTaskInput {
+        title: Some("Force delete continue task".to_string()),
+        description: None,
+        requirement_file_name: None,
+        requirement_content: "Task workflow uses resumable profile".to_string(),
+        workflow: run_workflow,
+        workflow_template_id: None,
+    })
+    .unwrap();
+
+    let paused = app.run_start("task-001", None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert!(is_run_continuable(&paused));
+
+    let profiles = app.delete_profile(&created.id, true).unwrap();
+    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+
+    let err = app.run_continue("task-001", "run-001", None).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("associated role visibility changed; reset it"));
 }
 
 #[test]

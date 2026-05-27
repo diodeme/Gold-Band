@@ -84,8 +84,8 @@ pub enum ProfileCommandError {
     ReadonlyBuiltIn,
     #[error("profile.built-in-scope-unsupported")]
     BuiltInScopeUnsupported,
-    #[error("profile.in-use")]
-    InUse {
+    #[error("profile.delete-confirmation-required")]
+    DeleteConfirmationRequired {
         template_count: usize,
         task_count: usize,
         run_count: usize,
@@ -97,14 +97,14 @@ impl ProfileCommandError {
         match self {
             Self::ReadonlyBuiltIn => "profile.readonly-built-in",
             Self::BuiltInScopeUnsupported => "profile.built-in-scope-unsupported",
-            Self::InUse { .. } => "profile.in-use",
+            Self::DeleteConfirmationRequired { .. } => "profile.delete-confirmation-required",
         }
     }
 
     pub fn params(&self) -> serde_json::Value {
         match self {
             Self::ReadonlyBuiltIn | Self::BuiltInScopeUnsupported => json!({}),
-            Self::InUse {
+            Self::DeleteConfirmationRequired {
                 template_count,
                 task_count,
                 run_count,

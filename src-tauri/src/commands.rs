@@ -291,6 +291,7 @@ pub fn update_profile(
 pub fn delete_profile(
     state: State<'_, DesktopState>,
     id: String,
+    force: Option<bool>,
 ) -> CommandResult<ProfileList> {
     let app = state.app().map_err(|error| {
         CommandErrorVm::new(
@@ -300,7 +301,7 @@ pub fn delete_profile(
             }),
         )
     })?;
-    match app.delete_profile(&id) {
+    match app.delete_profile(&id, force.unwrap_or(false)) {
         Ok(list) => Ok(list),
         Err(error) => {
             if error.downcast_ref::<ProfileCommandError>().is_some() {

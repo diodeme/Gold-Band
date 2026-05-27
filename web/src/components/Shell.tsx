@@ -1,4 +1,4 @@
-import { Bot, Boxes, BrainCircuit, ChevronsUpDown, Command, Settings } from 'lucide-react';
+import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
@@ -11,12 +11,13 @@ interface ShellProps {
   appName: string;
   repoRoot?: string;
   needsWorkspace?: boolean;
+  showSettingsUpdateDot?: boolean;
   onSelect: (module: PrimaryModule) => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-export function Shell({ active, appName, repoRoot, needsWorkspace, onSelect, onChooseWorkspace, children }: ShellProps) {
+export function Shell({ active, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children }: ShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -46,13 +47,12 @@ export function Shell({ active, appName, repoRoot, needsWorkspace, onSelect, onC
             <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
             <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<Bot />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
             <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<Boxes />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
-            <ShellNavButton disabled icon={<BrainCircuit />} label={t('common.modelManagement')} suffix={t('common.comingSoon')} />
           </nav>
 
           <Separator />
-          <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} onClick={() => onSelect('settings')} />
+          <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
         </aside>
-        <main className="flex min-w-0 flex-col overflow-hidden bg-gold-workspace">{children}</main>
+        <main className="relative flex min-w-0 flex-col overflow-hidden bg-gold-workspace">{children}</main>
       </div>
     </TooltipProvider>
   );
@@ -64,7 +64,7 @@ function handleNavLinkClick(event: React.MouseEvent<HTMLAnchorElement>, onClick?
   onClick?.();
 }
 
-function ShellNavButton({ active, disabled, href, icon, label, suffix, onClick }: { active?: boolean; disabled?: boolean; href?: string; icon: React.ReactNode; label: string; suffix?: string; onClick?: () => void }) {
+function ShellNavButton({ active, disabled, href, icon, label, trailing, onClick }: { active?: boolean; disabled?: boolean; href?: string; icon: React.ReactNode; label: string; trailing?: React.ReactNode; onClick?: () => void }) {
   const className = cn(
     'h-12 justify-between rounded-lg px-3 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
     active && 'bg-sidebar-accent text-sidebar-primary',
@@ -75,7 +75,7 @@ function ShellNavButton({ active, disabled, href, icon, label, suffix, onClick }
         <span className="[&_svg]:size-5">{icon}</span>
         <span>{label}</span>
       </span>
-      {suffix ? <span className="text-xs">{suffix}</span> : null}
+      {trailing ? <span className="flex items-center text-xs">{trailing}</span> : null}
     </>
   );
   const button = href && !disabled ? (
@@ -90,7 +90,11 @@ function ShellNavButton({ active, disabled, href, icon, label, suffix, onClick }
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent>{suffix}</TooltipContent>
+      <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+function UpdateDot() {
+  return <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />;
 }

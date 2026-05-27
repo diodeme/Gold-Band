@@ -146,11 +146,9 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   return (
-    <Page className="space-y-6 p-8">
+    <Page flush className="flex flex-col">
       <PageHeader
-        eyebrow={t('agentManagement.eyebrow')}
-        title={t('agentManagement.title')}
-        subtitle={t('agentManagement.subtitle')}
+        title={<span className="text-title">{t('agentManagement.title')}</span>}
         actions={(
           <>
             <Button variant="outline" disabled={loading} onClick={onRefresh}>
@@ -183,7 +181,8 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         )}
       />
 
-      {notice ? (
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
+        {notice ? (
         <Alert
           className={cn(
             'rounded-xl px-4 py-3',
@@ -272,6 +271,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </div>
     </Page>
   );
 }

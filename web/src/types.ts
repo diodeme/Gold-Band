@@ -40,12 +40,20 @@ export interface UpdateStatusVm {
   background: boolean;
 }
 
+export interface UpdateBadgeStateVm {
+  settingsEntrySeenVersion?: string | null;
+  settingsAdvancedSeenVersion?: string | null;
+  announcementClosedVersion?: string | null;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
   preferences: PreferencesVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  updateBadges: UpdateBadgeStateVm;
+  persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   appInfo: AppInfoVm;
   needsWorkspace: boolean;
@@ -208,7 +216,7 @@ export interface WorkflowEdgeDsl {
 export interface CreateTaskInput {
   title?: string | null;
   description?: string | null;
-  requirementFileName: string;
+  requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
   workflowTemplateId?: string | null;
@@ -229,7 +237,7 @@ export interface WorkflowTemplate {
   updatedAt: string;
 }
 
-export type ProfileScope = 'user' | 'project';
+export type ProfileScope = 'built-in' | 'user' | 'project';
 
 export interface ProfileVm {
   id: string;
@@ -237,6 +245,7 @@ export interface ProfileVm {
   summary: string;
   content: string;
   scope: ProfileScope;
+  isBuiltIn: boolean;
   createdAt: string;
   updatedAt: string;
   path: string;
@@ -599,7 +608,7 @@ export interface ContentVm {
   metadata: unknown;
 }
 
-export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowledge-base' | 'model-management' | 'settings';
+export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowledge-base' | 'settings';
 
 export type TaskPage =
   | { kind: 'task-list' }

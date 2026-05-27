@@ -153,8 +153,12 @@ pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> U
     if let Some(state) = app.try_state::<DesktopState>() {
         let _ = state.persist_updater_last_checked_at(Some(checked_at));
         let _ = state.set_update_status(status.clone());
+        let _ = state.persist_available_update(status.update.clone());
     }
-    if matches!(status.status, UpdateCheckStatus::Available) {
+    if matches!(
+        status.status,
+        UpdateCheckStatus::Available | UpdateCheckStatus::NotAvailable | UpdateCheckStatus::Error
+    ) {
         let _ = app.emit("gold-band://update-status", &status);
     }
     status

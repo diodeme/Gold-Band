@@ -113,8 +113,24 @@ impl GoldBandPaths {
         self.user_gold_band_root.clone()
     }
 
-    pub fn user_config_file(&self) -> Utf8PathBuf {
-        self.user_gold_band_dir().join("config.json")
+    pub fn user_settings_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_dir().join("settings.json")
+    }
+
+    pub fn user_state_file(&self) -> Utf8PathBuf {
+        if let Some(home) = std::env::var(active_storage_path_config().home_env_var)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return Utf8PathBuf::from(home)
+                .join(active_storage_path_config().config_dir_name)
+                .join("state.json");
+        }
+        let dir = dirs::data_local_dir()
+            .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
+            .unwrap_or_else(|| Utf8PathBuf::from("."));
+        dir.join(active_storage_path_config().app_key)
+            .join("state.json")
     }
 
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
@@ -410,16 +426,10 @@ fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> 
             .join(path_config.config_dir_name);
     }
 
-    let home = std::env::var("HOME")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("USERPROFILE")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| ".".to_string());
-    Utf8PathBuf::from(home).join(path_config.config_dir_name)
+    let home = dirs::home_dir()
+        .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
+        .unwrap_or_else(|| Utf8PathBuf::from("."));
+    home.join(path_config.config_dir_name)
 }
 
 fn is_under_system_temp(path: &Utf8Path) -> bool {
@@ -497,6 +507,7 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile;
 
     #[test]
     fn project_paths_split_repo_config_and_user_runtime() {
@@ -569,5 +580,41 @@ mod tests {
             Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-test-repo")).unwrap();
 
         assert!(is_under_system_temp(&repo_root));
+    }
+
+    #[test]
+    fn settings_file_in_user_gold_band_dir() {
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Example App"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
+        let settings = paths.user_settings_file();
+        assert!(settings.to_string().replace('\\', "/").ends_with("/.gold-band/settings.json"));
+    }
+
+    #[test]
+    fn state_file_in_data_local_dir_by_default() {
+        unsafe { std::env::remove_var("GOLD_BAND_HOME") };
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Example App"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
+        let state = paths.user_state_file();
+        let normalized = state.to_string().replace('\\', "/");
+        assert!(normalized.ends_with("state.json"), "expected state.json path, got: {normalized}");
+        assert!(normalized.contains("gold-band"), "expected gold-band in path, got: {normalized}");
+    }
+
+    #[test]
+    fn state_file_under_home_env_when_set() {
+        let temp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("D:/Projects/Example App"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
+        let state = paths.user_state_file();
+        assert!(state.to_string().replace('\\', "/").ends_with("/.gold-band/state.json"));
+        assert!(state.to_string().replace('\\', "/").contains("gold-band"));
     }
 }

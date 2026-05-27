@@ -8,8 +8,8 @@ use anyhow::Result;
 use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentConfig,
-    ManagedAgentType,
+    DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
 };
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -19,7 +19,7 @@ use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, Worker
 use crate::channel::current_channel_config;
 use crate::i18n::Translator;
 use crate::state::AgentDiagnosticState;
-use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, updater_settings};
+use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -44,12 +44,22 @@ pub struct LocalClaudeStatusVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateBadgeStateVm {
+    pub settings_entry_seen_version: Option<String>,
+    pub settings_advanced_seen_version: Option<String>,
+    pub announcement_closed_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppBootstrapVm {
     pub repo_root: String,
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
     pub updater_settings: UpdaterSettingsVm,
     pub update_status: UpdateStatusVm,
+    pub update_badges: UpdateBadgeStateVm,
+    pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub app_info: AppInfoVm,
     pub needs_workspace: bool,
@@ -625,6 +635,23 @@ pub fn preferences_vm(
     }
 }
 
+fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm {
+    UpdateBadgeStateVm {
+        settings_entry_seen_version: state.settings_entry_seen_version.clone(),
+        settings_advanced_seen_version: state.settings_advanced_seen_version.clone(),
+        announcement_closed_version: state.announcement_closed_version.clone(),
+    }
+}
+
+fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>) -> Option<UpdateInfoVm> {
+    update.map(|update| UpdateInfoVm {
+        version: update.version.clone(),
+        current_version: update.current_version.clone(),
+        notes: update.notes.clone(),
+        pub_date: update.pub_date.clone(),
+    })
+}
+
 pub fn bootstrap_vm(
     app: &App,
     recent_workspaces: Vec<String>,
@@ -644,6 +671,8 @@ pub fn bootstrap_vm(
         ),
         updater_settings: updater_settings(&app.config),
         update_status,
+        update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
+        persisted_available_update: persisted_available_update_vm(app.config.desktop_available_update.as_ref()),
         client_version: client_version.into(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),

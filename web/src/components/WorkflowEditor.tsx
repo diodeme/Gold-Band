@@ -756,7 +756,7 @@ function ProfilePicker({ profiles, value, invalid = false, onChange, t }: { prof
                   <CommandItem key={`${profile.scope}:${profile.id}`} value={profileSearchText(profile)} onSelect={() => selectProfile(profile.id)} className="items-start py-2">
                     <Check className={cn('mt-0.5 size-4', value === profile.id ? 'opacity-100' : 'opacity-0')} />
                     <span className="min-w-0 flex-1">
-                      <span className="flex items-center justify-between gap-2 font-medium"><span className="truncate">{profile.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{profile.scope}</span></span>
+                      <span className="flex items-center justify-between gap-2 font-medium"><span className="truncate">{profile.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{profileScopeText(t, profile.scope)}</span></span>
                       <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{profile.id}</span>
                       <span className="mt-1 block truncate text-xs text-muted-foreground" title={profile.summary}>{profile.summary}</span>
                       <span className="mt-1 block text-[11px] text-muted-foreground">{profile.createdAt} / {profile.updatedAt}</span>
@@ -793,6 +793,18 @@ function ProfileSummaryTooltip({ profile }: { profile: ProfileVm }) {
       </Tooltip>
     </TooltipProvider>
   );
+}
+
+function profileScopeText(t: (key: string) => string, scope: ProfileVm['scope']) {
+  switch (scope) {
+    case 'built-in':
+      return t('contextManagement.builtInScope');
+    case 'project':
+      return t('contextManagement.projectScope');
+    case 'user':
+    default:
+      return t('contextManagement.userScope');
+  }
 }
 
 function profileSearchText(profile: ProfileVm) {

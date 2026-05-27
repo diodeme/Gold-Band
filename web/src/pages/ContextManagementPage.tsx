@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronsUpDown, Edit, Eye, Plus, RefreshCw, Search } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import { Check, ChevronsUpDown, Edit, Eye, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
-import { createProfile, getProfiles, updateProfile } from '../api';
+import { createProfile, deleteProfile, getProfiles, updateProfile } from '../api';
 import { displayAppError } from '../i18n';
-import type { ProfileInput, ProfileListVm, ProfileScope, ProfileVm } from '../types';
+import type { AppErrorVm, ProfileInput, ProfileListVm, ProfileScope, ProfileVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Markdown } from '@/components/prompt-kit/markdown';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink } from '@/components/ui/pagination';
@@ -24,6 +27,7 @@ import { cn } from '@/lib/utils';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles';
+type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
 export function ContextManagementPage() {
@@ -32,12 +36,18 @@ export function ContextManagementPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ContextTab>('profiles');
-  const [query, setQuery] = useState('');
-  const [scope, setScope] = useState<'all' | ProfileScope>('all');
+  const [profileListTab, setProfileListTab] = useState<ProfileListTab>('custom');
+  const [builtInQuery, setBuiltInQuery] = useState('');
+  const [customQuery, setCustomQuery] = useState('');
+  const [customScope, setCustomScope] = useState<'all' | Exclude<ProfileScope, 'built-in'>>('all');
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(6);
   const [sheetMode, setSheetMode] = useState<ProfileSheetMode | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<ProfileVm | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProfileVm | null>(null);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
+  const [deleteConfirmationError, setDeleteConfirmationError] = useState<AppErrorVm | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -56,17 +66,26 @@ export function ContextManagementPage() {
   }, []);
 
   const profiles = vm?.profiles ?? [];
-  const filteredProfiles = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+  const builtInProfiles = useMemo(() => {
+    const normalizedQuery = builtInQuery.trim().toLowerCase();
     return profiles.filter((profile) => {
-      if (scope !== 'all' && profile.scope !== scope) return false;
+      if (!profile.isBuiltIn) return false;
       if (!normalizedQuery) return true;
       return profileSearchText(profile).includes(normalizedQuery);
     });
-  }, [profiles, query, scope]);
-  const pageCount = Math.max(1, Math.ceil(filteredProfiles.length / pageSize));
+  }, [profiles, builtInQuery]);
+  const customProfiles = useMemo(() => {
+    const normalizedQuery = customQuery.trim().toLowerCase();
+    return profiles.filter((profile) => {
+      if (profile.isBuiltIn) return false;
+      if (customScope !== 'all' && profile.scope !== customScope) return false;
+      if (!normalizedQuery) return true;
+      return profileSearchText(profile).includes(normalizedQuery);
+    });
+  }, [profiles, customQuery, customScope]);
+  const pageCount = Math.max(1, Math.ceil(customProfiles.length / pageSize));
   const safePageIndex = Math.min(pageIndex, pageCount - 1);
-  const pagedProfiles = filteredProfiles.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
+  const pagedCustomProfiles = customProfiles.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
 
   useEffect(() => {
     if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
@@ -77,8 +96,14 @@ export function ContextManagementPage() {
     setSelectedProfile(profile ?? null);
   };
 
+  const openDeleteDialog = (profile: ProfileVm) => {
+    setDeleteTarget(profile);
+    setDeleteError(null);
+    setDeleteConfirmationError(null);
+  };
+
   const saveProfile = async (input: ProfileInput) => {
-    if (sheetMode === 'edit' && selectedProfile) {
+    if (sheetMode === 'edit' && selectedProfile && !selectedProfile.isBuiltIn) {
       await updateProfile(selectedProfile.id, input);
     } else {
       await createProfile(input);
@@ -88,76 +113,224 @@ export function ContextManagementPage() {
     await refresh();
   };
 
+  const saveProfileAsNew = async (input: ProfileInput) => {
+    await createProfile(input);
+    setSheetMode(null);
+    setSelectedProfile(null);
+    await refresh();
+  };
+
+  const confirmDeleteProfile = async () => {
+    if (!deleteTarget || deleteTarget.isBuiltIn) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteProfile(deleteTarget.id, Boolean(deleteConfirmationError));
+      setDeleteTarget(null);
+      setDeleteConfirmationError(null);
+      await refresh();
+    } catch (err) {
+      if (isDeleteConfirmationRequiredError(err)) {
+        setDeleteConfirmationError(err);
+        return;
+      }
+      setDeleteError(err);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const listQuery = profileListTab === 'built-in' ? builtInQuery : customQuery;
+  const onQueryChange = (value: string) => {
+    if (profileListTab === 'built-in') {
+      setBuiltInQuery(value);
+      return;
+    }
+    setCustomQuery(value);
+    setPageIndex(0);
+  };
+
   return (
     <Page flush className="flex flex-col">
-      <PageHeader title={t('contextManagement.title')} />
+      <PageHeader title={<span className="text-title">{t('contextManagement.title')}</span>} />
       <div className="min-h-0 flex-1 p-5 xl:p-6">
         <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-          <CardHeader className="border-b px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
-                <TabsList>
-                  <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
+          <CardHeader className="border-b px-4 pt-2 pb-1">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
+                  <TabsList>
+                    <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {activeTab === 'profiles' ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
+                      <RefreshCw className={cn(loading && 'animate-spin')} />
+                      {t('common.refresh')}
+                    </Button>
+                    <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
+                  </div>
+                ) : null}
+              </div>
               {activeTab === 'profiles' ? (
-                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
-                    <RefreshCw className={cn(loading && 'animate-spin')} />
-                    {t('common.refresh')}
-                  </Button>
-                  <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
-                </div>
+                <Tabs value={profileListTab} onValueChange={(value) => setProfileListTab(value as ProfileListTab)}>
+                  <TabsList variant="line">
+                    <TabsTrigger value="custom">{t('contextManagement.customSectionTitle')}</TabsTrigger>
+                    <TabsTrigger value="built-in">{t('contextManagement.builtInSectionTitle')}</TabsTrigger>
+                  </TabsList>
+                </Tabs>
               ) : null}
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-            <div className="flex flex-col gap-2 border-b p-4 lg:flex-row lg:items-center">
+            <div className="flex flex-col gap-2 border-b px-4 py-1.5 lg:flex-row lg:items-center">
               <div className="relative min-w-[240px] flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   className="pl-9"
-                  value={query}
-                  onChange={(event) => { setQuery(event.target.value); setPageIndex(0); }}
+                  value={listQuery}
+                  onChange={(event) => onQueryChange(event.target.value)}
                   placeholder={t('contextManagement.searchPlaceholder')}
                 />
               </div>
-              <Select value={scope} onValueChange={(value) => { setScope(value as 'all' | ProfileScope); setPageIndex(0); }}>
-                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">{t('common.all')}</SelectItem>
-                  <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
-                  <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
-                </SelectContent>
-              </Select>
+              {profileListTab === 'custom' ? (
+                <Select value={customScope} onValueChange={(value) => { setCustomScope(value as 'all' | 'user' | 'project'); setPageIndex(0); }}>
+                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t('common.all')}</SelectItem>
+                    <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
+                    <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : null}
             </div>
             {error ? <div className="m-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <ScrollArea className="min-h-0 flex-1">
               {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-              {vm ? (
-                <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-                  {pagedProfiles.map((profile) => <ProfileCard key={`${profile.scope}:${profile.id}`} profile={profile} onView={() => openSheet('view', profile)} onEdit={() => openSheet('edit', profile)} />)}
+              {vm && profileListTab === 'built-in' ? (
+                <div className="grid gap-3 p-4 xl:grid-cols-2 2xl:grid-cols-3">
+                  {builtInProfiles.map((profile) => (
+                    <BuiltInProfileCard
+                      key={`${profile.scope}:${profile.id}`}
+                      profile={profile}
+                      onView={() => openSheet('view', profile)}
+                      onEdit={() => openSheet('edit', profile)}
+                    />
+                  ))}
                 </div>
               ) : null}
-              {vm && filteredProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
+              {vm && profileListTab === 'custom' ? (
+                <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+                  {pagedCustomProfiles.map((profile) => (
+                    <CustomProfileCard
+                      key={`${profile.scope}:${profile.id}`}
+                      profile={profile}
+                      onView={() => openSheet('view', profile)}
+                      onEdit={() => openSheet('edit', profile)}
+                      onDelete={() => openDeleteDialog(profile)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
+              {vm && profileListTab === 'custom' && customProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
             </ScrollArea>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-sm text-muted-foreground">
-              <span>{t('common.pageRange', { start: filteredProfiles.length ? safePageIndex * pageSize + 1 : 0, end: Math.min(filteredProfiles.length, (safePageIndex + 1) * pageSize), total: filteredProfiles.length })}</span>
-              <div className="flex items-center gap-2">
-                <span>{t('common.pageSize')}</span>
-                <PageSizePicker value={pageSize} onChange={(value) => { setPageSize(value); setPageIndex(0); }} />
-                <ProfilePagination pageIndex={safePageIndex} pageCount={pageCount} onPageChange={setPageIndex} />
+            {profileListTab === 'custom' && customProfiles.length > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-sm text-muted-foreground">
+                <span>{t('contextManagement.customProfilesPageRange', {
+                  start: customProfiles.length ? safePageIndex * pageSize + 1 : 0,
+                  end: Math.min(customProfiles.length, (safePageIndex + 1) * pageSize),
+                  total: customProfiles.length,
+                })}</span>
+                <div className="flex items-center gap-2">
+                  <span>{t('common.pageSize')}</span>
+                  <PageSizePicker value={pageSize} onChange={(value) => { setPageSize(value); setPageIndex(0); }} />
+                  <ProfilePagination pageIndex={safePageIndex} pageCount={pageCount} onPageChange={setPageIndex} />
+                </div>
               </div>
-            </div>
+            ) : null}
           </CardContent>
         </AppCard>
       </div>
-      <ProfileSheet mode={sheetMode} profile={selectedProfile} onOpenChange={(open) => { if (!open) setSheetMode(null); }} onSave={saveProfile} />
+      <ProfileSheet
+        mode={sheetMode}
+        profile={selectedProfile}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSheetMode(null);
+            setSelectedProfile(null);
+          }
+        }}
+        onSave={saveProfile}
+        onSaveAsNew={saveProfileAsNew}
+      />
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+            setDeleteError(null);
+            setDeleteConfirmationError(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('contextManagement.deleteProfileTitle')}</AlertDialogTitle>
+            {!deleteConfirmationError ? (
+              <AlertDialogDescription>
+                {t('contextManagement.deleteProfileDescription', { name: deleteTarget?.name ?? '' })}
+              </AlertDialogDescription>
+            ) : null}
+          </AlertDialogHeader>
+          {deleteConfirmationError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {deleteConfirmationMessage(t, deleteConfirmationError)}
+            </div>
+          ) : null}
+          {deleteError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {deleteDialogError(t, deleteError)}
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction disabled={deleting || deleteTarget?.isBuiltIn} onClick={(event) => { event.preventDefault(); void confirmDeleteProfile(); }}>
+              {deleteConfirmationError ? t('contextManagement.confirmDeleteProfileAction') : t('contextManagement.deleteProfileAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Page>
   );
 }
 
-function ProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: () => void; onEdit: () => void }) {
+function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: () => void; onEdit: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Card className="gap-0 bg-card/45 py-0">
+      <CardHeader className="px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-sm">{profile.name}</CardTitle>
+            <CardDescription className="mt-1 truncate font-mono text-[11px]">{profile.id}</CardDescription>
+          </div>
+          <Badge variant="secondary" className="shrink-0">{profileScopeLabel(t, profile.scope)}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="px-4 pb-0">
+        <CardDescription className="line-clamp-2 text-xs leading-5">{profile.summary}</CardDescription>
+      </CardContent>
+      <CardFooter className="justify-end gap-2 px-4 py-4">
+        <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
+        <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
+      </CardFooter>
+    </Card>
+  );
+}
+
+function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: ProfileVm; onView: () => void; onEdit: () => void; onDelete: () => void }) {
   const { t } = useTranslation();
   return (
     <Card className="min-h-52 gap-0 bg-card/50 py-0">
@@ -167,7 +340,7 @@ function ProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: 
             <CardTitle className="truncate text-base">{profile.name}</CardTitle>
             <CardDescription className="mt-1 truncate font-mono text-xs">{profile.id}</CardDescription>
           </div>
-          <Badge variant="outline">{profile.scope === 'project' ? t('contextManagement.projectScope') : t('contextManagement.userScope')}</Badge>
+          <Badge variant="outline" className="shrink-0">{profileScopeLabel(t, profile.scope)}</Badge>
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col px-4 pb-0">
@@ -180,16 +353,30 @@ function ProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: 
       <CardFooter className="justify-end gap-2 px-4 py-4">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
         <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
+        <Button
+          variant="outline"
+          size="sm"
+          title={t('contextManagement.deleteProfile', { name: profile.name })}
+          aria-label={t('contextManagement.deleteProfile', { name: profile.name })}
+          onClick={onDelete}
+        >
+          <Trash2 />
+          {t('contextManagement.deleteProfileShort')}
+        </Button>
       </CardFooter>
     </Card>
   );
 }
 
-function ProfileSheet({ mode, profile, onOpenChange, onSave }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void> }) {
+function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void>; onSaveAsNew: (input: ProfileInput) => Promise<void> }) {
   const { t } = useTranslation();
   const editing = mode === 'create' || mode === 'edit';
+  const isBuiltIn = Boolean(profile?.isBuiltIn);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState('');
+  const [saveAsError, setSaveAsError] = useState<string | null>(null);
   const form = useForm<ProfileInput>({
     defaultValues: profileInputDefaults(profile),
   });
@@ -197,6 +384,9 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave }: { mode: ProfileSh
   useEffect(() => {
     form.reset(profileInputDefaults(profile));
     setSubmitError(null);
+    setSaveAsOpen(false);
+    setSaveAsName(profile?.name ?? '');
+    setSaveAsError(null);
   }, [form, mode, profile]);
 
   const submit = async (input: ProfileInput) => {
@@ -211,100 +401,154 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave }: { mode: ProfileSh
     }
   };
 
+  const openSaveAsDialog = () => {
+    setSaveAsError(null);
+    setSaveAsName((form.getValues('name') || profile?.name || '').trim());
+    setSaveAsOpen(true);
+  };
+
+  const confirmSaveAsNew = async () => {
+    const trimmedName = saveAsName.trim();
+    if (!trimmedName) {
+      setSaveAsError(t('contextManagement.profileRequired'));
+      return;
+    }
+    const values = form.getValues();
+    setSaving(true);
+    setSaveAsError(null);
+    setSubmitError(null);
+    try {
+      await onSaveAsNew({ ...values, name: trimmedName, summary: values.summary.trim() });
+      setSaveAsOpen(false);
+    } catch (err) {
+      setSaveAsError(displayAppError(t, err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <Sheet open={mode !== null} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[min(720px,calc(100vw-2rem))] max-w-[min(720px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(720px,calc(100vw-2rem))]">
-        <SheetHeader className="border-b px-5 py-4 text-left">
-          <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
-          {editing ? <SheetDescription className="sr-only">{t('contextManagement.editDescription')}</SheetDescription> : <SheetDescription className={cn(!profile?.summary && 'sr-only')}>{profile?.summary || profile?.name}</SheetDescription>}
-        </SheetHeader>
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-4 p-5">
-            {submitError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{submitError}</div> : null}
+    <>
+      <Sheet open={mode !== null} onOpenChange={onOpenChange}>
+        <SheetContent className="w-[min(720px,calc(100vw-2rem))] max-w-[min(720px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(720px,calc(100vw-2rem))]">
+          <SheetHeader className="border-b px-5 py-4 text-left">
+            <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
             {editing ? (
-              <Form {...form}>
-                <form id="profile-form" className="space-y-4" onSubmit={form.handleSubmit(submit)}>
-                  <FormField
-                    control={form.control}
-                    name="scope"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('contextManagement.scope')}</FormLabel>
-                        <Select value={field.value} onValueChange={field.onChange}>
-                          <FormControl>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
-                            <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    rules={{ required: t('contextManagement.profileRequired') }}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('contextManagement.name')}</FormLabel>
-                        <FormControl><Input {...field} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="summary"
-                    rules={{ required: t('contextManagement.profileRequired') }}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('contextManagement.summary')}</FormLabel>
-                        <FormControl><Textarea {...field} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="content"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('contextManagement.content')}</FormLabel>
-                        <FormControl><Textarea className="min-h-72 font-mono text-xs" {...field} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </form>
-              </Form>
-            ) : profile ? (
-              <div className="space-y-4">
-                <Card className="bg-muted/15 py-0">
-                  <CardContent className="grid gap-3 p-3 text-sm md:grid-cols-2">
-                    <ProfileMeta label="ID" value={profile.id} />
-                    <ProfileMeta label={t('contextManagement.scope')} value={profile.scope === 'project' ? t('contextManagement.projectScope') : t('contextManagement.userScope')} />
-                    <ProfileMeta label={t('contextManagement.createdAt')} value={profile.createdAt} />
-                    <ProfileMeta label={t('contextManagement.updatedAt')} value={profile.updatedAt} />
-                  </CardContent>
-                </Card>
-                <Card className="bg-card/40 py-0">
-                  <CardContent className="p-4">
-                    <Markdown>{profile.content || t('contextManagement.emptyContent')}</Markdown>
-                  </CardContent>
-                </Card>
-              </div>
+              <SheetDescription className={cn(!isBuiltIn && 'sr-only')}>
+                {isBuiltIn ? t('contextManagement.builtInReadonlyHint') : t('contextManagement.editDescription')}
+              </SheetDescription>
+            ) : (
+              <SheetDescription className={cn(!profile?.summary && 'sr-only')}>{profile?.summary || profile?.name}</SheetDescription>
+            )}
+          </SheetHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-4 p-5">
+              {submitError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{submitError}</div> : null}
+              {editing ? (
+                <Form {...form}>
+                  <form id="profile-form" className="space-y-4" onSubmit={form.handleSubmit(submit)}>
+                    <FormField
+                      control={form.control}
+                      name="scope"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('contextManagement.scope')}</FormLabel>
+                          <Select value={field.value} onValueChange={(value) => field.onChange(value as ProfileScope)}>
+                            <FormControl>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
+                              <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="name"
+                      rules={{ required: t('contextManagement.profileRequired') }}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('contextManagement.name')}</FormLabel>
+                          <FormControl><Input {...field} /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="summary"
+                      rules={{ required: t('contextManagement.profileRequired') }}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('contextManagement.summary')}</FormLabel>
+                          <FormControl><Textarea {...field} /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="content"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('contextManagement.content')}</FormLabel>
+                          <FormControl><Textarea className="min-h-72 font-mono text-xs" {...field} /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </form>
+                </Form>
+              ) : profile ? (
+                <div className="space-y-4">
+                  <Card className="bg-muted/15 py-0">
+                    <CardContent className="grid gap-3 p-3 text-sm md:grid-cols-2">
+                      <ProfileMeta label="ID" value={profile.id} />
+                      <ProfileMeta label={t('contextManagement.scope')} value={profileScopeLabel(t, profile.scope)} />
+                      <ProfileMeta label={t('contextManagement.createdAt')} value={profile.createdAt} />
+                      <ProfileMeta label={t('contextManagement.updatedAt')} value={profile.updatedAt} />
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-card/40 py-0">
+                    <CardContent className="p-4">
+                      <Markdown>{profile.content || t('contextManagement.emptyContent')}</Markdown>
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : null}
+            </div>
+          </ScrollArea>
+          <SheetFooter className="border-t px-5 py-4">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
+            {editing ? (
+              isBuiltIn && mode === 'edit'
+                ? <Button type="button" disabled={saving} onClick={openSaveAsDialog}>{t('contextManagement.saveAsNewProfile')}</Button>
+                : <Button type="submit" form="profile-form" disabled={saving}>{t('common.save')}</Button>
             ) : null}
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+      <Dialog open={saveAsOpen} onOpenChange={setSaveAsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('contextManagement.saveAsNewProfile')}</DialogTitle>
+            <DialogDescription>{t('contextManagement.saveAsNewProfileDescription')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input value={saveAsName} onChange={(event) => setSaveAsName(event.target.value)} placeholder={t('contextManagement.name')} />
+            {saveAsError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{saveAsError}</div> : null}
           </div>
-        </ScrollArea>
-        <SheetFooter className="border-t px-5 py-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
-          {editing ? <Button type="submit" form="profile-form" disabled={saving}>{t('common.save')}</Button> : null}
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSaveAsOpen(false)}>{t('common.close')}</Button>
+            <Button disabled={saving} onClick={() => void confirmSaveAsNew()}>{t('contextManagement.saveAsNewProfile')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -392,11 +636,83 @@ function ProfilePagination({ pageIndex, pageCount, onPageChange }: { pageIndex: 
 
 function profileInputDefaults(profile: ProfileVm | null): ProfileInput {
   return {
-    scope: profile?.scope ?? 'user',
+    scope: profile?.scope === 'project' ? 'project' : 'user',
     name: profile?.name ?? '',
     summary: profile?.summary ?? '',
     content: profile?.content ?? '',
   };
+}
+
+function profileScopeLabel(t: (key: string) => string, scope: ProfileScope) {
+  switch (scope) {
+    case 'built-in':
+      return t('contextManagement.builtInScope');
+    case 'project':
+      return t('contextManagement.projectScope');
+    case 'user':
+    default:
+      return t('contextManagement.userScope');
+  }
+}
+
+function deleteDialogError(t: TFunction, error: unknown) {
+  if (isAppErrorVm(error) && error.code === 'app.unexpected' && typeof error.params.message === 'string' && error.params.message.trim()) {
+    return error.params.message;
+  }
+  const message = displayAppError(t, error);
+  if (message !== t('errors.app.unexpected')) {
+    return message;
+  }
+  return rawErrorText(error) || message;
+}
+
+function deleteConfirmationMessage(t: TFunction, error: AppErrorVm) {
+  const targets = profileUsageTargets(t, error.params ?? {});
+  if (targets) {
+    return t('contextManagement.deleteProfileBlockedByReferences', { targets });
+  }
+  return t('contextManagement.deleteProfileConfirmationDescription');
+}
+
+function profileUsageTargets(t: TFunction, params: Record<string, unknown>) {
+  return [
+    numericParam(params.templateCount) > 0 ? t('contextManagement.profileUsageTemplateCount', { count: numericParam(params.templateCount) }) : null,
+    numericParam(params.taskCount) > 0 ? t('contextManagement.profileUsageTaskCount', { count: numericParam(params.taskCount) }) : null,
+    numericParam(params.runCount) > 0 ? t('contextManagement.profileUsageRunCount', { count: numericParam(params.runCount) }) : null,
+  ].filter(Boolean).join('、');
+}
+
+function rawErrorText(error: unknown) {
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (!error || typeof error !== 'object') {
+    return '';
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return '';
+  }
+}
+
+function numericParam(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function isAppErrorVm(value: unknown): value is AppErrorVm {
+  return Boolean(value)
+    && typeof value === 'object'
+    && typeof (value as Partial<AppErrorVm>).code === 'string'
+    && typeof (value as Partial<AppErrorVm>).params === 'object'
+    && (value as Partial<AppErrorVm>).params !== null;
+}
+
+function isDeleteConfirmationRequiredError(value: unknown): value is AppErrorVm {
+  return isAppErrorVm(value) && value.code === 'profile.delete-confirmation-required';
 }
 
 function profileSearchText(profile: ProfileVm) {

@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,10 +10,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
 static PROFILE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+const BUILT_IN_PROFILE_TIMESTAMP: &str = "2026-05-27 00:00:00";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileScope {
+    BuiltIn,
     User,
     Project,
 }
@@ -34,6 +37,7 @@ pub struct ProfileEntry {
     pub summary: String,
     pub content: String,
     pub scope: ProfileScope,
+    pub is_built_in: bool,
     pub created_at: String,
     pub updated_at: String,
     pub path: String,
@@ -68,107 +72,124 @@ impl DefaultProfileIds {
 #[derive(Debug, Clone, Copy)]
 struct DefaultProfileSeed {
     key: &'static str,
+    id: &'static str,
     name: &'static str,
     summary: &'static str,
+    content: &'static str,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileCommandError {
+    #[error("profile.readonly-built-in")]
+    ReadonlyBuiltIn,
+    #[error("profile.built-in-scope-unsupported")]
+    BuiltInScopeUnsupported,
+    #[error("profile.delete-confirmation-required")]
+    DeleteConfirmationRequired {
+        template_count: usize,
+        task_count: usize,
+        run_count: usize,
+    },
+}
+
+impl ProfileCommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ReadonlyBuiltIn => "profile.readonly-built-in",
+            Self::BuiltInScopeUnsupported => "profile.built-in-scope-unsupported",
+            Self::DeleteConfirmationRequired { .. } => "profile.delete-confirmation-required",
+        }
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::ReadonlyBuiltIn | Self::BuiltInScopeUnsupported => json!({}),
+            Self::DeleteConfirmationRequired {
+                template_count,
+                task_count,
+                run_count,
+            } => json!({
+                "templateCount": template_count,
+                "taskCount": task_count,
+                "runCount": run_count,
+            }),
+        }
+    }
 }
 
 const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     DefaultProfileSeed {
         key: "plan",
+        id: "pf-builtin-plan",
         name: "方案",
         summary: "方案角色，用于需求分析和实施方案设计。",
+        content: "## 方案角色\n\n后续补充完整角色说明。",
     },
     DefaultProfileSeed {
         key: "dev",
+        id: "pf-builtin-dev",
         name: "开发",
         summary: "开发角色，用于实现需求并维护代码质量。",
+        content: "## 开发角色\n\n后续补充完整角色说明。",
     },
     DefaultProfileSeed {
         key: "review",
+        id: "pf-builtin-review",
         name: "审查",
         summary: "审查角色，用于检查实现质量、风险和一致性。",
+        content: "## 审查角色\n\n后续补充完整角色说明。",
     },
     DefaultProfileSeed {
         key: "test",
+        id: "pf-builtin-test",
         name: "测试",
         summary: "测试角色，用于执行验证并反馈质量结果。",
+        content: "## 测试角色\n\n后续补充完整角色说明。",
     },
     DefaultProfileSeed {
         key: "accept",
+        id: "pf-builtin-accept",
         name: "验收",
         summary: "验收角色，用于对照需求判断交付是否满足目标。",
+        content: "## 验收角色\n\n后续补充完整角色说明。",
     },
     DefaultProfileSeed {
         key: "cleanup",
+        id: "pf-builtin-cleanup",
         name: "清理",
         summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+        content: "## 清理角色\n\n后续补充完整角色说明。",
     },
 ];
 
-pub(crate) fn ensure_default_user_profiles(paths: &GoldBandPaths) -> Result<DefaultProfileIds> {
-    fs::create_dir_all(paths.user_context_profiles_dir().as_std_path())?;
-    let mut user_profiles = read_profile_dir(paths, ProfileScope::User)?;
-    let project_profiles = read_profile_dir(paths, ProfileScope::Project)?;
-    let mut by_key = BTreeMap::new();
-    for seed in DEFAULT_PROFILE_SEEDS {
-        if let Some(project_profile) = project_profiles
-            .iter()
-            .find(|profile| profile.name == seed.name)
-        {
-            remove_seeded_user_defaults_with_name(&user_profiles, seed.name, seed.summary)?;
-            by_key.insert(seed.key.to_string(), project_profile.id.clone());
-            continue;
-        }
-        if let Some(existing) = user_profiles
-            .iter()
-            .find(|profile| profile.name == seed.name)
-        {
-            by_key.insert(seed.key.to_string(), existing.id.clone());
-            continue;
-        }
-        let now = local_timestamp();
-        let entry = ProfileEntry {
-            id: next_profile_id(paths)?,
-            name: seed.name.to_string(),
-            summary: seed.summary.to_string(),
-            content: String::new(),
-            scope: ProfileScope::User,
-            created_at: now.clone(),
-            updated_at: now,
-            path: String::new(),
-        };
-        write_profile(paths, &entry)?;
-        by_key.insert(seed.key.to_string(), entry.id.clone());
-        user_profiles.push(ProfileEntry {
-            path: profile_path(paths, entry.scope, &entry.name, &entry.id).to_string(),
-            ..entry
-        });
-    }
+pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<DefaultProfileIds> {
+    let by_key = DEFAULT_PROFILE_SEEDS
+        .iter()
+        .map(|seed| (seed.key.to_string(), seed.id.to_string()))
+        .collect();
     Ok(DefaultProfileIds { by_key })
 }
 
 pub(crate) fn list_profiles(paths: &GoldBandPaths) -> Result<ProfileList> {
-    ensure_default_user_profiles(paths)?;
     let mut profiles = Vec::new();
     profiles.extend(read_profile_dir(paths, ProfileScope::Project)?);
     profiles.extend(read_profile_dir(paths, ProfileScope::User)?);
+    profiles.extend(built_in_profiles());
     profiles.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
-            .then_with(|| left.id.cmp(&right.id))
             .then_with(|| scope_rank(left.scope).cmp(&scope_rank(right.scope)))
+            .then_with(|| left.id.cmp(&right.id))
     });
     Ok(ProfileList { profiles })
 }
 
 pub(crate) fn show_profile(paths: &GoldBandPaths, id: &str) -> Result<ProfileEntry> {
-    ensure_default_user_profiles(paths)?;
     find_profile_by_id(paths, id)?.ok_or_else(|| anyhow!("profile `{id}` not found"))
 }
 
 pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Result<ProfileEntry> {
     ensure_profile_input(&input)?;
-    ensure_default_user_profiles(paths)?;
     let now = local_timestamp();
     let mut entry = ProfileEntry {
         id: next_profile_id(paths)?,
@@ -176,11 +197,12 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
         summary: input.summary.trim().to_string(),
         content: input.content,
         scope: input.scope,
+        is_built_in: false,
         created_at: now.clone(),
         updated_at: now,
         path: String::new(),
     };
-    entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id).to_string();
+    entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id)?.to_string();
     write_profile(paths, &entry)?;
     show_profile(paths, &entry.id)
 }
@@ -192,17 +214,21 @@ pub(crate) fn update_profile(
 ) -> Result<ProfileEntry> {
     ensure_profile_input(&input)?;
     let existing = show_profile(paths, id)?;
+    if existing.is_built_in {
+        return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+    }
     let mut entry = ProfileEntry {
         id: existing.id.clone(),
         name: input.name.trim().to_string(),
         summary: input.summary.trim().to_string(),
         content: input.content,
         scope: input.scope,
+        is_built_in: false,
         created_at: existing.created_at,
         updated_at: local_timestamp(),
         path: String::new(),
     };
-    entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id).to_string();
+    entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id)?.to_string();
     if existing.path != entry.path {
         let old_path = Utf8PathBuf::from(existing.path);
         if old_path.exists() {
@@ -213,9 +239,24 @@ pub(crate) fn update_profile(
     show_profile(paths, &entry.id)
 }
 
+pub(crate) fn delete_profile(paths: &GoldBandPaths, id: &str) -> Result<()> {
+    let existing = show_profile(paths, id)?;
+    if existing.is_built_in {
+        return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+    }
+    let path = Utf8PathBuf::from(existing.path);
+    if path.exists() {
+        fs::remove_file(path.as_std_path())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn find_profile_by_id(paths: &GoldBandPaths, id: &str) -> Result<Option<ProfileEntry>> {
     if id.trim().is_empty() {
         return Ok(None);
+    }
+    if let Some(profile) = built_in_profile_by_id(id) {
+        return Ok(Some(profile));
     }
     if let Some(profile) = read_profile_dir(paths, ProfileScope::Project)?
         .into_iter()
@@ -228,8 +269,42 @@ pub(crate) fn find_profile_by_id(paths: &GoldBandPaths, id: &str) -> Result<Opti
         .find(|profile| profile.id == id))
 }
 
+fn built_in_profiles() -> Vec<ProfileEntry> {
+    DEFAULT_PROFILE_SEEDS
+        .iter()
+        .map(|seed| ProfileEntry {
+            id: seed.id.to_string(),
+            name: seed.name.to_string(),
+            summary: seed.summary.to_string(),
+            content: seed.content.to_string(),
+            scope: ProfileScope::BuiltIn,
+            is_built_in: true,
+            created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
+            updated_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
+            path: format!("builtin://profiles/{}", seed.key),
+        })
+        .collect()
+}
+
+fn built_in_profile_by_id(id: &str) -> Option<ProfileEntry> {
+    DEFAULT_PROFILE_SEEDS
+        .iter()
+        .find(|seed| seed.id == id)
+        .map(|seed| ProfileEntry {
+            id: seed.id.to_string(),
+            name: seed.name.to_string(),
+            summary: seed.summary.to_string(),
+            content: seed.content.to_string(),
+            scope: ProfileScope::BuiltIn,
+            is_built_in: true,
+            created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
+            updated_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
+            path: format!("builtin://profiles/{}", seed.key),
+        })
+}
+
 fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<ProfileEntry>> {
-    let dir = profile_dir(paths, scope);
+    let dir = profile_dir(paths, scope)?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -253,6 +328,7 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
             summary: parsed.summary,
             content: parsed.content,
             scope,
+            is_built_in: false,
             created_at: parsed.created_at,
             updated_at: parsed.updated_at,
             path: path.to_string(),
@@ -319,7 +395,10 @@ fn unquote(value: &str) -> &str {
 }
 
 fn write_profile(paths: &GoldBandPaths, profile: &ProfileEntry) -> Result<()> {
-    let path = profile_path(paths, profile.scope, &profile.name, &profile.id);
+    if profile.is_built_in || profile.scope == ProfileScope::BuiltIn {
+        return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+    }
+    let path = profile_path(paths, profile.scope, &profile.name, &profile.id)?;
     ensure_parent_dir(&path)?;
     fs::write(path.as_std_path(), profile_markdown(profile))?;
     Ok(())
@@ -342,6 +421,9 @@ fn yaml_scalar(value: &str) -> String {
 }
 
 fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
+    if input.scope == ProfileScope::BuiltIn {
+        return Err(ProfileCommandError::BuiltInScopeUnsupported.into());
+    }
     if input.name.trim().is_empty() {
         bail!("profile name cannot be empty");
     }
@@ -351,15 +433,16 @@ fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
     Ok(())
 }
 
-fn profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Utf8PathBuf {
+fn profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Utf8PathBuf> {
     match scope {
-        ProfileScope::User => paths.user_context_profiles_dir(),
-        ProfileScope::Project => paths.project_context_profiles_dir(),
+        ProfileScope::User => Ok(paths.user_context_profiles_dir()),
+        ProfileScope::Project => Ok(paths.project_context_profiles_dir()),
+        ProfileScope::BuiltIn => Err(ProfileCommandError::BuiltInScopeUnsupported.into()),
     }
 }
 
-fn profile_path(paths: &GoldBandPaths, scope: ProfileScope, name: &str, id: &str) -> Utf8PathBuf {
-    profile_dir(paths, scope).join(format!("{}-{id}.md", sanitize_profile_name(name)))
+fn profile_path(paths: &GoldBandPaths, scope: ProfileScope, name: &str, id: &str) -> Result<Utf8PathBuf> {
+    Ok(profile_dir(paths, scope)?.join(format!("{}-{id}.md", sanitize_profile_name(name))))
 }
 
 fn sanitize_profile_name(name: &str) -> String {
@@ -412,29 +495,14 @@ fn base36(mut value: u128) -> String {
     String::from_utf8(output).expect("base36 uses ascii digits")
 }
 
-fn remove_seeded_user_defaults_with_name(
-    profiles: &[ProfileEntry],
-    name: &str,
-    summary: &str,
-) -> Result<()> {
-    for profile in profiles.iter().filter(|profile| {
-        profile.name == name && profile.summary == summary && profile.content.trim().is_empty()
-    }) {
-        let path = Utf8PathBuf::from(&profile.path);
-        if path.exists() {
-            fs::remove_file(path.as_std_path())?;
-        }
-    }
-    Ok(())
-}
-
 fn local_timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn scope_rank(scope: ProfileScope) -> u8 {
     match scope {
-        ProfileScope::Project => 0,
-        ProfileScope::User => 1,
+        ProfileScope::BuiltIn => 0,
+        ProfileScope::Project => 1,
+        ProfileScope::User => 2,
     }
 }

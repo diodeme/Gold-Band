@@ -7,6 +7,7 @@ import type {
   NodeDetailVm,
   PreferencesVm,
   ProfileListVm,
+  UpdateBadgeStateVm,
   UpdateStatusVm,
   UpdaterSettingsVm,
   RoundDetailVm,
@@ -42,8 +43,11 @@ export const mockUpdateStatus: UpdateStatusVm = {
   error: null,
   background: false,
 };
-let browserUpdaterSettings = { ...mockUpdaterSettings };
-let browserUpdateStatus = { ...mockUpdateStatus };
+export const mockUpdateBadges: UpdateBadgeStateVm = {
+  settingsEntrySeenVersion: null,
+  settingsAdvancedSeenVersion: null,
+  announcementClosedVersion: null,
+};
 const profileTimestamp = localTimestamp();
 
 function localTimestamp(date = new Date()) {
@@ -73,12 +77,12 @@ const defaultWorkflow: WorkflowDsl = {
   entry: 'plan',
   control: {},
   nodes: [
-    { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-m9jw0wq1-a7k3d2s1', goal: 'Analyze the imported requirement and produce an implementation plan.' },
-    { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-m9jw0wq2-q8s6k4n0', goal: 'Implement the requirement in the workspace.' },
-    { type: 'worker', id: 'review', provider: 'claude-acp', profile: 'pf-m9jw0wq3-r2x9p7m5', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'test', provider: 'claude-acp', profile: 'pf-m9jw0wq4-t3y8r1c6', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-m9jw0wq5-u4z7s2d7', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
-    { type: 'worker', id: 'cleanup', provider: 'claude-acp', profile: 'pf-m9jw0wq6-v5a8t3e8', goal: 'Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.' },
+    { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.' },
+    { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.' },
+    { type: 'worker', id: 'review', provider: 'claude-acp', profile: 'pf-builtin-review', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'test', provider: 'claude-acp', profile: 'pf-builtin-test', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-builtin-accept', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'cleanup', provider: 'claude-acp', profile: 'pf-builtin-cleanup', goal: 'Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.' },
   ],
   edges: [
     { from: 'plan', to: 'dev', on: 'success' },
@@ -102,12 +106,12 @@ export const mockWorkflowTemplates: WorkflowTemplateStore = {
 
 export const mockProfileList: ProfileListVm = {
   profiles: [
-    { id: 'pf-m9jw0wq1-a7k3d2s1', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/方案-pf-m9jw0wq1-a7k3d2s1.md' },
-    { id: 'pf-m9jw0wq2-q8s6k4n0', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/开发-pf-m9jw0wq2-q8s6k4n0.md' },
-    { id: 'pf-m9jw0wq3-r2x9p7m5', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/审查-pf-m9jw0wq3-r2x9p7m5.md' },
-    { id: 'pf-m9jw0wq4-t3y8r1c6', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/测试-pf-m9jw0wq4-t3y8r1c6.md' },
-    { id: 'pf-m9jw0wq5-u4z7s2d7', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/验收-pf-m9jw0wq5-u4z7s2d7.md' },
-    { id: 'pf-m9jw0wq6-v5a8t3e8', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', scope: 'user', createdAt: profileTimestamp, updatedAt: profileTimestamp, path: '~/.gold-band/context/profiles/清理-pf-m9jw0wq6-v5a8t3e8.md' },
+    { id: 'pf-builtin-plan', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/plan' },
+    { id: 'pf-builtin-dev', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/dev' },
+    { id: 'pf-builtin-review', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/review' },
+    { id: 'pf-builtin-test', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/test' },
+    { id: 'pf-builtin-accept', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/accept' },
+    { id: 'pf-builtin-cleanup', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/cleanup' },
   ],
 };
 
@@ -287,8 +291,10 @@ export const mockBootstrap: AppBootstrapVm = {
   repoRoot: 'D:\\Projects\\code\\ai\\Gold-Band',
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
-  updaterSettings: browserUpdaterSettings,
-  updateStatus: browserUpdateStatus,
+  updaterSettings: mockUpdaterSettings,
+  updateStatus: mockUpdateStatus,
+  updateBadges: mockUpdateBadges,
+  persistedAvailableUpdate: null,
   clientVersion: '',
   appInfo: mockAppInfo,
   needsWorkspace: false,

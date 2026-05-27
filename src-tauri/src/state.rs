@@ -4,13 +4,13 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{ManagedAgentType, RuntimeConfig, UserConfig};
+use gold_band::config::{ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
 
-use crate::updater::{UpdateStatusVm, initial_update_status};
+use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -30,16 +30,18 @@ impl DesktopContext {
 
     pub fn from_workspace(repo_root: Utf8PathBuf) -> Result<Self> {
         let paths = GoldBandPaths::new(repo_root.clone());
-        let user_config = load_user_config(&paths);
-        let needs_workspace = resolve_configured_workspace(&user_config).is_none()
+        let (settings, state) = load_configs(&paths);
+        let needs_workspace = resolve_configured_workspace(&settings).is_none()
             && find_workspace_root(&repo_root).is_none();
-        let repo_root = resolve_configured_workspace(&user_config)
+        let repo_root = resolve_configured_workspace(&settings)
             .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
-        let user_config = load_user_config(&paths);
-        let config = RuntimeConfig::default().apply_user_config(&user_config);
-        let mut recent_workspaces = recent_workspaces(&user_config, &repo_root);
+        let (settings, state) = load_configs(&paths);
+        let config = RuntimeConfig::default()
+            .apply_settings(&settings)
+            .apply_state(&state);
+        let mut recent_workspaces = recent_workspaces(&state, &repo_root);
         if needs_workspace {
             recent_workspaces.retain(|w| w != repo_root.as_str());
         }
@@ -62,6 +64,13 @@ pub struct AgentDiagnosticState {
     pub reason: Option<String>,
     pub checked_at: String,
     pub capabilities: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateBadgeSeenTarget {
+    SettingsEntry,
+    SettingsAdvanced,
+    Announcement,
 }
 
 pub struct DesktopState {
@@ -136,9 +145,49 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
         let app = guard.app();
-        let user_config = app.set_user_desktop_updater_last_checked_at(checked_at)?;
-        guard.config = RuntimeConfig::default().apply_user_config(&user_config);
+        let state = app.set_user_desktop_updater_last_checked_at(checked_at)?;
+        guard.config = guard.config.clone().apply_state(&state);
         Ok(())
+    }
+
+    pub fn mark_update_badge_seen(&self, target: UpdateBadgeSeenTarget, version: String) -> Result<RuntimeConfig> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let mut next_badges = guard.config.desktop_update_badges.clone();
+        match target {
+            UpdateBadgeSeenTarget::SettingsEntry => {
+                next_badges.settings_entry_seen_version = Some(version);
+            }
+            UpdateBadgeSeenTarget::SettingsAdvanced => {
+                next_badges.settings_advanced_seen_version = Some(version);
+            }
+            UpdateBadgeSeenTarget::Announcement => {
+                next_badges.announcement_closed_version = Some(version);
+            }
+        }
+        let state = app.set_user_desktop_update_badges(next_badges)?;
+        guard.config = guard.config.clone().apply_state(&state);
+        Ok(guard.config.clone())
+    }
+
+    pub fn persist_available_update(&self, update: Option<UpdateInfoVm>) -> Result<RuntimeConfig> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let available_update = update.map(|update| gold_band::config::DesktopAvailableUpdate {
+            version: update.version,
+            current_version: update.current_version,
+            notes: update.notes,
+            pub_date: update.pub_date,
+        });
+        let state = app.set_user_desktop_available_update(available_update)?;
+        guard.config = guard.config.clone().apply_state(&state);
+        Ok(guard.config.clone())
     }
 
     pub fn clear_agent_diagnostics(&self) -> Result<()> {
@@ -224,10 +273,12 @@ impl DesktopState {
             let repo_root = find_workspace_root(&repo_root).unwrap_or(repo_root);
             let app = App::with_config(repo_root.clone(), guard.config.clone());
             let workspace = repo_root.to_string();
-            let user_config = app.set_user_desktop_workspace(&workspace)?;
+            let (settings, state) = app.set_user_desktop_workspace(&workspace)?;
             guard.repo_root = repo_root;
-            guard.config = RuntimeConfig::default().apply_user_config(&user_config);
-            guard.recent_workspaces = recent_workspaces(&user_config, &guard.repo_root);
+            guard.config = RuntimeConfig::default()
+                .apply_settings(&settings)
+                .apply_state(&state);
+            guard.recent_workspaces = recent_workspaces(&state, &guard.repo_root);
             guard.needs_workspace = false;
             guard.clone()
         };
@@ -275,8 +326,8 @@ fn resolve_initial_workspace(cwd: &Utf8Path) -> Utf8PathBuf {
     find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-fn resolve_configured_workspace(user_config: &UserConfig) -> Option<Utf8PathBuf> {
-    user_config
+fn resolve_configured_workspace(settings: &SettingsConfig) -> Option<Utf8PathBuf> {
+    settings
         .desktop_workspace
         .as_deref()
         .map(str::trim)
@@ -301,14 +352,16 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
     }
 }
 
-fn load_user_config(paths: &GoldBandPaths) -> UserConfig {
-    read_json(&paths.user_config_file()).unwrap_or_default()
+fn load_configs(paths: &GoldBandPaths) -> (SettingsConfig, StateConfig) {
+    let settings: SettingsConfig = read_json(&paths.user_settings_file()).unwrap_or_default();
+    let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
+    (settings, state)
 }
 
-fn recent_workspaces(user_config: &UserConfig, repo_root: &Utf8Path) -> Vec<String> {
+fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
     let current = repo_root.to_string();
     let mut workspaces = vec![current.clone()];
-    for workspace in &user_config.recent_desktop_workspaces {
+    for workspace in &state.recent_desktop_workspaces {
         let workspace = workspace.trim();
         if !workspace.is_empty() && workspace != current && Utf8Path::new(workspace).is_dir() {
             workspaces.push(workspace.to_string());

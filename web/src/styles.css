@@ -56,6 +56,7 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-title: var(--title);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -85,6 +86,7 @@
   --app-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --background: #0b0d10;
   --foreground: #f4efe6;
+  --title: #fcf9f3;
   --card: #101215;
   --card-foreground: #f4efe6;
   --popover: #121418;
@@ -124,6 +126,7 @@
   color-scheme: dark;
   --background: #050814;
   --foreground: #edf4ff;
+  --title: #f7fbff;
   --card: #080c17;
   --card-foreground: #edf4ff;
   --popover: #0a0f1c;
@@ -162,6 +165,7 @@
   color-scheme: light;
   --background: #f7faff;
   --foreground: #111827;
+  --title: #070a14;
   --card: #fbfdff;
   --card-foreground: #111827;
   --popover: #ffffff;
@@ -200,6 +204,7 @@
   color-scheme: light;
   --background: #f7f2e8;
   --foreground: #211d16;
+  --title: #151008;
   --card: #fffaf1;
   --card-foreground: #211d16;
   --popover: #fffdf8;

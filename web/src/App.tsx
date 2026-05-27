@@ -1,12 +1,15 @@
 import { listen } from '@tauri-apps/api/event';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   checkUpdateManual,
   chooseWorkspace,
   continueRun,
   createTask,
+  dismissUpdateAnnouncement,
   downloadAndInstallUpdate,
   getAgentRegistry,
+  markSettingsAdvancedUpdateSeen,
+  markSettingsUpdateSeen,
   getAppBootstrap,
   getRoundDetail,
   getTaskList,
@@ -18,8 +21,13 @@ import {
   selectRecentWorkspace,
   startRun,
 } from './api';
+import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
+import { Button } from '@/components/ui/button';
+import { X } from 'lucide-react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
@@ -41,6 +49,7 @@ import type {
   DesktopLanguage,
   DesktopThemePreference,
   PreferencesVm,
+  UpdateBadgeStateVm,
   PrimaryModule,
   RoundDetailVm,
   RoundSelection,
@@ -67,6 +76,10 @@ const defaultUpdateStatus: UpdateStatusVm = {
   error: null,
   background: false,
 };
+const defaultUpdateBadges: UpdateBadgeStateVm = {
+  settingsEntrySeenVersion: null,
+  settingsAdvancedSeenVersion: null,
+};
 const defaultAppInfo: AppInfoVm = {
   channel: 'default',
   appName: 'Gold Band',
@@ -91,12 +104,24 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
+  const updateBadges = bootstrap?.updateBadges ?? defaultUpdateBadges;
+  const persistedAvailableUpdate = bootstrap?.persistedAvailableUpdate ?? null;
+  const effectiveAvailableUpdate = updateStatus.update ?? persistedAvailableUpdate;
+  const availableUpdateVersion = effectiveAvailableUpdate?.version ?? null;
+  const showSettingsUpdateDot = availableUpdateVersion !== null && updateBadges.settingsEntrySeenVersion !== availableUpdateVersion;
+  const showSettingsAdvancedUpdateDot = availableUpdateVersion !== null && updateBadges.settingsAdvancedSeenVersion !== availableUpdateVersion;
+  const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
+  const shouldShowUpdateAnnouncement = useMemo(
+    () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
+    [availableUpdateVersion, updateBadges.announcementClosedVersion],
+  );
   const { t } = useTranslation();
 
   useEffect(() => {
@@ -144,12 +169,16 @@ export function App() {
   }, [t]);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
       if (!active) return;
-      setBootstrap((current) => current ? { ...current, updateStatus: event.payload } : current);
+      setBootstrap((current) => current ? {
+        ...current,
+        updateStatus: event.payload,
+        persistedAvailableUpdate: event.payload.update ?? (event.payload.status === 'available' ? current.persistedAvailableUpdate : null),
+      } : current);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -164,7 +193,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
@@ -336,6 +365,7 @@ export function App() {
         preferences: saved,
         updaterSettings: defaultUpdaterSettings,
         updateStatus: defaultUpdateStatus,
+        updateBadges: defaultUpdateBadges,
         clientVersion: '',
         appInfo: defaultAppInfo,
         needsWorkspace: false,
@@ -368,7 +398,7 @@ export function App() {
     setBusy(true);
     try {
       const status = await checkUpdateManual();
-      setBootstrap((current) => current ? { ...current, updateStatus: status } : current);
+      setBootstrap((current) => current ? { ...current, updateStatus: status, persistedAvailableUpdate: status.update ?? null } : current);
       return status;
     } catch (err) {
       setError(displayAppError(t, err));
@@ -376,6 +406,50 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onMarkSettingsUpdateSeen = useCallback(async () => {
+    if (!availableUpdateVersion) return;
+    if (updateBadges.settingsEntrySeenVersion === availableUpdateVersion) return;
+    try {
+      const badges = await markSettingsUpdateSeen(availableUpdateVersion);
+      setBootstrap((current) => current ? { ...current, updateBadges: badges } : current);
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+  }, [availableUpdateVersion, t, updateBadges.settingsEntrySeenVersion]);
+
+  const onMarkSettingsAdvancedUpdateSeen = useCallback(async () => {
+    if (!availableUpdateVersion) return;
+    if (updateBadges.settingsAdvancedSeenVersion === availableUpdateVersion) return;
+    try {
+      const badges = await markSettingsAdvancedUpdateSeen(availableUpdateVersion);
+      setBootstrap((current) => current ? { ...current, updateBadges: badges } : current);
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+  }, [availableUpdateVersion, t, updateBadges.settingsAdvancedSeenVersion]);
+
+  const onDismissUpdateAnnouncement = useCallback(async () => {
+    if (!availableUpdateVersion) return;
+    if (updateBadges.announcementClosedVersion === availableUpdateVersion) return;
+    try {
+      const badges = await dismissUpdateAnnouncement(availableUpdateVersion);
+      setBootstrap((current) => current ? { ...current, updateBadges: badges } : current);
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+  }, [availableUpdateVersion, t, updateBadges.announcementClosedVersion]);
+
+  const onOpenUpdateAnnouncement = () => {
+    setUpdateAnnouncementOpen(true);
+  };
+
+  const onGoToSettingsUpdate = () => {
+    setUpdateAnnouncementOpen(false);
+    setWorkspacePickerOpen(false);
+    setPrimaryModule('settings');
+    pushRoute('settings', taskPage);
   };
 
   const onInstallUpdate = async () => {
@@ -410,6 +484,9 @@ export function App() {
           appInfo={appInfo}
           updaterSettings={updaterSettings}
           updateStatus={updateStatus}
+          availableUpdate={effectiveAvailableUpdate}
+          showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
+          showUpdatesSectionDot={showUpdatesSectionDot}
           downloadProgress={downloadProgress}
           clientVersion={bootstrap?.clientVersion ?? ''}
           busy={busy}
@@ -417,6 +494,8 @@ export function App() {
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
+          onViewSettings={onMarkSettingsUpdateSeen}
+          onViewAdvanced={onMarkSettingsAdvancedUpdateSeen}
         />
       )
       : primaryModule === 'agent-management'
@@ -431,6 +510,7 @@ export function App() {
       appName={appInfo.appName}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
+      showSettingsUpdateDot={showSettingsUpdateDot}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);
@@ -441,7 +521,41 @@ export function App() {
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      {shouldShowUpdateAnnouncement ? (
+        <div className="pointer-events-none fixed left-1/2 top-1 z-50 -translate-x-1/2">
+          <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
+            <AlertDescription className="flex items-center justify-between gap-4 text-sm">
+              <button type="button" className="inline-flex min-w-0 items-center gap-2 font-medium text-foreground hover:text-primary" onClick={onOpenUpdateAnnouncement}>
+                <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />
+                <span className="truncate">{t('settings.updater.announcement.title', { version: availableUpdateVersion })}</span>
+              </button>
+              <Button size="icon" variant="ghost" className="-mr-3 h-7 w-7 shrink-0 text-muted-foreground" onClick={onDismissUpdateAnnouncement} aria-label={t('settings.updater.announcement.dismiss')}>
+                <X className="size-4" />
+              </Button>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
       {content}
+      <AlertDialog open={updateAnnouncementOpen} onOpenChange={setUpdateAnnouncementOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('settings.updater.announcement.dialogTitle', { version: availableUpdateVersion ?? '' })}</AlertDialogTitle>
+            <div className="space-y-3 text-sm text-muted-foreground">
+              <p>{t('settings.updater.announcement.dialogDescription')}</p>
+              {effectiveAvailableUpdate?.notes ? (
+                <div className="max-h-72 overflow-y-auto rounded-md border border-border/50 bg-muted/20 p-3 text-left">
+                  <Markdown>{effectiveAvailableUpdate.notes}</Markdown>
+                </div>
+              ) : null}
+            </div>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction onClick={onGoToSettingsUpdate}>{t('settings.updater.announcement.goToSettings')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Shell>
   );
 

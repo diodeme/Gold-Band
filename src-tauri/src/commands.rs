@@ -166,7 +166,7 @@ pub fn create_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    let user_config = app
+    let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
@@ -177,7 +177,7 @@ pub fn create_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -198,7 +198,7 @@ pub fn update_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    let user_config = app
+    let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
@@ -209,7 +209,7 @@ pub fn update_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     state
         .clear_agent_diagnostic(agent_type)
@@ -226,10 +226,10 @@ pub fn delete_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    let user_config = app
+    let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -858,10 +858,10 @@ pub fn save_desktop_preferences(
     let app = context.app();
     app.set_user_desktop_preferences(theme, language, font.clone())
         .map_err(command_error)?;
-    let user_config = app
+    let settings = app
         .set_user_use_local_claude(use_local_claude)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     Ok(preferences_vm(theme, language, font, use_local_claude))
 }
@@ -874,10 +874,10 @@ pub fn save_updater_settings(
     let override_url = normalize_updater_url_override(override_url).map_err(command_error)?;
     let context = state.context().map_err(command_error)?;
     let app = context.app();
-    let user_config = app
+    let settings = app
         .set_user_desktop_updater_url_override(override_url)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     let settings = updater_settings(&config);
     state.update_config(config).map_err(command_error)?;
     Ok(settings)

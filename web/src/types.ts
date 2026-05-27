@@ -216,7 +216,7 @@ export interface WorkflowEdgeDsl {
 export interface CreateTaskInput {
   title?: string | null;
   description?: string | null;
-  requirementFileName: string;
+  requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
   workflowTemplateId?: string | null;
@@ -237,7 +237,7 @@ export interface WorkflowTemplate {
   updatedAt: string;
 }
 
-export type ProfileScope = 'user' | 'project';
+export type ProfileScope = 'built-in' | 'user' | 'project';
 
 export interface ProfileVm {
   id: string;
@@ -245,6 +245,7 @@ export interface ProfileVm {
   summary: string;
   content: string;
   scope: ProfileScope;
+  isBuiltIn: boolean;
   createdAt: string;
   updatedAt: string;
   path: string;

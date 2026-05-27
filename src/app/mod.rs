@@ -51,10 +51,12 @@ use self::orchestrator::{
 };
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
-    DefaultProfileIds, create_profile, ensure_default_user_profiles, list_profiles, show_profile,
-    update_profile,
+    DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
+    ensure_default_user_profiles, list_profiles, show_profile, update_profile,
 };
-pub use self::profiles::{ProfileEntry, ProfileInput, ProfileList, ProfileScope};
+pub use self::profiles::{
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+};
 
 fn tail_text(text: &str, limit: usize) -> String {
     if limit == 0 {
@@ -268,7 +270,7 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
 pub struct CreateTaskInput {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub requirement_file_name: String,
+    pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
     pub workflow_template_id: Option<String>,
@@ -348,6 +350,19 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.current_round.is_some()
         && run.current_node.is_some()
         && run.current_attempt.is_some()
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ProfileUsageCounts {
+    template_count: usize,
+    task_count: usize,
+    run_count: usize,
+}
+
+fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
+    workflow.nodes.iter().any(|node| match node {
+        NodeDsl::Worker(worker) => worker.profile.as_deref() == Some(profile_id),
+    })
 }
 
 impl App {
@@ -516,6 +531,24 @@ impl App {
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
         update_profile(&self.paths, id, input)
+    }
+
+    pub fn delete_profile(&self, id: &str) -> Result<ProfileList> {
+        let profile = show_profile(&self.paths, id)?;
+        if profile.is_built_in {
+            return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+        }
+        let usage = self.profile_usage_counts(id)?;
+        if usage.template_count > 0 || usage.task_count > 0 || usage.run_count > 0 {
+            return Err(ProfileCommandError::InUse {
+                template_count: usage.template_count,
+                task_count: usage.task_count,
+                run_count: usage.run_count,
+            }
+            .into());
+        }
+        delete_profile_file(&self.paths, id)?;
+        list_profiles(&self.paths)
     }
 
     pub fn save_workflow_template(
@@ -738,14 +771,6 @@ impl App {
     }
 
     pub fn create_task_from_requirement(&self, input: CreateTaskInput) -> Result<TaskSummary> {
-        let extension = std::path::Path::new(&input.requirement_file_name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .ok_or_else(|| anyhow!("requirement file must have .txt or .md extension"))?;
-        if !matches!(extension.as_str(), "txt" | "md") {
-            bail!("requirement file must be .txt or .md");
-        }
         if input.requirement_content.trim().is_empty() {
             bail!("requirement content cannot be empty");
         }
@@ -1489,6 +1514,104 @@ impl App {
     ) -> Result<ControlDecision> {
         let validated = validate_workflow(workflow)?;
         Ok(decide_next_step(&validated, run, round, node))
+    }
+
+    fn profile_usage_counts(&self, profile_id: &str) -> Result<ProfileUsageCounts> {
+        let mut counts = ProfileUsageCounts::default();
+        let store = self.load_workflow_template_store()?;
+        counts.template_count = store
+            .templates
+            .iter()
+            .filter(|template| workflow_uses_profile(&template.workflow, profile_id))
+            .count();
+
+        let tasks_dir = self.paths.tasks_dir();
+        if !tasks_dir.exists() {
+            return Ok(counts);
+        }
+
+        let mut task_paths = fs::read_dir(tasks_dir.as_std_path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        task_paths.sort();
+
+        for path in task_paths {
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(task_dir) = Utf8PathBuf::from_path_buf(path).ok() else {
+                continue;
+            };
+            let Some(task_id) = task_dir.file_name() else {
+                continue;
+            };
+
+            let workflow_path = self.paths.workflow_file(task_id);
+            if workflow_path.exists() {
+                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                if workflow_uses_profile(&workflow, profile_id) {
+                    counts.task_count += 1;
+                }
+            }
+
+            let runs_dir = self.paths.runs_dir(task_id);
+            if !runs_dir.exists() {
+                continue;
+            }
+            let mut run_paths = fs::read_dir(runs_dir.as_std_path())?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            run_paths.sort();
+            for run_path in run_paths {
+                if !run_path.is_dir() {
+                    continue;
+                }
+                let Some(run_dir) = Utf8PathBuf::from_path_buf(run_path).ok() else {
+                    continue;
+                };
+                let Some(run_id) = run_dir.file_name() else {
+                    continue;
+                };
+                let run_file = self.paths.run_file(task_id, run_id);
+                let snapshot_file = self.paths.workflow_snapshot_file(task_id, run_id);
+                if !run_file.exists() || !snapshot_file.exists() {
+                    continue;
+                }
+                let run = read_json::<RunState>(&run_file)?;
+                if !self.run_snapshot_is_actionable(task_id, &run)? {
+                    continue;
+                }
+                let workflow = read_json::<WorkflowDsl>(&snapshot_file)?;
+                if workflow_uses_profile(&workflow, profile_id) {
+                    counts.run_count += 1;
+                }
+            }
+        }
+
+        Ok(counts)
+    }
+
+    fn run_snapshot_is_actionable(&self, task_id: &str, run: &RunState) -> Result<bool> {
+        if run.status == RunStatus::Running || is_run_continuable(run) {
+            return Ok(true);
+        }
+        let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+            run.current_round.as_deref(),
+            run.current_node.as_deref(),
+            run.current_attempt.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        let node_file = self
+            .paths
+            .node_file(task_id, &run.id, round_id, node_id, attempt_id);
+        if !node_file.exists() {
+            return Ok(false);
+        }
+        let node = read_json::<NodeState>(&node_file)?;
+        Ok(node.outcome == Some(NodeOutcome::Invalid))
     }
 
     fn read_json_dir_sorted<T: DeserializeOwned>(&self, dir: &Utf8Path) -> Result<Vec<T>> {

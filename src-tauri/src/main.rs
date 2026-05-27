@@ -10,7 +10,7 @@ mod view_models;
 use anyhow::Context;
 use commands::{
     cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
-    delete_agent, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
+    delete_agent, delete_profile, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
     check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
@@ -77,6 +77,7 @@ fn run() -> anyhow::Result<()> {
             get_profile,
             create_profile,
             update_profile,
+            delete_profile,
             choose_workspace,
             select_recent_workspace,
             get_task_detail,

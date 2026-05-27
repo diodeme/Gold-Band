@@ -117,7 +117,71 @@ function command<T>(name: string, args?: Record<string, unknown>, fallback?: T):
   if (!isTauri && fallback !== undefined) {
     return Promise.resolve(fallback);
   }
-  return invoke<T>(name, args);
+  return invoke<T>(name, args).catch((error) => Promise.reject(normalizeCommandError(error)));
+}
+
+function normalizeCommandError(error: unknown): unknown {
+  const direct = asCommandError(error);
+  if (direct) {
+    return direct;
+  }
+  if (error instanceof Error) {
+    return parseCommandErrorString(error.message) ?? error;
+  }
+  if (typeof error === 'string') {
+    return parseCommandErrorString(error) ?? error;
+  }
+  if (error && typeof error === 'object') {
+    const candidate = error as {
+      message?: unknown;
+      error?: unknown;
+      cause?: unknown;
+      payload?: unknown;
+    };
+    for (const value of [candidate.error, candidate.cause, candidate.payload, candidate.message]) {
+      const normalized = normalizeCommandError(value);
+      if (asCommandError(normalized)) {
+        return normalized;
+      }
+    }
+  }
+  return error;
+}
+
+function parseCommandErrorString(value: string) {
+  const trimmed = value.trim();
+  const direct = parseCommandErrorJson(trimmed);
+  if (direct) {
+    return direct;
+  }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    return parseCommandErrorJson(trimmed.slice(start, end + 1));
+  }
+  return null;
+}
+
+function parseCommandErrorJson(value: string) {
+  try {
+    return asCommandError(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function asCommandError(value: unknown) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const candidate = value as { code?: unknown; params?: unknown };
+  if (typeof candidate.code !== 'string') {
+    return null;
+  }
+  return {
+    code: candidate.code,
+    params: candidate.params && typeof candidate.params === 'object' ? candidate.params as Record<string, unknown> : {},
+  };
 }
 
 function localTimestamp(date = new Date()) {
@@ -127,6 +191,10 @@ function localTimestamp(date = new Date()) {
 
 function browserProfileId() {
   return `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function browserCommandError(code: string, params: Record<string, unknown> = {}) {
+  return Promise.reject({ code, params });
 }
 
 export function checkLocalClaude() {
@@ -246,18 +314,45 @@ export function getProfile(id: string) {
 }
 
 export function createProfile(input: ProfileInput) {
+  if (isTauri) {
+    return invoke<ProfileVm>('create_profile', { input }).catch((error) => Promise.reject(normalizeCommandError(error)));
+  }
   const now = localTimestamp();
-  const profile = { ...input, id: browserProfileId(), createdAt: now, updatedAt: now, path: '' };
+  const profile = { ...input, id: browserProfileId(), isBuiltIn: false, createdAt: now, updatedAt: now, path: '' };
   browserProfileList = { profiles: [...browserProfileList.profiles, profile] };
-  return command<ProfileVm>('create_profile', { input }, profile);
+  return Promise.resolve(profile);
 }
 
 export function updateProfile(id: string, input: ProfileInput) {
+  if (isTauri) {
+    return invoke<ProfileVm>('update_profile', { id, input }).catch((error) => Promise.reject(normalizeCommandError(error)));
+  }
   const existing = browserProfileList.profiles.find((profile) => profile.id === id);
+  if (!existing) {
+    return browserCommandError('app.unexpected');
+  }
+  if (existing.isBuiltIn) {
+    return browserCommandError('profile.readonly-built-in');
+  }
   const now = localTimestamp();
-  const profile = { ...existing, ...input, id, updatedAt: now, createdAt: existing?.createdAt ?? now, path: existing?.path ?? '' };
+  const profile = { ...existing, ...input, id, isBuiltIn: false, updatedAt: now, createdAt: existing.createdAt, path: existing.path };
   browserProfileList = { profiles: browserProfileList.profiles.map((item) => item.id === id ? profile : item) };
-  return command<ProfileVm>('update_profile', { id, input }, profile);
+  return Promise.resolve(profile);
+}
+
+export function deleteProfile(id: string) {
+  if (isTauri) {
+    return invoke<ProfileListVm>('delete_profile', { id }).catch((error) => Promise.reject(normalizeCommandError(error)));
+  }
+  const existing = browserProfileList.profiles.find((profile) => profile.id === id);
+  if (!existing) {
+    return browserCommandError('app.unexpected');
+  }
+  if (existing.isBuiltIn) {
+    return browserCommandError('profile.readonly-built-in');
+  }
+  browserProfileList = { profiles: browserProfileList.profiles.filter((profile) => profile.id !== id) };
+  return Promise.resolve(browserProfileList);
 }
 
 export function chooseWorkspace() {
@@ -280,7 +375,7 @@ export function createTask(input: CreateTaskInput) {
   const task = {
     ...mockWorkflow.task,
     id: `task-${String(mockTaskList.tasks.length + 1).padStart(3, '0')}`,
-    title: input.title || input.requirementFileName.replace(/\.(md|txt)$/i, ''),
+    title: input.title?.trim() || `task-${String(mockTaskList.tasks.length + 1).padStart(3, '0')}`,
     description: input.description ?? null,
     requirement: input.requirementContent,
     requirementPreview: input.requirementContent.slice(0, 120),

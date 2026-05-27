@@ -82,7 +82,7 @@ fn create_task_from_requirement_writes_authoring_files() {
         .create_task_from_requirement(CreateTaskInput {
             title: Some("Imported requirement".to_string()),
             description: Some("created from md".to_string()),
-            requirement_file_name: "requirement.md".to_string(),
+            requirement_file_name: None,
             requirement_content: "Build a workflow".to_string(),
             workflow: workflow(&app, "plan"),
             workflow_template_id: None,
@@ -277,7 +277,7 @@ fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
     app.create_task_from_requirement(CreateTaskInput {
         title: Some("Snapshot task".to_string()),
         description: None,
-        requirement_file_name: "requirement.txt".to_string(),
+        requirement_file_name: Some("requirement.txt".to_string()),
         requirement_content: "Keep snapshot stable".to_string(),
         workflow: workflow(&app, "plan"),
         workflow_template_id: None,

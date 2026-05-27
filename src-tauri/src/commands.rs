@@ -4,7 +4,7 @@ use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
 use gold_band::app::{
-    CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
+    CreateTaskInput, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -76,7 +76,8 @@ pub struct ManagedAgentInput {
 pub struct CreateTaskInputVm {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub requirement_file_name: String,
+    #[serde(default)]
+    pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
     pub workflow_template_id: Option<String>,
@@ -284,6 +285,36 @@ pub fn update_profile(
 ) -> CommandResult<ProfileEntry> {
     let app = state.app().map_err(command_error)?;
     app.update_profile(&id, input).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn delete_profile(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<ProfileList> {
+    let app = state.app().map_err(|error| {
+        CommandErrorVm::new(
+            "app.unexpected",
+            serde_json::json!({
+                "message": format!("delete_profile `{}` failed before execution: {:#}", id, error),
+            }),
+        )
+    })?;
+    match app.delete_profile(&id) {
+        Ok(list) => Ok(list),
+        Err(error) => {
+            if error.downcast_ref::<ProfileCommandError>().is_some() {
+                Err(command_error(error))
+            } else {
+                Err(CommandErrorVm::new(
+                    "app.unexpected",
+                    serde_json::json!({
+                        "message": format!("delete_profile `{}` failed: {:#}", id, error),
+                    }),
+                ))
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -977,11 +1008,14 @@ fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
+    if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {
         return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
     }
-    CommandErrorVm::new("app.unexpected", serde_json::json!({}))
+    CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
 }
 
 fn updater_command_error_code(message: &str) -> Option<&'static str> {

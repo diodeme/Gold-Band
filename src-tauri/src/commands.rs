@@ -4,7 +4,7 @@ use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
 use gold_band::app::{
-    CreateTaskInput, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
+    CreateTaskInput, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -27,7 +27,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
-use crate::state::DesktopState;
+use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -36,8 +36,8 @@ use crate::updater::{
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
-    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, WorkflowVm,
-    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
+    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
     preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm,
     workflow_vm,
 };
@@ -76,7 +76,8 @@ pub struct ManagedAgentInput {
 pub struct CreateTaskInputVm {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub requirement_file_name: String,
+    #[serde(default)]
+    pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
     pub workflow_template_id: Option<String>,
@@ -165,7 +166,7 @@ pub fn create_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    let user_config = app
+    let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
@@ -176,7 +177,7 @@ pub fn create_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -197,7 +198,7 @@ pub fn update_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    let user_config = app
+    let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
@@ -208,7 +209,7 @@ pub fn update_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     state
         .clear_agent_diagnostic(agent_type)
@@ -225,10 +226,10 @@ pub fn delete_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    let user_config = app
+    let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -284,6 +285,37 @@ pub fn update_profile(
 ) -> CommandResult<ProfileEntry> {
     let app = state.app().map_err(command_error)?;
     app.update_profile(&id, input).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn delete_profile(
+    state: State<'_, DesktopState>,
+    id: String,
+    force: Option<bool>,
+) -> CommandResult<ProfileList> {
+    let app = state.app().map_err(|error| {
+        CommandErrorVm::new(
+            "app.unexpected",
+            serde_json::json!({
+                "message": format!("delete_profile `{}` failed before execution: {:#}", id, error),
+            }),
+        )
+    })?;
+    match app.delete_profile(&id, force.unwrap_or(false)) {
+        Ok(list) => Ok(list),
+        Err(error) => {
+            if error.downcast_ref::<ProfileCommandError>().is_some() {
+                Err(command_error(error))
+            } else {
+                Err(CommandErrorVm::new(
+                    "app.unexpected",
+                    serde_json::json!({
+                        "message": format!("delete_profile `{}` failed: {:#}", id, error),
+                    }),
+                ))
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -826,10 +858,10 @@ pub fn save_desktop_preferences(
     let app = context.app();
     app.set_user_desktop_preferences(theme, language, font.clone())
         .map_err(command_error)?;
-    let user_config = app
+    let settings = app
         .set_user_use_local_claude(use_local_claude)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     state.update_config(config).map_err(command_error)?;
     Ok(preferences_vm(theme, language, font, use_local_claude))
 }
@@ -842,10 +874,10 @@ pub fn save_updater_settings(
     let override_url = normalize_updater_url_override(override_url).map_err(command_error)?;
     let context = state.context().map_err(command_error)?;
     let app = context.app();
-    let user_config = app
+    let settings = app
         .set_user_desktop_updater_url_override(override_url)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_user_config(&user_config);
+    let config = RuntimeConfig::default().apply_settings(&settings);
     let settings = updater_settings(&config);
     state.update_config(config).map_err(command_error)?;
     Ok(settings)
@@ -854,6 +886,51 @@ pub fn save_updater_settings(
 #[tauri::command]
 pub fn get_update_status(state: State<'_, DesktopState>) -> CommandResult<UpdateStatusVm> {
     state.update_status().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn mark_settings_update_seen(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::SettingsEntry, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
+}
+
+#[tauri::command]
+pub fn mark_settings_advanced_update_seen(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::SettingsAdvanced, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
+}
+
+#[tauri::command]
+pub fn dismiss_update_announcement(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::Announcement, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
 }
 
 #[tauri::command]
@@ -932,11 +1009,14 @@ fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
+    if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {
         return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
     }
-    CommandErrorVm::new("app.unexpected", serde_json::json!({}))
+    CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
 }
 
 fn updater_command_error_code(message: &str) -> Option<&'static str> {

@@ -357,7 +357,7 @@ fn apply_local_command(
             show_overlay(app, state, CommandViewKind::Log, body)
         }
         ConsoleLocalCommand::Config => {
-            let persisted_user_theme = app.load_user_config()?.console_theme;
+            let persisted_user_theme = app.load_settings()?.console_theme;
             let body = format!(
                 "{}\n\nConsole Session\n  startup_theme: {}\n  persisted_user_theme: {}\n  effective_theme: {}\n  source: {}",
                 to_string_pretty(&app.config)?,
@@ -847,9 +847,9 @@ fn render_help_body(state: &ConsoleState) -> String {
 
 fn render_theme_help(app: &App, state: &ConsoleState) -> String {
     let persisted_user_theme = app
-        .load_user_config()
+        .load_settings()
         .ok()
-        .and_then(|config| config.console_theme);
+        .and_then(|settings| settings.console_theme);
     format!(
         "Console Themes\n  startup: {}\n  persisted: {}\n  effective: {}\n\nAvailable\n  gold-band\n  nord\n  dracula\n  cyber\n  onyx\n  mist\n  high-contrast\n\nUsage\n  /theme\n  /theme cyber",
         theme_name(app.config.console_theme),

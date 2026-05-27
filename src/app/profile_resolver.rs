@@ -52,6 +52,7 @@ pub(crate) fn resolve_profile(
     Ok(ResolvedProfileRef {
         name: profile.id,
         source: match profile.scope {
+            super::profiles::ProfileScope::BuiltIn => ProfileSource::BuiltIn,
             super::profiles::ProfileScope::Project => ProfileSource::Project,
             super::profiles::ProfileScope::User => ProfileSource::User,
         },

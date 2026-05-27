@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1684,6 +1684,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "dirs",
  "figlet-rs",
  "indexmap 2.14.0",
  "ratatui",
@@ -1698,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "camino",

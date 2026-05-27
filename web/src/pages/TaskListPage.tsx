@@ -125,8 +125,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
     <Page flush className="flex flex-col" onContextMenu={(event) => event.preventDefault()}>
       <PageHeader
         breadcrumbs={breadcrumbs}
-        title={t('taskList.title')}
-        subtitle={t('taskList.subtitle')}
+        title={<span className="text-title">{t('taskList.title')}</span>}
         actions={(
           <>
             <Button variant="outline" disabled={isInitialLoading || isManualRefreshing} onClick={onRefresh}>
@@ -275,6 +274,8 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
   const [requirementContent, setRequirementContent] = useState('');
   const [workflow, setWorkflow] = useState<WorkflowDsl | null>(null);
   const requirementInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+  const [confirmRequirementImportOpen, setConfirmRequirementImportOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
@@ -309,32 +310,45 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       .catch((err) => setFormError(displayAppError(t, err)));
   }, [open]);
 
-  const readRequirementFile = async (file: File | undefined) => {
-    if (!file) return;
+  const applyImportedRequirement = async (file: File) => {
     if (!/\.(txt|md)$/i.test(file.name)) {
       setFormError(t('taskList.create.invalidFile'));
       return;
     }
     const content = await file.text();
     setRequirementFileName(file.name);
+    setTitle(file.name.replace(/\.(txt|md)$/i, ''));
+    setDescription('');
     setRequirementContent(content);
-    if (!title.trim()) setTitle(file.name.replace(/\.(txt|md)$/i, ''));
     setFormError(null);
   };
 
   const clearRequirementFile = () => {
     setRequirementFileName('');
-    setRequirementContent('');
     setFormError(null);
     if (requirementInputRef.current) requirementInputRef.current.value = '';
   };
 
+  const hasRequirementDraft = Boolean(title.trim() || description.trim() || requirementContent.trim());
+
   const handleRequirementFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    try {
-      await readRequirementFile(event.target.files?.[0]);
-    } finally {
-      event.target.value = '';
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (hasRequirementDraft) {
+      setPendingImportFile(file);
+      setConfirmRequirementImportOpen(true);
+      return;
     }
+    await applyImportedRequirement(file);
+  };
+
+  const confirmRequirementImport = async () => {
+    if (!pendingImportFile) return;
+    const file = pendingImportFile;
+    setConfirmRequirementImportOpen(false);
+    setPendingImportFile(null);
+    await applyImportedRequirement(file);
   };
 
   const selectWorkflowTemplate = (templateId: string) => {
@@ -466,16 +480,16 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
   const showLastUsedHint = Boolean(lastUsedTemplate && selectedTemplateId !== lastUsedTemplate.id && !lastUsedHintDismissed);
 
   const submit = async (workflowDraft: WorkflowDsl) => {
-    if (!requirementFileName || !requirementContent.trim()) {
+    if (!title.trim() || !requirementContent.trim()) {
       setFormError(t('taskList.create.requirementRequired'));
       return;
     }
     setSaving(true);
     try {
       const created = await onCreateTask({
-        title: title.trim() || requirementFileName.replace(/\.(txt|md)$/i, ''),
+        title: title.trim(),
         description: description.trim() || null,
-        requirementFileName,
+        requirementFileName: requirementFileName || null,
         requirementContent,
         workflow: workflowDraft,
         workflowTemplateId: selectedTemplateId,
@@ -483,6 +497,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       if (created) {
         setTitle('');
         setDescription('');
+        setRequirementContent('');
         clearRequirementFile();
         setWorkflow(null);
       }
@@ -512,15 +527,23 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         </SheetHeader>
         <ScrollArea className="h-[calc(100vh-96px)]">
           <div className="space-y-4 p-5">
-            <AppCard className="grid gap-4 p-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-              <div className="space-y-3">
-                <div className="group relative">
+            <AppCard className="space-y-1 p-4">
+              <div className="flex flex-col gap-1.5 border-b pb-1 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-semibold text-foreground">{t('taskList.create.requirementSectionTitle')}</h3>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                  {requirementFileName ? <Badge variant="outline" className="max-w-full truncate">{requirementFileName}</Badge> : null}
+                  <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => requirementInputRef.current?.click()}>
+                    <Upload className="size-4" />
+                    {t('taskList.create.importRequirement')}
+                  </Button>
                   {requirementFileName ? (
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="absolute right-2 top-2 z-10 h-7 w-7 rounded-full bg-background/85 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                      className="size-8"
                       aria-label={t('taskList.create.removeFile')}
                       onClick={(event) => {
                         event.preventDefault();
@@ -531,35 +554,35 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                       <X className="size-4" />
                     </Button>
                   ) : null}
-                  <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-4 text-center text-sm text-muted-foreground transition-colors hover:bg-muted/30">
-                    <Upload className="size-5" />
-                    <span>{requirementFileName || t('taskList.create.pickFile')}</span>
-                    <Input
-                      ref={requirementInputRef}
-                      className="sr-only"
-                      type="file"
-                      accept=".txt,.md,text/plain,text/markdown"
-                      onChange={(event) => void handleRequirementFileChange(event)}
-                    />
-                  </label>
-                </div>
-                <div className="grid gap-1.5 text-sm">
-                  <Label className="text-xs text-muted-foreground">{t('taskList.create.taskTitle')}</Label>
-                  <Input value={title} onChange={(event) => setTitle(event.target.value)} />
-                </div>
-                <div className="grid gap-1.5 text-sm">
-                  <Label className="text-xs text-muted-foreground">{t('taskList.create.taskDescription')}</Label>
-                  <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
                 </div>
               </div>
-              <div className="min-w-0 rounded-xl border bg-muted/10 p-3">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <strong className="text-sm">{t('taskList.create.requirementPreview')}</strong>
-                  <Badge variant="outline">txt / md</Badge>
+              <div className="grid gap-3 pt-0.5 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)] lg:items-start lg:gap-5">
+                <div className="grid gap-2 text-sm">
+                  <div className="grid gap-1">
+                    <Label className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskTitle')}</Label>
+                    <Input className="h-10" value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('taskList.create.taskTitlePlaceholder')} />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskDescription')}</Label>
+                    <Textarea className="min-h-36 resize-none" value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('taskList.create.taskDescriptionPlaceholder')} />
+                  </div>
                 </div>
-                <ScrollArea className="h-56 rounded-lg bg-background/50 p-3 text-sm text-muted-foreground">
-                  <pre className="whitespace-pre-wrap break-words font-sans">{requirementContent || t('taskList.create.emptyRequirement')}</pre>
-                </ScrollArea>
+                <div className="grid gap-1 text-sm">
+                  <Label className="text-xs font-medium text-muted-foreground">{t('taskList.create.requirementContent')}</Label>
+                  <Input
+                    ref={requirementInputRef}
+                    className="sr-only"
+                    type="file"
+                    accept=".txt,.md,text/plain,text/markdown"
+                    onChange={(event) => void handleRequirementFileChange(event)}
+                  />
+                  <Textarea
+                    value={requirementContent}
+                    onChange={(event) => setRequirementContent(event.target.value)}
+                    placeholder={t('taskList.create.requirementContentPlaceholder')}
+                    className="min-h-[220px] bg-background"
+                  />
+                </div>
               </div>
             </AppCard>
             {formError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{formError}</div> : null}
@@ -673,6 +696,21 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
           </div>
         </ScrollArea>
       </SheetContent>
+      <AlertDialog open={confirmRequirementImportOpen} onOpenChange={(open) => {
+        setConfirmRequirementImportOpen(open);
+        if (!open) setPendingImportFile(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('taskList.create.confirmImportTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('taskList.create.confirmImportDescription')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmRequirementImport()}>{t('taskList.create.confirmImportAction')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={Boolean(deleteTemplateTarget)} onOpenChange={(open) => !open && setDeleteTemplateTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

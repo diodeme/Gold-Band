@@ -10,8 +10,9 @@ mod transition_context;
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
 use crate::config::{
-    ConsoleThemeName, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    ManagedAgentConfig, ManagedAgentType, RuntimeConfig, UserConfig,
+    ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage,
+    DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
+    RuntimeConfig, SettingsConfig, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -50,10 +51,12 @@ use self::orchestrator::{
 };
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
-    DefaultProfileIds, create_profile, ensure_default_user_profiles, list_profiles, show_profile,
-    update_profile,
+    DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
+    ensure_default_user_profiles, list_profiles, show_profile, update_profile,
 };
-pub use self::profiles::{ProfileEntry, ProfileInput, ProfileList, ProfileScope};
+pub use self::profiles::{
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+};
 
 fn tail_text(text: &str, limit: usize) -> String {
     if limit == 0 {
@@ -267,7 +270,7 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
 pub struct CreateTaskInput {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub requirement_file_name: String,
+    pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
     pub workflow_template_id: Option<String>,
@@ -349,42 +352,67 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.current_attempt.is_some()
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct ProfileUsageCounts {
+    template_count: usize,
+    task_count: usize,
+    run_count: usize,
+}
+
+fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
+    workflow.nodes.iter().any(|node| match node {
+        NodeDsl::Worker(worker) => worker.profile.as_deref() == Some(profile_id),
+    })
+}
+
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
     }
 
-    pub fn load_user_config(&self) -> Result<UserConfig> {
-        let path = self.paths.user_config_file();
+    pub fn load_settings(&self) -> Result<SettingsConfig> {
+        let path = self.paths.user_settings_file();
         if !path.exists() {
-            return Ok(UserConfig::default());
+            return Ok(SettingsConfig::default());
         }
         read_json(&path)
     }
 
-    pub fn save_user_config(&self, config: &UserConfig) -> Result<()> {
-        write_json(&self.paths.user_config_file(), config)
+    pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
+        write_json(&self.paths.user_settings_file(), settings)
     }
 
-    pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.console_theme = Some(theme);
-        self.save_user_config(&config)?;
-        Ok(config)
+    pub fn load_state(&self) -> Result<StateConfig> {
+        let path = self.paths.user_state_file();
+        if !path.exists() {
+            return Ok(StateConfig::default());
+        }
+        read_json(&path)
     }
 
-    pub fn set_user_desktop_theme(&self, theme: DesktopThemePreference) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_theme = Some(theme);
-        self.save_user_config(&config)?;
-        Ok(config)
+    pub fn save_state(&self, state: &StateConfig) -> Result<()> {
+        write_json(&self.paths.user_state_file(), state)
     }
 
-    pub fn set_user_desktop_language(&self, language: DesktopLanguage) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_language = Some(language);
-        self.save_user_config(&config)?;
-        Ok(config)
+    pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.console_theme = Some(theme);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_desktop_theme(&self, theme: DesktopThemePreference) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.desktop_theme = Some(theme);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_desktop_language(&self, language: DesktopLanguage) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.desktop_language = Some(language);
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_preferences(
@@ -392,64 +420,88 @@ impl App {
         theme: DesktopThemePreference,
         language: DesktopLanguage,
         font: DesktopFontPreference,
-    ) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_theme = Some(theme);
-        config.desktop_language = Some(language);
-        config.desktop_font = Some(font);
-        self.save_user_config(&config)?;
-        Ok(config)
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.desktop_theme = Some(theme);
+        settings.desktop_language = Some(language);
+        settings.desktop_font = Some(font);
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
-    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.use_local_claude = Some(use_local_claude);
-        self.save_user_config(&config)?;
-        Ok(config)
+    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.use_local_claude = Some(use_local_claude);
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_updater_url_override(
         &self,
         override_url: Option<String>,
-    ) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_updater_url_override = override_url;
-        self.save_user_config(&config)?;
-        Ok(config)
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.desktop_updater_url_override = override_url;
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_updater_last_checked_at(
         &self,
         checked_at: Option<String>,
-    ) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_updater_last_checked_at = checked_at;
-        self.save_user_config(&config)?;
-        Ok(config)
+    ) -> Result<StateConfig> {
+        let mut state = self.load_state()?;
+        state.desktop_updater_last_checked_at = checked_at;
+        self.save_state(&state)?;
+        Ok(state)
     }
 
-    pub fn set_user_desktop_workspace(&self, workspace: &str) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.desktop_workspace = Some(workspace.to_string());
-        config
+    pub fn set_user_desktop_update_badges(
+        &self,
+        update_badges: DesktopUpdateBadgeState,
+    ) -> Result<StateConfig> {
+        let mut state = self.load_state()?;
+        state.desktop_update_badges = update_badges;
+        self.save_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn set_user_desktop_available_update(
+        &self,
+        available_update: Option<DesktopAvailableUpdate>,
+    ) -> Result<StateConfig> {
+        let mut state = self.load_state()?;
+        state.desktop_available_update = available_update;
+        self.save_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn set_user_desktop_workspace(&self, workspace: &str) -> Result<(SettingsConfig, StateConfig)> {
+        let mut settings = self.load_settings()?;
+        settings.desktop_workspace = Some(workspace.to_string());
+        self.save_settings(&settings)?;
+
+        let mut state = self.load_state()?;
+        state
             .recent_desktop_workspaces
             .retain(|item| item != workspace);
-        config
+        state
             .recent_desktop_workspaces
             .insert(0, workspace.to_string());
-        config.recent_desktop_workspaces.truncate(8);
-        self.save_user_config(&config)?;
-        Ok(config)
+        state.recent_desktop_workspaces.truncate(8);
+        self.save_state(&state)?;
+
+        Ok((settings, state))
     }
 
     pub fn set_user_agents(
         &self,
         agents: std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig>,
-    ) -> Result<UserConfig> {
-        let mut config = self.load_user_config()?;
-        config.agents = Some(agents);
-        self.save_user_config(&config)?;
-        Ok(config)
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.agents = Some(agents);
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn managed_agents(
@@ -462,7 +514,7 @@ impl App {
         &self,
         agent_type: ManagedAgentType,
         config: ManagedAgentConfig,
-    ) -> Result<UserConfig> {
+    ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
         if !agent_type.is_supported() {
             bail!("agent `{}` is not supported yet", agent_type.as_str());
@@ -471,7 +523,7 @@ impl App {
         self.set_user_agents(agents)
     }
 
-    pub fn remove_managed_agent(&self, agent_type: ManagedAgentType) -> Result<UserConfig> {
+    pub fn remove_managed_agent(&self, agent_type: ManagedAgentType) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
         agents.remove(&agent_type);
         self.set_user_agents(agents)
@@ -495,6 +547,24 @@ impl App {
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
         update_profile(&self.paths, id, input)
+    }
+
+    pub fn delete_profile(&self, id: &str, force: bool) -> Result<ProfileList> {
+        let profile = show_profile(&self.paths, id)?;
+        if profile.is_built_in {
+            return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+        }
+        let usage = self.profile_usage_counts(id)?;
+        if !force && (usage.template_count > 0 || usage.task_count > 0 || usage.run_count > 0) {
+            return Err(ProfileCommandError::DeleteConfirmationRequired {
+                template_count: usage.template_count,
+                task_count: usage.task_count,
+                run_count: usage.run_count,
+            }
+            .into());
+        }
+        delete_profile_file(&self.paths, id)?;
+        list_profiles(&self.paths)
     }
 
     pub fn save_workflow_template(
@@ -717,14 +787,6 @@ impl App {
     }
 
     pub fn create_task_from_requirement(&self, input: CreateTaskInput) -> Result<TaskSummary> {
-        let extension = std::path::Path::new(&input.requirement_file_name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .ok_or_else(|| anyhow!("requirement file must have .txt or .md extension"))?;
-        if !matches!(extension.as_str(), "txt" | "md") {
-            bail!("requirement file must be .txt or .md");
-        }
         if input.requirement_content.trim().is_empty() {
             bail!("requirement content cannot be empty");
         }
@@ -1470,6 +1532,104 @@ impl App {
         Ok(decide_next_step(&validated, run, round, node))
     }
 
+    fn profile_usage_counts(&self, profile_id: &str) -> Result<ProfileUsageCounts> {
+        let mut counts = ProfileUsageCounts::default();
+        let store = self.load_workflow_template_store()?;
+        counts.template_count = store
+            .templates
+            .iter()
+            .filter(|template| workflow_uses_profile(&template.workflow, profile_id))
+            .count();
+
+        let tasks_dir = self.paths.tasks_dir();
+        if !tasks_dir.exists() {
+            return Ok(counts);
+        }
+
+        let mut task_paths = fs::read_dir(tasks_dir.as_std_path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        task_paths.sort();
+
+        for path in task_paths {
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(task_dir) = Utf8PathBuf::from_path_buf(path).ok() else {
+                continue;
+            };
+            let Some(task_id) = task_dir.file_name() else {
+                continue;
+            };
+
+            let workflow_path = self.paths.workflow_file(task_id);
+            if workflow_path.exists() {
+                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                if workflow_uses_profile(&workflow, profile_id) {
+                    counts.task_count += 1;
+                }
+            }
+
+            let runs_dir = self.paths.runs_dir(task_id);
+            if !runs_dir.exists() {
+                continue;
+            }
+            let mut run_paths = fs::read_dir(runs_dir.as_std_path())?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            run_paths.sort();
+            for run_path in run_paths {
+                if !run_path.is_dir() {
+                    continue;
+                }
+                let Some(run_dir) = Utf8PathBuf::from_path_buf(run_path).ok() else {
+                    continue;
+                };
+                let Some(run_id) = run_dir.file_name() else {
+                    continue;
+                };
+                let run_file = self.paths.run_file(task_id, run_id);
+                let snapshot_file = self.paths.workflow_snapshot_file(task_id, run_id);
+                if !run_file.exists() || !snapshot_file.exists() {
+                    continue;
+                }
+                let run = read_json::<RunState>(&run_file)?;
+                if !self.run_snapshot_is_actionable(task_id, &run)? {
+                    continue;
+                }
+                let workflow = read_json::<WorkflowDsl>(&snapshot_file)?;
+                if workflow_uses_profile(&workflow, profile_id) {
+                    counts.run_count += 1;
+                }
+            }
+        }
+
+        Ok(counts)
+    }
+
+    fn run_snapshot_is_actionable(&self, task_id: &str, run: &RunState) -> Result<bool> {
+        if run.status == RunStatus::Running || is_run_continuable(run) {
+            return Ok(true);
+        }
+        let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+            run.current_round.as_deref(),
+            run.current_node.as_deref(),
+            run.current_attempt.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        let node_file = self
+            .paths
+            .node_file(task_id, &run.id, round_id, node_id, attempt_id);
+        if !node_file.exists() {
+            return Ok(false);
+        }
+        let node = read_json::<NodeState>(&node_file)?;
+        Ok(node.outcome == Some(NodeOutcome::Invalid))
+    }
+
     fn read_json_dir_sorted<T: DeserializeOwned>(&self, dir: &Utf8Path) -> Result<Vec<T>> {
         if !dir.exists() {
             return Ok(Vec::new());
@@ -1608,7 +1768,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
-    use crate::config::ConsoleThemeName;
+    use crate::config::{
+        ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
+    };
     use camino::Utf8PathBuf;
     use tempfile::tempdir;
 
@@ -1643,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn user_console_theme_is_persisted() {
+    fn user_console_theme_is_persisted_to_settings() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -1654,7 +1816,137 @@ mod tests {
         let app = App::new(repo_root.clone());
         app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
 
-        let config = app.load_user_config().unwrap();
-        assert_eq!(config.console_theme, Some(ConsoleThemeName::Nord));
+        let settings = app.load_settings().unwrap();
+        assert_eq!(settings.console_theme, Some(ConsoleThemeName::Nord));
+    }
+
+    #[test]
+    fn desktop_preferences_persisted_to_settings() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        app.set_user_desktop_preferences(
+            DesktopThemePreference::Dark,
+            DesktopLanguage::En,
+            "Fira Code".to_string(),
+        )
+        .unwrap();
+        app.set_user_use_local_claude(true).unwrap();
+
+        let settings = app.load_settings().unwrap();
+        assert_eq!(settings.desktop_theme, Some(DesktopThemePreference::Dark));
+        assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
+        assert_eq!(settings.desktop_font, Some("Fira Code".to_string()));
+        assert_eq!(settings.use_local_claude, Some(true));
+
+        let state = app.load_state().unwrap();
+        assert!(state.desktop_updater_last_checked_at.is_none());
+        assert!(state.desktop_available_update.is_none());
+    }
+
+    #[test]
+    fn updater_state_persisted_to_state_json() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        app.set_user_desktop_updater_last_checked_at(Some("2026-05-27 10:00:00".to_string()))
+            .unwrap();
+        let badges = DesktopUpdateBadgeState {
+            settings_entry_seen_version: Some("0.3.1".to_string()),
+            settings_advanced_seen_version: None,
+            announcement_closed_version: Some("0.3.0".to_string()),
+        };
+        app.set_user_desktop_update_badges(badges).unwrap();
+
+        let state = app.load_state().unwrap();
+        assert_eq!(
+            state.desktop_updater_last_checked_at.as_deref(),
+            Some("2026-05-27 10:00:00")
+        );
+        assert_eq!(
+            state.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            Some("0.3.1")
+        );
+        assert_eq!(
+            state.desktop_update_badges.announcement_closed_version.as_deref(),
+            Some("0.3.0")
+        );
+
+        let settings = app.load_settings().unwrap();
+        assert!(settings.console_theme.is_none());
+    }
+
+    #[test]
+    fn workspace_persists_to_both_files() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        app.set_user_desktop_workspace("D:/Projects/MyRepo").unwrap();
+
+        let settings = app.load_settings().unwrap();
+        assert_eq!(
+            settings.desktop_workspace.as_deref(),
+            Some("D:/Projects/MyRepo")
+        );
+
+        let state = app.load_state().unwrap();
+        assert!(state
+            .recent_desktop_workspaces
+            .contains(&"D:/Projects/MyRepo".to_string()));
+    }
+
+    #[test]
+    fn recent_workspaces_deduplicated_and_truncated() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+
+        let state = app.load_state().unwrap();
+        // A should be at position 0 (most recent), B at position 1, no duplicates
+        assert_eq!(state.recent_desktop_workspaces.len(), 2);
+        assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/A");
+        assert_eq!(state.recent_desktop_workspaces[1], "D:/Projects/B");
+    }
+
+    #[test]
+    fn recent_workspaces_truncated_at_eight() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root.clone());
+        for i in 0..10 {
+            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}")).unwrap();
+        }
+
+        let state = app.load_state().unwrap();
+        assert_eq!(state.recent_desktop_workspaces.len(), 8);
+        assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/Repo9");
     }
 }

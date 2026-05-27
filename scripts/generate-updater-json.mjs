@@ -1,4 +1,5 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 const [assetDirArg, outputArg, ...rest] = process.argv.slice(2);
@@ -52,15 +53,18 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
     process.exit(1);
   }
 
+  const changelog = await extractChangelog(version);
+  const notes = changelog || `Gold Band ${version}`;
+
   const latest = {
     version,
-    notes: `Gold Band ${version}`,
+    notes,
     pub_date: new Date().toISOString(),
     platforms,
   };
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
-  console.log(`Wrote ${outputPath} (base: ${normalizedBase}) platforms: ${Object.keys(platforms).join(', ')}`);
+  console.log(`Wrote ${outputPath} (base: ${normalizedBase}) platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
 }
 
 async function generateGitHub(assetDir, outputPath) {
@@ -108,15 +112,18 @@ async function generateGitHub(assetDir, outputPath) {
     process.exit(1);
   }
 
+  const changelog = await extractChangelog(version);
+  const notes = changelog || `Gold Band ${tag}`;
+
   const latest = {
     version,
-    notes: `Gold Band ${tag}`,
+    notes,
     pub_date: new Date().toISOString(),
     platforms,
   };
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
-  console.log(`Wrote ${outputPath} with platforms: ${Object.keys(platforms).join(', ')}`);
+  console.log(`Wrote ${outputPath} with platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
 }
 
 function findExisting(platforms, plat, files) {
@@ -139,6 +146,29 @@ function platformKey(file) {
   if (lower.endsWith('.dmg') || lower.endsWith('.app.tar.gz') || lower.includes('darwin') || lower.includes('macos')) return `darwin-${arch}`;
   if (lower.endsWith('.msi') || lower.endsWith('.exe') || lower.includes('windows')) return `windows-${arch}`;
   return null;
+}
+
+async function extractChangelog(version) {
+  const changelogPath = path.resolve('CHANGELOG.md');
+  if (!existsSync(changelogPath)) return null;
+
+  const content = await readFile(changelogPath, 'utf8');
+  // Match the section for this version: "## [0.3.1](...) (date)" or "## 0.3.1 (date)"
+  const headingPattern = new RegExp(
+    `^## \\[?${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]?[^\n]*\n`,
+    'm',
+  );
+  const match = content.match(headingPattern);
+  if (!match || match.index === undefined) return null;
+
+  const start = match.index + match[0].length;
+  // Find the next version heading or end of file
+  const nextHeading = new RegExp('^## \\[?\\d+\\.\\d+\\.\\d+', 'm');
+  nextHeading.lastIndex = start;
+  const nextMatch = nextHeading.exec(content);
+  const end = nextMatch ? nextMatch.index : content.length;
+
+  return content.slice(start, end).trim();
 }
 
 function score(file) {

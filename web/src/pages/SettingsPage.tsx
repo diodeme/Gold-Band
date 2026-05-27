@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -34,6 +34,9 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  availableUpdate?: UpdateInfoVm | null;
+  showAdvancedUpdateDot: boolean;
+  showUpdatesSectionDot: boolean;
   downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
@@ -41,9 +44,11 @@ interface SettingsPageProps {
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
+  onViewSettings: () => Promise<void> | void;
+  onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -55,6 +60,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   const [preferenceVersion, setPreferenceVersion] = useState(0);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>('general');
 
   useEffect(() => setTheme(preferences.theme), [preferences.theme]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
@@ -71,6 +77,15 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   useEffect(() => {
     checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
   }, [useLocalClaude]);
+
+  useEffect(() => {
+    void onViewSettings();
+  }, [onViewSettings]);
+
+  useEffect(() => {
+    if (activeTab !== 'advanced') return;
+    void onViewAdvanced();
+  }, [activeTab, onViewAdvanced]);
 
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
@@ -138,22 +153,22 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   void preferenceVersion;
 
   return (
-    <Page className="space-y-6 p-8">
-      <div className="flex items-center justify-between gap-4">
-        <span className="font-mono text-xs text-muted-foreground">{t('settings.path', { appName: appInfo.appName })}</span>
-        <div className="flex gap-2">
-          <Button variant="ghost" disabled>{t('common.export')}</Button>
-          <Button disabled>{t('common.run')}</Button>
-        </div>
-      </div>
+    <Page flush className="flex flex-col">
+      <PageHeader
+        title={<span className="text-title">{t('settings.title')}</span>}
+      />
 
-      <PageHeader title={t('settings.title')} />
-
-      <Tabs defaultValue="general" className="space-y-4">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
         <TabsList className="grid w-fit grid-cols-3">
           <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
           <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
-          <TabsTrigger value="advanced">{t('settings.tabs.advanced')}</TabsTrigger>
+          <TabsTrigger value="advanced">
+            <span className="inline-flex items-center gap-2">
+              <span>{t('settings.tabs.advanced')}</span>
+              {showAdvancedUpdateDot ? <UpdateDot /> : null}
+            </span>
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="m-0">
@@ -332,7 +347,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                 ) : null}
               </div>
             </SettingsSection>
-            <SettingsSection title={t('settings.updater.title')}>
+            <SettingsSection title={<span className="inline-flex items-center gap-2">{t('settings.updater.title')}{showUpdatesSectionDot ? <UpdateDot /> : null}</span>}>
               <div className="max-w-4xl space-y-3">
                 <div className="flex items-center gap-3">
                   <div className="w-28 shrink-0 text-sm font-medium text-muted-foreground">{t('settings.updater.currentUrl')}</div>
@@ -371,7 +386,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                 </div>
                 <div className="flex">
                   <div className="w-28 shrink-0" />
-                  <UpdateStatusInline status={updateStatus} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
+                  <UpdateStatusInline status={updateStatus} availableUpdate={availableUpdate} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
                 </div>
               </div>
             </SettingsSection>
@@ -380,22 +395,25 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
       </Tabs>
 
       {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
+      </div>
     </Page>
   );
 }
 
-function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
+function UpdateStatusInline({ status, availableUpdate, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; availableUpdate?: UpdateInfoVm | null; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
   const { t } = useTranslation();
-  const downloading = status.status === 'downloading';
-  const statusClass = status.status === 'available' || status.status === 'downloading'
+  const resolvedUpdate = status.update ?? availableUpdate ?? null;
+  const effectiveStatus = status.status === 'idle' && resolvedUpdate ? 'available' : status.status;
+  const downloading = effectiveStatus === 'downloading';
+  const statusClass = effectiveStatus === 'available' || effectiveStatus === 'downloading'
     ? 'text-gold-success'
-    : status.status === 'error'
+    : effectiveStatus === 'error'
       ? 'text-destructive'
       : 'text-muted-foreground';
   const progressPct = downloadProgress && downloadProgress.total ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)) : 0;
   const hasProgress = downloadProgress && downloadProgress.downloaded > 0;
   const hasTotal = downloadProgress && downloadProgress.total != null;
-  const hasResultRow = status.status !== 'idle' || !!status.error;
+  const hasResultRow = resolvedUpdate !== null || status.status !== 'idle' || !!status.error;
   return (
     <div className="min-w-0 flex-1 space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
@@ -404,11 +422,11 @@ function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onI
       </div>
       {hasResultRow ? (
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span>
-          {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → <span className="text-destructive">{status.update.version}</span></span> : null}
+          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${effectiveStatus}`)}</span>
+          {resolvedUpdate ? <span className="font-mono text-xs text-muted-foreground">{resolvedUpdate.currentVersion} → <span className="text-destructive">{resolvedUpdate.version}</span></span> : null}
           {downloading ? (
             <Button size="sm" disabled><Loader2 className="mr-1.5 size-3.5 animate-spin" />{t('settings.updater.status.downloading')}</Button>
-          ) : status.status === 'available' ? (
+          ) : effectiveStatus === 'available' ? (
             <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
           ) : null}
           {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}
@@ -432,6 +450,10 @@ function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onI
   );
 }
 
+function UpdateDot() {
+  return <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />;
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -447,7 +469,7 @@ function formatCheckedAt(value: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function SettingsSection({ title, children, divided = false }: { title: string; children: ReactNode; divided?: boolean }) {
+function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {
   return (
     <section className={cn('grid gap-4 px-5 py-5 lg:grid-cols-[160px_minmax(0,1fr)]', divided && 'border-t border-border/45')}>
       <h2 className="text-base font-semibold text-foreground">{title}</h2>

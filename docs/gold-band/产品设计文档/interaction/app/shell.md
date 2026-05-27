@@ -60,7 +60,7 @@ Agent 管理
 - 一级菜单只控制右侧功能区的根模块。
 - 点击“任务编排”应回到任务列表根页面，而不是保留任务工作流或 Round 详情等深层页面。
 - 当前实现任务编排、Agent 管理、上下文管理和设置。
-- 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile；列表拆成“自定义角色 / 内置角色”双 tab，自定义角色维护独立分页与过滤，内置角色单独浏览。
+- 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile；列表拆成“自定义角色 / 内置角色”双 tab，自定义角色维护独立分页与过滤，内置角色单独浏览。浏览器预览 mock 与桌面端 Tauri 数据通路必须分层隔离，不能在正式路径复用 mock 状态；该分层由前端 Vitest 回归测试持续覆盖 runtime 选择、facade 透传和 desktop/browser 双实现语义。
 - 模型管理保持占位，可显示 disabled 或 coming soon 状态。
 - 不在一级菜单中放 run、round、node 等任务内部对象。
 

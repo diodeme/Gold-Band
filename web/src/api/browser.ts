@@ -1,0 +1,310 @@
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
+import type { RuntimeApi } from './client';
+import { browserPreviewState } from './browserState';
+import { localTimestamp, toRoundSelectionInput } from './shared';
+
+const browserFontCandidates = [
+  'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
+] as const;
+
+type LocalFontData = { family: string };
+type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
+
+export const browserApi: RuntimeApi = {
+  checkLocalClaude() {
+    return Promise.resolve({ found: false, path: null });
+  },
+  getAppBootstrap() {
+    return Promise.resolve(browserPreviewState.getAppBootstrap());
+  },
+  async getSystemFonts() {
+    const queriedFonts = await queryBrowserLocalFonts();
+    if (queriedFonts.length > 0) return queriedFonts;
+    const detectedFonts = detectBrowserFonts(browserFontCandidates);
+    if (detectedFonts.length > 0) return detectedFonts;
+    return normalizeFontFamilies(browserFontCandidates);
+  },
+  getAgentRegistry() {
+    return Promise.resolve(mockAgentRegistry);
+  },
+  createAgent(_agentType: string, _input: ManagedAgentInput) {
+    return Promise.resolve(mockAgentRegistry);
+  },
+  updateAgent(_agentType: string, _input: ManagedAgentInput) {
+    return Promise.resolve(mockAgentRegistry);
+  },
+  deleteAgent(_agentType: string) {
+    return Promise.resolve(mockAgentRegistry);
+  },
+  doctorAgent(_agentType: string) {
+    return Promise.resolve(mockAgentRegistry);
+  },
+  getTaskList() {
+    return Promise.resolve(mockTaskList);
+  },
+  getProfiles() {
+    return Promise.resolve(browserPreviewState.getProfiles());
+  },
+  getProfile(id: string) {
+    return Promise.resolve(browserPreviewState.getProfile(id) ?? browserPreviewState.getProfiles().profiles[0]);
+  },
+  createProfile(input: ProfileInput) {
+    const now = localTimestamp();
+    const profile: ProfileVm = { ...input, id: browserProfileId(), isBuiltIn: false, createdAt: now, updatedAt: now, path: '' };
+    return Promise.resolve(browserPreviewState.addProfile(profile));
+  },
+  updateProfile(id: string, input: ProfileInput) {
+    const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
+    if (!existing) return browserCommandError('app.unexpected');
+    if (existing.isBuiltIn) return browserCommandError('profile.readonly-built-in');
+    const profile: ProfileVm = { ...existing, ...input, id, isBuiltIn: false, createdAt: existing.createdAt, updatedAt: localTimestamp(), path: existing.path };
+    return Promise.resolve(browserPreviewState.updateProfile(profile));
+  },
+  deleteProfile(id: string, force = false) {
+    const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
+    if (!existing) return browserCommandError('app.unexpected');
+    if (existing.isBuiltIn) return browserCommandError('profile.readonly-built-in');
+    if (!force && existing.summary.includes('[requires-confirmation]')) {
+      return browserCommandError('profile.delete-confirmation-required', {
+        templateCount: 1,
+        taskCount: 1,
+        runCount: 0,
+      });
+    }
+    return Promise.resolve(browserPreviewState.removeProfile(id));
+  },
+  chooseWorkspace() {
+    return Promise.resolve({ ...mockBootstrap, updateBadges: browserPreviewState.getUpdateBadges() });
+  },
+  selectRecentWorkspace(workspace: string) {
+    return Promise.resolve({ ...mockBootstrap, repoRoot: workspace, updateBadges: browserPreviewState.getUpdateBadges() });
+  },
+  getTaskDetail(taskId: string) {
+    return Promise.resolve({ ...mockTaskDetail, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockTaskDetail.task });
+  },
+  getWorkflow(taskId: string) {
+    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
+  },
+  createTask(input: CreateTaskInput) {
+    const task = {
+      ...mockWorkflow.task,
+      id: `task-${String(mockTaskList.tasks.length + 1).padStart(3, '0')}`,
+      title: input.title?.trim() || `task-${String(mockTaskList.tasks.length + 1).padStart(3, '0')}`,
+      description: input.description ?? null,
+      requirement: input.requirementContent,
+      requirementPreview: input.requirementContent.slice(0, 120),
+      workflowExists: true,
+      workflowValid: true,
+      workflowError: null,
+    };
+    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2) });
+  },
+  saveTaskWorkflow(taskId: string, workflow: WorkflowDsl) {
+    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2) });
+  },
+  getWorkflowTemplates() {
+    return Promise.resolve(browserPreviewState.getWorkflowTemplates());
+  },
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
+    const current = browserPreviewState.getWorkflowTemplates();
+    const template = {
+      id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${current.templates.length + 1}`,
+      name,
+      workflow,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+      ...current,
+      lastUsedTemplateId: template.id,
+      templates: [...current.templates, template],
+    }));
+  },
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
+    const current = browserPreviewState.getWorkflowTemplates();
+    return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+      ...current,
+      lastUsedTemplateId: templateId,
+      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, updatedAt: new Date().toISOString() } : template),
+    }));
+  },
+  deleteWorkflowTemplate(templateId: string) {
+    const current = browserPreviewState.getWorkflowTemplates();
+    return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+      ...current,
+      lastUsedTemplateId: current.lastUsedTemplateId === templateId ? 'default' : current.lastUsedTemplateId,
+      templates: current.templates.filter((template) => template.id !== templateId),
+    }));
+  },
+  getRunDetail(taskId: string, runId: string) {
+    return Promise.resolve({ ...mockRunDetail, run: { ...mockRunDetail.run, id: runId, taskId } });
+  },
+  getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection) {
+    return Promise.resolve(mockRoundDetail(selection, { taskId, runId, roundId }));
+  },
+  startRun(taskId: string) {
+    return Promise.resolve({ ...mockRunDetail.run, taskId });
+  },
+  continueRun(taskId: string, runId: string, _promptId?: string | null) {
+    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  submitManualCheck(taskId: string, runId: string, _roundId: string, _nodeId: string, _attemptId: string, _outcome: 'success' | 'failure') {
+    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  retryRun(taskId: string, runId: string) {
+    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  killRun(taskId: string, runId: string) {
+    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'completed', outcome: 'killed' });
+  },
+  getLogPage(query: LogQueryInput) {
+    return Promise.resolve(mockLogPage(query));
+  },
+  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null) {
+    return Promise.resolve(fallback ?? null);
+  },
+  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null) {
+    return Promise.resolve(fallback ?? null);
+  },
+  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null) {
+    return Promise.resolve(fallback ?? null);
+  },
+  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null) {
+    return Promise.resolve(fallback ?? null);
+  },
+  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput) {
+    const empty: AcpRawFramePageVm = {
+      items: [],
+      page: query?.page ?? 0,
+      pageSize: query?.pageSize ?? 100,
+      total: 0,
+      hasPrevious: false,
+      hasNext: false,
+      order: 'latest',
+      search: query?.search ?? null,
+      kind: query?.kind ?? null,
+      direction: query?.direction ?? null,
+    };
+    return Promise.resolve(empty);
+  },
+  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+    return Promise.resolve({ ...mockContent, title: name });
+  },
+  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+    return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
+  },
+  showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string) {
+    return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
+  },
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, _useLocalClaude: boolean) {
+    return Promise.resolve({ theme, language, font, useLocalClaude: false });
+  },
+  saveUpdaterSettings(overrideUrl: string | null) {
+    const current = browserPreviewState.getUpdaterSettings();
+    const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
+    return Promise.resolve(browserPreviewState.setUpdaterSettings({
+      ...current,
+      overrideUrl: normalized,
+      effectiveUrl: normalized ?? current.builtInUrl,
+    }));
+  },
+  getUpdateStatus() {
+    return Promise.resolve(browserPreviewState.getUpdateStatus());
+  },
+  markSettingsUpdateSeen(version: string) {
+    const current = browserPreviewState.getUpdateBadges();
+    return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, settingsEntrySeenVersion: version }));
+  },
+  markSettingsAdvancedUpdateSeen(version: string) {
+    const current = browserPreviewState.getUpdateBadges();
+    return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, settingsAdvancedSeenVersion: version }));
+  },
+  dismissUpdateAnnouncement(version: string) {
+    const current = browserPreviewState.getUpdateBadges();
+    return Promise.resolve(browserPreviewState.setUpdateBadges({ ...current, announcementClosedVersion: version }));
+  },
+  checkUpdateManual() {
+    return Promise.resolve(browserPreviewState.setUpdateStatus({
+      status: 'error',
+      checkedAt: localTimestamp(),
+      update: null,
+      error: { code: 'updater.check-failed', params: { message: 'Browser preview cannot check desktop updates.' } },
+      background: false,
+    }));
+  },
+  downloadAndInstallUpdate() {
+    return Promise.resolve();
+  },
+};
+
+function browserProfileId() {
+  return `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function browserCommandError(code: string, params: Record<string, unknown> = {}) {
+  return Promise.reject({ code, params });
+}
+
+function detectBrowserFonts(candidates: readonly string[]) {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return [];
+  }
+  const sample = '任务编排 AI Workflow 0123456789';
+  const size = '72px';
+  const baseFamilies = ['monospace', 'sans-serif', 'serif'] as const;
+  const baselines = new Map(
+    baseFamilies.map((family) => {
+      context.font = `${size} ${family}`;
+      return [family, context.measureText(sample).width] as const;
+    }),
+  );
+  return normalizeFontFamilies(
+    candidates.filter((family) => {
+      const quoted = quoteFontFamily(family);
+      if (document.fonts.check(`16px ${quoted}`)) {
+        return true;
+      }
+      return baseFamilies.some((baseFamily) => {
+        context.font = `${size} ${quoted}, ${baseFamily}`;
+        return context.measureText(sample).width !== baselines.get(baseFamily);
+      });
+    }),
+  );
+}
+
+async function queryBrowserLocalFonts() {
+  const fontWindow = window as LocalFontWindow;
+  if (typeof fontWindow.queryLocalFonts !== 'function') {
+    return [];
+  }
+  try {
+    const fonts = await fontWindow.queryLocalFonts();
+    return normalizeFontFamilies(fonts.map((font) => font.family));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeFontFamilies(families: readonly string[]) {
+  const collator = new Intl.Collator(['zh-CN', 'en'], { sensitivity: 'base', numeric: true });
+  return Array.from(new Set(families.map((family) => family.trim()).filter(Boolean))).sort((left, right) => collator.compare(left, right));
+}
+
+function quoteFontFamily(family: string) {
+  return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+void mockWorkflowTemplates;
+void toRoundSelectionInput;
+void mockBootstrap;
+void mockContent;
+void mockAgentRegistry;
+void mockTaskDetail;
+void mockWorkflow;
+void mockRoundDetail;
+void mockRunDetail;
+void mockLogPage;
+void mockTaskList;

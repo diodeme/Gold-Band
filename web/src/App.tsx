@@ -21,6 +21,7 @@ import {
   selectRecentWorkspace,
   startRun,
 } from './api';
+import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -168,7 +169,7 @@ export function App() {
   }, [t]);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
@@ -192,7 +193,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return undefined;
+    if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {

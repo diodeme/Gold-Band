@@ -533,14 +533,14 @@ impl App {
         update_profile(&self.paths, id, input)
     }
 
-    pub fn delete_profile(&self, id: &str) -> Result<ProfileList> {
+    pub fn delete_profile(&self, id: &str, force: bool) -> Result<ProfileList> {
         let profile = show_profile(&self.paths, id)?;
         if profile.is_built_in {
             return Err(ProfileCommandError::ReadonlyBuiltIn.into());
         }
         let usage = self.profile_usage_counts(id)?;
-        if usage.template_count > 0 || usage.task_count > 0 || usage.run_count > 0 {
-            return Err(ProfileCommandError::InUse {
+        if !force && (usage.template_count > 0 || usage.task_count > 0 || usage.run_count > 0) {
+            return Err(ProfileCommandError::DeleteConfirmationRequired {
                 template_count: usage.template_count,
                 task_count: usage.task_count,
                 run_count: usage.run_count,

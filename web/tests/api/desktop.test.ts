@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./shared', () => ({
+vi.mock('../../src/api/shared', () => ({
   invokeCommand: vi.fn(() => Promise.resolve({ profiles: [] })),
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
 
-import { desktopApi } from './desktop';
-import { invokeCommand } from './shared';
+import { desktopApi } from '../../src/api/desktop';
+import { invokeCommand } from '../../src/api/shared';
 
 describe('desktopApi', () => {
   beforeEach(() => {

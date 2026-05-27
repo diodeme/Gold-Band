@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BrowserPreviewState } from './browserState';
+import { BrowserPreviewState } from '../../src/api/browserState';
 
 describe('BrowserPreviewState', () => {
   it('returns defensive profile copies', () => {

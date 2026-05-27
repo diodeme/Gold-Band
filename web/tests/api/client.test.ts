@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./browser', () => ({
+vi.mock('../../src/api/browser', () => ({
   browserApi: { runtime: 'browser' },
 }));
 
-vi.mock('./desktop', () => ({
+vi.mock('../../src/api/desktop', () => ({
   desktopApi: { runtime: 'desktop' },
 }));
 
-vi.mock('./shared', () => ({
+vi.mock('../../src/api/shared', () => ({
   isTauriRuntime: vi.fn(),
 }));
 
-import { browserApi } from './browser';
-import { getRuntimeApi } from './client';
-import { desktopApi } from './desktop';
-import { isTauriRuntime } from './shared';
+import { browserApi } from '../../src/api/browser';
+import { getRuntimeApi } from '../../src/api/client';
+import { desktopApi } from '../../src/api/desktop';
+import { isTauriRuntime } from '../../src/api/shared';
 
 describe('getRuntimeApi', () => {
   beforeEach(() => {

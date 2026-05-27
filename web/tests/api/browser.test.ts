@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 async function loadBrowserApi() {
   vi.resetModules();
-  const module = await import('./browser');
+  const module = await import('../../src/api/browser');
   return module.browserApi;
 }
 

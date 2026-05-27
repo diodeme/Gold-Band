@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./api/client', () => ({
+vi.mock('../src/api/client', () => ({
   getRuntimeApi: vi.fn(),
 }));
 
-import { getRuntimeApi } from './api/client';
-import { deleteProfile } from './api';
+import { getRuntimeApi } from '../src/api/client';
+import { deleteProfile } from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {

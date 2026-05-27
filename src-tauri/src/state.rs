@@ -10,7 +10,7 @@ use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
 
-use crate::updater::{UpdateStatusVm, initial_update_status};
+use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -62,6 +62,13 @@ pub struct AgentDiagnosticState {
     pub reason: Option<String>,
     pub checked_at: String,
     pub capabilities: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateBadgeSeenTarget {
+    SettingsEntry,
+    SettingsAdvanced,
+    Announcement,
 }
 
 pub struct DesktopState {
@@ -139,6 +146,46 @@ impl DesktopState {
         let user_config = app.set_user_desktop_updater_last_checked_at(checked_at)?;
         guard.config = RuntimeConfig::default().apply_user_config(&user_config);
         Ok(())
+    }
+
+    pub fn mark_update_badge_seen(&self, target: UpdateBadgeSeenTarget, version: String) -> Result<RuntimeConfig> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let mut next_badges = guard.config.desktop_update_badges.clone();
+        match target {
+            UpdateBadgeSeenTarget::SettingsEntry => {
+                next_badges.settings_entry_seen_version = Some(version);
+            }
+            UpdateBadgeSeenTarget::SettingsAdvanced => {
+                next_badges.settings_advanced_seen_version = Some(version);
+            }
+            UpdateBadgeSeenTarget::Announcement => {
+                next_badges.announcement_closed_version = Some(version);
+            }
+        }
+        let user_config = app.set_user_desktop_update_badges(next_badges)?;
+        guard.config = RuntimeConfig::default().apply_user_config(&user_config);
+        Ok(guard.config.clone())
+    }
+
+    pub fn persist_available_update(&self, update: Option<UpdateInfoVm>) -> Result<RuntimeConfig> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let available_update = update.map(|update| gold_band::config::DesktopAvailableUpdate {
+            version: update.version,
+            current_version: update.current_version,
+            notes: update.notes,
+            pub_date: update.pub_date,
+        });
+        let user_config = app.set_user_desktop_available_update(available_update)?;
+        guard.config = RuntimeConfig::default().apply_user_config(&user_config);
+        Ok(guard.config.clone())
     }
 
     pub fn clear_agent_diagnostics(&self) -> Result<()> {

@@ -14,9 +14,11 @@ use commands::{
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
     check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
-    kill_run, respond_acp_permission, retry_run, save_desktop_preferences, save_task_workflow,
-    save_updater_settings, save_workflow_template, select_recent_workspace, send_acp_prompt,
-    show_artifact, show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
+    dismiss_update_announcement, kill_run, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
+    save_task_workflow, save_updater_settings,
+    save_workflow_template, select_recent_workspace, send_acp_prompt, show_artifact,
+    show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
     update_profile, update_workflow_template,
 };
 use gold_band::storage::configure_storage_paths;
@@ -104,6 +106,9 @@ fn run() -> anyhow::Result<()> {
             save_desktop_preferences,
             save_updater_settings,
             get_update_status,
+            mark_settings_update_seen,
+            mark_settings_advanced_update_seen,
+            dismiss_update_announcement,
             check_update_manual,
             download_and_install_update,
         ])

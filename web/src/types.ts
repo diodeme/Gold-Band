@@ -40,12 +40,20 @@ export interface UpdateStatusVm {
   background: boolean;
 }
 
+export interface UpdateBadgeStateVm {
+  settingsEntrySeenVersion?: string | null;
+  settingsAdvancedSeenVersion?: string | null;
+  announcementClosedVersion?: string | null;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
   preferences: PreferencesVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  updateBadges: UpdateBadgeStateVm;
+  persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   appInfo: AppInfoVm;
   needsWorkspace: boolean;

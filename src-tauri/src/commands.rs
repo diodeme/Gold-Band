@@ -27,7 +27,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
-use crate::state::DesktopState;
+use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -36,8 +36,8 @@ use crate::updater::{
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
-    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, WorkflowVm,
-    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
+    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
     preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm,
     workflow_vm,
 };
@@ -854,6 +854,51 @@ pub fn save_updater_settings(
 #[tauri::command]
 pub fn get_update_status(state: State<'_, DesktopState>) -> CommandResult<UpdateStatusVm> {
     state.update_status().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn mark_settings_update_seen(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::SettingsEntry, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
+}
+
+#[tauri::command]
+pub fn mark_settings_advanced_update_seen(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::SettingsAdvanced, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
+}
+
+#[tauri::command]
+pub fn dismiss_update_announcement(
+    state: State<'_, DesktopState>,
+    version: String,
+) -> CommandResult<UpdateBadgeStateVm> {
+    let config = state
+        .mark_update_badge_seen(UpdateBadgeSeenTarget::Announcement, version)
+        .map_err(command_error)?;
+    Ok(UpdateBadgeStateVm {
+        settings_entry_seen_version: config.desktop_update_badges.settings_entry_seen_version,
+        settings_advanced_seen_version: config.desktop_update_badges.settings_advanced_seen_version,
+        announcement_closed_version: config.desktop_update_badges.announcement_closed_version,
+    })
 }
 
 #[tauri::command]

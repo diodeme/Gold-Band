@@ -10,8 +10,9 @@ mod transition_context;
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
 use crate::config::{
-    ConsoleThemeName, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    ManagedAgentConfig, ManagedAgentType, RuntimeConfig, UserConfig,
+    ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage,
+    DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
+    RuntimeConfig, UserConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -424,6 +425,26 @@ impl App {
     ) -> Result<UserConfig> {
         let mut config = self.load_user_config()?;
         config.desktop_updater_last_checked_at = checked_at;
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_user_desktop_update_badges(
+        &self,
+        update_badges: DesktopUpdateBadgeState,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_update_badges = update_badges;
+        self.save_user_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn set_user_desktop_available_update(
+        &self,
+        available_update: Option<DesktopAvailableUpdate>,
+    ) -> Result<UserConfig> {
+        let mut config = self.load_user_config()?;
+        config.desktop_available_update = available_update;
         self.save_user_config(&config)?;
         Ok(config)
     }

@@ -660,6 +660,15 @@ const resources = {
           checkNow: '检查更新',
           install: '下载并安装',
           lastCheckedAt: '上次检查：{{time}}',
+          announcement: {
+            title: '发现新版本 {{version}}',
+            description: '可前往 设置 → 高级 → 更新 查看并安装。',
+            dismiss: '关闭',
+            view: '查看更新',
+            dialogTitle: '发现新版本 {{version}}',
+            dialogDescription: '检测到新的客户端版本。请前往 设置 → 高级 → 更新 完成下载和安装。',
+            goToSettings: '前往设置更新'
+          },
           channel: {
             default: '默认',
             wb: 'WB',
@@ -1333,6 +1342,15 @@ const resources = {
           checkNow: 'Check update',
           install: 'Download and install',
           lastCheckedAt: 'Last checked: {{time}}',
+          announcement: {
+            title: 'New version {{version}} available',
+            description: 'Go to Settings → Advanced → Updates to review and install it.',
+            dismiss: 'Close',
+            view: 'View update',
+            dialogTitle: 'New version {{version}} available',
+            dialogDescription: 'A new client version has been detected. Go to Settings → Advanced → Updates to download and install it.',
+            goToSettings: 'Go to Settings'
+          },
           channel: {
             default: 'Default',
             wb: 'WB',

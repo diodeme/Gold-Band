@@ -262,6 +262,23 @@ impl ManagedAgentConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DesktopUpdateBadgeState {
+    pub settings_entry_seen_version: Option<String>,
+    pub settings_advanced_seen_version: Option<String>,
+    pub announcement_closed_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopAvailableUpdate {
+    pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+    pub pub_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserConfig {
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
@@ -273,6 +290,9 @@ pub struct UserConfig {
     pub desktop_font: Option<DesktopFontPreference>,
     pub desktop_updater_url_override: Option<String>,
     pub desktop_updater_last_checked_at: Option<String>,
+    #[serde(default)]
+    pub desktop_update_badges: DesktopUpdateBadgeState,
+    pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
@@ -292,6 +312,8 @@ pub struct RuntimeConfig {
     pub desktop_font: DesktopFontPreference,
     pub desktop_updater_url_override: Option<String>,
     pub desktop_updater_last_checked_at: Option<String>,
+    pub desktop_update_badges: DesktopUpdateBadgeState,
+    pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
 }
@@ -314,6 +336,8 @@ impl Default for RuntimeConfig {
             desktop_font: "app-default".to_string(),
             desktop_updater_url_override: None,
             desktop_updater_last_checked_at: None,
+            desktop_update_badges: DesktopUpdateBadgeState::default(),
+            desktop_available_update: None,
             agents,
             use_local_claude: false,
         }
@@ -348,6 +372,8 @@ impl RuntimeConfig {
         }
         self.desktop_updater_url_override = user_config.desktop_updater_url_override.clone();
         self.desktop_updater_last_checked_at = user_config.desktop_updater_last_checked_at.clone();
+        self.desktop_update_badges = user_config.desktop_update_badges.clone();
+        self.desktop_available_update = user_config.desktop_available_update.clone();
         if let Some(agents) = &user_config.agents {
             self.agents = agents.clone();
         }
@@ -361,8 +387,8 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConsoleThemeName, DesktopLanguage, DesktopThemePreference, RuntimeConfig, RuntimeLogLevel,
-        UserConfig,
+        ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
+        DesktopUpdateBadgeState, RuntimeConfig, RuntimeLogLevel, UserConfig,
     };
     use std::str::FromStr;
 
@@ -450,6 +476,17 @@ mod tests {
             desktop_language: Some(DesktopLanguage::En),
             desktop_font: Some("Microsoft YaHei UI".to_string()),
             desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
+            desktop_update_badges: DesktopUpdateBadgeState {
+                settings_entry_seen_version: Some("1.2.3".to_string()),
+                settings_advanced_seen_version: Some("1.2.3".to_string()),
+                announcement_closed_version: Some("1.2.2".to_string()),
+            },
+            desktop_available_update: Some(DesktopAvailableUpdate {
+                version: "1.2.3".to_string(),
+                current_version: "1.2.2".to_string(),
+                notes: Some("Patch release".to_string()),
+                pub_date: Some("2026-05-27T00:00:00Z".to_string()),
+            }),
             log_level: Some(RuntimeLogLevel::Trace),
             ..UserConfig::default()
         });
@@ -460,6 +497,22 @@ mod tests {
         assert_eq!(
             config.desktop_updater_url_override.as_deref(),
             Some("https://updates.example/latest.json")
+        );
+        assert_eq!(
+            config.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            config.desktop_update_badges.settings_advanced_seen_version.as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            config.desktop_update_badges.announcement_closed_version.as_deref(),
+            Some("1.2.2")
+        );
+        assert_eq!(
+            config.desktop_available_update.as_ref().map(|update| update.version.as_str()),
+            Some("1.2.3")
         );
         assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
     }

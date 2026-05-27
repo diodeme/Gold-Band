@@ -34,6 +34,8 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  showAdvancedUpdateDot: boolean;
+  showUpdatesSectionDot: boolean;
   downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
@@ -41,9 +43,11 @@ interface SettingsPageProps {
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
+  onViewSettings: () => Promise<void> | void;
+  onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -55,6 +59,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   const [preferenceVersion, setPreferenceVersion] = useState(0);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>('general');
 
   useEffect(() => setTheme(preferences.theme), [preferences.theme]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
@@ -71,6 +76,15 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   useEffect(() => {
     checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
   }, [useLocalClaude]);
+
+  useEffect(() => {
+    void onViewSettings();
+  }, [onViewSettings]);
+
+  useEffect(() => {
+    if (activeTab !== 'advanced') return;
+    void onViewAdvanced();
+  }, [activeTab, onViewAdvanced]);
 
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
@@ -144,11 +158,16 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
       />
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <Tabs defaultValue="general" className="space-y-4">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
         <TabsList className="grid w-fit grid-cols-3">
           <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
           <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
-          <TabsTrigger value="advanced">{t('settings.tabs.advanced')}</TabsTrigger>
+          <TabsTrigger value="advanced">
+            <span className="inline-flex items-center gap-2">
+              <span>{t('settings.tabs.advanced')}</span>
+              {showAdvancedUpdateDot ? <UpdateDot /> : null}
+            </span>
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="m-0">
@@ -327,7 +346,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                 ) : null}
               </div>
             </SettingsSection>
-            <SettingsSection title={t('settings.updater.title')}>
+            <SettingsSection title={<span className="inline-flex items-center gap-2">{t('settings.updater.title')}{showUpdatesSectionDot ? <UpdateDot /> : null}</span>}>
               <div className="max-w-4xl space-y-3">
                 <div className="flex items-center gap-3">
                   <div className="w-28 shrink-0 text-sm font-medium text-muted-foreground">{t('settings.updater.currentUrl')}</div>
@@ -428,6 +447,10 @@ function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onI
   );
 }
 
+function UpdateDot() {
+  return <span className="size-2 rounded-full bg-destructive" aria-hidden="true" />;
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -443,7 +466,7 @@ function formatCheckedAt(value: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function SettingsSection({ title, children, divided = false }: { title: string; children: ReactNode; divided?: boolean }) {
+function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {
   return (
     <section className={cn('grid gap-4 px-5 py-5 lg:grid-cols-[160px_minmax(0,1fr)]', divided && 'border-t border-border/45')}>
       <h2 className="text-base font-semibold text-foreground">{title}</h2>

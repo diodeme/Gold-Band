@@ -10,6 +10,7 @@ import {
   mockTaskDetail,
   mockTaskList,
   mockWorkflow,
+  mockUpdateBadges,
   mockUpdateStatus,
   mockUpdaterSettings,
   mockWorkflowTemplates,
@@ -40,6 +41,7 @@ import type {
   RunSummaryVm,
   TaskDetailVm,
   TaskListVm,
+  UpdateBadgeStateVm,
   UpdateStatusVm,
   UpdaterSettingsVm,
   WorkflowDsl,
@@ -51,6 +53,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 let browserProfileList = { ...mockProfileList, profiles: [...mockProfileList.profiles] };
 let browserUpdaterSettings = { ...mockUpdaterSettings };
 let browserUpdateStatus = { ...mockUpdateStatus };
+let browserUpdateBadges = { ...mockUpdateBadges };
 const browserFontCandidates = [
   'MiSans',
   'Maple Mono NF CN',
@@ -138,6 +141,8 @@ export function getAppBootstrap() {
     ...mockBootstrap,
     updaterSettings: browserUpdaterSettings,
     updateStatus: browserUpdateStatus,
+    updateBadges: browserUpdateBadges,
+    persistedAvailableUpdate: browserUpdateStatus.update ?? null,
     clientVersion: mockBootstrap.clientVersion,
   });
 }
@@ -256,11 +261,11 @@ export function updateProfile(id: string, input: ProfileInput) {
 }
 
 export function chooseWorkspace() {
-  return command<AppBootstrapVm | null>('choose_workspace', undefined, mockBootstrap);
+  return command<AppBootstrapVm | null>('choose_workspace', undefined, { ...mockBootstrap, updateBadges: browserUpdateBadges });
 }
 
 export function selectRecentWorkspace(workspace: string) {
-  return command<AppBootstrapVm>('select_recent_workspace', { workspace }, { ...mockBootstrap, repoRoot: workspace });
+  return command<AppBootstrapVm>('select_recent_workspace', { workspace }, { ...mockBootstrap, repoRoot: workspace, updateBadges: browserUpdateBadges });
 }
 
 export function getTaskDetail(taskId: string) {
@@ -436,6 +441,21 @@ export function saveUpdaterSettings(overrideUrl: string | null) {
 
 export function getUpdateStatus() {
   return command<UpdateStatusVm>('get_update_status', undefined, browserUpdateStatus);
+}
+
+export function markSettingsUpdateSeen(version: string) {
+  browserUpdateBadges = { ...browserUpdateBadges, settingsEntrySeenVersion: version };
+  return command<UpdateBadgeStateVm>('mark_settings_update_seen', { version }, browserUpdateBadges);
+}
+
+export function markSettingsAdvancedUpdateSeen(version: string) {
+  browserUpdateBadges = { ...browserUpdateBadges, settingsAdvancedSeenVersion: version };
+  return command<UpdateBadgeStateVm>('mark_settings_advanced_update_seen', { version }, browserUpdateBadges);
+}
+
+export function dismissUpdateAnnouncement(version: string) {
+  browserUpdateBadges = { ...browserUpdateBadges, announcementClosedVersion: version };
+  return command<UpdateBadgeStateVm>('dismiss_update_announcement', { version }, browserUpdateBadges);
 }
 
 export function checkUpdateManual() {

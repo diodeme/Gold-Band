@@ -7,6 +7,7 @@ import type {
   NodeDetailVm,
   PreferencesVm,
   ProfileListVm,
+  UpdateBadgeStateVm,
   UpdateStatusVm,
   UpdaterSettingsVm,
   RoundDetailVm,
@@ -41,6 +42,11 @@ export const mockUpdateStatus: UpdateStatusVm = {
   update: null,
   error: null,
   background: false,
+};
+export const mockUpdateBadges: UpdateBadgeStateVm = {
+  settingsEntrySeenVersion: null,
+  settingsAdvancedSeenVersion: null,
+  announcementClosedVersion: null,
 };
 let browserUpdaterSettings = { ...mockUpdaterSettings };
 let browserUpdateStatus = { ...mockUpdateStatus };
@@ -289,6 +295,8 @@ export const mockBootstrap: AppBootstrapVm = {
   preferences,
   updaterSettings: browserUpdaterSettings,
   updateStatus: browserUpdateStatus,
+  updateBadges: mockUpdateBadges,
+  persistedAvailableUpdate: null,
   clientVersion: '',
   appInfo: mockAppInfo,
   needsWorkspace: false,

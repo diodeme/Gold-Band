@@ -599,7 +599,7 @@ export interface ContentVm {
   metadata: unknown;
 }
 
-export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowledge-base' | 'model-management' | 'settings';
+export type PrimaryModule = 'task-orchestration' | 'agent-management' | 'knowledge-base' | 'settings';
 
 export type TaskPage =
   | { kind: 'task-list' }

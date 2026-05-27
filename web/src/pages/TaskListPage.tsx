@@ -125,8 +125,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
     <Page flush className="flex flex-col" onContextMenu={(event) => event.preventDefault()}>
       <PageHeader
         breadcrumbs={breadcrumbs}
-        title={t('taskList.title')}
-        subtitle={t('taskList.subtitle')}
+        title={<span className="text-title">{t('taskList.title')}</span>}
         actions={(
           <>
             <Button variant="outline" disabled={isInitialLoading || isManualRefreshing} onClick={onRefresh}>

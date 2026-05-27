@@ -138,18 +138,13 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   void preferenceVersion;
 
   return (
-    <Page className="space-y-6 p-8">
-      <div className="flex items-center justify-between gap-4">
-        <span className="font-mono text-xs text-muted-foreground">{t('settings.path', { appName: appInfo.appName })}</span>
-        <div className="flex gap-2">
-          <Button variant="ghost" disabled>{t('common.export')}</Button>
-          <Button disabled>{t('common.run')}</Button>
-        </div>
-      </div>
+    <Page flush className="flex flex-col">
+      <PageHeader
+        title={<span className="text-title">{t('settings.title')}</span>}
+      />
 
-      <PageHeader title={t('settings.title')} />
-
-      <Tabs defaultValue="general" className="space-y-4">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
+        <Tabs defaultValue="general" className="space-y-4">
         <TabsList className="grid w-fit grid-cols-3">
           <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
           <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
@@ -380,6 +375,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
       </Tabs>
 
       {clientVersion ? <Badge variant="outline" className="font-mono text-muted-foreground"><span className="mr-2 size-2 rounded-full bg-gold-success" /> {t('settings.clientVersion', { version: clientVersion })}</Badge> : null}
+      </div>
     </Page>
   );
 }

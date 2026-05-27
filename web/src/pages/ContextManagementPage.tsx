@@ -90,7 +90,7 @@ export function ContextManagementPage() {
 
   return (
     <Page flush className="flex flex-col">
-      <PageHeader title={t('contextManagement.title')} />
+      <PageHeader title={<span className="text-title">{t('contextManagement.title')}</span>} />
       <div className="min-h-0 flex-1 p-5 xl:p-6">
         <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
           <CardHeader className="border-b px-4 py-3">

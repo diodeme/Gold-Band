@@ -1,4 +1,4 @@
-import { Bot, Boxes, BrainCircuit, ChevronsUpDown, Command, Settings } from 'lucide-react';
+import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
@@ -46,7 +46,6 @@ export function Shell({ active, appName, repoRoot, needsWorkspace, onSelect, onC
             <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
             <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<Bot />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
             <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<Boxes />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
-            <ShellNavButton disabled icon={<BrainCircuit />} label={t('common.modelManagement')} suffix={t('common.comingSoon')} />
           </nav>
 
           <Separator />

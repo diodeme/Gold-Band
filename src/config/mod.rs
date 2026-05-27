@@ -279,7 +279,7 @@ pub struct DesktopAvailableUpdate {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UserConfig {
+pub struct SettingsConfig {
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
     pub log_provider_command: Option<bool>,
@@ -289,13 +289,18 @@ pub struct UserConfig {
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_font: Option<DesktopFontPreference>,
     pub desktop_updater_url_override: Option<String>,
+    pub desktop_workspace: Option<String>,
+    pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
+    pub use_local_claude: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateConfig {
     pub desktop_updater_last_checked_at: Option<String>,
     #[serde(default)]
     pub desktop_update_badges: DesktopUpdateBadgeState,
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
-    pub desktop_workspace: Option<String>,
-    pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
-    pub use_local_claude: Option<bool>,
     #[serde(default)]
     pub recent_desktop_workspaces: Vec<String>,
 }
@@ -345,41 +350,45 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    pub fn apply_user_config(mut self, user_config: &UserConfig) -> Self {
-        if let Some(log_level) = user_config.log_level {
+    pub fn apply_settings(mut self, settings: &SettingsConfig) -> Self {
+        if let Some(log_level) = settings.log_level {
             self.log_level = log_level;
         }
-        if let Some(log_prompts) = user_config.log_prompts {
+        if let Some(log_prompts) = settings.log_prompts {
             self.log_prompts = log_prompts;
         }
-        if let Some(log_provider_command) = user_config.log_provider_command {
+        if let Some(log_provider_command) = settings.log_provider_command {
             self.log_provider_command = log_provider_command;
         }
-        if let Some(log_retention_days) = user_config.log_retention_days {
+        if let Some(log_retention_days) = settings.log_retention_days {
             self.log_retention_days = log_retention_days;
         }
-        if let Some(console_theme) = user_config.console_theme {
+        if let Some(console_theme) = settings.console_theme {
             self.console_theme = console_theme;
         }
-        if let Some(desktop_theme) = user_config.desktop_theme {
+        if let Some(desktop_theme) = settings.desktop_theme {
             self.desktop_theme = desktop_theme;
         }
-        if let Some(desktop_language) = user_config.desktop_language {
+        if let Some(desktop_language) = settings.desktop_language {
             self.desktop_language = desktop_language;
         }
-        if let Some(desktop_font) = &user_config.desktop_font {
+        if let Some(desktop_font) = &settings.desktop_font {
             self.desktop_font = desktop_font.clone();
         }
-        self.desktop_updater_url_override = user_config.desktop_updater_url_override.clone();
-        self.desktop_updater_last_checked_at = user_config.desktop_updater_last_checked_at.clone();
-        self.desktop_update_badges = user_config.desktop_update_badges.clone();
-        self.desktop_available_update = user_config.desktop_available_update.clone();
-        if let Some(agents) = &user_config.agents {
+        self.desktop_updater_url_override = settings.desktop_updater_url_override.clone();
+        if let Some(agents) = &settings.agents {
             self.agents = agents.clone();
         }
-        if let Some(use_local_claude) = user_config.use_local_claude {
+        if let Some(use_local_claude) = settings.use_local_claude {
             self.use_local_claude = use_local_claude;
         }
+        self
+    }
+
+    pub fn apply_state(mut self, state: &StateConfig) -> Self {
+        self.desktop_updater_last_checked_at = state.desktop_updater_last_checked_at.clone();
+        self.desktop_update_badges = state.desktop_update_badges.clone();
+        self.desktop_available_update = state.desktop_available_update.clone();
         self
     }
 }
@@ -388,7 +397,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, RuntimeConfig, RuntimeLogLevel, UserConfig,
+        DesktopUpdateBadgeState, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::str::FromStr;
 
@@ -469,13 +478,28 @@ mod tests {
     }
 
     #[test]
-    fn user_config_overrides_default_values() {
-        let config = RuntimeConfig::default().apply_user_config(&UserConfig {
+    fn settings_config_roundtrips_json() {
+        let settings = SettingsConfig {
             console_theme: Some(ConsoleThemeName::Nord),
             desktop_theme: Some(DesktopThemePreference::Dark),
             desktop_language: Some(DesktopLanguage::En),
             desktop_font: Some("Microsoft YaHei UI".to_string()),
             desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
+            log_level: Some(RuntimeLogLevel::Trace),
+            ..SettingsConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.console_theme, Some(ConsoleThemeName::Nord));
+        assert_eq!(roundtripped.desktop_theme, Some(DesktopThemePreference::Dark));
+        assert_eq!(roundtripped.desktop_language, Some(DesktopLanguage::En));
+        assert_eq!(roundtripped.desktop_font.as_deref(), Some("Microsoft YaHei UI"));
+        assert!(matches!(roundtripped.log_level, Some(RuntimeLogLevel::Trace)));
+    }
+
+    #[test]
+    fn state_config_roundtrips_json() {
+        let state = StateConfig {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
@@ -487,8 +511,35 @@ mod tests {
                 notes: Some("Patch release".to_string()),
                 pub_date: Some("2026-05-27T00:00:00Z".to_string()),
             }),
+            recent_desktop_workspaces: vec!["/path/a".to_string(), "/path/b".to_string()],
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            roundtripped.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            roundtripped.desktop_available_update.as_ref().map(|u| u.version.as_str()),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            roundtripped.recent_desktop_workspaces,
+            vec!["/path/a", "/path/b"]
+        );
+    }
+
+    #[test]
+    fn apply_settings_overrides_defaults() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            console_theme: Some(ConsoleThemeName::Nord),
+            desktop_theme: Some(DesktopThemePreference::Dark),
+            desktop_language: Some(DesktopLanguage::En),
+            desktop_font: Some("Microsoft YaHei UI".to_string()),
+            desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
-            ..UserConfig::default()
+            ..SettingsConfig::default()
         });
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
@@ -498,33 +549,109 @@ mod tests {
             config.desktop_updater_url_override.as_deref(),
             Some("https://updates.example/latest.json")
         );
+        assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
+    }
+
+    #[test]
+    fn apply_state_overrides_defaults() {
+        let config = RuntimeConfig::default().apply_state(&StateConfig {
+            desktop_updater_last_checked_at: Some("2026-05-27 10:00:00".to_string()),
+            desktop_update_badges: DesktopUpdateBadgeState {
+                settings_entry_seen_version: Some("1.2.3".to_string()),
+                settings_advanced_seen_version: Some("1.2.3".to_string()),
+                announcement_closed_version: Some("1.2.2".to_string()),
+            },
+            desktop_available_update: Some(DesktopAvailableUpdate {
+                version: "1.2.3".to_string(),
+                current_version: "1.2.2".to_string(),
+                notes: Some("Patch release".to_string()),
+                pub_date: Some("2026-05-27T00:00:00Z".to_string()),
+            }),
+            ..StateConfig::default()
+        });
+        assert_eq!(
+            config.desktop_updater_last_checked_at.as_deref(),
+            Some("2026-05-27 10:00:00")
+        );
         assert_eq!(
             config.desktop_update_badges.settings_entry_seen_version.as_deref(),
             Some("1.2.3")
         );
         assert_eq!(
-            config.desktop_update_badges.settings_advanced_seen_version.as_deref(),
+            config.desktop_available_update.as_ref().map(|u| u.version.as_str()),
             Some("1.2.3")
         );
-        assert_eq!(
-            config.desktop_update_badges.announcement_closed_version.as_deref(),
-            Some("1.2.2")
-        );
-        assert_eq!(
-            config.desktop_available_update.as_ref().map(|update| update.version.as_str()),
-            Some("1.2.3")
-        );
-        assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
     }
 
     #[test]
-    fn empty_user_config_keeps_defaults() {
-        let config = RuntimeConfig::default().apply_user_config(&UserConfig::default());
+    fn empty_settings_keeps_defaults() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig::default());
         assert_eq!(config.console_theme, ConsoleThemeName::GoldBand);
         assert_eq!(config.desktop_theme, DesktopThemePreference::System);
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
         assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+    }
+
+    #[test]
+    fn empty_state_keeps_defaults() {
+        let config = RuntimeConfig::default().apply_state(&StateConfig::default());
+        assert!(config.desktop_updater_last_checked_at.is_none());
+        assert!(config.desktop_available_update.is_none());
+    }
+
+    #[test]
+    fn full_roundtrip_from_settings_and_state() {
+        let settings = SettingsConfig {
+            console_theme: Some(ConsoleThemeName::Nord),
+            desktop_theme: Some(DesktopThemePreference::Dark),
+            desktop_language: Some(DesktopLanguage::En),
+            desktop_font: Some("Fira Code".to_string()),
+            desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
+            log_level: Some(RuntimeLogLevel::Trace),
+            use_local_claude: Some(true),
+            ..SettingsConfig::default()
+        };
+        let state = StateConfig {
+            desktop_updater_last_checked_at: Some("2026-05-27 10:00:00".to_string()),
+            desktop_update_badges: DesktopUpdateBadgeState {
+                settings_entry_seen_version: Some("1.2.3".to_string()),
+                settings_advanced_seen_version: Some("1.2.3".to_string()),
+                announcement_closed_version: Some("1.2.2".to_string()),
+            },
+            desktop_available_update: Some(DesktopAvailableUpdate {
+                version: "1.2.3".to_string(),
+                current_version: "1.2.2".to_string(),
+                notes: Some("Patch release".to_string()),
+                pub_date: Some("2026-05-27T00:00:00Z".to_string()),
+            }),
+            ..StateConfig::default()
+        };
+        let config = RuntimeConfig::default()
+            .apply_settings(&settings)
+            .apply_state(&state);
+        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
+        assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
+        assert_eq!(config.desktop_language, DesktopLanguage::En);
+        assert_eq!(config.desktop_font, "Fira Code");
+        assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
+        assert!(config.use_local_claude);
+        assert_eq!(
+            config.desktop_updater_url_override.as_deref(),
+            Some("https://updates.example/latest.json")
+        );
+        assert_eq!(
+            config.desktop_updater_last_checked_at.as_deref(),
+            Some("2026-05-27 10:00:00")
+        );
+        assert_eq!(
+            config.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            config.desktop_available_update.as_ref().map(|u| u.version.as_str()),
+            Some("1.2.3")
+        );
     }
 }
 

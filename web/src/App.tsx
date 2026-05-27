@@ -483,6 +483,7 @@ export function App() {
           appInfo={appInfo}
           updaterSettings={updaterSettings}
           updateStatus={updateStatus}
+          availableUpdate={effectiveAvailableUpdate}
           showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
           showUpdatesSectionDot={showUpdatesSectionDot}
           downloadProgress={downloadProgress}

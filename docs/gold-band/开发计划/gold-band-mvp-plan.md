@@ -123,6 +123,7 @@
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27：更新提示新增分层红点：后台发现当前可更新版本时，左侧 Settings、设置页 Advanced tab 和 Updates 分组标题同时提醒；Settings 和 Advanced 的已读状态按版本号持久化，用户逐层进入时只清当前层，Updates 红点仅在当前无可更新版本时消失。
 - 2026-05-27：右侧主内容区顶部新增一次性更新公告区；首次发现某个新版本时展示公告，点击后弹窗引导用户前往 设置 → 高级 → 更新；公告关闭状态与可用更新快照一并持久化，重启应用后若版本仍可更新则公告继续可见，直到用户关闭或后续检查确认无更新。
+- 2026-05-27：修正更新状态区的缓存展示语义；当重启后仅命中持久化的可用更新快照、实时 `updateStatus` 仍是 `idle` 时，UI 仍按“可更新”态展示状态文案、版本号和安装入口，避免出现“尚未检查”与可更新版本并存。
 - 2026-05-26：Windows release 桌面包使用 GUI subsystem，安装后双击启动不再附带 cmd 窗口；debug/dev 构建仍保留控制台输出。后台子进程统一通过 process helper 设置隐藏窗口，Windows 进程树清理丢弃 `taskkill` stdout/stderr，ACP provider 的 npx/codex 等子进程同样不弹控制台窗口。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 

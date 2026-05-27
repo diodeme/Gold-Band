@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -34,6 +34,7 @@ interface SettingsPageProps {
   appInfo: AppInfoVm;
   updaterSettings: UpdaterSettingsVm;
   updateStatus: UpdateStatusVm;
+  availableUpdate?: UpdateInfoVm | null;
   showAdvancedUpdateDot: boolean;
   showUpdatesSectionDot: boolean;
   downloadProgress: { downloaded: number; total: number | null } | null;
@@ -47,7 +48,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -385,7 +386,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                 </div>
                 <div className="flex">
                   <div className="w-28 shrink-0" />
-                  <UpdateStatusInline status={updateStatus} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
+                  <UpdateStatusInline status={updateStatus} availableUpdate={availableUpdate} busy={busy} downloadProgress={downloadProgress} onCheckUpdate={onCheckUpdate} onInstallUpdate={onInstallUpdate} />
                 </div>
               </div>
             </SettingsSection>
@@ -399,18 +400,20 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   );
 }
 
-function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
+function UpdateStatusInline({ status, availableUpdate, busy, downloadProgress, onCheckUpdate, onInstallUpdate }: { status: UpdateStatusVm; availableUpdate?: UpdateInfoVm | null; busy: boolean; downloadProgress: { downloaded: number; total: number | null } | null; onCheckUpdate: () => Promise<UpdateStatusVm | undefined>; onInstallUpdate: () => Promise<void> }) {
   const { t } = useTranslation();
-  const downloading = status.status === 'downloading';
-  const statusClass = status.status === 'available' || status.status === 'downloading'
+  const resolvedUpdate = status.update ?? availableUpdate ?? null;
+  const effectiveStatus = status.status === 'idle' && resolvedUpdate ? 'available' : status.status;
+  const downloading = effectiveStatus === 'downloading';
+  const statusClass = effectiveStatus === 'available' || effectiveStatus === 'downloading'
     ? 'text-gold-success'
-    : status.status === 'error'
+    : effectiveStatus === 'error'
       ? 'text-destructive'
       : 'text-muted-foreground';
   const progressPct = downloadProgress && downloadProgress.total ? Math.min(100, Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)) : 0;
   const hasProgress = downloadProgress && downloadProgress.downloaded > 0;
   const hasTotal = downloadProgress && downloadProgress.total != null;
-  const hasResultRow = status.status !== 'idle' || !!status.error;
+  const hasResultRow = resolvedUpdate !== null || status.status !== 'idle' || !!status.error;
   return (
     <div className="min-w-0 flex-1 space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
@@ -419,11 +422,11 @@ function UpdateStatusInline({ status, busy, downloadProgress, onCheckUpdate, onI
       </div>
       {hasResultRow ? (
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${status.status}`)}</span>
-          {status.update ? <span className="font-mono text-xs text-muted-foreground">{status.update.currentVersion} → <span className="text-destructive">{status.update.version}</span></span> : null}
+          <span className={cn('font-medium', statusClass)}>{t(`settings.updater.status.${effectiveStatus}`)}</span>
+          {resolvedUpdate ? <span className="font-mono text-xs text-muted-foreground">{resolvedUpdate.currentVersion} → <span className="text-destructive">{resolvedUpdate.version}</span></span> : null}
           {downloading ? (
             <Button size="sm" disabled><Loader2 className="mr-1.5 size-3.5 animate-spin" />{t('settings.updater.status.downloading')}</Button>
-          ) : status.status === 'available' ? (
+          ) : effectiveStatus === 'available' ? (
             <Button size="sm" onClick={() => void onInstallUpdate()} disabled={busy}>{t('settings.updater.install')}</Button>
           ) : null}
           {status.error ? <span className="text-xs text-destructive">{t(`errors.${status.error.code}`, status.error.params)}</span> : null}

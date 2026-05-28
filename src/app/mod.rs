@@ -91,6 +91,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         role_key: &str,
         goal: &str,
         validation: bool,
+        manual_check: bool,
     ) -> NodeDsl {
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
@@ -114,8 +115,8 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: None,
-            manual_check: None,
+            permission_mode: Some("bypassPermissions".to_string()),
+            manual_check: manual_check.then_some(true),
         })
     }
 
@@ -123,7 +124,10 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         version: "0.1".to_string(),
         id: "task-workflow".to_string(),
         entry: "plan".to_string(),
-        control: WorkflowControl::default(),
+        control: WorkflowControl {
+            max_attempts: Some(1),
+            max_rounds: Some(1),
+        },
         nodes: vec![
             worker(
                 provider,
@@ -132,6 +136,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 "plan",
                 "Analyze the imported requirement and produce an implementation plan.",
                 false,
+                true,
             ),
             worker(
                 provider,
@@ -139,6 +144,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 "dev",
                 "dev",
                 "Implement the requirement in the workspace.",
+                false,
                 false,
             ),
             worker(
@@ -148,6 +154,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 "review",
                 "Review the implementation and return JSON with result and reason fields.",
                 true,
+                false,
             ),
             worker(
                 provider,
@@ -156,6 +163,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 "test",
                 "Run or describe verification and return JSON with result and reason fields.",
                 true,
+                false,
             ),
             worker(
                 provider,
@@ -164,13 +172,15 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 "accept",
                 "Validate acceptance and return JSON with result and reason fields.",
                 true,
+                false,
             ),
             worker(
                 provider,
                 profiles,
                 "cleanup",
                 "cleanup",
-                "Clean up resources, finalize handoff notes, and close the task after acceptance succeeds.",
+                "Clean up resources, finalize handoff notes, clean up Git workspace",
+                false,
                 false,
             ),
         ],

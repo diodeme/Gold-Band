@@ -20,37 +20,18 @@ const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
 const baseVersion = pkg.version;
 
 let channelVersion;
-let channelTag;
 if (isDefaultChannel) {
   channelVersion = baseVersion;
 } else {
-  const tagPattern = `v${baseVersion}-${channel}.*`;
-  let existingTags = [];
-  try {
-    existingTags = execSync(`git tag -l "${tagPattern}"`, { encoding: 'utf8', cwd: repoRoot })
-      .trim()
-      .split('\n')
-      .filter(Boolean);
-  } catch {
-    // no tags yet
-  }
-
-  let maxCounter = 0;
-  const escapedBase = baseVersion.replace(/\./g, '\\.');
-  const escapedChannel = channel.replace(/\./g, '\\.');
-  const tagRegex = new RegExp(`^v${escapedBase}-${escapedChannel}\\.(\\d+)$`);
-  for (const tag of existingTags) {
-    const match = tag.trim().match(tagRegex);
-    if (match) {
-      const n = parseInt(match[1], 10);
-      if (n > maxCounter) maxCounter = n;
-    }
-  }
-
-  const counter = String(maxCounter + 1);
-  channelVersion = `${baseVersion}-${channel}.${counter}`;
-  channelTag = `v${channelVersion}`;
-  console.log(`Channel build: ${channel} ${channelVersion} (tag: ${channelTag})`);
+  const now = new Date();
+  const ts = now.getFullYear().toString() +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0') +
+    String(now.getHours()).padStart(2, '0') +
+    String(now.getMinutes()).padStart(2, '0');
+  const shortSha = execSync('git rev-parse --short=7 HEAD', { encoding: 'utf8', cwd: repoRoot }).trim();
+  channelVersion = `${baseVersion}-${channel}.${ts}+${shortSha}`;
+  console.log(`Channel build: ${channel} ${channelVersion}`);
 }
 
 // ── env ──
@@ -82,16 +63,8 @@ const result = spawnSync('npx', ['tauri', 'build', '--config', overlayPath], {
   shell: process.platform === 'win32',
 });
 
-// ── tag on success ──
-if (result.status === 0 && !isDefaultChannel) {
-  execSync(`git tag "${channelTag}"`, { stdio: 'inherit', cwd: repoRoot });
-  try {
-    execSync(`git push origin "${channelTag}"`, { stdio: 'inherit', cwd: repoRoot });
-  } catch {
-    console.error(`Tag ${channelTag} created locally but push failed. Push manually: git push origin "${channelTag}"`);
-  }
-} else if (result.status !== 0) {
-  console.error('Build failed — tag skipped.');
+if (result.status !== 0) {
+  console.error('Build failed.');
 }
 
 // ── post-build: collect artifacts & generate latest.json ──

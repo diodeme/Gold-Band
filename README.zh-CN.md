@@ -217,3 +217,7 @@ Gold Band 仅基于 GNU Affero General Public License v3.0 授权。完整许可
 ### CLI 示例与桌面行为不一致
 
 正常产品使用请优先使用桌面客户端。CLI commands 适合 automation 和 debugging，但桌面交互是当前产品方向。
+
+## Community
+
+本项目积极参与并认可 [linux.do社区](linux.do)

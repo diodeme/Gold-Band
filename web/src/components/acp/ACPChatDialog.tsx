@@ -290,7 +290,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const timeline = useMemo(() => buildAcpTimeline(effectiveEvents), [effectiveEvents]);
   const sessionActive = isSessionActive(effective?.status) || isRuntimeActiveStatus(runtimeStatus);
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const composerLocked = (waitingForPermission && !planInterventionOption) || showManualCheckActions;
+  const composerLocked = waitingForPermission && !planInterventionOption;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const submittingPrompt = (sending || waitingForOptimisticPrompt) && !turnAccepted;
   const activePromptLocked = sending || awaitingResponse || waitingForOptimisticPrompt || sessionActive || cancelling;
@@ -711,16 +711,15 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       </div>
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
+          {showManualCheckActions ? (
+            <AcpManualCheckPanel
+              submitting={manualCheckSubmitting}
+              onSuccess={() => void submitManualDecision('success')}
+              onFailure={() => void submitManualDecision('failure')}
+            />
+          ) : null}
           {composerLocked ? (
-            showManualCheckActions ? (
-              <AcpManualCheckPanel
-                submitting={manualCheckSubmitting}
-                onSuccess={() => void submitManualDecision('success')}
-                onFailure={() => void submitManualDecision('failure')}
-              />
-            ) : (
-              <AcpPermissionComposerLock />
-            )
+            <AcpPermissionComposerLock />
           ) : (
             <PromptInput
               value={prompt}
@@ -802,23 +801,21 @@ function AcpPermissionComposerLock() {
 function AcpManualCheckPanel({ submitting, onSuccess, onFailure }: { submitting: boolean; onSuccess: () => void; onFailure: () => void }) {
   const { t } = useTranslation();
   return (
-    <Card className="rounded-2xl border-primary/20 bg-card/85 shadow-sm shadow-background/30">
-      <CardContent className="space-y-3 p-4">
-        <div className="space-y-1">
-          <div className="text-sm font-semibold text-foreground">{t('acp.manualCheckPending')}</div>
-          <p className="text-xs leading-5 text-muted-foreground">{t('acp.manualCheckDescription')}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button className="h-9 rounded-full px-4" size="sm" disabled={submitting} onClick={onSuccess}>
-            {submitting ? <Loader2 className="size-3.5 animate-spin" /> : null}
-            {submitting ? t('acp.manualCheckSubmitting') : t('acp.manualCheckSuccess')}
-          </Button>
-          <Button className="h-9 rounded-full px-4" size="sm" variant="outline" disabled={submitting} onClick={onFailure}>
-            {t('acp.manualCheckFailure')}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="mb-3 flex min-w-0 items-center gap-3 rounded-2xl border border-primary/20 bg-card/60 px-4 py-2.5 shadow-sm shadow-background/20">
+      <div className="min-w-0 flex-1">
+        <span className="text-sm font-semibold text-foreground">{t('acp.manualCheckPending')}</span>
+        <span className="ml-2 text-xs text-muted-foreground">{t('acp.manualCheckDescription')}</span>
+      </div>
+      <div className="flex shrink-0 gap-2">
+        <Button className="h-8 rounded-full px-3" size="sm" disabled={submitting} onClick={onSuccess}>
+          {submitting ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          {submitting ? t('acp.manualCheckSubmitting') : t('acp.manualCheckSuccess')}
+        </Button>
+        <Button className="h-8 rounded-full px-3" size="sm" variant="outline" disabled={submitting} onClick={onFailure}>
+          {t('acp.manualCheckFailure')}
+        </Button>
+      </div>
+    </div>
   );
 }
 

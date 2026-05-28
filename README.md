@@ -217,3 +217,6 @@ Open the run/round in the desktop client and inspect the node state, ACP session
 ### CLI examples differ from desktop behavior
 
 Prefer the desktop client for normal product use. CLI commands are useful for automation and debugging, but desktop interaction is the current product direction.
+
+## Community
+This project actively participates in and acknowledges the [linux.do community](https://linux.do).

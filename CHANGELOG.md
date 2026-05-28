@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/diodeme/Gold-Band/compare/v0.3.1...v0.4.0) (2026-05-28)
+
+
+### Features
+
+* improve updater and built-in profiles ([#21](https://github.com/diodeme/Gold-Band/issues/21)) ([89a5b06](https://github.com/diodeme/Gold-Band/commit/89a5b06c98e8f00aa2b0bbd0998e0782b9569497))
+* **workflow:** align default workflow with 测试工作流 ([#26](https://github.com/diodeme/Gold-Band/issues/26)) ([50d6d93](https://github.com/diodeme/Gold-Band/commit/50d6d938014b5ab82ca2bb30f79f8d0d0e15d252))
+* **workflow:** improve manual check type and built-in prompt ([#25](https://github.com/diodeme/Gold-Band/issues/25)) ([54219d6](https://github.com/diodeme/Gold-Band/commit/54219d6a1afed672a230ead0bd2f6ee59ceda49a))
+
 ## [0.3.1](https://github.com/diodeme/Gold-Band/compare/v0.3.0...v0.3.1) (2026-05-26)
 
 

@@ -37,8 +37,11 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
     const plat = platformKey(file);
     if (!plat) continue;
     if (platforms[plat]) {
-      const existingScore = score(findExisting(platforms, plat, files));
-      if (score(file) <= existingScore) continue;
+      const existingFile = findExisting(platforms, plat, files);
+      const existingScore = score(existingFile);
+      const newScore = score(file);
+      if (newScore < existingScore) continue;
+      if (newScore === existingScore && cmpSemver(extractSemver(file), extractSemver(existingFile)) <= 0) continue;
     }
 
     const sig = await readFile(path.join(assetDir, signatures.get(file)), 'utf8');
@@ -95,7 +98,11 @@ async function generateGitHub(assetDir, outputPath) {
     .filter((file) => signatures.has(file))
     .map((file) => ({ file, platform: platformKey(file) }))
     .filter((item) => item.platform)
-    .sort((left, right) => score(right.file) - score(left.file));
+    .sort((left, right) => {
+      const scoreDiff = score(right.file) - score(left.file);
+      if (scoreDiff !== 0) return scoreDiff;
+      return cmpSemver(extractSemver(right.file), extractSemver(left.file));
+    });
 
   const platforms = {};
   for (const candidate of candidates) {
@@ -169,6 +176,23 @@ async function extractChangelog(version) {
   const end = nextMatch ? nextMatch.index : content.length;
 
   return content.slice(start, end).trim();
+}
+
+function extractSemver(file) {
+  const match = file.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+}
+
+function cmpSemver(a, b) {
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] > b[i]) return 1;
+    if (a[i] < b[i]) return -1;
+  }
+  return 0;
 }
 
 function score(file) {

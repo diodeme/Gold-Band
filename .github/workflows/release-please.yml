@@ -132,7 +132,6 @@ jobs:
         with:
           workspaces: |
             . -> target
-            src-tauri -> src-tauri/target
 
       - name: Generate default Tauri channel config
         shell: bash

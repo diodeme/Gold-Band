@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
@@ -57,6 +57,14 @@ if (password) {
 const overlayPath = join(repoRoot, 'src-tauri', 'target', 'channel', `tauri.${channel}.conf.json`);
 writeTauriConfigOverlay(config, overlayPath, isDefaultChannel ? undefined : channelVersion);
 
+// Clean stale bundle artifacts from both possible target locations
+// (workspace root target/ takes precedence after Cargo workspace migration)
+for (const dir of possibleBundleDirs()) {
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const result = spawnSync('npx', ['tauri', 'build', '--config', overlayPath], {
   env,
   stdio: 'inherit',
@@ -69,17 +77,20 @@ if (result.status !== 0) {
 
 // ── post-build: collect artifacts & generate latest.json ──
 if (result.status === 0 && config.releaseBaseUrl) {
-  const bundleDir = join(repoRoot, 'src-tauri', 'target', 'release', 'bundle');
   const releaseDir = join(repoRoot, 'release', channel);
   mkdirSync(releaseDir, { recursive: true });
 
+  const bundleDir = findBundleDir();
+  if (!bundleDir) {
+    console.error('Could not locate bundle artifacts directory.');
+    process.exit(1);
+  }
+
   // Find all .sig files recursively and copy artifact + signature
   const sigFiles = [];
-  if (existsSync(bundleDir)) {
-    walkDir(bundleDir, (filePath) => {
-      if (filePath.endsWith('.sig')) sigFiles.push(filePath);
-    });
-  }
+  walkDir(bundleDir, (filePath) => {
+    if (filePath.endsWith('.sig')) sigFiles.push(filePath);
+  });
 
   for (const sigPath of sigFiles) {
     const artifactPath = sigPath.slice(0, -4); // remove .sig
@@ -110,4 +121,18 @@ function walkDir(dir, fn) {
       fn(full);
     }
   }
+}
+
+function possibleBundleDirs() {
+  return [
+    join(repoRoot, 'target', 'release', 'bundle'),
+    join(repoRoot, 'src-tauri', 'target', 'release', 'bundle'),
+  ];
+}
+
+function findBundleDir() {
+  for (const dir of possibleBundleDirs()) {
+    if (existsSync(dir)) return dir;
+  }
+  return null;
 }

@@ -1972,22 +1972,22 @@ function parseAcpTimestamp(value?: string | null) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function formatThinkingDuration(t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
+function formatThinkingDuration(_t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
   if (durationMs == null) return null;
   const seconds = Math.max(1, Math.round(durationMs / 1000));
-  return t('acp.thinkingDuration', { seconds });
+  return formatElapsedDuration(seconds);
 }
 
 function formatElapsedDuration(totalSeconds: number) {
   const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
-  if (minutes < 60) return restSeconds ? `${minutes} 分 ${restSeconds} 秒` : `${minutes} 分`;
+  if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
-  if (hours < 24) return restMinutes ? `${hours} 时 ${restMinutes} 分` : `${hours} 时`;
+  if (hours < 24) return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
-  return restHours ? `${days} 天 ${restHours} 时` : `${days} 天`;
+  return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }

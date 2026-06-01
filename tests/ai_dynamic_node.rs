@@ -9,6 +9,7 @@ use gold_band::dynamic::{
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+    render_prompt_bundle,
 };
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -18,6 +19,7 @@ enum DynamicScenario {
     Fanout,
     NestedFanout,
     InvalidWorkflowInvocation,
+    FanoutRepair,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
 }
 
@@ -45,6 +47,10 @@ impl DynamicProvider {
 
     fn invalid_workflow_invocation() -> Self {
         Self::new(DynamicScenario::InvalidWorkflowInvocation)
+    }
+
+    fn fanout_repair() -> Self {
+        Self::new(DynamicScenario::FanoutRepair)
     }
 
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
@@ -139,6 +145,16 @@ impl DynamicProvider {
             }
             (DynamicScenario::InvalidWorkflowInvocation, "bootstrap") => {
                 Some(invalid_workflow_invocation_completion(profile))
+            }
+            (DynamicScenario::FanoutRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(too_many_fanout_branches_completion(profile))
+                }
+            }
+            (DynamicScenario::FanoutRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
             }
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap") => {
                 let workflow_id = workflow_id.lock().unwrap().clone();
@@ -278,6 +294,65 @@ fn invalid_workflow_invocation_completion(profile: &str) -> String {
                     "workspace": {{ "mode": "readonly" }},
                     "dependsOn": ["bootstrap"],
                     "workflowId": "missing-workflow"
+                }}
+            }}
+        }}"#
+    )
+}
+
+fn too_many_fanout_branches_completion(profile: &str) -> String {
+    format!(
+        r#"{{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "split into too many branches",
+            "next": {{
+                "type": "fanout",
+                "groupId": "group-overflow",
+                "nodes": [
+                    {{
+                        "id": "branch-a",
+                        "kind": "worker",
+                        "title": "Branch A",
+                        "task": "Finish branch A",
+                        "provider": "claude-acp",
+                        "profile": "{profile}",
+                        "workspace": {{ "mode": "readonly" }},
+                        "dependsOn": ["bootstrap"]
+                    }},
+                    {{
+                        "id": "branch-b",
+                        "kind": "worker",
+                        "title": "Branch B",
+                        "task": "Finish branch B",
+                        "provider": "claude-acp",
+                        "profile": "{profile}",
+                        "workspace": {{ "mode": "readonly" }},
+                        "dependsOn": ["bootstrap"]
+                    }},
+                    {{
+                        "id": "branch-c",
+                        "kind": "worker",
+                        "title": "Branch C",
+                        "task": "Finish branch C",
+                        "provider": "claude-acp",
+                        "profile": "{profile}",
+                        "workspace": {{ "mode": "readonly" }},
+                        "dependsOn": ["bootstrap"]
+                    }}
+                ],
+                "merge": {{
+                    "title": "Merge overflow",
+                    "provider": "claude-acp",
+                    "profile": "{profile}",
+                    "task": "Merge branch outputs"
+                }},
+                "acceptance": {{
+                    "title": "Accept overflow",
+                    "provider": "claude-acp",
+                    "profile": "{profile}",
+                    "task": "Accept merged branch outputs"
                 }}
             }}
         }}"#
@@ -428,6 +503,17 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
             "group-core-accept"
         ]
     );
+    let bootstrap = render_prompt_bundle(&invocations[0]).unwrap();
+    assert!(bootstrap.system_prompt.contains("dynamic-run-001"));
+    assert!(bootstrap.system_prompt.contains("bootstrap"));
+    assert!(bootstrap.system_prompt.contains("claude-acp"));
+    assert!(bootstrap.system_prompt.contains("dynamic-node-completion"));
+    assert!(bootstrap.user_prompt.contains("# Requirement\nExercise AI-DYNAMIC"));
+    assert!(bootstrap.user_prompt.contains("# Task\nDesign the first internal dynamic step"));
+    let merge = render_prompt_bundle(&invocations[3]).unwrap();
+    assert!(merge.system_prompt.contains("group-core"));
+    assert!(merge.system_prompt.contains("branch-a"));
+    assert!(merge.system_prompt.contains("branch-b"));
 }
 
 #[test]
@@ -525,12 +611,12 @@ fn ai_dynamic_rejects_unallowed_workflow_invocation() {
     assert_eq!(run.pause_reason, Some(PauseReason::ErrorBlocked));
 
     let graph = dynamic_graph(&app, task_id);
-    assert_eq!(graph.proposals.len(), 1);
+    assert_eq!(graph.proposals.len(), 4);
     assert_eq!(
-        graph.proposals[0].validation_status,
+        graph.proposals.last().unwrap().validation_status,
         DynamicProposalValidationStatus::Rejected
     );
-    assert!(graph.proposals[0].validation_errors[0].contains("references unallowed workflow"));
+    assert!(graph.proposals.last().unwrap().validation_errors[0].contains("references unallowed workflow"));
 }
 
 #[test]
@@ -654,6 +740,50 @@ fn ai_dynamic_rejects_allowed_workflow_with_duplicate_workflow_id() {
 }
 
 #[test]
+fn ai_dynamic_repairs_over_limit_fanout_before_pausing() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-fanout-repair";
+    let provider = DynamicProvider::fanout_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.proposals.len() >= 2);
+    assert_eq!(
+        graph.proposals[0].validation_status,
+        DynamicProposalValidationStatus::Rejected
+    );
+    assert!(graph.proposals[0].validation_errors[0].contains("maxFanout"));
+    assert!(graph.proposals.iter().any(|proposal| {
+        proposal.validation_status == DynamicProposalValidationStatus::Accepted
+    }));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert!(invocations.iter().any(|invocation| invocation.session_mode == SessionMode::Continue));
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    assert!(repair_invocation
+        .resume_prompt
+        .as_deref()
+        .unwrap()
+        .contains("maxFanout"));
+    assert!(repair_invocation
+        .resume_prompt
+        .as_deref()
+        .unwrap()
+        .contains("remaining dynamic nodes"));
+}
+
+#[test]
 fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -733,4 +863,16 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
         gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
     assert_eq!(child_run.status, RunStatus::Completed);
     assert_eq!(child_run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let child_invocation = render_prompt_bundle(
+        invocations
+            .iter()
+            .find(|invocation| invocation.runtime_context.run_id == "run-002")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(child_invocation.user_prompt.contains("Run child workflow from frozen snapshot"));
+    assert!(child_invocation.user_prompt.contains("Run child work"));
+    assert!(child_invocation.user_prompt.contains("# Requirement\nExercise AI-DYNAMIC"));
 }

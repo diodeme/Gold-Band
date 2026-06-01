@@ -37,7 +37,7 @@
 - `allowedWorkflows.workflowId` 引用 workflow DSL 内的 `workflow.id`，不是模板外层 `template.id`；run start 时冻结为 allowed workflow snapshots。
 - `allowedWorkflows` 引用的模板必须满足模板库级唯一性约束：若某个模板的 `workflow.id` 与其他模板重复，则任何包含该模板引用的 AI-DYNAMIC 工作流都不能保存，用户需手动修改模板 JSON 中的 `workflow.id` 后再试。
 - `maxGroupDepth` 限制 fanout group 的嵌套深度；底层状态通过 `parentGroupId` 记录父子 group，子 group closed 后把自己的 acceptance 节点挂入父 group terminal，父 group 必须等所有 root chain 都到达 terminal boundary 后才会 merge。
-- `merge` 和 `acceptance` 只配置 provider；角色和任务目标由 `src/prompts/ai_dynamic_merge.md`、`src/prompts/ai_dynamic_acceptance.md` 提供，runtime 创建节点并注入 group 上下文。
+- `merge` 和 `acceptance` 只配置 provider；角色由 `src/prompts/<lang>/runtime/ai-dynamic/merge.md`、`src/prompts/<lang>/runtime/ai-dynamic/acceptance.md` 提供，runtime 创建节点并通过 minijinja 渲染把 group/worktree/terminal/child-run 等上下文与当前剩余预算注入 system prompt，把当前 goal 注入 user prompt。
 - 外层 edge 仍然只消费 `ai-dynamic` 的最终 `success / failure / killed` outcome。
 
 ## 4. 内部控制 artifact

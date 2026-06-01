@@ -9,7 +9,7 @@
 - AI-DYNAMIC Inspector 已调整为“节点 ID + 四个默认收起编辑块”：基础信息、Fan-out Agent、Merge Agent、Acceptance Agent；fan-out/merge/acceptance 只配置 agent，不再由用户配置角色和目标。
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、merge、acceptance 和 completion 派生逻辑。
-- AI-DYNAMIC runtime 内置 prompt 已整理到 `src/prompts/ai_dynamic_fanout.md`、`src/prompts/ai_dynamic_merge.md`、`src/prompts/ai_dynamic_acceptance.md`、`src/prompts/ai_dynamic_node_task.md`，便于后续直接修改。
+- prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；invalid proposal 会写入 rejected proposal 并让 run 进入 error-blocked pause。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot，child run 成功后由 runtime 包装 completion。
@@ -894,16 +894,26 @@ AI-DYNAMIC 初始节点拿到：
 
 ### 16.2 内部 dynamic node prompt
 
-每个内部节点拿到：
+每个内部节点拿到的 prompt 分两层：
 
-- 当前 sub-task
-- 当前 dynamic node id / group id / chain id
+system prompt：
+
+- 当前 dynamic node id / group id / chain id / depth
 - dependsOn 节点摘要
 - upstream artifact/attachment 路径
-- workspace path
+- workspace path / workspace mode
 - allowed workflow snapshots 摘要
 - 当前 dynamic graph 摘要
+- 可用 provider 列表
+- 可用 profile 列表
+- 当前剩余预算摘要（例如 remaining dynamic nodes、remaining workflow invocations、当前 fanout 能力）
 - 输出 schema：`dynamic-node-completion`
+- 不主动扫描 dynamic run 目录、只读取 prompt 明确给出的路径等 runtime 规则
+
+user prompt：
+
+- 原始 requirement
+- 当前 sub-task / 当前 goal
 
 要求：
 
@@ -917,9 +927,9 @@ AI-DYNAMIC 初始节点拿到：
 
 如果内部节点是 workflow invocation：
 
-- 它不直接给 agent prompt。
-- runtime 启动 child workflow run。
-- child workflow 的 requirement/task 由 invocation node 的 `task` 派生。
+- 它本身不直接跑 agent，而是由 runtime 启动 child workflow run。
+- child workflow 的 requirement 继承原始 requirement。
+- child workflow 的 user prompt task 由 invocation node 的 `task` 与 child node 原始 `goal` 通过 `src/prompts/<lang>/runtime/ai-dynamic/workflow_invocation.md` 包装得到。
 - child workflow 完成后，该 invocation node success/failure。
 
 V1 推荐 runtime 根据 child run outcome 包装 completion：
@@ -1097,7 +1107,7 @@ V1 先做成功路径，但失败不能隐式。
   -> AI-DYNAMIC paused/error-blocked 或 failure
 
 任一 proposal invalid
-  -> AI-DYNAMIC paused/error-blocked
+  -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于校验错误自修复；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
 
 merge failure
   -> AI-DYNAMIC paused/error-blocked

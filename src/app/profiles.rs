@@ -7,6 +7,8 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::DesktopLanguage;
+use crate::prompts::{PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN, PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language};
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
 static PROFILE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -75,7 +77,6 @@ struct DefaultProfileSeed {
     id: &'static str,
     name: &'static str,
     summary: &'static str,
-    content: &'static str,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,42 +124,36 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         id: "pf-builtin-plan",
         name: "方案",
         summary: "方案角色，用于需求分析和实施方案设计。",
-        content: include_str!("../prompts/plan.md"),
     },
     DefaultProfileSeed {
         key: "dev",
         id: "pf-builtin-dev",
         name: "开发",
         summary: "开发角色，用于实现需求并维护代码质量。",
-        content: include_str!("../prompts/dev.md"),
     },
     DefaultProfileSeed {
         key: "review",
         id: "pf-builtin-review",
         name: "审查",
         summary: "审查角色，用于检查实现质量、风险和一致性。",
-        content: include_str!("../prompts/review.md"),
     },
     DefaultProfileSeed {
         key: "test",
         id: "pf-builtin-test",
         name: "测试",
         summary: "测试角色，用于执行验证并反馈质量结果。",
-        content: include_str!("../prompts/test.md"),
     },
     DefaultProfileSeed {
         key: "accept",
         id: "pf-builtin-accept",
         name: "验收",
         summary: "验收角色，用于对照需求判断交付是否满足目标。",
-        content: include_str!("../prompts/accept.md"),
     },
     DefaultProfileSeed {
         key: "cleanup",
         id: "pf-builtin-cleanup",
         name: "清理",
         summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
-        content: include_str!("../prompts/clean.md"),
     },
 ];
 
@@ -170,11 +165,11 @@ pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<Def
     Ok(DefaultProfileIds { by_key })
 }
 
-pub(crate) fn list_profiles(paths: &GoldBandPaths) -> Result<ProfileList> {
+pub(crate) fn list_profiles(paths: &GoldBandPaths, language: DesktopLanguage) -> Result<ProfileList> {
     let mut profiles = Vec::new();
     profiles.extend(read_profile_dir(paths, ProfileScope::Project)?);
     profiles.extend(read_profile_dir(paths, ProfileScope::User)?);
-    profiles.extend(built_in_profiles());
+    profiles.extend(built_in_profiles(language));
     profiles.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
@@ -184,8 +179,8 @@ pub(crate) fn list_profiles(paths: &GoldBandPaths) -> Result<ProfileList> {
     Ok(ProfileList { profiles })
 }
 
-pub(crate) fn show_profile(paths: &GoldBandPaths, id: &str) -> Result<ProfileEntry> {
-    find_profile_by_id(paths, id)?.ok_or_else(|| anyhow!("profile `{id}` not found"))
+pub(crate) fn show_profile(paths: &GoldBandPaths, id: &str, language: DesktopLanguage) -> Result<ProfileEntry> {
+    find_profile_by_id(paths, id, language)?.ok_or_else(|| anyhow!("profile `{id}` not found"))
 }
 
 pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Result<ProfileEntry> {
@@ -204,7 +199,7 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
     };
     entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id)?.to_string();
     write_profile(paths, &entry)?;
-    show_profile(paths, &entry.id)
+    show_profile(paths, &entry.id, DesktopLanguage::ZhCn)
 }
 
 pub(crate) fn update_profile(
@@ -213,7 +208,7 @@ pub(crate) fn update_profile(
     input: ProfileInput,
 ) -> Result<ProfileEntry> {
     ensure_profile_input(&input)?;
-    let existing = show_profile(paths, id)?;
+    let existing = show_profile(paths, id, DesktopLanguage::ZhCn)?;
     if existing.is_built_in {
         return Err(ProfileCommandError::ReadonlyBuiltIn.into());
     }
@@ -236,11 +231,11 @@ pub(crate) fn update_profile(
         }
     }
     write_profile(paths, &entry)?;
-    show_profile(paths, &entry.id)
+    show_profile(paths, &entry.id, DesktopLanguage::ZhCn)
 }
 
 pub(crate) fn delete_profile(paths: &GoldBandPaths, id: &str) -> Result<()> {
-    let existing = show_profile(paths, id)?;
+    let existing = show_profile(paths, id, DesktopLanguage::ZhCn)?;
     if existing.is_built_in {
         return Err(ProfileCommandError::ReadonlyBuiltIn.into());
     }
@@ -251,11 +246,15 @@ pub(crate) fn delete_profile(paths: &GoldBandPaths, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn find_profile_by_id(paths: &GoldBandPaths, id: &str) -> Result<Option<ProfileEntry>> {
+pub(crate) fn find_profile_by_id(
+    paths: &GoldBandPaths,
+    id: &str,
+    language: DesktopLanguage,
+) -> Result<Option<ProfileEntry>> {
     if id.trim().is_empty() {
         return Ok(None);
     }
-    if let Some(profile) = built_in_profile_by_id(id) {
+    if let Some(profile) = built_in_profile_by_id(id, language) {
         return Ok(Some(profile));
     }
     if let Some(profile) = read_profile_dir(paths, ProfileScope::Project)?
@@ -269,14 +268,14 @@ pub(crate) fn find_profile_by_id(paths: &GoldBandPaths, id: &str) -> Result<Opti
         .find(|profile| profile.id == id))
 }
 
-fn built_in_profiles() -> Vec<ProfileEntry> {
+fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
     DEFAULT_PROFILE_SEEDS
         .iter()
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
             name: seed.name.to_string(),
             summary: seed.summary.to_string(),
-            content: seed.content.to_string(),
+            content: built_in_profile_content(seed.key, language).to_string(),
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
@@ -286,7 +285,7 @@ fn built_in_profiles() -> Vec<ProfileEntry> {
         .collect()
 }
 
-fn built_in_profile_by_id(id: &str) -> Option<ProfileEntry> {
+fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<ProfileEntry> {
     DEFAULT_PROFILE_SEEDS
         .iter()
         .find(|seed| seed.id == id)
@@ -294,13 +293,25 @@ fn built_in_profile_by_id(id: &str) -> Option<ProfileEntry> {
             id: seed.id.to_string(),
             name: seed.name.to_string(),
             summary: seed.summary.to_string(),
-            content: seed.content.to_string(),
+            content: built_in_profile_content(seed.key, language).to_string(),
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             updated_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             path: format!("builtin://profiles/{}", seed.key),
         })
+}
+
+fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static str {
+    match key {
+        "plan" => prompt_by_language(language, PROFILE_PLAN_ZH_CN, PROFILE_PLAN_EN),
+        "dev" => prompt_by_language(language, PROFILE_DEV_ZH_CN, PROFILE_DEV_EN),
+        "review" => prompt_by_language(language, PROFILE_REVIEW_ZH_CN, PROFILE_REVIEW_EN),
+        "test" => prompt_by_language(language, PROFILE_TEST_ZH_CN, PROFILE_TEST_EN),
+        "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
+        "cleanup" => prompt_by_language(language, PROFILE_CLEAN_ZH_CN, PROFILE_CLEAN_EN),
+        _ => "",
+    }
 }
 
 fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<ProfileEntry>> {
@@ -480,7 +491,7 @@ fn next_profile_id(paths: &GoldBandPaths) -> Result<String> {
             base36(u128::from(std::process::id())),
             base36(u128::from(counter))
         );
-        if find_profile_by_id(paths, &id)?.is_none() {
+        if find_profile_by_id(paths, &id, DesktopLanguage::ZhCn)?.is_none() {
             return Ok(id);
         }
     }

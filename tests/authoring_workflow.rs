@@ -173,6 +173,8 @@ fn default_workflow_template_includes_simplified_output_schema() {
         .iter()
         .find(|template| template.id == "default")
         .unwrap();
+    assert!(default.workflow.control.max_attempts.is_none());
+    assert!(default.workflow.control.max_rounds.is_none());
     let review = default
         .workflow
         .nodes

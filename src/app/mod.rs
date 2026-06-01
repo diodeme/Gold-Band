@@ -125,8 +125,8 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         id: "task-workflow".to_string(),
         entry: "plan".to_string(),
         control: WorkflowControl {
-            max_attempts: Some(1),
-            max_rounds: Some(1),
+            max_attempts: None,
+            max_rounds: None,
         },
         nodes: vec![
             worker(

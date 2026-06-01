@@ -75,7 +75,7 @@ const defaultWorkflow: WorkflowDsl = {
   version: '0.1',
   id: 'task-workflow',
   entry: 'plan',
-  control: { max_attempts: 1, max_rounds: 1 },
+  control: {},
   nodes: [
     { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', permission_mode: 'bypassPermissions', manual_check: true },
     { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.', permission_mode: 'bypassPermissions' },

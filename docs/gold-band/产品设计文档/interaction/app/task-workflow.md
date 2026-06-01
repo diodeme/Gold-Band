@@ -107,7 +107,7 @@
 - worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
 - 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。
 - 默认模板来自后端持久化的内置 workflow JSON，前端“默认模板”按钮只应用该模板，不维护独立业务默认 schema/expression，也不会在模板缺失时本地合成默认 workflow；默认模板生成顺序为先同步默认角色，再把生成出的角色 ID 写入默认节点 profile。
-- 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。
+- 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
 - AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁提供问号说明指导用户填写；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。

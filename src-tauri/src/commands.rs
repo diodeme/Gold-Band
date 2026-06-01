@@ -943,6 +943,21 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
     run_download_and_install_update(&app).await.map_err(command_error)
 }
 
+fn providers_for_node(node: &NodeDsl) -> Vec<String> {
+    match node {
+        NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
+        NodeDsl::AiDynamic(dynamic) => [
+            dynamic.provider.as_ref(),
+            dynamic.merge.provider.as_ref(),
+            dynamic.acceptance.provider.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect(),
+    }
+}
+
 fn ensure_workflow_agents_doctor_ready(
     state: &DesktopState,
     workflow: &WorkflowDsl,
@@ -950,8 +965,8 @@ fn ensure_workflow_agents_doctor_ready(
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     let mut providers = BTreeSet::new();
     for node in &workflow.nodes {
-        if let Some(provider) = node.provider() {
-            providers.insert(provider.to_string());
+        for provider in providers_for_node(node) {
+            providers.insert(provider);
         }
     }
     for provider in providers {
@@ -973,7 +988,9 @@ fn ensure_workflow_agents_doctor_ready(
         }
     }
     for node in &workflow.nodes {
-        let NodeDsl::Worker(worker) = node;
+        let NodeDsl::Worker(worker) = node else {
+            continue;
+        };
         let Some(provider) = worker.provider.as_deref() else {
             continue;
         };
@@ -1038,6 +1055,30 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
         WorkflowValidationError::SuccessNewRoundTarget { from } => CommandErrorVm::new(
             "workflow.success-new-round-target",
             serde_json::json!({ "from": from }),
+        ),
+        WorkflowValidationError::DuplicateWorkflowId {
+            workflow_name,
+            workflow_id,
+            conflicts,
+        } => CommandErrorVm::new(
+            "workflow.duplicate-id",
+            serde_json::json!({
+                "workflowName": workflow_name,
+                "workflowId": workflow_id,
+                "conflicts": conflicts,
+            }),
+        ),
+        WorkflowValidationError::AiDynamicInvalidWorkflow {
+            node_id,
+            workflow_name,
+            reason,
+        } => CommandErrorVm::new(
+            "workflow.ai-dynamic-invalid-workflow",
+            serde_json::json!({
+                "nodeId": node_id,
+                "workflowName": workflow_name,
+                "reason": reason,
+            }),
         ),
     }
 }

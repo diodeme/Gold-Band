@@ -24,6 +24,7 @@ pub enum RunOutcome {
 #[serde(rename_all = "kebab-case")]
 pub enum NodeType {
     Worker,
+    AiDynamic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

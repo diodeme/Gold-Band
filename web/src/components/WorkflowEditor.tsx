@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronsUpDown, Info, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, ChevronDown, ChevronsUpDown, CircleHelp, Info, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import {
   Background,
   BaseEdge,
@@ -17,7 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, ManagedAgentVm, ProfileVm, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicAgentConfigDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   NEW_ROUND_NODE,
@@ -39,6 +39,7 @@ import { CodeBlock, EmptyState } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -120,12 +121,16 @@ interface WorkflowEditorProps {
   onChange?: (workflow: WorkflowDsl) => void;
   onApplyDefaultTemplate?: (workflow: WorkflowDsl) => void;
   defaultWorkflow?: WorkflowDsl | null;
+  workflowTemplates?: WorkflowTemplateStore | null;
+  currentTemplateId?: string | null;
+  currentTemplateName?: string | null;
+  allowAiDynamic?: boolean;
   saving?: boolean;
   showSaveAction?: boolean;
   validationRequestId?: number;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
   const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
@@ -140,18 +145,21 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [invalidNodeIds, setInvalidNodeIds] = useState<Set<string>>(new Set());
+  const [jsonDraft, setJsonDraft] = useState(() => JSON.stringify(initialWorkflow, null, 2));
+  const [jsonError, setJsonError] = useState<string | null>(null);
   const handledValidationRequestIdRef = useRef(0);
   const agents = useMemo(() => agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [], [agentRegistry]);
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
-  const workflowJson = useMemo(() => JSON.stringify(workflow, null, 2), [workflow]);
   const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && agents.length > 0;
   const { nodes, edges } = useMemo(() => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, t), [invalidNodeIds, selectedEdgeId, selectedNodeId, t, visibleTerminalIds, workflow]);
 
   useEffect(() => {
     if (JSON.stringify(workflow) === JSON.stringify(initialWorkflow)) return;
     setWorkflow(initialWorkflow);
+    setJsonDraft(JSON.stringify(initialWorkflow, null, 2));
+    setJsonError(null);
     setSelectedNodeId(initialWorkflow.nodes[0]?.id ?? null);
     setSelectedEdgeId(null);
     setVisibleTerminalIds(new Set());
@@ -161,11 +169,11 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   useEffect(() => {
     if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, agents, t);
+    const validation = validateWorkflowForSave(workflow, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
-  }, [agents, profiles, t, validationRequestId, workflow]);
+  }, [agents, profiles, t, validationRequestId, workflow, workflowTemplates]);
 
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
@@ -182,7 +190,9 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const syncWorkflow = (next: WorkflowDsl) => {
     setFieldErrors({});
     setInvalidNodeIds(new Set());
+    setJsonError(null);
     setWorkflow(next);
+    setJsonDraft(JSON.stringify(next, null, 2));
     onChange?.(next);
   };
 
@@ -192,6 +202,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setFieldErrors(pendingValidation.fieldErrors);
     setInvalidNodeIds(new Set(pendingValidation.issues.map((issue) => issue.nodeId).filter(Boolean) as string[]));
     setWorkflow(pendingValidation.sanitizedWorkflow);
+    setJsonDraft(JSON.stringify(pendingValidation.sanitizedWorkflow, null, 2));
     onChange?.(pendingValidation.sanitizedWorkflow);
     const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.edgeIndex !== undefined);
     if (firstIssue?.nodeId) {
@@ -238,7 +249,18 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   };
 
   const handleSave = async () => {
-    const validation = validateWorkflowForSave(workflow, profiles, agents, t);
+    let workflowToSave = workflow;
+    if (tab === 'json') {
+      const parsed = parseWorkflowJson(jsonDraft);
+      if (!parsed) {
+        setJsonError(t('workflowEditor.outputSchemaInvalid'));
+        return;
+      }
+      workflowToSave = normalizeWorkflowSchemas(parsed);
+      setWorkflow(workflowToSave);
+      onChange?.(workflowToSave);
+    }
+    const validation = validateWorkflowForSave(workflowToSave, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -275,6 +297,26 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setPendingFocusNodeId(id);
   };
 
+  const addAiDynamicNode = () => {
+    const id = uniqueNodeId(workflow, 'ai-dynamic');
+    const node: WorkflowAiDynamicNodeDsl = {
+      type: 'ai-dynamic',
+      id,
+      provider: null,
+      profile: null,
+      goal: null,
+      control: defaultDynamicControl(),
+      allowedWorkflows: [],
+      merge: { provider: null, profile: null, goal: null },
+      acceptance: { provider: null, profile: null, goal: null },
+    };
+    const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
+    syncWorkflow(next);
+    setSelectedNodeId(id);
+    setSelectedEdgeId(null);
+    setPendingFocusNodeId(id);
+  };
+
   const deleteSelectedNode = () => {
     if (!selectedNodeId) return;
     const nodes = workflow.nodes.filter((node) => node.id !== selectedNodeId);
@@ -288,12 +330,12 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setSelectedNodeId(next.nodes[0]?.id ?? null);
   };
 
-  const updateNode = (nodeId: string, patch: Partial<WorkflowWorkerNodeDsl>) => {
+  const updateNode = (nodeId: string, patch: Partial<WorkflowNodeDsl>) => {
     const nextId = patch.id && patch.id !== nodeId ? sanitizeNodeId(patch.id, workflow, nodeId) : null;
     const next = {
       ...workflow,
       entry: nextId && workflow.entry === nodeId ? nextId : workflow.entry,
-      nodes: workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } : node),
+      nodes: workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl : node),
       edges: nextId ? workflow.edges.map((edge) => ({ ...edge, from: edge.from === nodeId ? nextId : edge.from, to: edge.to === nodeId ? nextId : edge.to })) : workflow.edges,
     };
     syncWorkflow(next);
@@ -371,8 +413,28 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
               <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-full border border-border/70 bg-background/75 p-1 shadow-sm shadow-background/20 backdrop-blur-md">
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-3 text-xs font-medium hover:bg-muted/80" onClick={addWorkerNode}>
                   <Plus className="size-3.5" />
-                  {t('workflowEditor.addNode')}
+                  {t('workflowEditor.addWorkerNode')}
                 </Button>
+                {allowAiDynamic ? (
+                  <span className="inline-flex items-center">
+                    <Button size="sm" variant="ghost" className="h-8 rounded-full px-3 text-xs font-medium hover:bg-muted/80" onClick={addAiDynamicNode}>
+                      <Sparkles className="size-3.5" />
+                      {t('workflowEditor.addAiDynamicNode')}
+                    </Button>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button type="button" variant="ghost" size="icon-xs" className="ml-0.5 h-7 w-7 rounded-full" aria-label={t('workflowEditor.aiDynamicHelp')}>
+                            <CircleHelp className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent showArrow={false} className="max-w-72 border border-amber-400/25 bg-neutral-950/95 px-3 py-2 text-[12px] leading-relaxed text-neutral-100 shadow-2xl shadow-black/60 ring-1 ring-white/10 backdrop-blur-md">
+                          {t('workflowEditor.aiDynamicHelp')}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </span>
+                ) : null}
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId} onClick={deleteSelectedNode}>
                   <Trash2 className="size-3.5" />
                   {t('workflowEditor.deleteNode')}
@@ -422,9 +484,18 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
               </ReactFlow>
             </div>
           ) : (
-            <ScrollArea className="h-[560px] p-4">
-              <CodeBlock>{workflowJson}</CodeBlock>
-            </ScrollArea>
+            <div className="h-[560px] p-4">
+              <Textarea
+                value={jsonDraft}
+                onChange={(event) => {
+                  setJsonDraft(event.target.value);
+                  setJsonError(null);
+                }}
+                className="h-full min-h-full resize-none font-mono text-xs"
+                spellCheck={false}
+              />
+              {jsonError ? <p className="mt-2 text-xs text-destructive">{jsonError}</p> : null}
+            </div>
           )}
         </CardContent>
       </AppCard>
@@ -437,7 +508,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
             <div className="space-y-4 p-4">
               <WorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />
               {!agents.length ? <EmptyState>{t('workflowEditor.noAgents')}</EmptyState> : null}
-              {selectedNode ? <NodeInspector node={selectedNode} agents={agents} profiles={profiles} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateNode} onOpenProfileManagement={onOpenProfileManagement} t={t} /> : null}
+              {selectedNode ? <NodeInspector node={selectedNode} agents={agents} profiles={profiles} workflow={workflow} workflowTemplates={workflowTemplates ?? null} fieldErrors={fieldErrors} onUpdate={updateNode} onOpenProfileManagement={onOpenProfileManagement} t={t} /> : null}
               {selectedEdge ? <EdgeInspector edge={selectedEdge} index={selectedEdgeIndex} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateEdge} onDelete={deleteSelectedEdge} t={t} /> : null}
               {!selectedNode && !selectedEdge ? <EmptyState>{t('workflowEditor.selectHint')}</EmptyState> : null}
             </div>
@@ -488,7 +559,14 @@ function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { contr
   );
 }
 
-function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate, onOpenProfileManagement, t }: { node: WorkflowNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowWorkerNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function NodeInspector(props: { node: WorkflowNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  if (props.node.type === 'ai-dynamic') {
+    return <AiDynamicNodeInspector {...props} node={props.node} />;
+  }
+  return <WorkerNodeInspector {...props} node={props.node} />;
+}
+
+function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, onOpenProfileManagement, t }: { node: WorkflowWorkerNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   const [nodeIdDraft, setNodeIdDraft] = useState(node.id);
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const [schemaDraft, setSchemaDraft] = useState('');
@@ -501,12 +579,13 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
   const resultMode = validationEnabled ? 'ai' : manualCheckEnabled ? 'manual' : 'none';
   const expression = conditionExpression(node.success_condition);
   const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
+  const updateWorker = (patch: Partial<WorkflowWorkerNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const permissionModes = selectedAgent?.supportedModes ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null };
   const updateOutput = useCallback((patch: Partial<WorkflowOutputContractDsl>) => {
     const artifact = patch.artifact ?? node.output?.artifact ?? `${node.id}-result`;
-    onUpdate(node.id, {
+    updateWorker({
       manual_check: null,
       output: { kind: 'json', artifact, schema: node.output?.schema ?? null, ...patch },
     });
@@ -576,7 +655,7 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
       setNodeIdDraft(node.id);
       return;
     }
-    onUpdate(node.id, { id: value });
+    updateWorker({ id: value });
   };
   return (
     <div className="space-y-3 rounded-xl border bg-card/45 p-3">
@@ -603,17 +682,17 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
         />
       </Field>
       <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => onUpdate(node.id, { provider, permission_mode: null })}>
+        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
       <Field label={<ProfileLabel t={t} onOpenProfileManagement={onOpenProfileManagement} />} errors={errorsFor('profile')}>
-        <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => onUpdate(node.id, { profile })} t={t} />
+        <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
       </Field>
       <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => onUpdate(node.id, { permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value })}>
+        <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value })}>
           <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
             <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
           </SelectTrigger>
@@ -624,7 +703,7 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
         </Select>
       </Field>
       <Field label={t('workflowEditor.goal')} errors={errorsFor('goal')}>
-        <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} onChange={(event) => onUpdate(node.id, { goal: event.target.value })} />
+        <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} onChange={(event) => updateWorker({ goal: event.target.value })} />
       </Field>
       <div className="space-y-3 rounded-lg border bg-muted/10 p-3">
         <div className="space-y-1">
@@ -637,9 +716,9 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
             setSchemaDraft('');
             setSchemaError(null);
             setSchemaDirty(false);
-            if (mode === 'ai') onUpdate(node.id, { ...defaultValidationPatch(node.id), manual_check: null });
-            if (mode === 'manual') onUpdate(node.id, { ...clearValidationPatch, manual_check: true });
-            if (mode === 'none') onUpdate(node.id, { ...clearValidationPatch, manual_check: null });
+            if (mode === 'ai') updateWorker({ ...defaultValidationPatch(node.id), manual_check: null });
+            if (mode === 'manual') updateWorker({ ...clearValidationPatch, manual_check: true });
+            if (mode === 'none') updateWorker({ ...clearValidationPatch, manual_check: null });
           }}
         >
           <SelectTrigger>
@@ -699,13 +778,246 @@ function NodeInspector({ node, agents, profiles, workflow, fieldErrors, onUpdate
               {schemaError ? <span className="text-xs text-destructive">{schemaError}</span> : null}
             </Field>
             <Field label={<HelpLabel label={t('workflowEditor.successExpression')} help={t('workflowEditor.successExpressionHelp')} />} errors={errorsFor('success_condition')}>
-              <Input className={cn('font-mono', errorClass(errorsFor('success_condition')))} value={expression} placeholder="$.result == true" onChange={(event) => onUpdate(node.id, { manual_check: null, success_condition: { expression: event.target.value } })} />
+              <Input className={cn('font-mono', errorClass(errorsFor('success_condition')))} value={expression} placeholder="$.result == true" onChange={(event) => updateWorker({ manual_check: null, success_condition: { expression: event.target.value } })} />
             </Field>
           </div>
         ) : null}
       </div>
     </div>
   );
+}
+
+function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, onUpdate, t }: { node: WorkflowAiDynamicNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  const [nodeIdDraft, setNodeIdDraft] = useState(node.id);
+  const [nodeIdComposing, setNodeIdComposing] = useState(false);
+  const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
+  const templates = workflowTemplates?.templates ?? [];
+  const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
+  const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
+  const updateAgentConfig = (key: 'merge' | 'acceptance', patch: Partial<DynamicAgentConfigDsl>) => {
+    updateDynamic({ [key]: { ...(node[key] ?? {}), ...patch, profile: null, goal: null } } as Partial<WorkflowAiDynamicNodeDsl>);
+  };
+  const updateControl = (patch: Partial<DynamicControlDsl>) => {
+    updateDynamic({ control: { ...control, ...patch } } as Partial<WorkflowAiDynamicNodeDsl>);
+  };
+  const parseLimit = (value: string) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+  };
+  const commitNodeId = (value: string) => {
+    if (value === node.id) {
+      setNodeIdDraft(node.id);
+      return;
+    }
+    updateDynamic({ id: value });
+  };
+
+  useEffect(() => {
+    setNodeIdDraft(node.id);
+  }, [node.id]);
+
+  return (
+    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
+        <Badge variant="outline">{t('workflowEditor.addAiDynamicNode')}</Badge>
+      </div>
+      <Field label={t('workflowEditor.nodeId')} errors={errorsFor('id')}>
+        <Input
+          className={errorClass(errorsFor('id'))}
+          value={nodeIdDraft}
+          onChange={(event) => setNodeIdDraft(event.target.value)}
+          onBlur={(event) => commitNodeId(event.target.value)}
+          onCompositionStart={() => setNodeIdComposing(true)}
+          onCompositionEnd={(event) => {
+            setNodeIdComposing(false);
+            setNodeIdDraft(event.currentTarget.value);
+            commitNodeId(event.currentTarget.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || nodeIdComposing) return;
+            event.currentTarget.blur();
+          }}
+        />
+      </Field>
+      <WorkflowEditorSection title={t('workflowEditor.aiDynamicBasicInfo')}>
+        <Field label={t('workflowEditor.allowedWorkflows')} errors={errorsFor('allowedWorkflows')}>
+          <AllowedWorkflowMultiSelect
+            templates={templates}
+            selectedWorkflowIds={(node.allowedWorkflows ?? []).map((item) => item.workflowId)}
+            allowNestedDynamic={control.allowNestedDynamic}
+            invalid={errorsFor('allowedWorkflows').length > 0}
+            onChange={(workflowIds) => updateDynamic({ allowedWorkflows: workflowIds.map((workflowId) => ({ workflowId })) })}
+            t={t}
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          {dynamicControlFields(t).map((field) => (
+            <Field key={field.key} label={field.label} errors={errorsFor(`control.${field.key}`)}>
+              <Input className={errorClass(errorsFor(`control.${field.key}`))} type="number" min={1} step={1} value={String(control[field.key])} onChange={(event) => updateControl({ [field.key]: parseLimit(event.target.value) } as Partial<DynamicControlDsl>)} />
+            </Field>
+          ))}
+        </div>
+        <label className="flex items-center justify-between gap-3 rounded-md border bg-background/55 px-3 py-2 text-sm">
+          <span>{t('workflowEditor.allowNestedDynamic')}</span>
+          <input type="checkbox" checked={control.allowNestedDynamic} onChange={(event) => updateControl({ allowNestedDynamic: event.target.checked })} />
+        </label>
+      </WorkflowEditorSection>
+      <WorkflowEditorSection title={t('workflowEditor.fanoutAgent')}>
+        <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
+          <Select value={node.provider ?? ''} onValueChange={(provider) => updateDynamic({ provider, profile: null, goal: null })}>
+            <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+            <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+          </Select>
+        </Field>
+      </WorkflowEditorSection>
+      <WorkflowEditorSection title={t('workflowEditor.mergeAgent')}>
+        <DynamicAgentInspector config={node.merge} agents={agents} errorsFor={(field) => errorsFor(`merge.${field}`)} onChange={(patch) => updateAgentConfig('merge', patch)} t={t} />
+      </WorkflowEditorSection>
+      <WorkflowEditorSection title={t('workflowEditor.acceptanceAgent')}>
+        <DynamicAgentInspector config={node.acceptance} agents={agents} errorsFor={(field) => errorsFor(`acceptance.${field}`)} onChange={(patch) => updateAgentConfig('acceptance', patch)} t={t} />
+      </WorkflowEditorSection>
+    </div>
+  );
+}
+
+function WorkflowEditorSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <Collapsible className="rounded-lg border bg-muted/10">
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-medium">
+        <span>{title}</span>
+        <ChevronDown className="size-4 text-muted-foreground transition-transform data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-3 border-t px-3 py-3">
+        {children}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function DynamicAgentInspector({ config, agents, errorsFor, onChange, t }: { config: DynamicAgentConfigDsl; agents: ManagedAgentVm[]; errorsFor: (field: string) => string[]; onChange: (patch: Partial<DynamicAgentConfigDsl>) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  return (
+    <div className="space-y-3">
+      <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
+        <Select value={config.provider ?? ''} onValueChange={(provider) => onChange({ provider, profile: null, goal: null })}>
+          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+          <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+        </Select>
+      </Field>
+    </div>
+  );
+}
+
+function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNestedDynamic, invalid, onChange, t }: { templates: WorkflowTemplate[]; selectedWorkflowIds: string[]; allowNestedDynamic: boolean; invalid: boolean; onChange: (workflowIds: string[]) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  const [open, setOpen] = useState(false);
+  const selected = new Set(selectedWorkflowIds);
+  const workflowIdCounts = workflowIdCountMap(templates);
+  const uniqueSelectableTemplateByWorkflowId = new Map(
+    templates
+      .filter((template) => workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t) === null)
+      .map((template) => [template.workflow.id.trim(), template] as const),
+  );
+  const selectedTemplates = selectedWorkflowIds
+    .map((workflowId) => uniqueSelectableTemplateByWorkflowId.get(workflowId))
+    .filter((template): template is WorkflowTemplate => Boolean(template));
+  const invalidWorkflowIds = selectedWorkflowIds.filter((workflowId) => !uniqueSelectableTemplateByWorkflowId.has(workflowId));
+  const workflowOptions = templates.map((template) => ({
+    template,
+    reason: workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t),
+  }));
+  const selectableOptions = workflowOptions.filter((option) => option.reason === null);
+  const disabledOptions = workflowOptions.filter((option) => option.reason !== null);
+  const toggleWorkflow = (workflowId: string) => {
+    const next = selected.has(workflowId)
+      ? selectedWorkflowIds.filter((item) => item !== workflowId)
+      : [...selectedWorkflowIds, workflowId];
+    onChange(next);
+  };
+  const removeWorkflow = (workflowId: string) => onChange(selectedWorkflowIds.filter((item) => item !== workflowId));
+
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal>
+      <PopoverTrigger asChild>
+        <Button variant="outline" role="combobox" aria-expanded={open} className={cn('h-auto min-h-9 w-full justify-between px-2 py-1.5 font-normal', invalid && 'border-destructive text-destructive focus-visible:ring-destructive')}>
+          <span className="flex min-w-0 flex-1 flex-wrap gap-1">
+            {selectedTemplates.map((template) => (
+              <Badge key={template.workflow.id} variant="secondary" className="max-w-full gap-1">
+                <span className="max-w-40 truncate">{template.name}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">{template.workflow.id}</span>
+                <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeWorkflow(template.workflow.id); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeWorkflow(template.workflow.id); }}>
+                  <X className="size-3" />
+                </span>
+              </Badge>
+            ))}
+            {invalidWorkflowIds.map((workflowId) => (
+              <Badge key={workflowId} variant="destructive" className="max-w-full gap-1">
+                <span className="max-w-44 truncate font-mono text-[10px]">{workflowId}</span>
+                <span role="button" tabIndex={0} className="rounded-full" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeWorkflow(workflowId); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeWorkflow(workflowId); }}>
+                  <X className="size-3" />
+                </span>
+              </Badge>
+            ))}
+            {selectedTemplates.length === 0 && invalidWorkflowIds.length === 0 ? <span className="px-1 text-muted-foreground">{t('workflowEditor.selectAllowedWorkflows')}</span> : null}
+          </span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command filter={(itemValue, search) => workflowCommandScore(itemValue, search)}>
+          <CommandInput placeholder={t('workflowEditor.searchWorkflows')} />
+          <CommandList>
+            <CommandEmpty>{t('workflowEditor.noWorkflowTemplates')}</CommandEmpty>
+            <CommandGroup heading={t('workflowEditor.selectableWorkflows')}>
+              {selectableOptions.map(({ template }) => {
+                const workflowId = template.workflow.id;
+                return (
+                  <CommandItem key={workflowId} value={workflowTemplateSearchText(template)} onSelect={() => toggleWorkflow(workflowId)} className="items-start py-2">
+                    <Check className={cn('mt-0.5 size-4', selected.has(workflowId) ? 'opacity-100' : 'opacity-0')} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{template.name}</span>
+                      <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{workflowId}</span>
+                    </span>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+            {disabledOptions.length > 0 ? (
+              <CommandGroup heading={t('workflowEditor.unselectableWorkflows')}>
+                {disabledOptions.map(({ template, reason }, index) => {
+                  const workflowId = template.workflow.id.trim();
+                  return (
+                    <CommandItem key={`${template.id}:${workflowId}:${index}`} value={workflowTemplateSearchText(template)} disabled className="items-start py-2 opacity-60">
+                      <span className="mt-1 size-4 shrink-0 rounded-full border border-muted-foreground/40" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{template.name}</span>
+                        <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{workflowId || t('workflowEditor.emptyWorkflowId')}</span>
+                        <span className="mt-1 block text-xs text-destructive">{reason}</span>
+                      </span>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            ) : null}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function dynamicControlFields(t: (key: string) => string): Array<{ key: Exclude<keyof DynamicControlDsl, 'allowNestedDynamic'>; label: string }> {
+  return [
+    { key: 'maxDynamicNodes', label: t('workflowEditor.maxDynamicNodes') },
+    { key: 'maxFanout', label: t('workflowEditor.maxFanout') },
+    { key: 'maxDepth', label: t('workflowEditor.maxDepth') },
+    { key: 'maxParallel', label: t('workflowEditor.maxParallel') },
+    { key: 'maxGroupDepth', label: t('workflowEditor.maxGroupDepth') },
+    { key: 'maxWorkflowInvocations', label: t('workflowEditor.maxWorkflowInvocations') },
+  ];
+}
+
+function workflowContainsAiDynamic(workflow: WorkflowDsl) {
+  return workflow.nodes.some((item) => item.type === 'ai-dynamic');
 }
 
 function ProfileLabel({ t, onOpenProfileManagement }: { t: (key: string) => string; onOpenProfileManagement?: () => void }) {
@@ -812,6 +1124,34 @@ function profileSearchText(profile: ProfileVm) {
 }
 
 function profileCommandScore(itemValue: string, search: string) {
+  const normalizedSearch = search.trim().toLowerCase();
+  if (!normalizedSearch) return 1;
+  return itemValue.toLowerCase().includes(normalizedSearch) ? 1 : 0;
+}
+
+function workflowTemplateSearchText(template: WorkflowTemplate) {
+  return [template.name, template.workflow.id].join('\n').toLowerCase();
+}
+
+function workflowIdCountMap(templates: WorkflowTemplate[]) {
+  const counts = new Map<string, number>();
+  templates.forEach((template) => {
+    const workflowId = template.workflow.id.trim();
+    if (!workflowId) return;
+    counts.set(workflowId, (counts.get(workflowId) ?? 0) + 1);
+  });
+  return counts;
+}
+
+function workflowDisabledReason(template: WorkflowTemplate, workflowIdCounts: Map<string, number>, allowNestedDynamic: boolean, t: (key: string, options?: Record<string, unknown>) => string) {
+  const workflowId = template.workflow.id.trim();
+  if (!workflowId) return t('workflowEditor.unselectableWorkflowEmptyId');
+  if ((workflowIdCounts.get(workflowId) ?? 0) > 1) return t('workflowEditor.unselectableWorkflowDuplicateId', { workflow: workflowId });
+  if (!allowNestedDynamic && workflowContainsAiDynamic(template.workflow)) return t('workflowEditor.unselectableWorkflowNestedDynamic');
+  return null;
+}
+
+function workflowCommandScore(itemValue: string, search: string) {
   const normalizedSearch = search.trim().toLowerCase();
   if (!normalizedSearch) return 1;
   return itemValue.toLowerCase().includes(normalizedSearch) ? 1 : 0;
@@ -949,9 +1289,9 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
     const width = item.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH;
     const height = item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT;
     const node = workflow.nodes.find((n) => n.id === item.id);
-    const detail = node?.type === 'worker' ? (node as WorkflowWorkerNodeDsl).goal ?? '' : node?.type ?? item.id;
+    const detail = node && 'goal' in node ? node.goal ?? '' : node?.type ?? item.id;
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
-    const provider = node?.type === 'worker' ? (node as WorkflowWorkerNodeDsl).provider : undefined;
+    const provider = node && 'provider' in node ? node.provider : undefined;
     const iconKey = provider ? providerToIconKey(provider) : undefined;
     return {
       id: item.id,
@@ -959,7 +1299,7 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       position: topLeft(pos.x, pos.y, width, height),
       sourcePosition: SOURCE_POS,
       targetPosition: TARGET_POS,
-      data: { label: workflowNodeLabel(item.id, item.terminal, t), kind: item.terminal ? 'terminal' : node?.type ?? 'node', detail, terminal: item.terminal, iconKey },
+      data: { label: workflowNodeLabel(item.id, item.terminal, node?.type, t), kind: item.terminal ? 'terminal' : node?.type ?? 'node', detail, terminal: item.terminal, iconKey },
       className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected', invalid && 'ring-1 ring-destructive'),
       selected: !item.terminal && item.id === selectedNodeId,
       draggable: false,
@@ -999,9 +1339,10 @@ function edgeColor(edge: WorkflowEdgeDsl) {
   return authoringEdgeColor(edge.on);
 }
 
-function workflowNodeLabel(id: string, terminal: boolean, t: (key: string) => string) {
+function workflowNodeLabel(id: string, terminal: boolean, nodeType: WorkflowNodeDsl['type'] | undefined, t: (key: string) => string) {
   if (id === END_NODE) return t('workflowEditor.nodeLabels.end');
   if (id === NEW_ROUND_NODE) return t('workflowEditor.nodeLabels.newRound');
+  if (nodeType === 'ai-dynamic' && /^ai-dynamic(?:-\d+)?$/.test(id)) return t('workflowEditor.nodeLabels.aiDynamic');
   return id;
 }
 
@@ -1049,6 +1390,18 @@ function defaultValidationPatch(nodeId: string): Partial<WorkflowWorkerNodeDsl> 
   };
 }
 
+function defaultDynamicControl(): DynamicControlDsl {
+  return {
+    maxDynamicNodes: 20,
+    maxFanout: 5,
+    maxDepth: 6,
+    maxParallel: 3,
+    maxGroupDepth: 1,
+    maxWorkflowInvocations: 10,
+    allowNestedDynamic: false,
+  };
+}
+
 function conditionExpression(condition?: WorkflowJsonConditionDsl | null) {
   if (!condition) return '';
   if ('expression' in condition) return condition.expression;
@@ -1073,6 +1426,17 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
     ...workflow,
     control,
     nodes: workflow.nodes.map((node) => {
+      if (node.type === 'ai-dynamic') {
+        return {
+          ...node,
+          profile: null,
+          goal: null,
+          control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>) },
+          allowedWorkflows: node.allowedWorkflows ?? [],
+          merge: { ...(node.merge ?? {}), profile: null, goal: null },
+          acceptance: { ...(node.acceptance ?? {}), profile: null, goal: null },
+        };
+      }
       const normalizedNode = { ...(node as WorkflowWorkerNodeDsl & { primary_artifact?: unknown }) };
       delete normalizedNode.primary_artifact;
       if (!normalizedNode.output?.schema) return normalizedNode;
@@ -1136,6 +1500,9 @@ export function validateWorkflowForSave(
   profiles: ProfileVm[],
   agents: ManagedAgentVm[],
   t: (key: string, options?: Record<string, unknown>) => string,
+  workflowTemplates: WorkflowTemplateStore | null = null,
+  currentTemplateId: string | null = null,
+  currentTemplateName: string | null = null,
 ): WorkflowValidationResult {
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
@@ -1143,6 +1510,12 @@ export function validateWorkflowForSave(
   const profileIds = new Set(profiles.map((profile) => profile.id));
   const agentById = new Map(agents.map((agent) => [agent.agentType, agent]));
   const agentIds = new Set(agentById.keys());
+  const templates = workflowTemplates?.templates ?? [];
+  const workflowIdCounts = workflowIdCountMap(templates);
+  const duplicateWorkflowTemplates = workflow.id.trim()
+    ? templates.filter((template) => template.workflow.id.trim() === workflow.id.trim())
+    : [];
+  const duplicateConflictTemplates = duplicateWorkflowTemplates.filter((template) => template.id !== currentTemplateId);
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
   const edgeOutcomeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim() && ['success', 'failure'].includes(edge.on)) {
@@ -1164,8 +1537,21 @@ export function validateWorkflowForSave(
   const nodeField = (node: WorkflowNodeDsl, field: string) => `node:${node.id}:${field}`;
   const edgeField = (index: number, field: string) => `edge:${index}:${field}`;
   const controlField = (field: string) => `control:${field}`;
+  const validateAgentConfig = (node: WorkflowNodeDsl, nodeLabel: string, prefix: 'merge' | 'acceptance', config: DynamicAgentConfigDsl) => {
+    if (!config.provider?.trim()) addIssue(t('workflowEditor.validationDynamicAgentProviderRequired', { node: nodeLabel, agent: t(`workflowEditor.${prefix}Agent`) }), nodeField(node, `${prefix}.provider`), node.id);
+    else if (!agentIds.has(config.provider)) addIssue(t('workflowEditor.validationDynamicAgentProviderUnavailable', { node: nodeLabel, agent: t(`workflowEditor.${prefix}Agent`) }), nodeField(node, `${prefix}.provider`), node.id);
+  };
 
   if (!workflow.id.trim()) addIssue(t('workflowEditor.validationWorkflowIdRequired'));
+  else if (duplicateConflictTemplates.length > 0) {
+    addIssue(
+      t('errors.workflow.duplicate-id', {
+        workflowName: currentTemplateName ?? duplicateWorkflowTemplates.find((template) => template.id === currentTemplateId)?.name ?? workflow.id.trim(),
+        workflowId: workflow.id.trim(),
+        conflicts: duplicateConflictTemplates.map((template) => template.name).join('、'),
+      }),
+    );
+  }
   if (!workflow.entry.trim()) addIssue(t('workflowEditor.validationEntryRequired'));
   else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
@@ -1184,12 +1570,19 @@ export function validateWorkflowForSave(
 
     if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
     else if (!agentIds.has(node.provider)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (node.permission_mode?.trim()) {
+    else if (node.type === 'worker' && node.permission_mode?.trim()) {
       const supportedModeIds = new Set((agentById.get(node.provider)?.supportedModes ?? []).map((mode) => mode.id));
       if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
     }
+    if (node.type === 'ai-dynamic') {
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, nodeField, addIssue, t);
+      validateAgentConfig(node, nodeLabel, 'merge', node.merge ?? {});
+      validateAgentConfig(node, nodeLabel, 'acceptance', node.acceptance ?? {});
+      return;
+    }
+
     if (!node.profile?.trim()) {
       addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
     } else if (!profileIds.has(node.profile)) {
@@ -1245,6 +1638,51 @@ export function validateWorkflowForSave(
   });
 
   return { valid: issues.length === 0, issues, fieldErrors, sanitizedWorkflow };
+}
+
+function validateAiDynamicNodeForSave(
+  node: WorkflowAiDynamicNodeDsl,
+  nodeLabel: string,
+  workflowTemplates: WorkflowTemplateStore | null | undefined,
+  nodeField: (node: WorkflowNodeDsl, field: string) => string,
+  addIssue: (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number) => void,
+  t: (key: string, options?: Record<string, unknown>) => string,
+) {
+  const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
+  dynamicControlFields(t).forEach((field) => {
+    if ((control[field.key] ?? 0) <= 0) {
+      addIssue(t('workflowEditor.validationDynamicLimitPositive', { node: nodeLabel, field: field.label }), nodeField(node, `control.${field.key}`), node.id);
+    }
+  });
+  const templates = workflowTemplates?.templates ?? [];
+  const workflowIdCounts = workflowIdCountMap(templates);
+  const templateById = new Map(
+    templates
+      .filter((template) => workflowIdCounts.get(template.workflow.id.trim()) === 1)
+      .map((template) => [template.workflow.id.trim(), template] as const),
+  );
+  const seen = new Set<string>();
+  (node.allowedWorkflows ?? []).forEach((allowed) => {
+    const workflowId = allowed.workflowId?.trim();
+    if (!workflowId) {
+      addIssue(t('workflowEditor.validationAllowedWorkflowRequired', { node: nodeLabel }), nodeField(node, 'allowedWorkflows'), node.id);
+      return;
+    }
+    if (seen.has(workflowId)) {
+      addIssue(t('workflowEditor.validationAllowedWorkflowDuplicated', { node: nodeLabel, workflow: workflowId }), nodeField(node, 'allowedWorkflows'), node.id);
+      return;
+    }
+    seen.add(workflowId);
+    const template = templateById.get(workflowId);
+    if (!template) {
+      const duplicated = (workflowIdCounts.get(workflowId) ?? 0) > 1;
+      addIssue(t(duplicated ? 'workflowEditor.validationAllowedWorkflowIdNotUnique' : 'workflowEditor.validationAllowedWorkflowMissing', { node: nodeLabel, workflow: workflowId }), nodeField(node, 'allowedWorkflows'), node.id);
+      return;
+    }
+    if (!control.allowNestedDynamic && workflowContainsAiDynamic(template.workflow)) {
+      addIssue(t('workflowEditor.validationAllowedWorkflowNestedDynamic', { node: nodeLabel, workflow: workflowId }), nodeField(node, 'allowedWorkflows'), node.id);
+    }
+  });
 }
 
 function successConditionPath(condition: WorkflowJsonConditionDsl) {

@@ -19,24 +19,36 @@ pub(crate) fn resolve_workflow_profiles(
 ) -> Result<ResolvedWorkflowMetadata> {
     let mut profiles = Vec::new();
     for node in &workflow.nodes {
-        let profile = match node {
-            NodeDsl::Worker(worker) => worker.profile.as_deref(),
-        };
-        let Some(profile) = profile else {
-            bail!("node `{}` is not associated with role", node.id());
-        };
-        let trimmed = profile.trim();
-        if trimmed.is_empty() {
-            bail!("node `{}` is not associated with role", node.id());
-        }
-        let resolved = resolve_profile(paths, node.id(), trimmed)?;
-        if profiles.iter().all(|existing: &ResolvedProfileRef| {
-            existing.name != resolved.name || existing.path != resolved.path
-        }) {
-            profiles.push(resolved);
+        match node {
+            NodeDsl::Worker(worker) => {
+                push_profile(paths, &mut profiles, node.id(), worker.profile.as_deref())?
+            }
+            NodeDsl::AiDynamic(_) => {}
         }
     }
     Ok(ResolvedWorkflowMetadata { profiles })
+}
+
+fn push_profile(
+    paths: &GoldBandPaths,
+    profiles: &mut Vec<ResolvedProfileRef>,
+    node_id: &str,
+    profile: Option<&str>,
+) -> Result<()> {
+    let Some(profile) = profile else {
+        bail!("node `{node_id}` is not associated with role");
+    };
+    let trimmed = profile.trim();
+    if trimmed.is_empty() {
+        bail!("node `{node_id}` is not associated with role");
+    }
+    let resolved = resolve_profile(paths, node_id, trimmed)?;
+    if profiles.iter().all(|existing: &ResolvedProfileRef| {
+        existing.name != resolved.name || existing.path != resolved.path
+    }) {
+        profiles.push(resolved);
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_profile(

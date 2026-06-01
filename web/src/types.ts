@@ -182,7 +182,7 @@ export interface WorkflowControlDsl {
   max_rounds?: number | null;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -194,6 +194,38 @@ export interface WorkflowWorkerNodeDsl {
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
   manual_check?: boolean | null;
+}
+
+export interface WorkflowAiDynamicNodeDsl {
+  type: 'ai-dynamic';
+  id: string;
+  provider?: string | null;
+  profile?: string | null;
+  goal?: string | null;
+  control: DynamicControlDsl;
+  allowedWorkflows: AllowedWorkflowRefDsl[];
+  merge: DynamicAgentConfigDsl;
+  acceptance: DynamicAgentConfigDsl;
+}
+
+export interface DynamicControlDsl {
+  maxDynamicNodes: number;
+  maxFanout: number;
+  maxDepth: number;
+  maxParallel: number;
+  maxGroupDepth: number;
+  maxWorkflowInvocations: number;
+  allowNestedDynamic: boolean;
+}
+
+export interface AllowedWorkflowRefDsl {
+  workflowId: string;
+}
+
+export interface DynamicAgentConfigDsl {
+  provider?: string | null;
+  profile?: string | null;
+  goal?: string | null;
 }
 
 export interface WorkflowOutputContractDsl {

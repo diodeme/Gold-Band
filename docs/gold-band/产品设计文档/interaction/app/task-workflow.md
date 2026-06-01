@@ -93,6 +93,10 @@
 - 工作流校验错误在桌面 VM 中以 `code + params` 结构返回，前端按 i18n 渲染可见文案；后端不返回直接展示给用户的本地化句子，也不要求前端解析后端英文错误字符串。
 - 新建 / 修改 / 修复模式进入作者态画布编辑器，基于 `@xyflow/react` 支持新增节点、连接边、选择节点/边并在右侧 Inspector 配置；节点坐标不写入 workflow DSL，由系统根据节点和边自动排布为规整的从左到右结构。
 - 画布左上角提供浮动结构工具条，用于新增节点与删除当前选中节点；右侧 Inspector 只承载工作流控制、节点配置和边配置。
+- 工作流编辑器通过 `allowAiDynamic` 能力开关控制是否允许新增 `AI-DYNAMIC` 节点；开启后工具条显示本地化的 AI 动态节点新增按钮，旁侧问号提示“AI动态节点，节点内部由AI自行设计动态工作流来实现节点目标”，关闭时只允许新增普通 worker 节点。
+- `AI-DYNAMIC` 节点 Inspector 默认展示节点 ID，并提供四个默认收起的编辑块：基础信息、Fan-out Agent、Merge Agent、Acceptance Agent。基础信息包含 allowed workflows 与动态控制限制；三个 agent 块只配置 provider，角色和目标由 runtime 内置 prompt 提供。
+- allowed workflows 使用可搜索多选下拉栏，分为“可选择的工作流”和“不可选择的工作流”。不可选择项禁用并展示原因，例如 `workflow.id` 重复、`workflow.id` 为空、包含 AI-DYNAMIC 但未允许嵌套；默认工作流不做重复 ID 豁免。触发器内以标签展示已选 workflow 名称与 DSL `workflow.id`，标签可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
+- 保存 workflow 时，前端校验 AI-DYNAMIC 的控制限制必须为正整数、allowed workflow 必须存在且不重复、`allowNestedDynamic=false` 时不得选择包含 AI-DYNAMIC 的 workflow；后端保存和 run start 时会再次校验并冻结 snapshot。
 - 作者态画布右键菜单提供“添加结束节点”和“添加新 Round 节点”；添加后会在画布中出现对应虚拟目标节点，普通节点可拖拽连线到该目标，用于补齐结束流向或开启新 round 的流向。
 - Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
@@ -122,6 +126,7 @@
 ### 5.4 作者态与运行态边界
 - 任务级工作流保存为 `tasks/<task>/authoring/workflow.json`，可在任务工作流页后续修改。
 - 新建 run 时 runtime 会把当时的 authoring workflow 写入 `runs/<run>/workflow.snapshot.json`。
+- workflow snapshot 中的 `AI-DYNAMIC` allowed workflows 会在进入节点时冻结为 `allowed-workflow-snapshots.json`；内部 workflow invocation 只引用本次冻结快照，不读取 live 模板。
 - 已存在 run / round 的展示和继续执行只读取运行时快照，不被后续 authoring workflow 修改回写。
 
 ## 6. Run / Round 执行列表

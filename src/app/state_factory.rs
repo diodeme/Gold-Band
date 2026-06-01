@@ -1,6 +1,6 @@
 use crate::config::ResolvedProfileRef;
 use crate::domain::{ResolvedConfig, RunStatus, VERSION};
-use crate::dsl::{JsonConditionDsl, NodeDsl};
+use crate::dsl::{DynamicAgentConfigDsl, JsonConditionDsl, NodeDsl};
 use crate::runtime::NodeState;
 
 use super::ids::now_rfc3339_like;
@@ -106,6 +106,56 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::Value::String("new".to_string()),
             );
         }
+        NodeDsl::AiDynamic(dynamic) => {
+            config.insert(
+                "provider".to_string(),
+                serde_json::Value::String(
+                    dynamic
+                        .provider
+                        .clone()
+                        .expect("validated ai-dynamic provider must exist"),
+                ),
+            );
+            if let Some(profile) = resolved_profile.as_ref() {
+                config.insert(
+                    "profileSource".to_string(),
+                    serde_json::to_value(&profile.source).expect("serialize profile source"),
+                );
+                config.insert(
+                    "profilePath".to_string(),
+                    serde_json::Value::String(profile.path.clone()),
+                );
+            }
+            config.insert(
+                "dynamicControl".to_string(),
+                serde_json::to_value(&dynamic.control).expect("serialize dynamic control"),
+            );
+            config.insert(
+                "allowedWorkflows".to_string(),
+                serde_json::to_value(&dynamic.allowed_workflows)
+                    .expect("serialize allowed workflows"),
+            );
+            insert_dynamic_agent_config(&mut config, "merge", &dynamic.merge);
+            insert_dynamic_agent_config(&mut config, "acceptance", &dynamic.acceptance);
+            config.insert("manualCheck".to_string(), serde_json::Value::Bool(false));
+            config.insert(
+                "sessionMode".to_string(),
+                serde_json::Value::String("new".to_string()),
+            );
+        }
     }
     config
+}
+
+fn insert_dynamic_agent_config(
+    config: &mut ResolvedConfig,
+    prefix: &str,
+    agent: &DynamicAgentConfigDsl,
+) {
+    if let Some(provider) = &agent.provider {
+        config.insert(
+            format!("{prefix}Provider"),
+            serde_json::Value::String(provider.clone()),
+        );
+    }
 }

@@ -393,7 +393,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -486,6 +486,8 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     }
     setSaving(true);
     try {
+      setFormError(null);
+      setWorkflowError(null);
       const created = await onCreateTask({
         title: title.trim(),
         description: description.trim() || null,
@@ -494,13 +496,15 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         workflow: workflowDraft,
         workflowTemplateId: selectedTemplateId,
       });
-      if (created) {
-        setTitle('');
-        setDescription('');
-        setRequirementContent('');
-        clearRequirementFile();
-        setWorkflow(null);
-      }
+      if (!created) return;
+      setTitle('');
+      setDescription('');
+      setRequirementContent('');
+      clearRequirementFile();
+      setWorkflow(null);
+    } catch (err) {
+      setWorkflowNotice(null);
+      setWorkflowError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }
@@ -681,6 +685,10 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   profiles={profileList?.profiles ?? []}
                   onOpenProfileManagement={onOpenProfileManagement}
                   defaultWorkflow={defaultWorkflow}
+                  workflowTemplates={templateStore}
+                  currentTemplateId={selectedTemplateId}
+                  currentTemplateName={selectedTemplate?.name ?? null}
+                  allowAiDynamic
                   saving={saving}
                   onChange={(next) => {
                     setWorkflow(next);

@@ -20,7 +20,7 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
     OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
-    WorkflowValidationError, validate_workflow,
+    WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::process::kill_process_tree;
 use crate::provider::{
@@ -40,7 +40,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use self::ids::{next_task_id, now_rfc3339_like};
+use self::ids::{next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
@@ -369,10 +369,113 @@ struct ProfileUsageCounts {
     run_count: usize,
 }
 
+fn duplicate_workflow_id_error(
+    workflow_name: &str,
+    workflow_id: &str,
+    conflicts: Vec<String>,
+) -> Result<()> {
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(WorkflowValidationError::DuplicateWorkflowId {
+        workflow_name: workflow_name.to_string(),
+        workflow_id: workflow_id.to_string(),
+        conflicts: conflicts.join(", "),
+    }
+    .into())
+}
+
+fn validate_unique_workflow_template_id(
+    store: &WorkflowTemplateStore,
+    workflow: &WorkflowDsl,
+    workflow_name: &str,
+    exclude_template_id: Option<&str>,
+) -> Result<()> {
+    let workflow_id = workflow.id.trim();
+    let conflicts = store
+        .templates
+        .iter()
+        .filter(|template| exclude_template_id != Some(template.id.as_str()))
+        .filter(|template| template.workflow.id.trim() == workflow_id)
+        .map(|template| template.name.clone())
+        .collect::<Vec<_>>();
+    duplicate_workflow_id_error(workflow_name, workflow_id, conflicts)
+}
+
+fn validate_ai_dynamic_allowed_workflows(
+    workflow: &WorkflowDsl,
+    store: &WorkflowTemplateStore,
+) -> Result<()> {
+    for node in &workflow.nodes {
+        let NodeDsl::AiDynamic(dynamic) = node else {
+            continue;
+        };
+        for allowed in &dynamic.allowed_workflows {
+            let workflow_id = allowed.workflow_id.trim();
+            let template = store
+                .templates
+                .iter()
+                .find(|template| template.workflow.id.trim() == workflow_id)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "ai-dynamic node `{}` allowed workflow `{workflow_id}` not found",
+                        dynamic.id
+                    )
+                })?;
+            if let Err(error) = validate_unique_workflow_template_id(
+                store,
+                &template.workflow,
+                &template.name,
+                Some(&template.id),
+            ) {
+                return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
+                    node_id: dynamic.id.clone(),
+                    workflow_name: template.name.clone(),
+                    reason: error.to_string(),
+                }
+                .into());
+            }
+            let validated = validate_workflow(template.workflow.clone()).map_err(|error| {
+                WorkflowValidationError::AiDynamicInvalidWorkflow {
+                    node_id: dynamic.id.clone(),
+                    workflow_name: template.name.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+            if !dynamic.control.allow_nested_dynamic && workflow_contains_ai_dynamic(&validated.raw)
+            {
+                return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
+                    node_id: dynamic.id.clone(),
+                    workflow_name: template.name.clone(),
+                    reason: format!("workflow `{workflow_id}` contains AI-DYNAMIC"),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
     workflow.nodes.iter().any(|node| match node {
         NodeDsl::Worker(worker) => worker.profile.as_deref() == Some(profile_id),
+        NodeDsl::AiDynamic(_) => false,
     })
+}
+
+fn providers_for_node(node: &NodeDsl) -> Vec<String> {
+    match node {
+        NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
+        NodeDsl::AiDynamic(dynamic) => [
+            dynamic.provider.as_ref(),
+            dynamic.merge.provider.as_ref(),
+            dynamic.acceptance.provider.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect(),
+    }
 }
 
 impl App {
@@ -486,7 +589,10 @@ impl App {
         Ok(state)
     }
 
-    pub fn set_user_desktop_workspace(&self, workspace: &str) -> Result<(SettingsConfig, StateConfig)> {
+    pub fn set_user_desktop_workspace(
+        &self,
+        workspace: &str,
+    ) -> Result<(SettingsConfig, StateConfig)> {
         let mut settings = self.load_settings()?;
         settings.desktop_workspace = Some(workspace.to_string());
         self.save_settings(&settings)?;
@@ -586,11 +692,24 @@ impl App {
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
         }
+        let mut store = self.load_workflow_template_store()?;
+        let mut workflow = workflow;
+        loop {
+            workflow.id = next_workflow_id();
+            let conflicts = store
+                .templates
+                .iter()
+                .any(|template| template.workflow.id == workflow.id);
+            if !conflicts {
+                break;
+            }
+        }
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
+        validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
-        let mut store = self.load_workflow_template_store()?;
         let now = now_rfc3339_like();
         let id = unique_workflow_template_id(&store, name);
         store.templates.push(WorkflowTemplate {
@@ -617,11 +736,18 @@ impl App {
         if template_id == "default" {
             bail!("default workflow template cannot be updated");
         }
+        let mut store = self.load_workflow_template_store()?;
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        validate_unique_workflow_template_id(
+            &store,
+            &validated.raw,
+            template_id,
+            Some(template_id),
+        )?;
+        validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
-        let mut store = self.load_workflow_template_store()?;
         let template = store
             .templates
             .iter_mut()
@@ -721,7 +847,11 @@ impl App {
             return Ok(provider_override.clone());
         }
         let (agent_type, config) = self.managed_agent(provider)?;
-        Ok(Arc::from(provider_from_agent(agent_type, config, self.config.use_local_claude)?))
+        Ok(Arc::from(provider_from_agent(
+            agent_type,
+            config,
+            self.config.use_local_claude,
+        )?))
     }
 
     pub fn provider_info(&self, provider: &str) -> Result<ProviderInfo> {
@@ -733,7 +863,11 @@ impl App {
         if !agent_type.is_supported() {
             bail!("agent `{provider}` is not supported yet");
         }
-        match acp_client::doctor(&config.adapter, self.paths.repo_root.clone(), self.config.use_local_claude) {
+        match acp_client::doctor(
+            &config.adapter,
+            self.paths.repo_root.clone(),
+            self.config.use_local_claude,
+        ) {
             Ok(capabilities) => Ok(DoctorResult {
                 available: true,
                 reason: None,
@@ -804,6 +938,25 @@ impl App {
         let validated = validate_workflow(input.workflow.clone())?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        let store = self.load_workflow_template_store()?;
+        let selected_template = input
+            .workflow_template_id
+            .as_deref()
+            .and_then(|template_id| {
+                store
+                    .templates
+                    .iter()
+                    .find(|template| template.id == template_id)
+            });
+        if let Some(template) = selected_template {
+            validate_unique_workflow_template_id(
+                &store,
+                &template.workflow,
+                &template.name,
+                Some(template.id.as_str()),
+            )?;
+        }
+        validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
         let task_id = next_task_id(&self.paths.tasks_dir())?;
         let task = TaskState {
@@ -834,6 +987,8 @@ impl App {
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        let store = self.load_workflow_template_store()?;
+        validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
         write_json(&self.paths.workflow_file(task_id), &validated.raw)?;
         self.task_summary(task_id)
@@ -1503,8 +1658,8 @@ impl App {
 
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
-            if let Some(provider) = node.provider() {
-                let (agent_type, _) = self.managed_agent(provider)?;
+            for provider in providers_for_node(node) {
+                let (agent_type, _) = self.managed_agent(&provider)?;
                 if !agent_type.is_supported() {
                     bail!("agent `{provider}` is not supported yet");
                 }
@@ -1884,11 +2039,17 @@ mod tests {
             Some("2026-05-27 10:00:00")
         );
         assert_eq!(
-            state.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            state
+                .desktop_update_badges
+                .settings_entry_seen_version
+                .as_deref(),
             Some("0.3.1")
         );
         assert_eq!(
-            state.desktop_update_badges.announcement_closed_version.as_deref(),
+            state
+                .desktop_update_badges
+                .announcement_closed_version
+                .as_deref(),
             Some("0.3.0")
         );
 
@@ -1906,7 +2067,8 @@ mod tests {
         unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
 
         let app = App::new(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/MyRepo").unwrap();
+        app.set_user_desktop_workspace("D:/Projects/MyRepo")
+            .unwrap();
 
         let settings = app.load_settings().unwrap();
         assert_eq!(
@@ -1915,9 +2077,11 @@ mod tests {
         );
 
         let state = app.load_state().unwrap();
-        assert!(state
-            .recent_desktop_workspaces
-            .contains(&"D:/Projects/MyRepo".to_string()));
+        assert!(
+            state
+                .recent_desktop_workspaces
+                .contains(&"D:/Projects/MyRepo".to_string())
+        );
     }
 
     #[test]
@@ -1952,7 +2116,8 @@ mod tests {
 
         let app = App::new(repo_root.clone());
         for i in 0..10 {
-            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}")).unwrap();
+            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}"))
+                .unwrap();
         }
 
         let state = app.load_state().unwrap();

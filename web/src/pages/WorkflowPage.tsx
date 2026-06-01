@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { displayStatus, displayWorkflowError } from '../i18n';
+import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
@@ -67,6 +67,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
+  const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
   const [validationRequestId, setValidationRequestId] = useState(0);
 
   const toggleRun = (runId: string, expanded: boolean) => {
@@ -76,6 +77,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const closeWorkflowDrawer = useCallback(() => {
     setWorkflowDrawerMode(null);
     setWorkflowDraft(null);
+    setWorkflowSaveError(null);
   }, []);
 
   const openWorkflowDrawer = (mode: WorkflowDrawerMode) => {
@@ -140,11 +142,13 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const saveWorkflow = async (workflow: WorkflowDsl) => {
     setSavingWorkflow(true);
     try {
+      setWorkflowSaveError(null);
       const saved = await onSaveWorkflow(vm.task.id, workflow);
-      if (saved) {
-        setWorkflowDraft(null);
-        setWorkflowDrawerMode(null);
-      }
+      if (!saved) return;
+      setWorkflowDraft(null);
+      setWorkflowDrawerMode(null);
+    } catch (error) {
+      setWorkflowSaveError(displayAppError(t, error));
     } finally {
       setSavingWorkflow(false);
     }
@@ -277,7 +281,10 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               ) : null}
               {editingWorkflow ? (
                 workflowDraft ? (
-                  <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={setWorkflowDraft} />
+                  <>
+                    {workflowSaveError ? <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">{workflowSaveError}</div> : null}
+                    <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} />
+                  </>
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (
                 <>

@@ -441,7 +441,12 @@ fn profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Utf8PathBuf
     }
 }
 
-fn profile_path(paths: &GoldBandPaths, scope: ProfileScope, name: &str, id: &str) -> Result<Utf8PathBuf> {
+fn profile_path(
+    paths: &GoldBandPaths,
+    scope: ProfileScope,
+    name: &str,
+    id: &str,
+) -> Result<Utf8PathBuf> {
     Ok(profile_dir(paths, scope)?.join(format!("{}-{id}.md", sanitize_profile_name(name))))
 }
 

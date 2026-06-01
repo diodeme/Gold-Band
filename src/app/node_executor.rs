@@ -176,6 +176,7 @@ fn output_artifact_for_predecessor(
             .output
             .as_ref()
             .map(|output| output.artifact.as_str()),
+        NodeDsl::AiDynamic(_) => None,
     }?;
     let path = app.paths.artifact_file(
         task_id,
@@ -243,6 +244,7 @@ fn build_predecessor_contexts(
                 });
             let branch_reason = match node_dsl {
                 NodeDsl::Worker(worker) => output_contract_reason(worker),
+                NodeDsl::AiDynamic(_) => None,
             };
             Some(PromptPredecessorContext {
                 round_id: trace_ref.round_id.clone(),
@@ -302,6 +304,9 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             Vec::new(),
         ),
+        NodeDsl::AiDynamic(_) => {
+            bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
+        }
     };
 
     let profile_content = profile

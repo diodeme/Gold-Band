@@ -26,6 +26,8 @@ preset -> task -> run -> round/attempt
 - `status` 与 `outcome` 必须分离：`status` 表示生命周期，`outcome` 表示终局结果
 - `paused` 只属于 `status`，不属于 `outcome`
 - `ai-dynamic` 内部状态归属外层节点 attempt，外层 round graph 只保留一个复合节点
+- AI-DYNAMIC prompt 分层遵循：runtime 决定的身份、历史、路径、限制、可用资源和输出协议进入 system prompt，并通过 minijinja 模板渲染；requirement 与当前 goal 进入 user prompt
+- runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
 - [控制层](control.md)

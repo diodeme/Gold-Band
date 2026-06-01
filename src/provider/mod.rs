@@ -3,6 +3,7 @@ use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_output
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
+use crate::prompts::{RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,8 @@ pub struct WorkerInvocation {
     pub output_contract: Option<PromptOutputContract>,
     pub runtime_context: PromptRuntimeContext,
     pub predecessors: Vec<PromptPredecessorContext>,
+    #[serde(default)]
+    pub extra_system_sections: Vec<String>,
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
     pub permission_mode: Option<String>,
@@ -82,6 +85,7 @@ pub struct PromptRuntimeContext {
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    pub language: crate::config::DesktopLanguage,
     pub run_dir: Utf8PathBuf,
     pub round_dir: Utf8PathBuf,
     pub node_dir: Utf8PathBuf,
@@ -435,25 +439,93 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> String {
-    [
-        render_current_location(&req.runtime_context),
-        render_predecessor_chain(&req.predecessors, &req.runtime_context),
-        render_predecessor_reasons(&req.predecessors),
-        render_directory_rules(&req.runtime_context),
-        render_role_section(req.profile.as_deref(), req.profile_content.as_deref()),
-        render_artifact_constraints(req.output_contract.as_ref()),
-    ]
-    .into_iter()
-    .filter(|section| !section.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join("\n\n")
+    render_template(
+        prompt_by_language(req.runtime_context.language, RUNTIME_SYSTEM_ZH_CN, RUNTIME_SYSTEM_EN),
+        runtime_system_context(req),
+    )
+    .expect("prompt template renders")
 }
 
-fn render_current_location(ctx: &PromptRuntimeContext) -> String {
-    format!(
-        "你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: {}\n- Task: {}\n- Run: {}\n- Round: {}\n- Node: {}\n- Attempt: {}",
-        ctx.project_id, ctx.task_id, ctx.run_id, ctx.round_id, ctx.node_id, ctx.attempt_id
-    )
+#[derive(Serialize)]
+struct RuntimePromptTemplateContext {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    attempt_dir: String,
+    attachments_dir: String,
+    run_dir: String,
+    node_dir: String,
+    predecessors: RuntimePredecessorTemplateContext,
+    extra_system_sections: Option<String>,
+    profile: RuntimeProfileTemplateContext,
+    output_contract: Option<RuntimeOutputContractTemplateContext>,
+}
+
+#[derive(Serialize)]
+struct RuntimePredecessorTemplateContext {
+    is_empty: bool,
+    chain: String,
+    reason_lines: String,
+    reason_lines_empty: bool,
+}
+
+#[derive(Serialize)]
+struct RuntimeProfileTemplateContext {
+    id: Option<String>,
+    content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RuntimeOutputContractTemplateContext {
+    artifact: String,
+    kind: String,
+    schema: String,
+    success_condition: Option<String>,
+}
+
+fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContext {
+    RuntimePromptTemplateContext {
+        project_id: req.runtime_context.project_id.clone(),
+        task_id: req.runtime_context.task_id.clone(),
+        run_id: req.runtime_context.run_id.clone(),
+        round_id: req.runtime_context.round_id.clone(),
+        node_id: req.runtime_context.node_id.clone(),
+        attempt_id: req.runtime_context.attempt_id.clone(),
+        attempt_dir: req.runtime_context.attempt_dir.to_string(),
+        attachments_dir: req.runtime_context.attachments_dir.to_string(),
+        run_dir: req.runtime_context.run_dir.to_string(),
+        node_dir: req.runtime_context.node_dir.to_string(),
+        predecessors: runtime_predecessor_context(&req.predecessors, &req.runtime_context),
+        extra_system_sections: {
+            let sections = req
+                .extra_system_sections
+                .iter()
+                .filter(|section| !section.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>();
+            if sections.is_empty() {
+                None
+            } else {
+                Some(sections.join("\n\n"))
+            }
+        },
+        profile: RuntimeProfileTemplateContext {
+            id: req.profile.clone(),
+            content: req
+                .profile_content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        },
+        output_contract: req
+            .output_contract
+            .as_ref()
+            .map(runtime_output_contract_context),
+    }
 }
 
 fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
@@ -463,15 +535,28 @@ fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
     )
 }
 
-fn render_predecessor_chain(
+fn runtime_predecessor_context(
+    predecessors: &[PromptPredecessorContext],
+    ctx: &PromptRuntimeContext,
+) -> RuntimePredecessorTemplateContext {
+    let reason_lines = predecessor_reason_lines(predecessors);
+    RuntimePredecessorTemplateContext {
+        is_empty: predecessors.is_empty(),
+        chain: predecessor_chain_text(predecessors, ctx),
+        reason_lines_empty: reason_lines.is_empty(),
+        reason_lines,
+    }
+}
+
+fn predecessor_chain_text(
     predecessors: &[PromptPredecessorContext],
     ctx: &PromptRuntimeContext,
 ) -> String {
     if predecessors.is_empty() {
-        return "当前节点的前序运行节点：无，当前节点是本轮入口节点。".to_string();
+        return String::new();
     }
 
-    let mut chain = String::from("当前节点的前序运行节点：\n");
+    let mut chain = String::new();
     for (index, predecessor) in predecessors.iter().enumerate() {
         chain.push_str(&format!("{} ", predecessor_ref(predecessor)));
         let next_round = predecessors
@@ -493,12 +578,8 @@ fn render_predecessor_chain(
     chain
 }
 
-fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> String {
-    if predecessors.is_empty() {
-        return "当前节点前序节点的分支执行原因：无。".to_string();
-    }
-
-    let lines = predecessors
+fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String {
+    predecessors
         .iter()
         .filter_map(|predecessor| {
             let is_ordinary = predecessor.branch_kind == "普通"
@@ -519,16 +600,9 @@ fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> Stri
                 parts.push(reason.to_string());
             }
             if let Some(artifact) = &predecessor.output_artifact {
-                parts.push(format!(
-                    "输出 artifact={}: {}",
-                    artifact.name, artifact.path
-                ));
+                parts.push(format!("输出 artifact={}: {}", artifact.name, artifact.path));
                 if let Some(preview) = artifact.preview.as_deref() {
-                    parts.push(format!(
-                        "输出预览={}{}",
-                        preview.trim(),
-                        if preview.ends_with('\n') { "" } else { "" }
-                    ));
+                    parts.push(format!("输出预览={}", preview.trim()));
                 }
             }
             Some(format!(
@@ -537,58 +611,23 @@ fn render_predecessor_reasons(predecessors: &[PromptPredecessorContext]) -> Stri
                 parts.join("；")
             ))
         })
-        .collect::<Vec<_>>();
-
-    if lines.is_empty() {
-        "当前节点前序节点的分支执行原因：前序节点均为普通节点，按节点结果进入当前分支。".to_string()
-    } else {
-        format!("当前节点前序节点的分支执行原因：\n{}", lines.join("\n"))
-    }
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn render_directory_rules(ctx: &PromptRuntimeContext) -> String {
-    format!(
-        "Gold Band 文件规则：\n- 本节点运行产物目录：{}\n- 本次节点运行中，你创建的自由文件必须写入：{}\n- 不要把自由文件写到 attachments 之外。\n- 当前节点所需上下文已在本 prompt 中给出。\n- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。\n- 当前 run 目录仅作为这些已给出路径的父级上下文：{}\n- 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。\n- 当前 node 目录可写入：{}\n- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。",
-        ctx.attempt_dir, ctx.attachments_dir, ctx.run_dir, ctx.node_dir
-    )
-}
-
-fn render_role_section(profile: Option<&str>, profile_content: Option<&str>) -> String {
-    let Some(profile) = profile else {
-        return "当前节点角色：\n- 未配置 profile。".to_string();
-    };
-    let content = profile_content
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    match content {
-        Some(content) => format!("当前节点角色：\n- Profile ID: {profile}\n\n{content}"),
-        None => format!("当前节点角色：\n- Profile ID: {profile}\n- 未找到 profile 正文。"),
+fn runtime_output_contract_context(
+    contract: &PromptOutputContract,
+) -> RuntimeOutputContractTemplateContext {
+    RuntimeOutputContractTemplateContext {
+        artifact: contract.artifact.clone(),
+        kind: contract.kind.clone(),
+        schema: contract
+            .schema
+            .as_ref()
+            .map(|schema| serde_json::to_string_pretty(schema).expect("serialize output schema"))
+            .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
+        success_condition: contract.success_condition.clone(),
     }
-}
-
-fn render_artifact_constraints(contract: Option<&PromptOutputContract>) -> String {
-    let Some(contract) = contract else {
-        return "当前节点 artifact 规则：\n- 当前节点未声明 output DSL，不需要产出 canonical artifact。\n- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。".to_string();
-    };
-
-    let mut section = format!(
-        "当前节点输出约束：\n- 输出 artifact: {}\n- 输出类型: {}\n\n你必须在最后一步按照以下格式输出你的结果：",
-        contract.artifact, contract.kind
-    );
-    if let Some(schema) = &contract.schema {
-        section.push_str(&format!(
-            "\n{}",
-            serde_json::to_string_pretty(schema).expect("serialize output schema")
-        ));
-    } else {
-        section.push_str("\n当前节点未声明结构化 schema。");
-    }
-    if let Some(condition) = contract.success_condition.as_deref() {
-        section.push_str(&format!(
-            "\n\nruntime 将使用以下条件判断节点结果：\n{condition}"
-        ));
-    }
-    section
 }
 
 fn log_prompt_bundle(
@@ -675,6 +714,7 @@ mod tests {
             round_id: "round-001".to_string(),
             node_id: "dev".to_string(),
             attempt_id: "attempt-001".to_string(),
+            language: crate::config::DesktopLanguage::ZhCn,
             run_dir: Utf8PathBuf::from("/run"),
             round_dir: Utf8PathBuf::from("/run/rounds/round-001"),
             node_dir: Utf8PathBuf::from("/run/rounds/round-001/nodes/dev"),
@@ -694,6 +734,7 @@ mod tests {
             output_contract: None,
             runtime_context,
             predecessors: Vec::new(),
+            extra_system_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),
             session_mode: SessionMode::New,
             permission_mode: None,

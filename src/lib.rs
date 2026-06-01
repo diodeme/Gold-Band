@@ -12,6 +12,7 @@ pub mod dynamic;
 pub mod inspect;
 pub mod observability;
 pub mod process;
+pub mod prompts;
 pub mod provider;
 pub mod runtime;
 pub mod storage;

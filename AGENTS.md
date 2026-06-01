@@ -17,6 +17,14 @@ docs\gold-band\开发计划
 
 当前项目前端使用tailwindcss+shadcn-ui, chat ui界面使用prompt-kit。必须优先根据页面需要使用组件库生成copy-in代码，不能自己手写代码，可以在生成的copy-in代码中，根据需要进行修改
 
+当前项目所有内置提示词（profile、runtime、repair、AI-DYNAMIC 等）必须统一放在 `src/prompts/` 下管理，不允许把长 prompt 文本散落硬编码在实现代码里。
+提示词目录必须按语言组织为 `src/prompts/zh-CN/...` 和 `src/prompts/en/...`，语言目录下的子目录结构必须保持一致；新增或修改提示词时，必须同步维护中英文版本。
+
+system prompt / user prompt 的固定区分标准：
+1. 由 runtime 决定、用户不需要直接操心、且需要稳定执行的上下文，放 system prompt，例如角色、历史、目录路径、文件规则、能力边界、剩余预算、输出协议、repair 指令。
+2. 与本次执行目标直接相关、会随任务变化的内容，放 user prompt，例如 requirement、goal、当前 task。
+3. 任何需要模板变量、条件分支或修复重试的提示词，也必须继续放在 `src/prompts/` 下统一管理和渲染，不能回退成代码内硬编码字符串。
+
 # 团队共享协作规则
 
 ## 桌面端产品心智

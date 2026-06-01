@@ -13,6 +13,7 @@ fn runtime_context() -> PromptRuntimeContext {
         round_id: "round-001".to_string(),
         node_id: "dev".to_string(),
         attempt_id: "attempt-001".to_string(),
+        language: gold_band::config::DesktopLanguage::ZhCn,
         run_dir: Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001",
         ),
@@ -67,6 +68,7 @@ fn invocation() -> WorkerInvocation {
             }),
             branch_reason: None,
         }],
+        extra_system_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
         session_mode: SessionMode::New,
         permission_mode: None,

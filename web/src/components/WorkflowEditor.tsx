@@ -488,8 +488,14 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
               <Textarea
                 value={jsonDraft}
                 onChange={(event) => {
-                  setJsonDraft(event.target.value);
+                  const nextDraft = event.target.value;
+                  setJsonDraft(nextDraft);
                   setJsonError(null);
+                  const parsed = parseWorkflowJson(nextDraft);
+                  if (!parsed) return;
+                  const nextWorkflow = normalizeWorkflowSchemas(parsed);
+                  setWorkflow(nextWorkflow);
+                  onChange?.(nextWorkflow);
                 }}
                 className="h-full min-h-full resize-none font-mono text-xs"
                 spellCheck={false}

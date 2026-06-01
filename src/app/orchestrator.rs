@@ -28,6 +28,7 @@ use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
 };
+use crate::prompts::{AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN, AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN, AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN, AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN, RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template};
 use crate::provider::{
     PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, StreamMode, WorkerInvocation,
@@ -61,10 +62,7 @@ struct NextExecution {
 }
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
-const AI_DYNAMIC_FANOUT_PROMPT: &str = include_str!("../prompts/ai_dynamic_fanout.md");
-const AI_DYNAMIC_MERGE_PROMPT: &str = include_str!("../prompts/ai_dynamic_merge.md");
-const AI_DYNAMIC_ACCEPTANCE_PROMPT: &str = include_str!("../prompts/ai_dynamic_acceptance.md");
-const AI_DYNAMIC_NODE_TASK_PROMPT: &str = include_str!("../prompts/ai_dynamic_node_task.md");
+const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 
 fn localized_continue_prompt(language: DesktopLanguage) -> String {
     match language {
@@ -84,10 +82,18 @@ fn output_schema_for_node<'a>(
 }
 
 fn invalid_output_repair_prompt(schema: &serde_json::Value) -> String {
-    let dsl = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
-    format!(
-        "当前输出不合法。请修复当前节点的最终输出。\n\n最后一次输出必须按照以下 DSL 输出，不要输出解释、Markdown、代码围栏或任何额外内容，只输出符合 DSL 的内容。\n\n{dsl}"
+    let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
+    render_template(
+        prompt_by_language(
+            DesktopLanguage::ZhCn,
+            RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN,
+            RUNTIME_INVALID_OUTPUT_REPAIR_EN,
+        ),
+        serde_json::json!({
+            "schema": schema,
+        }),
     )
+    .expect("prompt template renders")
 }
 
 pub(crate) fn run_start(
@@ -168,7 +174,7 @@ fn prepare_run(
     let workflow: WorkflowDsl = read_json(&workflow_path)?;
     let validated = validate_workflow(workflow.clone())?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw)?;
+    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     write_json(
         &app.paths.task_workflow_resolved_file(task_id),
         &validated.raw,
@@ -297,7 +303,7 @@ pub(crate) fn run_continue(
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw)?;
+    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     let current = current_attempt_state(app, task_id, &run)?;
     let (mut round, mut node) = current;
@@ -438,7 +444,7 @@ pub(crate) fn submit_manual_check(
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw)?;
+    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     ensure!(run.status == RunStatus::Paused, "run is not paused");
     ensure!(
@@ -592,7 +598,7 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw)?;
+    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     let (mut round, node) = current_attempt_state(app, task_id, &run)?;
     let node_id = node.node_id.clone();
@@ -1266,6 +1272,7 @@ fn dynamic_runtime_context(
         round_id: ctx.round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        language: ctx.app.config.desktop_language,
         run_dir,
         round_dir,
         node_dir,
@@ -1360,7 +1367,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         dynamic_run_id: dynamic_run_id.clone(),
         kind: DynamicNodeKind::Worker,
         title: "AI-DYNAMIC bootstrap".to_string(),
-        task: AI_DYNAMIC_FANOUT_PROMPT.trim().to_string(),
+        task: "Design the first internal dynamic step for this AI-DYNAMIC node.".to_string(),
         status: DynamicNodeStatus::Ready,
         outcome: None,
         group_id: None,
@@ -1493,35 +1500,108 @@ fn execute_dynamic_worker(
     let node = graph.nodes[index].clone();
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
-    let invocation = build_dynamic_worker_invocation(
-        ctx,
-        graph,
-        &node,
-        &attempt_id,
-        Some(dynamic_output_contract()),
-    )?;
     let provider_id = node
         .provider
         .as_deref()
-        .ok_or_else(|| anyhow!("dynamic worker `{}` is missing provider", node.id))?;
-    append_dynamic_event(
-        ctx,
-        "dynamic_node_started",
-        serde_json::json!({
-            "nodeId": node.id,
-            "kind": node.kind,
-        }),
-    )?;
-    let result = ctx
-        .app
-        .provider_for_id(provider_id)?
-        .run_worker(invocation)?;
-    finalize_dynamic_worker_result(ctx, graph, index, &attempt_id, result)?;
-    if graph.nodes[index].outcome != Some(NodeOutcome::Success) {
-        pause_dynamic_graph(ctx, graph, "dynamic worker failed")?;
-        bail!("dynamic worker `{}` failed", graph.nodes[index].id);
+        .ok_or_else(|| anyhow!("dynamic worker `{}` is missing provider", node.id))?
+        .to_string();
+    let worker_ref_path = ctx.app.paths.dynamic_node_worker_ref_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        &attempt_id,
+    );
+    let mut proposal_repair_prompts = 0;
+    let mut session_mode = SessionMode::New;
+    let mut continue_ref = None;
+    let mut resume_prompt = None;
+    let mut resume_prompt_visibility = PromptVisibility::Visible;
+
+    loop {
+        let invocation = build_dynamic_worker_invocation(
+            ctx,
+            graph,
+            &node,
+            &attempt_id,
+            Some(dynamic_output_contract()),
+            session_mode,
+            continue_ref.clone(),
+            resume_prompt.take(),
+            resume_prompt_visibility,
+        )?;
+        append_dynamic_event(
+            ctx,
+            "dynamic_node_started",
+            serde_json::json!({
+                "nodeId": node.id,
+                "kind": node.kind,
+                "sessionMode": session_mode,
+            }),
+        )?;
+        let result = ctx
+            .app
+            .provider_for_id(&provider_id)?
+            .run_worker(invocation)?;
+        finalize_dynamic_worker_result(ctx, graph, index, &attempt_id, result)?;
+        if graph.nodes[index].outcome != Some(NodeOutcome::Success) {
+            pause_dynamic_graph(ctx, graph, "dynamic worker failed")?;
+            bail!("dynamic worker `{}` failed", graph.nodes[index].id);
+        }
+        match accept_dynamic_completion_from_artifact(ctx, graph, index, &attempt_id) {
+            Ok(()) => return Ok(()),
+            Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+                let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
+                    .ok()
+                    .and_then(|worker_ref| worker_ref.continue_ref);
+                let Some(repair_continue_ref) = repair_continue_ref else {
+                    pause_dynamic_graph(ctx, graph, "invalid dynamic-node-completion proposal")?;
+                    return Err(err);
+                };
+                proposal_repair_prompts += 1;
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_proposal_repair_requested",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempt": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "error": err.to_string(),
+                    }),
+                )?;
+                graph.nodes[index].status = DynamicNodeStatus::Running;
+                graph.nodes[index].outcome = None;
+                graph.nodes[index].finished_at = None;
+                graph.run.status = DynamicRunStatus::Running;
+                graph.run.outcome = None;
+                graph.run.updated_at = now_rfc3339_like();
+                persist_dynamic_graph(ctx, graph)?;
+                session_mode = SessionMode::Continue;
+                continue_ref = Some(repair_continue_ref);
+                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, err.to_string()));
+                resume_prompt_visibility = PromptVisibility::Hidden;
+                continue;
+            }
+            Err(err) => {
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_proposal_repair_exhausted",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempts": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "error": err.to_string(),
+                    }),
+                )?;
+                pause_dynamic_graph(ctx, graph, "invalid dynamic-node-completion proposal")?;
+                return Err(err);
+            }
+        }
     }
-    accept_dynamic_completion_from_artifact(ctx, graph, index, &attempt_id)
 }
 
 fn execute_dynamic_agent_stage(
@@ -1533,7 +1613,17 @@ fn execute_dynamic_agent_stage(
     let node = graph.nodes[index].clone();
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
-    let invocation = build_dynamic_worker_invocation(ctx, graph, &node, &attempt_id, None)?;
+    let invocation = build_dynamic_worker_invocation(
+        ctx,
+        graph,
+        &node,
+        &attempt_id,
+        None,
+        SessionMode::New,
+        None,
+        None,
+        PromptVisibility::Visible,
+    )?;
     let provider_id = node
         .provider
         .as_deref()
@@ -1598,7 +1688,11 @@ fn execute_dynamic_workflow_invocation(
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
     let child_workflow =
-        workflow_with_dynamic_invocation_task(snapshot.workflow.clone(), &node.task);
+        workflow_with_dynamic_invocation_task(
+            ctx.app.config.desktop_language,
+            snapshot.workflow.clone(),
+            &node.task,
+        );
     let child_workflow_path = ctx
         .app
         .paths
@@ -1671,15 +1765,26 @@ fn execute_dynamic_workflow_invocation(
     accept_dynamic_completion(ctx, graph, index, completion, None, None)
 }
 
-fn workflow_with_dynamic_invocation_task(mut workflow: WorkflowDsl, task: &str) -> WorkflowDsl {
+fn workflow_with_dynamic_invocation_task(
+    language: DesktopLanguage,
+    mut workflow: WorkflowDsl,
+    task: &str,
+) -> WorkflowDsl {
     for node in &mut workflow.nodes {
         if let NodeDsl::Worker(worker) = node {
             worker.goal = Some(match worker.goal.as_deref() {
-                Some(goal) if !goal.trim().is_empty() => format!(
-                    "Child workflow invocation task:\n{}\n\nNode goal:\n{}",
-                    task.trim(),
-                    goal.trim()
-                ),
+                Some(goal) if !goal.trim().is_empty() => render_template(
+                    prompt_by_language(
+                        language,
+                        AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN,
+                        AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
+                    ),
+                    serde_json::json!({
+                        "invocation_task": task.trim(),
+                        "node_goal": goal.trim(),
+                    }),
+                )
+                .expect("prompt template renders"),
                 _ => task.trim().to_string(),
             });
         }
@@ -2095,16 +2200,12 @@ fn ensure_dynamic_node_budget(graph: &DynamicGraphState, additional_nodes: usize
     Ok(())
 }
 
-fn dynamic_group_agent_spec(
-    config: &DynamicAgentConfigDsl,
-    title: String,
-    task: &'static str,
-) -> DynamicAgentTaskSpec {
+fn dynamic_group_agent_spec(config: &DynamicAgentConfigDsl, title: String) -> DynamicAgentTaskSpec {
     DynamicAgentTaskSpec {
         title,
         provider: config.provider.clone().unwrap_or_default(),
         profile: String::new(),
-        task: task.trim().to_string(),
+        task: String::new(),
     }
 }
 
@@ -2159,13 +2260,8 @@ fn materialize_dynamic_next(
                 .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
                 .map(|group| group.depth + 1)
                 .unwrap_or(1);
-            let merge =
-                dynamic_group_agent_spec(&ctx.dynamic.merge, merge.title, AI_DYNAMIC_MERGE_PROMPT);
-            let acceptance = dynamic_group_agent_spec(
-                &ctx.dynamic.acceptance,
-                acceptance.title,
-                AI_DYNAMIC_ACCEPTANCE_PROMPT,
-            );
+            let merge = dynamic_group_agent_spec(&ctx.dynamic.merge, merge.title);
+            let acceptance = dynamic_group_agent_spec(&ctx.dynamic.acceptance, acceptance.title);
             let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
             let group = DynamicGroupState {
                 version: VERSION.to_string(),
@@ -2684,9 +2780,13 @@ fn build_dynamic_worker_invocation(
     node: &DynamicNodeState,
     attempt_id: &str,
     output_contract: Option<PromptOutputContract>,
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+    resume_prompt: Option<String>,
+    resume_prompt_visibility: PromptVisibility,
 ) -> Result<WorkerInvocation> {
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let builtin_profile = dynamic_builtin_profile(node);
+    let builtin_profile = dynamic_builtin_profile(ctx.app.config.desktop_language, node);
     let profile = builtin_profile
         .map(|(profile, _)| profile.to_string())
         .or_else(|| node.profile.clone());
@@ -2702,24 +2802,26 @@ fn build_dynamic_worker_invocation(
         .workspace_path
         .clone()
         .unwrap_or_else(|| ctx.app.paths.repo_root.clone());
+    let extra_system_sections = dynamic_system_sections(ctx, graph, node)?;
     Ok(WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile,
         profile_content,
         requirement_path: None,
-        requirement_text: Some(dynamic_requirement_text(ctx, graph, node)?),
+        requirement_text: Some(dynamic_requirement_text(ctx)?),
         workspace_dir,
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
         runtime_context,
         predecessors: dynamic_predecessor_contexts(ctx, graph, node),
-        task_instruction: Some(dynamic_task_instruction(graph, node)),
-        session_mode: SessionMode::New,
+        extra_system_sections,
+        task_instruction: Some(dynamic_task_instruction(ctx, graph, node)),
+        session_mode,
         permission_mode: None,
-        continue_ref: None,
-        resume_prompt: None,
+        continue_ref,
+        resume_prompt,
         resume_prompt_id: None,
-        resume_prompt_visibility: PromptVisibility::Visible,
+        resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,
         log_provider_command: ctx.app.config.log_provider_command,
@@ -2737,65 +2839,70 @@ fn build_dynamic_worker_invocation(
     })
 }
 
-fn dynamic_builtin_profile(node: &DynamicNodeState) -> Option<(&'static str, &'static str)> {
+fn dynamic_builtin_profile(
+    language: DesktopLanguage,
+    node: &DynamicNodeState,
+) -> Option<(&'static str, &'static str)> {
     match node.kind {
-        DynamicNodeKind::Worker if node.depth == 0 && node.chain_id == "bootstrap" => {
-            Some(("ai-dynamic-fanout", AI_DYNAMIC_FANOUT_PROMPT))
-        }
-        DynamicNodeKind::Merge => Some(("ai-dynamic-merge", AI_DYNAMIC_MERGE_PROMPT)),
-        DynamicNodeKind::Acceptance => {
-            Some(("ai-dynamic-acceptance", AI_DYNAMIC_ACCEPTANCE_PROMPT))
-        }
+        DynamicNodeKind::Worker if node.depth == 0 && node.chain_id == "bootstrap" => Some((
+            "ai-dynamic-fanout",
+            prompt_by_language(language, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_FANOUT_EN),
+        )),
+        DynamicNodeKind::Merge => Some((
+            "ai-dynamic-merge",
+            prompt_by_language(language, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_MERGE_EN),
+        )),
+        DynamicNodeKind::Acceptance => Some((
+            "ai-dynamic-acceptance",
+            prompt_by_language(
+                language,
+                AI_DYNAMIC_ACCEPTANCE_ZH_CN,
+                AI_DYNAMIC_ACCEPTANCE_EN,
+            ),
+        )),
         _ => None,
     }
 }
 
-fn dynamic_requirement_text(
+fn dynamic_requirement_text(ctx: &DynamicExecutionContext<'_>) -> Result<String> {
+    Ok(std::fs::read_to_string(
+        ctx.app.paths.requirement_file(ctx.task_id).as_std_path(),
+    )
+    .unwrap_or_default())
+}
+
+fn dynamic_proposal_repair_prompt(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
-) -> Result<String> {
-    let base_requirement =
-        std::fs::read_to_string(ctx.app.paths.requirement_file(ctx.task_id).as_std_path())
-            .unwrap_or_default();
-    Ok(format!(
-        "{}\n\n# AI-DYNAMIC context\n- Dynamic run: {}\n- Internal node: {}\n- Kind: {:?}\n- Group: {}\n- Chain: {}\n- Depth: {}\n- Workspace mode: {:?}\n- Workspace path: {}\n\n# Allowed workflow snapshots\n{}\n\n# Control limits\n{}",
-        base_requirement.trim(),
-        graph.run.id,
-        node.id,
-        node.kind,
-        node.group_id.as_deref().unwrap_or("none"),
-        node.chain_id,
-        node.depth,
-        node.workspace.mode,
-        node.workspace_path
-            .as_ref()
-            .map(|path| path.to_string())
-            .unwrap_or_else(|| ctx.app.paths.repo_root.to_string()),
-        allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
-        serde_json::to_string_pretty(&graph.run.control)?,
-    ))
+    error: String,
+) -> String {
+    render_template(
+        prompt_by_language(
+            ctx.app.config.desktop_language,
+            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
+            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
+        ),
+        serde_json::json!({
+            "validation_errors": format!("- {error}"),
+            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+        }),
+    )
+    .expect("prompt template renders")
 }
 
-fn dynamic_task_instruction(graph: &DynamicGraphState, node: &DynamicNodeState) -> String {
-    let completed_nodes = graph
-        .nodes
-        .iter()
-        .filter(|item| item.status == DynamicNodeStatus::Completed)
-        .map(|item| format!("{}({:?})", item.id, item.outcome))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let metadata = AI_DYNAMIC_NODE_TASK_PROMPT
-        .replace("{title}", &node.title)
-        .replace(
-            "{depends_on}",
-            &if node.depends_on.is_empty() {
-                "none".to_string()
-            } else {
-                node.depends_on.join(", ")
-            },
-        )
-        .replace("{completed_nodes}", &completed_nodes);
+fn dynamic_task_instruction(ctx: &DynamicExecutionContext<'_>, _graph: &DynamicGraphState, node: &DynamicNodeState) -> String {
+    let metadata = render_template(
+        prompt_by_language(
+            ctx.app.config.desktop_language,
+            AI_DYNAMIC_NODE_TASK_ZH_CN,
+            AI_DYNAMIC_NODE_TASK_EN,
+        ),
+        serde_json::json!({
+            "title": node.title,
+        }),
+    )
+    .expect("prompt template renders");
     format!("{}\n\n{}", node.task.trim(), metadata.trim())
 }
 
@@ -2844,7 +2951,7 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
         .iter()
         .map(|snapshot| {
             format!(
-                "- {} / {} / {} / containsAiDynamic={}",
+                "- workflowId={} snapshotId={} name={} containsAiDynamic={}",
                 snapshot.workflow_id,
                 snapshot.snapshot_id,
                 snapshot.name,
@@ -2853,6 +2960,254 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    let mut providers = Vec::new();
+    if let Some(provider) = ctx.dynamic.provider.clone() {
+        providers.push(provider);
+    }
+    if let Some(provider) = ctx.dynamic.merge.provider.clone() {
+        providers.push(provider);
+    }
+    if let Some(provider) = ctx.dynamic.acceptance.provider.clone() {
+        providers.push(provider);
+    }
+    providers.sort();
+    providers.dedup();
+    if providers.is_empty() {
+        return "none".to_string();
+    }
+    providers
+        .into_iter()
+        .map(|provider| format!("- {provider}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    match ctx.app.profiles() {
+        Ok(list) if !list.profiles.is_empty() => list
+            .profiles
+            .into_iter()
+            .map(|profile| format!("- {} ({})", profile.name, profile.id))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => "none".to_string(),
+    }
+}
+
+fn dynamic_remaining_budget_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -> String {
+    let current_workflow_invocations = graph
+        .nodes
+        .iter()
+        .filter(|candidate| candidate.kind == DynamicNodeKind::WorkflowInvocation)
+        .count() as u32;
+    let parent_group_depth = node
+        .group_id
+        .as_deref()
+        .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
+        .map(|group| group.depth)
+        .unwrap_or(0);
+    let next_group_depth = parent_group_depth + 1;
+    let running_count = graph
+        .nodes
+        .iter()
+        .filter(|candidate| candidate.status == DynamicNodeStatus::Running)
+        .count() as u32;
+    format!(
+        "- remaining dynamic nodes: {}\n- max fanout nodes in one proposal: {}\n- remaining workflow invocations: {}\n- current group depth: {}\n- remaining nested group depth headroom: {}\n- available parallel slots right now: {}\n- nested AI-DYNAMIC allowed: {}",
+        graph
+            .run
+            .control
+            .max_dynamic_nodes
+            .saturating_sub(graph.nodes.len() as u32),
+        graph.run.control.max_fanout,
+        graph
+            .run
+            .control
+            .max_workflow_invocations
+            .saturating_sub(current_workflow_invocations),
+        parent_group_depth,
+        graph
+            .run
+            .control
+            .max_group_depth
+            .saturating_sub(next_group_depth.saturating_sub(1)),
+        graph.run.control.max_parallel.saturating_sub(running_count),
+        graph.run.control.allow_nested_dynamic,
+    )
+}
+
+fn dynamic_graph_summary(graph: &DynamicGraphState) -> String {
+    let current = if graph.run.current_node_ids.is_empty() {
+        "none".to_string()
+    } else {
+        graph.run.current_node_ids.join(", ")
+    };
+    let completed = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == DynamicNodeStatus::Completed)
+        .map(|node| format!("{}({:?})", node.id, node.outcome))
+        .collect::<Vec<_>>();
+    let completed = if completed.is_empty() {
+        "none".to_string()
+    } else {
+        completed.join(", ")
+    };
+    format!(
+        "- current internal nodes: {}\n- total nodes: {}\n- groups: {}\n- completed nodes: {}",
+        current,
+        graph.nodes.len(),
+        graph.groups.len(),
+        completed,
+    )
+}
+
+fn dynamic_upstream_refs_summary(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> String {
+    if node.depends_on.is_empty() {
+        return "- none".to_string();
+    }
+    node.depends_on
+        .iter()
+        .filter_map(|dependency_id| graph.nodes.iter().find(|item| item.id == *dependency_id))
+        .map(|dependency| {
+            let attempt_id = dynamic_attempt_id(dependency);
+            let artifact_path = ctx.app.paths.dynamic_node_artifact_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                &dependency.id,
+                &attempt_id,
+                DYNAMIC_COMPLETION_ARTIFACT,
+            );
+            let attachments_dir = ctx.app.paths.dynamic_node_attachments_dir(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                &dependency.id,
+                &attempt_id,
+            );
+            format!(
+                "- {}: completion={} attachments={}",
+                dependency.id, artifact_path, attachments_dir
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn dynamic_kind_specific_summary(
+    _ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> String {
+    match node.kind {
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+            let Some(group_id) = node.group_id.as_deref() else {
+                return "- group summary unavailable".to_string();
+            };
+            let Some(group) = graph.groups.iter().find(|group| group.id == group_id) else {
+                return "- group summary unavailable".to_string();
+            };
+            let child_runs = graph
+                .nodes
+                .iter()
+                .filter(|candidate| candidate.group_id.as_deref() == Some(group_id))
+                .filter_map(|candidate| {
+                    candidate.child_run_id.as_ref().map(|child_run_id| {
+                        format!("{}={}", candidate.id, child_run_id)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let child_runs = if child_runs.is_empty() {
+                "none".to_string()
+            } else {
+                child_runs.join(", ")
+            };
+            format!(
+                "- group: {}\n- root nodes: {}\n- terminal nodes: {}\n- branch workspaces:\n{}\n- child runs: {}",
+                group.id,
+                if group.root_node_ids.is_empty() {
+                    "none".to_string()
+                } else {
+                    group.root_node_ids.join(", ")
+                },
+                if group.terminal_node_ids.is_empty() {
+                    "none".to_string()
+                } else {
+                    group.terminal_node_ids.join(", ")
+                },
+                dynamic_group_workspace_summary(graph, group),
+                child_runs,
+            )
+        }
+        _ => "- none".to_string(),
+    }
+}
+
+fn dynamic_system_sections(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Result<Vec<String>> {
+    let workspace_path = node
+        .workspace_path
+        .as_ref()
+        .map(|path| path.to_string())
+        .unwrap_or_else(|| ctx.app.paths.repo_root.to_string());
+    let dynamic_root = ctx.app.paths.dynamic_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    let runtime_context = dynamic_runtime_context(ctx, &node.id, &dynamic_attempt_id(node));
+    Ok(vec![render_template(
+        prompt_by_language(
+            ctx.app.config.desktop_language,
+            AI_DYNAMIC_SYSTEM_ZH_CN,
+            AI_DYNAMIC_SYSTEM_EN,
+        ),
+        serde_json::json!({
+            "outer_node_id": ctx.outer_node_id,
+            "outer_attempt_id": ctx.outer_attempt_id,
+            "dynamic_run_id": graph.run.id,
+            "node_id": node.id,
+            "kind": format!("{:?}", node.kind),
+            "group_id": node.group_id.as_deref().unwrap_or("none"),
+            "chain_id": node.chain_id,
+            "depth": node.depth,
+            "dynamic_root": dynamic_root,
+            "node_dir": runtime_context.node_dir,
+            "attempt_dir": runtime_context.attempt_dir,
+            "attachments_dir": runtime_context.attachments_dir,
+            "workspace_mode": format!("{:?}", node.workspace.mode),
+            "workspace_path": workspace_path,
+            "upstream_refs": dynamic_upstream_refs_summary(ctx, graph, node),
+            "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
+            "available_providers": available_provider_summary(ctx),
+            "available_profiles": available_profile_summary(ctx),
+            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+            "graph_summary": dynamic_graph_summary(graph),
+            "depends_on": if node.depends_on.is_empty() {
+                "none".to_string()
+            } else {
+                node.depends_on.join(", ")
+            },
+            "kind_specific_context": dynamic_kind_specific_summary(ctx, graph, node),
+        }),
+    )?])
 }
 
 fn prepare_dynamic_attempt_dirs(

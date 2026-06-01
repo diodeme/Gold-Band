@@ -650,11 +650,11 @@ impl App {
     }
 
     pub fn profiles(&self) -> Result<ProfileList> {
-        list_profiles(&self.paths)
+        list_profiles(&self.paths, self.config.desktop_language)
     }
 
     pub fn profile_show(&self, id: &str) -> Result<ProfileEntry> {
-        show_profile(&self.paths, id)
+        show_profile(&self.paths, id, self.config.desktop_language)
     }
 
     pub fn create_profile(&self, input: ProfileInput) -> Result<ProfileEntry> {
@@ -666,7 +666,7 @@ impl App {
     }
 
     pub fn delete_profile(&self, id: &str, force: bool) -> Result<ProfileList> {
-        let profile = show_profile(&self.paths, id)?;
+        let profile = show_profile(&self.paths, id, self.config.desktop_language)?;
         if profile.is_built_in {
             return Err(ProfileCommandError::ReadonlyBuiltIn.into());
         }
@@ -680,7 +680,7 @@ impl App {
             .into());
         }
         delete_profile_file(&self.paths, id)?;
-        list_profiles(&self.paths)
+        list_profiles(&self.paths, self.config.desktop_language)
     }
 
     pub fn save_workflow_template(
@@ -706,7 +706,7 @@ impl App {
         }
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
-        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
@@ -739,7 +739,7 @@ impl App {
         let mut store = self.load_workflow_template_store()?;
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
-        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
             &store,
             &validated.raw,
@@ -937,7 +937,7 @@ impl App {
 
         let validated = validate_workflow(input.workflow.clone())?;
         self.validate_workflow_agents(&validated)?;
-        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         let selected_template = input
             .workflow_template_id
@@ -986,7 +986,7 @@ impl App {
         self.task_show(task_id)?;
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
-        resolve_workflow_profiles(&self.paths, &validated.raw)?;
+        resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
@@ -1893,7 +1893,11 @@ impl App {
             return Ok((Some(err.to_string()), None));
         }
 
-        match resolve_workflow_profiles(&self.paths, &validated.raw) {
+        match resolve_workflow_profiles(
+            &self.paths,
+            &validated.raw,
+            self.config.desktop_language,
+        ) {
             Ok(_) => Ok((None, None)),
             Err(err) => Ok((Some(err.to_string()), None)),
         }

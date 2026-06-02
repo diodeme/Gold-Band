@@ -58,7 +58,7 @@ fn run() -> anyhow::Result<()> {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<DesktopState>();
                 if let Ok(app) = state.app() {
-                    let _ = app.stop_all_running_sessions();
+                    let _ = app.pause_all_running_sessions();
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
             }

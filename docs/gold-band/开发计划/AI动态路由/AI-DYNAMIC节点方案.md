@@ -4,15 +4,15 @@
 
 本轮已完成 V1 成功路径的可运行闭环：
 
-- DSL 已支持 `worker | ai-dynamic`，并校验 AI-DYNAMIC fan-out provider、动态控制限制、merge/acceptance provider 与 allowed workflow 引用。
+- DSL 已支持 `worker | ai-dynamic`，并校验 AI-DYNAMIC fan-out provider、动态控制限制与 allowed workflow 引用；fan-out proposal 中的 merge/acceptance spec 由 runtime 在执行时校验。
 - workflow 编辑器已通过 `allowAiDynamic` 能力开关控制 AI-DYNAMIC 节点新增入口；新增按钮与默认节点名走 i18n，按钮旁提供问号说明。
-- AI-DYNAMIC Inspector 已调整为“节点 ID + 四个默认收起编辑块”：基础信息、Fan-out Agent、Merge Agent、Acceptance Agent；fan-out/merge/acceptance 只配置 agent，不再由用户配置角色和目标。
+- AI-DYNAMIC Inspector 已调整为“节点 ID + 两个默认收起编辑块”：基础信息、Fan-out Agent；merge/acceptance 不再由用户预配置，而是由 fan-out proposal 在运行时自主生成。
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
-- runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、merge、acceptance 和 completion 派生逻辑。
+- runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；invalid proposal 会写入 rejected proposal 并让 run 进入 error-blocked pause。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
-- workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot，child run 成功后由 runtime 包装 completion。
+- workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
 - view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals，外层 graph 保持单个复合节点。
 - 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot；同时通过 `cargo test`、`npm run web:test`、`npm run web:build`。
 
@@ -214,13 +214,7 @@ type NodeDsl = WorkerNode | AiDynamicNode;
   "allowedWorkflows": [
     { "workflowId": "dev-review-test-accept" },
     { "workflowId": "review-test" }
-  ],
-  "merge": {
-    "provider": "claude-acp"
-  },
-  "acceptance": {
-    "provider": "claude-acp"
-  }
+  ]
 }
 ```
 
@@ -416,6 +410,8 @@ workflow-invocation node
   -> runtime 启动 child workflow run
   -> child run success，则该 dynamic node success
   -> child run failure，则该 dynamic node failure / pause
+  -> child run paused，则该 dynamic node paused（作为复合节点对外投影）
+  -> continue outer run 时，runtime 直接委托 child run 从自身断点恢复
 ```
 
 ---
@@ -970,12 +966,15 @@ outer orchestrator enters AI-DYNAMIC node
 
 ```text
 internal node completed
-  -> read dynamic-node-completion artifact
-  -> validate schema
-  -> validate budget / dependency / group / workflow reference
+  -> worker thread reads dynamic-node-completion artifact
+  -> worker thread builds accepted/rejected proposal result
+  -> main thread receives completion message
+  -> main thread validates schema / budget / dependency / group / workflow reference
   -> save proposal
   -> materialize next
 ```
+
+说明：AI-DYNAMIC 现在不是串行“挑一个 ready node 执行到底”，而是主线程调度 + 子线程执行 + 完成回传后继续补位。主线程是 graph 的唯一写入者；并行执行只发生在 node job 本身，proposal 回写和 materialize 不在子线程直接改共享 graph。
 
 ### 17.3 materialize next=end
 
@@ -999,7 +998,8 @@ if dependencies satisfied -> ready
 create group
 create child nodes
 assign groupId / chainId
-enqueue ready nodes
+mark as pending/ready according to dependsOn
+main thread immediately backfills newly available slots up to maxParallel
 ```
 
 ### 17.6 group merge
@@ -1024,6 +1024,37 @@ all groups closed
 all chains terminal
   -> AI-DYNAMIC node success
   -> outer workflow continues
+```
+
+### 17.8 run stop / kill
+
+```text
+manual outer run stop
+  -> cancel current outer attempt/provider
+  -> enumerate dynamic internal node attempt dirs and cancel active ACP/provider resources
+  -> recursively kill workflow-invocation child runs
+  -> mark reachable dynamic nodes as completed+killed
+  -> mark dynamic run as completed+killed
+  -> outer workflow state converges to killed
+```
+
+### 17.9 pause / continue
+
+```text
+app close or explicit runtime interruption
+  -> cancel current outer attempt/provider
+  -> enumerate dynamic internal node attempt dirs and cancel active ACP/provider resources
+  -> recursively pause workflow-invocation child runs with ProcessInterrupted
+  -> mark reachable dynamic nodes as paused
+  -> mark dynamic run as paused(ProcessInterrupted)
+  -> outer workflow state converges to paused(ProcessInterrupted)
+
+continue outer run
+  -> if current node is AI-DYNAMIC, reload dynamic graph
+  -> flip paused dynamic run / paused internal nodes back to schedulable state
+  -> paused worker / merge / acceptance nodes continue from saved worker_ref
+  -> paused workflow-invocation nodes delegate continue to childRunId
+  -> once child/internal node completes, main thread resumes proposal materialize and replenished scheduling
 ```
 
 ---
@@ -1142,12 +1173,10 @@ acceptance failure
 AI-DYNAMIC
 ```
 
-AI-DYNAMIC 节点配置区默认先显示节点 ID，然后提供四个默认收起的编辑块：
+AI-DYNAMIC 节点配置区默认先显示节点 ID，然后提供两个默认收起的编辑块：
 
 - 基础信息：allowed workflows、maxDynamicNodes、maxFanout、maxDepth、maxParallel、maxGroupDepth、maxWorkflowInvocations、allowNestedDynamic
 - Fan-out Agent：provider
-- Merge Agent：provider
-- Acceptance Agent：provider
 
 allowed workflows 使用可搜索多选下拉栏，按可选/不可选分组展示 workflow。不可选项禁用并显示原因；默认工作流不豁免 `workflow.id` 重复限制。触发器内展示已选 workflow 标签，标签展示 workflow 名称与 DSL `workflow.id`，并可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
 

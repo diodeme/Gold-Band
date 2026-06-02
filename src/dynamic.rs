@@ -1,5 +1,5 @@
-use crate::domain::{NodeOutcome, RunOutcome, VERSION};
-use crate::dsl::{DynamicAgentConfigDsl, DynamicControlDsl, WorkflowDsl};
+use crate::domain::{NodeOutcome, PauseReason, RunOutcome, VERSION};
+use crate::dsl::{DynamicControlDsl, WorkflowDsl};
 use anyhow::{Result, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,8 @@ pub struct DynamicRunState {
     pub parent_attempt_id: String,
     pub status: DynamicRunStatus,
     pub outcome: Option<RunOutcome>,
+    #[serde(default)]
+    pub pause_reason: Option<PauseReason>,
     pub started_at: String,
     pub updated_at: String,
     pub control: DynamicControlDsl,
@@ -208,17 +210,6 @@ pub struct DynamicAgentTaskSpec {
     pub task: String,
 }
 
-impl DynamicAgentTaskSpec {
-    pub fn from_config(title: impl Into<String>, config: &DynamicAgentConfigDsl) -> Self {
-        Self {
-            title: title.into(),
-            provider: config.provider.clone().unwrap_or_default(),
-            profile: String::new(),
-            task: config.goal.clone().unwrap_or_default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicNodeCompletion {
@@ -288,6 +279,10 @@ pub fn validate_dynamic_run_state(state: &DynamicRunState) -> Result<()> {
     ensure!(
         !(state.status == DynamicRunStatus::Completed && state.outcome.is_none()),
         "completed dynamic run must have outcome"
+    );
+    ensure!(
+        !(state.status != DynamicRunStatus::Paused && state.pause_reason.is_some()),
+        "non-paused dynamic run cannot have pauseReason"
     );
     Ok(())
 }

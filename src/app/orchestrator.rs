@@ -1,3 +1,4 @@
+use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Result, anyhow, bail, ensure};
@@ -12,8 +13,8 @@ use crate::domain::{
     VERSION,
 };
 use crate::dsl::{
-    AiDynamicNode, DynamicAgentConfigDsl, NodeDsl, ValidatedWorkflow, WorkflowDsl,
-    validate_workflow, workflow_contains_ai_dynamic,
+    AiDynamicNode, NodeDsl, ValidatedWorkflow, WorkflowDsl, validate_workflow,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
@@ -127,12 +128,11 @@ pub(crate) fn run_start_background(
 ) -> Result<RunState> {
     let prepared = prepare_run(app, task_id, workflow_override)?;
     let initial_run = prepared.run.clone();
-    let repo_root = app.paths.repo_root.clone();
-    let config = app.config.clone();
+    let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
 
     thread::spawn(move || {
-        let app = App::with_config(repo_root, config);
+        let app = background_app;
         let PreparedRun {
             validated,
             resolved_profiles,
@@ -352,21 +352,31 @@ pub(crate) fn run_continue(
             if node.manual_check_pending {
                 bail!("current attempt is waiting for manual check");
             }
-            let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
-                task_id,
-                run_id,
-                &round.id,
-                &node.node_id,
-                &node.attempt_id,
-            ))?
-            .continue_ref
-            .ok_or_else(|| anyhow::anyhow!("current attempt has no ACP continue reference"))?;
-            (
-                SessionMode::Continue,
-                Some(continue_ref),
-                Some(localized_continue_prompt(app.config.desktop_language)),
-                prompt_id,
-            )
+            match validated.get_node(&node.node_id) {
+                Some(NodeDsl::AiDynamic(_)) => (
+                    SessionMode::Continue,
+                    None,
+                    None,
+                    None,
+                ),
+                _ => {
+                    let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    ))?
+                    .continue_ref
+                    .ok_or_else(|| anyhow::anyhow!("current attempt has no ACP continue reference"))?;
+                    (
+                        SessionMode::Continue,
+                        Some(continue_ref),
+                        Some(localized_continue_prompt(app.config.desktop_language)),
+                        prompt_id,
+                    )
+                }
+            }
         }
         RunStatus::Completed if node.outcome == Some(NodeOutcome::Invalid) => {
             node = re_evaluate_attempt(app, task_id, &run.id, &round.id, node)?;
@@ -405,14 +415,13 @@ pub(crate) fn run_continue_background(
     if node.manual_check_pending {
         bail!("current attempt is waiting for manual check");
     }
-    let repo_root = app.paths.repo_root.clone();
-    let config = app.config.clone();
+    let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
 
     thread::spawn(move || {
-        let app = App::with_config(repo_root, config);
+        let app = background_app;
         if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
@@ -561,8 +570,7 @@ pub(crate) fn submit_manual_check_background(
     outcome: NodeOutcome,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
-    let repo_root = app.paths.repo_root.clone();
-    let config = app.config.clone();
+    let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let round_id = round_id.to_string();
@@ -570,7 +578,7 @@ pub(crate) fn submit_manual_check_background(
     let attempt_id = attempt_id.to_string();
 
     thread::spawn(move || {
-        let app = App::with_config(repo_root, config);
+        let app = background_app;
         if let Err(err) = submit_manual_check(
             &app,
             &task_id,
@@ -1195,6 +1203,18 @@ struct DynamicExecutionContext<'a> {
     dynamic: &'a AiDynamicNode,
 }
 
+#[derive(Debug)]
+struct DynamicExecutionResult {
+    node: DynamicNodeState,
+    proposals: Vec<DynamicProposalState>,
+}
+
+#[derive(Debug)]
+struct DynamicExecutionMessage {
+    node_id: String,
+    result: Result<DynamicExecutionResult>,
+}
+
 fn freeze_allowed_workflow_snapshots(
     app: &App,
     dynamic: &AiDynamicNode,
@@ -1294,6 +1314,23 @@ fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
     "attempt-001".to_string()
 }
 
+fn dynamic_proposal_file_path(
+    ctx: &DynamicExecutionContext<'_>,
+    proposal_id: &str,
+) -> Utf8PathBuf {
+    ctx.app
+        .paths
+        .dynamic_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        )
+        .join("proposals")
+        .join(format!("{proposal_id}.json"))
+}
+
 fn execute_ai_dynamic_node(
     app: &App,
     task_id: &str,
@@ -1313,6 +1350,18 @@ fn execute_ai_dynamic_node(
         dynamic,
     };
     let mut graph = load_or_create_dynamic_graph(&ctx)?;
+    if graph.run.status == DynamicRunStatus::Paused {
+        graph.run.status = DynamicRunStatus::Running;
+        graph.run.outcome = None;
+        graph.run.pause_reason = None;
+        graph.run.updated_at = now_rfc3339_like();
+        for node in &mut graph.nodes {
+            if node.status == DynamicNodeStatus::Paused {
+                node.status = DynamicNodeStatus::Ready;
+                node.finished_at = None;
+            }
+        }
+    }
     persist_dynamic_graph(&ctx, &graph)?;
     drive_dynamic_graph(&ctx, &mut graph)?;
 
@@ -1395,6 +1444,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         parent_attempt_id: ctx.outer_attempt_id.to_string(),
         status: DynamicRunStatus::Running,
         outcome: None,
+        pause_reason: None,
         started_at: now.clone(),
         updated_at: now,
         control: ctx.dynamic.control.clone(),
@@ -1424,17 +1474,12 @@ fn drive_dynamic_graph(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
 ) -> Result<()> {
+    let (tx, rx) = mpsc::channel::<DynamicExecutionMessage>();
     loop {
         refresh_dynamic_ready_nodes(graph);
+        launch_ready_dynamic_nodes(ctx, graph, &tx)?;
         persist_dynamic_graph(ctx, graph)?;
-        if let Some(index) = graph
-            .nodes
-            .iter()
-            .position(|node| node.status == DynamicNodeStatus::Ready)
-        {
-            execute_dynamic_node_at(ctx, graph, index)?;
-            continue;
-        }
+
         if advance_dynamic_groups(ctx, graph)? {
             continue;
         }
@@ -1453,51 +1498,226 @@ fn drive_dynamic_graph(
             )?;
             return Ok(());
         }
+
+        if graph
+            .nodes
+            .iter()
+            .any(|node| node.status == DynamicNodeStatus::Running)
+        {
+                let message = rx
+                .recv()
+                .map_err(|_| anyhow!("dynamic execution channel closed unexpectedly"))?;
+            apply_dynamic_execution_message(ctx, graph, message)?;
+            if graph.run.status == DynamicRunStatus::Paused {
+                return Ok(());
+            }
+            continue;
+        }
+
         pause_dynamic_graph(
             ctx,
             graph,
+            graph.run.pause_reason.unwrap_or(PauseReason::ErrorBlocked),
             "dynamic graph has no ready node and is not complete",
         )?;
         bail!("AI-DYNAMIC graph `{}` is blocked", graph.run.id);
     }
 }
 
-fn execute_dynamic_node_at(
+fn launch_ready_dynamic_nodes(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
-    index: usize,
+    tx: &mpsc::Sender<DynamicExecutionMessage>,
 ) -> Result<()> {
-    {
+    let ready_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == DynamicNodeStatus::Ready)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    for node_id in ready_ids {
+        let Some(index) = graph.nodes.iter().position(|node| node.id == node_id) else {
+            continue;
+        };
         let node = graph
             .nodes
             .get_mut(index)
             .ok_or_else(|| anyhow!("dynamic node index out of range"))?;
         node.status = DynamicNodeStatus::Running;
         node.started_at.get_or_insert_with(now_rfc3339_like);
+        let node_clone = node.clone();
+        graph.run.updated_at = now_rfc3339_like();
+        persist_dynamic_graph(ctx, graph)?;
+
+        let background_app = ctx.app.clone_for_background();
+        let task_id = ctx.task_id.to_string();
+        let run_id = ctx.run_id.to_string();
+        let round_id = ctx.round_id.to_string();
+        let outer_node_id = ctx.outer_node_id.to_string();
+        let outer_attempt_id = ctx.outer_attempt_id.to_string();
+        let dynamic = ctx.dynamic.clone();
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let app = background_app;
+            let message = DynamicExecutionMessage {
+                node_id: node_clone.id.clone(),
+                result: execute_dynamic_node_job(
+                    &app,
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    &outer_node_id,
+                    &outer_attempt_id,
+                    &dynamic,
+                    node_clone,
+                ),
+            };
+            let _ = tx.send(message);
+        });
+    }
+    Ok(())
+}
+
+fn apply_dynamic_execution_message(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+    message: DynamicExecutionMessage,
+) -> Result<()> {
+    let index = graph
+        .nodes
+        .iter()
+        .position(|node| node.id == message.node_id)
+        .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", message.node_id))?;
+    let result = message.result?;
+    graph.nodes[index] = result.node;
+    if graph.nodes[index].status == DynamicNodeStatus::Paused {
+        let pause_reason = match graph.nodes[index].kind {
+            DynamicNodeKind::WorkflowInvocation => {
+                let child_run_id = graph.nodes[index]
+                    .child_run_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("paused workflow invocation missing child run id"))?;
+                ctx.app
+                    .run_status(ctx.task_id, child_run_id)?
+                    .pause_reason
+                    .unwrap_or(PauseReason::ProcessInterrupted)
+            }
+            _ => PauseReason::ProcessInterrupted,
+        };
+        pause_dynamic_graph(
+            ctx,
+            graph,
+            pause_reason,
+            "dynamic node paused and is waiting to continue",
+        )?;
+        return Ok(());
+    }
+    let mut accepted_any = false;
+    let mut rejected_source_node_id = None;
+    for proposal in result.proposals {
+        let source_index = graph
+            .nodes
+            .iter()
+            .position(|node| node.id == proposal.source_node_id)
+            .ok_or_else(|| anyhow!("dynamic proposal source node `{}` missing", proposal.source_node_id))?;
+        if proposal.validation_status == DynamicProposalValidationStatus::Rejected {
+            rejected_source_node_id = Some(graph.nodes[source_index].id.clone());
+            graph.proposals.push(proposal);
+            continue;
+        }
+        let completion: DynamicNodeCompletion = serde_json::from_value(proposal.parsed.clone())?;
+        accepted_any = true;
+        graph.proposals.push(proposal.clone());
+        materialize_dynamic_next(ctx, graph, source_index, completion.next)?;
+        append_dynamic_event(
+            ctx,
+            "dynamic_proposal_accepted",
+            serde_json::json!({
+                "proposalId": proposal.id,
+                "sourceNodeId": proposal.source_node_id,
+            }),
+        )?;
+    }
+    if !accepted_any {
+        if let Some(source_node_id) = rejected_source_node_id {
+            pause_dynamic_graph(
+                ctx,
+                graph,
+                PauseReason::ErrorBlocked,
+                "invalid dynamic-node-completion proposal",
+            )?;
+            return Err(anyhow!("dynamic proposal from `{source_node_id}` was rejected"));
+        }
     }
     graph.run.updated_at = now_rfc3339_like();
-    refresh_dynamic_ready_nodes(graph);
-    persist_dynamic_graph(ctx, graph)?;
+    persist_dynamic_graph(ctx, graph)
+}
 
-    let kind = graph.nodes[index].kind;
-    match kind {
-        DynamicNodeKind::Worker => execute_dynamic_worker(ctx, graph, index),
-        DynamicNodeKind::WorkflowInvocation => {
-            execute_dynamic_workflow_invocation(ctx, graph, index)
-        }
-        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
-            execute_dynamic_agent_stage(ctx, graph, index)
-        }
+fn execute_dynamic_node_job(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    dynamic: &AiDynamicNode,
+    node: DynamicNodeState,
+) -> Result<DynamicExecutionResult> {
+    let dynamic_run_path = app
+        .paths
+        .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let graph_path = app
+        .paths
+        .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let run: DynamicRunState = read_json(&dynamic_run_path)?;
+    let mut graph: DynamicGraphState = read_json(&graph_path)?;
+    let ctx = DynamicExecutionContext {
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        dynamic,
+    };
+    let index = graph
+        .nodes
+        .iter()
+        .position(|candidate| candidate.id == node.id)
+        .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", node.id))?;
+    graph.run = run;
+    graph.nodes[index] = node.clone();
+    match node.kind {
+        DynamicNodeKind::Worker => execute_dynamic_worker(&ctx, &graph, node),
+        DynamicNodeKind::WorkflowInvocation => execute_dynamic_workflow_invocation(&ctx, &graph, node),
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => execute_dynamic_agent_stage(&ctx, &graph, node),
     }
+}
+
+fn dynamic_node_continue_ref(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    attempt_id: &str,
+) -> Option<serde_json::Value> {
+    read_json::<WorkerRefState>(&ctx.app.paths.dynamic_node_worker_ref_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        attempt_id,
+    ))
+    .ok()
+    .and_then(|worker_ref| worker_ref.continue_ref)
 }
 
 fn execute_dynamic_worker(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
-) -> Result<()> {
-    ensure_dynamic_workspace(ctx, &mut graph.nodes[index])?;
-    let node = graph.nodes[index].clone();
+    graph: &DynamicGraphState,
+    mut node: DynamicNodeState,
+) -> Result<DynamicExecutionResult> {
+    ensure_dynamic_workspace(ctx, &mut node)?;
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
     let provider_id = node
@@ -1515,10 +1735,19 @@ fn execute_dynamic_worker(
         &attempt_id,
     );
     let mut proposal_repair_prompts = 0;
-    let mut session_mode = SessionMode::New;
-    let mut continue_ref = None;
-    let mut resume_prompt = None;
+    let mut continue_ref = dynamic_node_continue_ref(ctx, &node, &attempt_id);
+    let mut session_mode = if continue_ref.is_some() {
+        SessionMode::Continue
+    } else {
+        SessionMode::New
+    };
+    let mut resume_prompt = if continue_ref.is_some() {
+        Some(localized_continue_prompt(ctx.app.config.desktop_language))
+    } else {
+        None
+    };
     let mut resume_prompt_visibility = PromptVisibility::Visible;
+    let mut proposals = Vec::new();
 
     loop {
         let invocation = build_dynamic_worker_invocation(
@@ -1531,7 +1760,8 @@ fn execute_dynamic_worker(
             continue_ref.clone(),
             resume_prompt.take(),
             resume_prompt_visibility,
-        )?;
+        )
+        .map_err(|error| anyhow!("failed to build dynamic worker invocation for `{}`: {error}", node.id))?;
         append_dynamic_event(
             ctx,
             "dynamic_node_started",
@@ -1540,24 +1770,94 @@ fn execute_dynamic_worker(
                 "kind": node.kind,
                 "sessionMode": session_mode,
             }),
-        )?;
+        )
+        .map_err(|error| anyhow!("failed to append dynamic start event for `{}`: {error}", node.id))?;
         let result = ctx
             .app
-            .provider_for_id(&provider_id)?
-            .run_worker(invocation)?;
-        finalize_dynamic_worker_result(ctx, graph, index, &attempt_id, result)?;
-        if graph.nodes[index].outcome != Some(NodeOutcome::Success) {
-            pause_dynamic_graph(ctx, graph, "dynamic worker failed")?;
-            bail!("dynamic worker `{}` failed", graph.nodes[index].id);
+            .provider_for_id(&provider_id)
+            .map_err(|error| anyhow!("failed to resolve provider `{}` for `{}`: {error}", provider_id, node.id))?
+            .run_worker(invocation)
+            .map_err(|error| anyhow!("provider `{}` failed to run `{}`: {error}", provider_id, node.id))?;
+        finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
+        if node.outcome != Some(NodeOutcome::Success) {
+            bail!("dynamic worker `{}` failed", node.id);
         }
-        match accept_dynamic_completion_from_artifact(ctx, graph, index, &attempt_id) {
-            Ok(()) => return Ok(()),
+        match build_dynamic_completion_from_artifact(ctx, &attempt_id, &node) {
+            Ok(proposal) if proposal.validation_status == DynamicProposalValidationStatus::Accepted => {
+                proposals.push(proposal);
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_node_completed",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "kind": node.kind,
+                        "outcome": node.outcome,
+                    }),
+                )?;
+                return Ok(DynamicExecutionResult { node, proposals });
+            }
+            Ok(proposal) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+                let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
+                    .ok()
+                    .and_then(|worker_ref| worker_ref.continue_ref);
+                let validation_error = proposal.validation_errors.join("\n");
+                proposals.push(proposal);
+                let Some(repair_continue_ref) = repair_continue_ref else {
+                    append_dynamic_event(
+                        ctx,
+                        "dynamic_proposal_repair_exhausted",
+                        serde_json::json!({
+                            "nodeId": node.id,
+                            "attemptId": attempt_id,
+                            "repairAttempts": proposal_repair_prompts,
+                            "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                            "error": validation_error,
+                        }),
+                    )?;
+                    return Ok(DynamicExecutionResult { node, proposals });
+                };
+                proposal_repair_prompts += 1;
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_proposal_repair_requested",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempt": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "error": validation_error,
+                    }),
+                )?;
+                session_mode = SessionMode::Continue;
+                continue_ref = Some(repair_continue_ref);
+                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, validation_error));
+                resume_prompt_visibility = PromptVisibility::Hidden;
+                node.status = DynamicNodeStatus::Running;
+                node.outcome = None;
+                node.finished_at = None;
+                continue;
+            }
+            Ok(proposal) => {
+                let validation_error = proposal.validation_errors.join("\n");
+                proposals.push(proposal);
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_proposal_repair_exhausted",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "repairAttempts": proposal_repair_prompts,
+                        "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
+                        "error": validation_error,
+                    }),
+                )?;
+                return Ok(DynamicExecutionResult { node, proposals });
+            }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
                 let Some(repair_continue_ref) = repair_continue_ref else {
-                    pause_dynamic_graph(ctx, graph, "invalid dynamic-node-completion proposal")?;
                     return Err(err);
                 };
                 proposal_repair_prompts += 1;
@@ -1572,17 +1872,13 @@ fn execute_dynamic_worker(
                         "error": err.to_string(),
                     }),
                 )?;
-                graph.nodes[index].status = DynamicNodeStatus::Running;
-                graph.nodes[index].outcome = None;
-                graph.nodes[index].finished_at = None;
-                graph.run.status = DynamicRunStatus::Running;
-                graph.run.outcome = None;
-                graph.run.updated_at = now_rfc3339_like();
-                persist_dynamic_graph(ctx, graph)?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
                 resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, err.to_string()));
                 resume_prompt_visibility = PromptVisibility::Hidden;
+                node.status = DynamicNodeStatus::Running;
+                node.outcome = None;
+                node.finished_at = None;
                 continue;
             }
             Err(err) => {
@@ -1597,7 +1893,6 @@ fn execute_dynamic_worker(
                         "error": err.to_string(),
                     }),
                 )?;
-                pause_dynamic_graph(ctx, graph, "invalid dynamic-node-completion proposal")?;
                 return Err(err);
             }
         }
@@ -1606,22 +1901,32 @@ fn execute_dynamic_worker(
 
 fn execute_dynamic_agent_stage(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
-) -> Result<()> {
-    graph.nodes[index].workspace_path = Some(ctx.app.paths.repo_root.clone());
-    let node = graph.nodes[index].clone();
+    graph: &DynamicGraphState,
+    mut node: DynamicNodeState,
+) -> Result<DynamicExecutionResult> {
+    node.workspace_path = Some(ctx.app.paths.repo_root.clone());
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
+    let continue_ref = dynamic_node_continue_ref(ctx, &node, &attempt_id);
+    let session_mode = if continue_ref.is_some() {
+        SessionMode::Continue
+    } else {
+        SessionMode::New
+    };
+    let resume_prompt = if continue_ref.is_some() {
+        Some(localized_continue_prompt(ctx.app.config.desktop_language))
+    } else {
+        None
+    };
     let invocation = build_dynamic_worker_invocation(
         ctx,
         graph,
         &node,
         &attempt_id,
         None,
-        SessionMode::New,
-        None,
-        None,
+        session_mode,
+        continue_ref,
+        resume_prompt,
         PromptVisibility::Visible,
     )?;
     let provider_id = node
@@ -1640,30 +1945,37 @@ fn execute_dynamic_agent_stage(
         .app
         .provider_for_id(provider_id)?
         .run_worker(invocation)?;
-    finalize_dynamic_worker_result(ctx, graph, index, &attempt_id, result)?;
-    if graph.nodes[index].outcome != Some(NodeOutcome::Success) {
-        pause_dynamic_graph(ctx, graph, "dynamic merge or acceptance failed")?;
-        bail!("dynamic stage `{}` failed", graph.nodes[index].id);
+    finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
+    if node.status == DynamicNodeStatus::Paused {
+        return Ok(DynamicExecutionResult {
+            node,
+            proposals: Vec::new(),
+        });
+    }
+    if node.outcome != Some(NodeOutcome::Success) {
+        bail!("dynamic stage `{}` failed", node.id);
     }
     append_dynamic_event(
         ctx,
         "dynamic_node_completed",
         serde_json::json!({
-            "nodeId": graph.nodes[index].id,
-            "kind": graph.nodes[index].kind,
-            "outcome": graph.nodes[index].outcome,
+            "nodeId": node.id,
+            "kind": node.kind,
+            "outcome": node.outcome,
         }),
     )?;
-    Ok(())
+    Ok(DynamicExecutionResult {
+        node,
+        proposals: Vec::new(),
+    })
 }
 
 fn execute_dynamic_workflow_invocation(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
-) -> Result<()> {
-    ensure_dynamic_workspace(ctx, &mut graph.nodes[index])?;
-    let node = graph.nodes[index].clone();
+    graph: &DynamicGraphState,
+    mut node: DynamicNodeState,
+) -> Result<DynamicExecutionResult> {
+    ensure_dynamic_workspace(ctx, &mut node)?;
     let workflow_id = node
         .workflow_id
         .as_deref()
@@ -1687,12 +1999,11 @@ fn execute_dynamic_workflow_invocation(
 
     let attempt_id = dynamic_attempt_id(&node);
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
-    let child_workflow =
-        workflow_with_dynamic_invocation_task(
-            ctx.app.config.desktop_language,
-            snapshot.workflow.clone(),
-            &node.task,
-        );
+    let child_workflow = workflow_with_dynamic_invocation_task(
+        ctx.app.config.desktop_language,
+        snapshot.workflow.clone(),
+        &node.task,
+    );
     let child_workflow_path = ctx
         .app
         .paths
@@ -1716,41 +2027,74 @@ fn execute_dynamic_workflow_invocation(
             "snapshotId": snapshot.snapshot_id,
         }),
     )?;
-    let child_run = ctx
-        .app
-        .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?;
-    {
-        let current = graph
-            .nodes
-            .get_mut(index)
-            .ok_or_else(|| anyhow!("dynamic node index out of range"))?;
-        current.child_run_id = Some(child_run.id.clone());
-        current.finished_at = Some(now_rfc3339_like());
-        current.status = DynamicNodeStatus::Completed;
-        current.outcome = Some(if child_run.outcome == Some(RunOutcome::Success) {
-            NodeOutcome::Success
-        } else {
-            NodeOutcome::Failure
-        });
+    let child_run = match node.child_run_id.as_deref() {
+        Some(child_run_id) => ctx.app.run_continue(ctx.task_id, child_run_id, None)?,
+        None => ctx
+            .app
+            .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
+    };
+    node.child_run_id = Some(child_run.id.clone());
+    match child_run.status {
+        RunStatus::Paused => {
+            let pause_reason = child_run
+                .pause_reason
+                .unwrap_or(PauseReason::ProcessInterrupted);
+            node.status = DynamicNodeStatus::Paused;
+            node.outcome = None;
+            node.finished_at = Some(now_rfc3339_like());
+            append_dynamic_event(
+                ctx,
+                "dynamic_child_workflow_paused",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "workflowId": workflow_id,
+                    "childRunId": child_run.id,
+                    "pauseReason": pause_reason,
+                }),
+            )?;
+            return Ok(DynamicExecutionResult {
+                node,
+                proposals: Vec::new(),
+            });
+        }
+        RunStatus::Completed => {
+            node.finished_at = Some(now_rfc3339_like());
+            node.status = DynamicNodeStatus::Completed;
+            node.outcome = Some(match child_run.outcome {
+                Some(RunOutcome::Success) => NodeOutcome::Success,
+                Some(RunOutcome::Killed) => NodeOutcome::Killed,
+                _ => NodeOutcome::Failure,
+            });
+        }
+        RunStatus::Running => {
+            bail!("child workflow invocation `{}` is still running", node.id);
+        }
     }
-    graph.run.updated_at = now_rfc3339_like();
     append_dynamic_event(
         ctx,
         "dynamic_child_workflow_completed",
         serde_json::json!({
-            "nodeId": graph.nodes[index].id,
+            "nodeId": node.id,
             "workflowId": workflow_id,
             "childRunId": child_run.id,
             "outcome": child_run.outcome,
+            "status": child_run.status,
         }),
     )?;
-    if graph.nodes[index].outcome != Some(NodeOutcome::Success) {
-        pause_dynamic_graph(ctx, graph, "child workflow failed")?;
-        bail!(
-            "child workflow invocation `{}` failed",
-            graph.nodes[index].id
-        );
+    if node.outcome != Some(NodeOutcome::Success) {
+        match node.outcome {
+            Some(NodeOutcome::Killed) => {
+                node.status = DynamicNodeStatus::Paused;
+                node.outcome = None;
+                return Ok(DynamicExecutionResult {
+                    node,
+                    proposals: Vec::new(),
+                });
+            }
+            _ => bail!("child workflow invocation `{}` failed", node.id),
+        }
     }
+    let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&node.id));
     let completion = DynamicNodeCompletion {
         version: VERSION.to_string(),
         kind: DynamicNodeCompletionKind::DynamicNodeCompletion,
@@ -1762,7 +2106,30 @@ fn execute_dynamic_workflow_invocation(
             "childRunId": child_run.id,
         })),
     };
-    accept_dynamic_completion(ctx, graph, index, completion, None, None)
+    let proposal = build_dynamic_completion_proposal(
+        ctx,
+        &node,
+        completion,
+        Some(dynamic_proposal_file_path(ctx, &proposal_id)),
+        Some(
+            ctx.app
+                .paths
+                .dynamic_node_attempt_dir(
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.round_id,
+                    ctx.outer_node_id,
+                    ctx.outer_attempt_id,
+                    &node.id,
+                    &attempt_id,
+                )
+                .join("raw.stream.jsonl"),
+        ),
+    )?;
+    Ok(DynamicExecutionResult {
+        node,
+        proposals: vec![proposal],
+    })
 }
 
 fn workflow_with_dynamic_invocation_task(
@@ -1794,16 +2161,11 @@ fn workflow_with_dynamic_invocation_task(
 
 fn finalize_dynamic_worker_result(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
+    node: &mut DynamicNodeState,
     attempt_id: &str,
     result: ProviderRunResult,
 ) -> Result<()> {
-    let node_id = graph.nodes[index].id.clone();
-    let node = graph
-        .nodes
-        .get_mut(index)
-        .ok_or_else(|| anyhow!("dynamic node index out of range"))?;
+    let node_id = node.id.clone();
     node.finished_at = Some(now_rfc3339_like());
     match result.status {
         ProviderRunStatus::Success => {
@@ -1874,31 +2236,28 @@ fn finalize_dynamic_worker_result(
             node.outcome = None;
         }
     }
-    validate_dynamic_node_state(node)?;
-    graph.run.updated_at = now_rfc3339_like();
-    persist_dynamic_graph(ctx, graph)
+    validate_dynamic_node_state(node)
 }
 
-fn accept_dynamic_completion_from_artifact(
+fn build_dynamic_completion_from_artifact(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
     attempt_id: &str,
-) -> Result<()> {
-    let node_id = graph.nodes[index].id.clone();
+    node: &DynamicNodeState,
+) -> Result<DynamicProposalState> {
     let artifact_path = ctx.app.paths.dynamic_node_artifact_file(
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
         ctx.outer_node_id,
         ctx.outer_attempt_id,
-        &node_id,
+        &node.id,
         attempt_id,
         DYNAMIC_COMPLETION_ARTIFACT,
     );
     ensure!(
         artifact_path.exists(),
-        "dynamic node `{node_id}` did not produce dynamic-node-completion"
+        "dynamic node `{}` did not produce dynamic-node-completion",
+        node.id
     );
     let raw = std::fs::read_to_string(artifact_path.as_std_path())?;
     let completion: DynamicNodeCompletion = parse_json_artifact(&raw)?;
@@ -1911,43 +2270,36 @@ fn accept_dynamic_completion_from_artifact(
             ctx.round_id,
             ctx.outer_node_id,
             ctx.outer_attempt_id,
-            &node_id,
+            &node.id,
             attempt_id,
         )
         .join("raw.stream.jsonl");
-    accept_dynamic_completion(
-        ctx,
-        graph,
-        index,
-        completion,
-        Some(artifact_path),
-        Some(raw_output_path),
-    )
+    build_dynamic_completion_proposal(ctx, node, completion, Some(artifact_path), Some(raw_output_path))
 }
 
-fn accept_dynamic_completion(
+fn build_dynamic_completion_proposal(
     ctx: &DynamicExecutionContext<'_>,
-    graph: &mut DynamicGraphState,
-    index: usize,
+    node: &DynamicNodeState,
     completion: DynamicNodeCompletion,
     artifact_path: Option<Utf8PathBuf>,
     raw_output_path: Option<Utf8PathBuf>,
-) -> Result<()> {
-    let source_node_id = graph.nodes[index].id.clone();
+) -> Result<DynamicProposalState> {
+    let graph: DynamicGraphState = read_json(&ctx.app.paths.dynamic_graph_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    ))?;
+    let index = graph
+        .nodes
+        .iter()
+        .position(|candidate| candidate.id == node.id)
+        .ok_or_else(|| anyhow!("dynamic source node `{}` missing", node.id))?;
+    let source_node_id = node.id.clone();
     let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&source_node_id));
-    let proposal_artifact_path = artifact_path.unwrap_or_else(|| {
-        ctx.app
-            .paths
-            .dynamic_dir(
-                ctx.task_id,
-                ctx.run_id,
-                ctx.round_id,
-                ctx.outer_node_id,
-                ctx.outer_attempt_id,
-            )
-            .join("proposals")
-            .join(format!("{proposal_id}.json"))
-    });
+    let proposal_artifact_path =
+        artifact_path.unwrap_or_else(|| dynamic_proposal_file_path(ctx, &proposal_id));
     let proposal_raw_output_path = raw_output_path.unwrap_or_else(|| {
         ctx.app
             .paths
@@ -1961,7 +2313,7 @@ fn accept_dynamic_completion(
             .join("events.jsonl")
     });
     let parsed = serde_json::to_value(&completion)?;
-    if let Err(err) = validate_dynamic_completion(graph, index, &completion).and_then(|_| {
+    match validate_dynamic_completion(&graph, index, &completion).and_then(|_| {
         ensure!(
             !graph.proposals.iter().any(|proposal| {
                 proposal.source_node_id == source_node_id
@@ -1971,55 +2323,44 @@ fn accept_dynamic_completion(
         );
         Ok(())
     }) {
-        graph.proposals.push(DynamicProposalState {
+        Ok(()) => Ok(DynamicProposalState {
             version: VERSION.to_string(),
-            id: proposal_id.clone(),
-            dynamic_run_id: graph.run.id.clone(),
-            source_node_id: source_node_id.clone(),
+            id: proposal_id,
+            dynamic_run_id: graph.run.id,
+            source_node_id,
             artifact_path: proposal_artifact_path,
             raw_output_path: proposal_raw_output_path,
             parsed,
-            validation_status: DynamicProposalValidationStatus::Rejected,
-            validation_errors: vec![err.to_string()],
+            validation_status: DynamicProposalValidationStatus::Accepted,
+            validation_errors: Vec::new(),
             materialized_event_ids: Vec::new(),
             created_at: now_rfc3339_like(),
-        });
-        append_dynamic_event(
-            ctx,
-            "dynamic_proposal_rejected",
-            serde_json::json!({
-                "proposalId": proposal_id,
-                "sourceNodeId": source_node_id,
-                "error": err.to_string(),
-            }),
-        )?;
-        pause_dynamic_graph(ctx, graph, "invalid dynamic-node-completion proposal")?;
-        return Err(err);
-    }
-    let proposal = DynamicProposalState {
-        version: VERSION.to_string(),
-        id: proposal_id.clone(),
-        dynamic_run_id: graph.run.id.clone(),
-        source_node_id: source_node_id.clone(),
-        artifact_path: proposal_artifact_path,
-        raw_output_path: proposal_raw_output_path,
-        parsed,
-        validation_status: DynamicProposalValidationStatus::Accepted,
-        validation_errors: Vec::new(),
-        materialized_event_ids: Vec::new(),
-        created_at: now_rfc3339_like(),
-    };
-    graph.proposals.push(proposal);
-    materialize_dynamic_next(ctx, graph, index, completion.next)?;
-    append_dynamic_event(
-        ctx,
-        "dynamic_proposal_accepted",
-        serde_json::json!({
-            "proposalId": proposal_id,
-            "sourceNodeId": source_node_id,
         }),
-    )?;
-    persist_dynamic_graph(ctx, graph)
+        Err(err) => {
+            append_dynamic_event(
+                ctx,
+                "dynamic_proposal_rejected",
+                serde_json::json!({
+                    "proposalId": proposal_id,
+                    "sourceNodeId": source_node_id,
+                    "error": err.to_string(),
+                }),
+            )?;
+            Ok(DynamicProposalState {
+                version: VERSION.to_string(),
+                id: proposal_id,
+                dynamic_run_id: graph.run.id,
+                source_node_id,
+                artifact_path: proposal_artifact_path,
+                raw_output_path: proposal_raw_output_path,
+                parsed,
+                validation_status: DynamicProposalValidationStatus::Rejected,
+                validation_errors: vec![err.to_string()],
+                materialized_event_ids: Vec::new(),
+                created_at: now_rfc3339_like(),
+            })
+        }
+    }
 }
 
 fn validate_dynamic_completion(
@@ -2189,6 +2530,14 @@ fn ensure_dynamic_agent_task_spec(spec: &DynamicAgentTaskSpec, name: &str) -> Re
         !spec.title.trim().is_empty(),
         "dynamic {name} title cannot be blank"
     );
+    ensure!(
+        !spec.provider.trim().is_empty(),
+        "dynamic {name} provider cannot be blank"
+    );
+    ensure!(
+        !spec.task.trim().is_empty(),
+        "dynamic {name} task cannot be blank"
+    );
     Ok(())
 }
 
@@ -2198,15 +2547,6 @@ fn ensure_dynamic_node_budget(graph: &DynamicGraphState, additional_nodes: usize
         "dynamic graph exceeds maxDynamicNodes"
     );
     Ok(())
-}
-
-fn dynamic_group_agent_spec(config: &DynamicAgentConfigDsl, title: String) -> DynamicAgentTaskSpec {
-    DynamicAgentTaskSpec {
-        title,
-        provider: config.provider.clone().unwrap_or_default(),
-        profile: String::new(),
-        task: String::new(),
-    }
 }
 
 fn materialize_dynamic_next(
@@ -2260,8 +2600,6 @@ fn materialize_dynamic_next(
                 .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
                 .map(|group| group.depth + 1)
                 .unwrap_or(1);
-            let merge = dynamic_group_agent_spec(&ctx.dynamic.merge, merge.title);
-            let acceptance = dynamic_group_agent_spec(&ctx.dynamic.acceptance, acceptance.title);
             let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
             let group = DynamicGroupState {
                 version: VERSION.to_string(),
@@ -2353,7 +2691,7 @@ fn dynamic_node_state_from_spec(
         workspace: spec.workspace,
         workspace_path: None,
         provider: spec.provider,
-        profile: None,
+        profile: spec.profile,
         workflow_id: spec.workflow_id,
         workflow_snapshot_id,
         child_run_id: None,
@@ -2374,13 +2712,18 @@ fn refresh_dynamic_ready_nodes(graph: &mut DynamicGraphState) {
         })
         .map(|node| node.id.clone())
         .collect::<std::collections::HashSet<_>>();
-    let running_count = graph
+    let occupied_slots = graph
         .nodes
         .iter()
-        .filter(|node| node.status == DynamicNodeStatus::Running)
+        .filter(|node| {
+            matches!(
+                node.status,
+                DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+            )
+        })
         .count();
     let mut available_slots =
-        (graph.run.control.max_parallel as usize).saturating_sub(running_count);
+        (graph.run.control.max_parallel as usize).saturating_sub(occupied_slots);
     for index in 0..graph.nodes.len() {
         if available_slots == 0 {
             break;
@@ -2795,8 +3138,7 @@ fn build_dynamic_worker_invocation(
         None => node
             .profile
             .as_deref()
-            .map(|profile| ctx.app.profile_show(profile).map(|entry| entry.content))
-            .transpose()?,
+            .and_then(|profile| ctx.app.profile_show(profile).ok().map(|entry| entry.content)),
     };
     let workspace_dir = node
         .workspace_path
@@ -2963,14 +3305,13 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
 }
 
 fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    let mut providers = Vec::new();
+    let mut providers = ctx
+        .app
+        .managed_agents()
+        .keys()
+        .map(|agent_type| agent_type.as_str().to_string())
+        .collect::<Vec<_>>();
     if let Some(provider) = ctx.dynamic.provider.clone() {
-        providers.push(provider);
-    }
-    if let Some(provider) = ctx.dynamic.merge.provider.clone() {
-        providers.push(provider);
-    }
-    if let Some(provider) = ctx.dynamic.acceptance.provider.clone() {
         providers.push(provider);
     }
     providers.sort();
@@ -2993,7 +3334,7 @@ fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
             .map(|profile| format!("- {} ({})", profile.name, profile.id))
             .collect::<Vec<_>>()
             .join("\n"),
-        _ => "none".to_string(),
+        Ok(_) | Err(_) => "none".to_string(),
     }
 }
 
@@ -3408,16 +3749,19 @@ fn persist_dynamic_graph(
 fn pause_dynamic_graph(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
+    pause_reason: PauseReason,
     reason: &str,
 ) -> Result<()> {
     graph.run.status = DynamicRunStatus::Paused;
     graph.run.outcome = None;
+    graph.run.pause_reason = Some(pause_reason);
     graph.run.updated_at = now_rfc3339_like();
     append_dynamic_event(
         ctx,
         "dynamic_run_paused",
         serde_json::json!({
             "dynamicRunId": graph.run.id,
+            "pauseReason": pause_reason,
             "reason": reason,
         }),
     )?;
@@ -3612,6 +3956,65 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Completed {
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
+        }
+
+        if node.status == RunStatus::Paused {
+            let pause_reason = if node.node_type == crate::domain::NodeType::AiDynamic {
+                let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+                    task_id,
+                    &run.id,
+                    &round.id,
+                    &node.node_id,
+                    &node.attempt_id,
+                ))?;
+                graph.run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted)
+            } else {
+                PauseReason::ProcessInterrupted
+            };
+            run.status = RunStatus::Paused;
+            run.pause_reason = Some(pause_reason);
+            run.updated_at = now_rfc3339_like();
+            round.status = RunStatus::Paused;
+            let summary = format!(
+                "run {} paused at {}/{}/{}",
+                run.id, round.id, node.node_id, node.attempt_id
+            );
+            progress(&summary);
+            write_run_progress_best_effort(
+                &app.paths,
+                task_id,
+                run,
+                Some(node.node_type),
+                if pause_reason == PauseReason::ErrorBlocked {
+                    ProgressStage::Blocked
+                } else {
+                    ProgressStage::Paused
+                },
+                summary.clone(),
+            );
+            append_run_event_best_effort(
+                &app.paths,
+                task_id,
+                &run.id,
+                "run_paused",
+                run.updated_at.clone(),
+                run_event_data(
+                    &ExecutionContext::for_run(task_id, &run.id)
+                        .with_round(round.id.clone())
+                        .with_node(node.node_id.clone())
+                        .with_attempt(node.attempt_id.clone()),
+                    Some(if pause_reason == PauseReason::ErrorBlocked {
+                        ProgressStage::Blocked
+                    } else {
+                        ProgressStage::Paused
+                    }),
+                    Some(run.status),
+                    Some(summary),
+                    run.pause_reason,
+                ),
+            );
+            persist_runtime_state(app, task_id, run, round, &node)?;
+            return Ok(());
         }
 
         if node.status == RunStatus::Completed && node.outcome == Some(NodeOutcome::Invalid) {

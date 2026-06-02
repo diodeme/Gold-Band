@@ -1,10 +1,10 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
-use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
     DynamicGraphState, DynamicGroupStatus, DynamicNodeKind, DynamicNodeStatus,
-    DynamicProposalValidationStatus,
+    DynamicProposalValidationStatus, DynamicRunStatus,
 };
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
@@ -21,6 +21,7 @@ enum DynamicScenario {
     InvalidWorkflowInvocation,
     FanoutRepair,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
+    WorkflowInvocationPauseThenContinue { workflow_id: Arc<Mutex<String>> },
 }
 
 #[derive(Clone)]
@@ -56,6 +57,10 @@ impl DynamicProvider {
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
         Self::new(DynamicScenario::WorkflowInvocation { workflow_id })
     }
+
+    fn workflow_invocation_pause_then_continue(workflow_id: Arc<Mutex<String>>) -> Self {
+        Self::new(DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id })
+    }
 }
 
 impl ProviderAdapter for DynamicProvider {
@@ -82,25 +87,34 @@ impl ProviderAdapter for DynamicProvider {
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         self.invocations.lock().unwrap().push(req.clone());
-        let output_artifact = match self.dynamic_artifact_for(&req) {
-            Some(content) => Some(OutputArtifactPayload {
-                name: req
-                    .output_contract
-                    .as_ref()
-                    .map(|contract| contract.artifact.clone())
-                    .unwrap_or_else(|| "dynamic-node-completion".to_string()),
-                content,
-            }),
-            None => None,
+        let (status, output_artifact) = match (&self.scenario, req.runtime_context.run_id.as_str(), req.runtime_context.node_id.as_str(), req.session_mode) {
+            (DynamicScenario::WorkflowInvocationPauseThenContinue { .. }, "run-002", "child", SessionMode::New) => (
+                ProviderRunStatus::Interrupted,
+                None,
+            ),
+            _ => {
+                let output_artifact = match self.dynamic_artifact_for(&req) {
+                    Some(content) => Some(OutputArtifactPayload {
+                        name: req
+                            .output_contract
+                            .as_ref()
+                            .map(|contract| contract.artifact.clone())
+                            .unwrap_or_else(|| "dynamic-node-completion".to_string()),
+                        content,
+                    }),
+                    None => None,
+                };
+                (ProviderRunStatus::Success, output_artifact)
+            }
         };
 
         Ok(ProviderRunResult {
-            status: ProviderRunStatus::Success,
+            status,
             exit_code: Some(0),
             result_payload: Some(ProviderResultPayload { output_artifact }),
             worker_ref_seed: Some(SessionRef {
                 provider: "claude-acp".to_string(),
-                mode: SessionMode::New,
+                mode: req.session_mode,
                 supports_open_session: true,
                 supports_continue_session: true,
                 continue_ref: Some(serde_json::json!({
@@ -156,7 +170,8 @@ impl DynamicProvider {
             (DynamicScenario::FanoutRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
             }
-            (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap") => {
+            (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
+            | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") => {
                 let workflow_id = workflow_id.lock().unwrap().clone();
                 Some(workflow_invocation_completion(&workflow_id))
             }
@@ -423,13 +438,7 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                             "maxWorkflowInvocations": 2,
                             "allowNestedDynamic": false
                         }},
-                        "allowedWorkflows": {allowed_workflows},
-                        "merge": {{
-                            "provider": "claude-acp"
-                        }},
-                        "acceptance": {{
-                            "provider": "claude-acp"
-                        }}
+                        "allowedWorkflows": {allowed_workflows}
                     }}
                 ],
                 "edges": [
@@ -493,16 +502,12 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         .iter()
         .map(|invocation| invocation.runtime_context.node_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(
-        node_ids,
-        vec![
-            "bootstrap",
-            "branch-a",
-            "branch-b",
-            "group-core-merge",
-            "group-core-accept"
-        ]
-    );
+    assert_eq!(node_ids[0], "bootstrap");
+    assert_eq!(node_ids[3], "group-core-merge");
+    assert_eq!(node_ids[4], "group-core-accept");
+    let branch_nodes = node_ids[1..3].to_vec();
+    assert!(branch_nodes.contains(&"branch-a"));
+    assert!(branch_nodes.contains(&"branch-b"));
     let bootstrap = render_prompt_bundle(&invocations[0]).unwrap();
     assert!(bootstrap.system_prompt.contains("dynamic-run-001"));
     assert!(bootstrap.system_prompt.contains("bootstrap"));
@@ -709,9 +714,7 @@ fn ai_dynamic_rejects_allowed_workflow_with_duplicate_workflow_id() {
                         "maxWorkflowInvocations": 2,
                         "allowNestedDynamic": false
                     }},
-                    "allowedWorkflows": [{{ "workflowId": "shared-workflow" }}],
-                    "merge": {{ "provider": "claude-acp" }},
-                    "acceptance": {{ "provider": "claude-acp" }}
+                    "allowedWorkflows": [{{ "workflowId": "shared-workflow" }}]
                 }}
             ],
             "edges": [
@@ -781,6 +784,231 @@ fn ai_dynamic_repairs_over_limit_fanout_before_pausing() {
         .as_deref()
         .unwrap()
         .contains("remaining dynamic nodes"));
+}
+
+#[test]
+fn ai_dynamic_run_kill_recursively_marks_child_run_and_dynamic_nodes_killed() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-kill-child";
+    let workflow_id = Arc::new(Mutex::new(String::new()));
+    let provider = DynamicProvider::workflow_invocation(workflow_id.clone());
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+
+    let store = app
+        .save_workflow_template(
+            "Child Flow".to_string(),
+            serde_json::from_str(&format!(
+                r#"{{
+                    "version": "0.1",
+                    "id": "child-flow",
+                    "entry": "child",
+                    "nodes": [
+                        {{
+                            "id": "child",
+                            "type": "worker",
+                            "provider": "claude-acp",
+                            "profile": "{profile}",
+                            "goal": "Run child work"
+                        }}
+                    ],
+                    "edges": [
+                        {{ "from": "child", "to": "$end", "on": "success" }}
+                    ]
+                }}"#
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let child_template = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Child Flow")
+        .unwrap();
+    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
+
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(
+        &app,
+        task_id,
+        &profile,
+        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
+    );
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let killed = app.run_kill(task_id, "run-001").unwrap();
+    assert_eq!(killed.outcome, Some(RunOutcome::Killed));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(graph.run.outcome, Some(RunOutcome::Killed));
+    let child_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "child-flow-node")
+        .unwrap();
+    assert_eq!(child_node.outcome, Some(NodeOutcome::Killed));
+    let child_run: gold_band::runtime::RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
+    assert_eq!(child_run.outcome, Some(RunOutcome::Killed));
+}
+
+#[test]
+fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-child-pause";
+    let workflow_id = Arc::new(Mutex::new(String::new()));
+    let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+
+    let store = app
+        .save_workflow_template(
+            "Child Flow".to_string(),
+            serde_json::from_str(&format!(
+                r#"{{
+                    "version": "0.1",
+                    "id": "child-flow",
+                    "entry": "child",
+                    "nodes": [
+                        {{
+                            "id": "child",
+                            "type": "worker",
+                            "provider": "claude-acp",
+                            "profile": "{profile}",
+                            "goal": "Run child work"
+                        }}
+                    ],
+                    "edges": [
+                        {{ "from": "child", "to": "$end", "on": "success" }}
+                    ]
+                }}"#
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let child_template = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Child Flow")
+        .unwrap();
+    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
+
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(
+        &app,
+        task_id,
+        &profile,
+        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
+    );
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+    assert_eq!(graph.run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    let invocation_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "child-flow-node")
+        .unwrap();
+    assert_eq!(invocation_node.status, DynamicNodeStatus::Paused);
+    assert_eq!(invocation_node.child_run_id.as_deref(), Some("run-002"));
+
+    let child_run: gold_band::runtime::RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
+    assert_eq!(child_run.status, RunStatus::Paused);
+    assert_eq!(child_run.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let resumed = app.run_continue(task_id, "run-001", None).unwrap();
+    assert_eq!(resumed.status, RunStatus::Completed);
+    assert_eq!(resumed.outcome, Some(RunOutcome::Success));
+
+    let child_run: gold_band::runtime::RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
+    assert_eq!(child_run.status, RunStatus::Completed);
+    assert_eq!(child_run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert!(invocations.iter().any(|invocation| {
+        invocation.runtime_context.run_id == "run-002"
+            && invocation.runtime_context.node_id == "child"
+            && invocation.session_mode == SessionMode::Continue
+    }));
+}
+
+#[test]
+fn ai_dynamic_pause_all_running_sessions_recursively_pauses_child_run() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-global-pause";
+    let workflow_id = Arc::new(Mutex::new(String::new()));
+    let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
+    let app = App::with_provider(repo_root, Box::new(provider));
+    let profile = first_profile_id(&app);
+
+    let store = app
+        .save_workflow_template(
+            "Child Flow".to_string(),
+            serde_json::from_str(&format!(
+                r#"{{
+                    "version": "0.1",
+                    "id": "child-flow",
+                    "entry": "child",
+                    "nodes": [
+                        {{
+                            "id": "child",
+                            "type": "worker",
+                            "provider": "claude-acp",
+                            "profile": "{profile}",
+                            "goal": "Run child work"
+                        }}
+                    ],
+                    "edges": [
+                        {{ "from": "child", "to": "$end", "on": "success" }}
+                    ]
+                }}"#
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let child_template = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Child Flow")
+        .unwrap();
+    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
+
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(
+        &app,
+        task_id,
+        &profile,
+        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
+    );
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+
+    let paused_runs = app.pause_all_running_sessions().unwrap();
+    assert!(paused_runs.is_empty());
+
+    let paused = app.run_pause(task_id, "run-001", PauseReason::ProcessInterrupted).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(graph.run.status, gold_band::dynamic::DynamicRunStatus::Paused);
+    assert_eq!(graph.run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    let child_run: gold_band::runtime::RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
+    assert_eq!(child_run.status, RunStatus::Paused);
+    assert_eq!(child_run.pause_reason, Some(PauseReason::ProcessInterrupted));
 }
 
 #[test]

@@ -614,6 +614,24 @@ pub(crate) fn finalize_ai_attempt(
     result: ProviderRunResult,
 ) -> Result<NodeState> {
     node.finished_at = Some(now_rfc3339_like());
+    if let Some(seed) = result.worker_ref_seed.clone() {
+        let worker_ref = WorkerRefState {
+            version: VERSION.to_string(),
+            provider: seed.provider,
+            mode: seed.mode,
+            supports_open_session: seed.supports_open_session,
+            supports_continue_session: seed.supports_continue_session,
+            continue_ref: seed.continue_ref,
+            open_command: seed.open_command,
+        };
+        validate_worker_ref_state(&worker_ref)?;
+        write_json(
+            &app.paths
+                .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
+            &worker_ref,
+        )?;
+    }
+
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
@@ -633,24 +651,6 @@ pub(crate) fn finalize_ai_attempt(
                     )?;
                     std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
                 }
-            }
-
-            if let Some(seed) = result.worker_ref_seed {
-                let worker_ref = WorkerRefState {
-                    version: VERSION.to_string(),
-                    provider: seed.provider,
-                    mode: seed.mode,
-                    supports_open_session: seed.supports_open_session,
-                    supports_continue_session: seed.supports_continue_session,
-                    continue_ref: seed.continue_ref,
-                    open_command: seed.open_command,
-                };
-                validate_worker_ref_state(&worker_ref)?;
-                write_json(
-                    &app.paths
-                        .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
-                    &worker_ref,
-                )?;
             }
 
             let needs_output_artifact = node.resolved_config.contains_key("outputArtifact");

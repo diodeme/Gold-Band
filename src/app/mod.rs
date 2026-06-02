@@ -22,6 +22,7 @@ use crate::dsl::{
     OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
     WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
+use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
@@ -466,21 +467,21 @@ fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => [
-            dynamic.provider.as_ref(),
-            dynamic.merge.provider.as_ref(),
-            dynamic.acceptance.provider.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect(),
+        NodeDsl::AiDynamic(dynamic) => dynamic.provider.iter().cloned().collect(),
     }
 }
 
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
+    }
+
+    pub(crate) fn clone_for_background(&self) -> Self {
+        Self {
+            paths: self.paths.clone(),
+            config: self.config.clone(),
+            provider_override: self.provider_override.clone(),
+        }
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -1423,8 +1424,7 @@ impl App {
 
     pub fn run_kill(&self, task_id: &str, run_id: &str) -> Result<RunState> {
         let mut run = self.run_status(task_id, run_id)?;
-        self.request_current_provider_cancel_best_effort(task_id, run_id, &run);
-        self.kill_current_provider_process_best_effort(task_id, run_id, &run);
+        self.kill_run_descendants_best_effort(task_id, run_id, &run);
         run.status = RunStatus::Completed;
         run.outcome = Some(RunOutcome::Killed);
         run.pause_reason = None;
@@ -1451,6 +1451,13 @@ impl App {
                     node.finished_at = Some(now_rfc3339_like());
                     validate_node_state(&node)?;
                     write_json(&node_path, &node)?;
+                    self.kill_dynamic_descendants_best_effort(
+                        task_id,
+                        run_id,
+                        round_id,
+                        node_id,
+                        attempt_id,
+                    );
                 }
             }
         }
@@ -1458,8 +1465,8 @@ impl App {
         Ok(run)
     }
 
-    pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
-        let mut stopped = Vec::new();
+    pub fn pause_all_running_sessions(&self) -> Result<Vec<RunState>> {
+        let mut paused = Vec::new();
         for task in self.task_list()? {
             let Ok(runs) = self.run_list(&task.id) else {
                 continue;
@@ -1468,46 +1475,193 @@ impl App {
                 if run.status != RunStatus::Running {
                     continue;
                 }
-                if let Ok(killed) = self.run_kill(&task.id, &run.id) {
-                    stopped.push(killed);
+                if let Ok(paused_run) = self.run_pause(&task.id, &run.id, PauseReason::ProcessInterrupted) {
+                    paused.push(paused_run);
                 }
             }
         }
-        Ok(stopped)
+        Ok(paused)
     }
 
-    fn request_current_provider_cancel_best_effort(
-        &self,
-        task_id: &str,
-        run_id: &str,
-        run: &RunState,
-    ) {
+    pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
+        self.pause_all_running_sessions()
+    }
+
+    fn kill_run_descendants_best_effort(&self, task_id: &str, run_id: &str, run: &RunState) {
         let (Some(round_id), Some(node_id), Some(attempt_id)) =
             (&run.current_round, &run.current_node, &run.current_attempt)
         else {
             return;
         };
-        let attempt_dir = self
-            .paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-        let _ = request_cancel(&attempt_dir, now_rfc3339_like());
-        let _ = cancel_pending_permission_requests(&attempt_dir, now_rfc3339_like());
+        self.cancel_attempt_dir_best_effort(&self.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id));
+        self.kill_provider_pid_file_best_effort(&self.paths.provider_pid_file(task_id, run_id, round_id, node_id, attempt_id));
+        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
     }
 
-    fn kill_current_provider_process_best_effort(
+    fn update_dynamic_descendants_best_effort(
         &self,
         task_id: &str,
         run_id: &str,
-        run: &RunState,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        pause_reason: Option<PauseReason>,
     ) {
-        let (Some(round_id), Some(node_id), Some(attempt_id)) =
-            (&run.current_round, &run.current_node, &run.current_attempt)
-        else {
+        let graph_path = self
+            .paths
+            .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
+        let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
             return;
         };
-        let pid_path = self
-            .paths
-            .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
+
+        for dynamic_node in &mut graph.nodes {
+            let dynamic_node_dir = self.paths.dynamic_node_dir(
+                task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                &dynamic_node.id,
+            );
+            if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
+                for entry in entries.flatten() {
+                    let attempt_path = entry.path();
+                    if !attempt_path.is_dir() {
+                        continue;
+                    }
+                    let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
+                        continue;
+                    };
+                    self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                    self.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
+                }
+            }
+            if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
+                if let Some(reason) = pause_reason {
+                    let _ = self.run_pause(task_id, &child_run_id, reason);
+                } else {
+                    let _ = self.run_kill(task_id, &child_run_id);
+                }
+            }
+            match pause_reason {
+                Some(_) => {
+                    if dynamic_node.status != DynamicNodeStatus::Completed {
+                        dynamic_node.status = DynamicNodeStatus::Paused;
+                        dynamic_node.outcome = None;
+                        dynamic_node.finished_at = Some(now_rfc3339_like());
+                    }
+                }
+                None => {
+                    dynamic_node.status = DynamicNodeStatus::Completed;
+                    dynamic_node.outcome = Some(NodeOutcome::Killed);
+                    dynamic_node.finished_at.get_or_insert_with(now_rfc3339_like);
+                }
+            }
+        }
+
+        if pause_reason.is_none() {
+            for group in &mut graph.groups {
+                if group.status != DynamicGroupStatus::Closed {
+                    group.status = DynamicGroupStatus::Failed;
+                    group.updated_at = now_rfc3339_like();
+                }
+            }
+        }
+
+        match pause_reason {
+            Some(reason) => {
+                graph.run.status = DynamicRunStatus::Paused;
+                graph.run.outcome = None;
+                graph.run.pause_reason = Some(reason);
+            }
+            None => {
+                graph.run.status = DynamicRunStatus::Completed;
+                graph.run.outcome = Some(RunOutcome::Killed);
+                graph.run.pause_reason = None;
+            }
+        }
+        graph.run.current_node_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.status, DynamicNodeStatus::Ready | DynamicNodeStatus::Running | DynamicNodeStatus::Paused))
+            .map(|node| node.id.clone())
+            .collect();
+        graph.run.updated_at = now_rfc3339_like();
+        let _ = write_json(&graph_path, &graph);
+        let _ = write_json(
+            &self
+                .paths
+                .dynamic_run_file(task_id, run_id, round_id, node_id, attempt_id),
+            &graph.run,
+        );
+    }
+
+    fn kill_dynamic_descendants_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) {
+        self.update_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id, None);
+    }
+
+    pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
+        let mut run = self.run_status(task_id, run_id)?;
+        if run.status != RunStatus::Running {
+            return Ok(run);
+        }
+        let now = now_rfc3339_like();
+        let current_round = run.current_round.clone();
+        let current_node = run.current_node.clone();
+        let current_attempt = run.current_attempt.clone();
+        self.kill_run_descendants_best_effort(task_id, run_id, &run);
+        run.status = RunStatus::Paused;
+        run.outcome = None;
+        run.pause_reason = Some(reason);
+        run.updated_at = now.clone();
+        validate_run_state(&run)?;
+        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+
+        if let Some(round_id) = current_round.as_deref() {
+            let mut round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+            round.status = RunStatus::Paused;
+            validate_round_state(&round)?;
+            write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
+
+            if let (Some(node_id), Some(attempt_id)) = (current_node.as_deref(), current_attempt.as_deref()) {
+                let node_path = self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id);
+                if node_path.exists() {
+                    let mut node: NodeState = read_json(&node_path)?;
+                    if node.status != RunStatus::Completed {
+                        node.status = RunStatus::Paused;
+                        node.outcome = None;
+                        node.finished_at = Some(now.clone());
+                        validate_node_state(&node)?;
+                        write_json(&node_path, &node)?;
+                    }
+                    self.update_dynamic_descendants_best_effort(
+                        task_id,
+                        run_id,
+                        round_id,
+                        node_id,
+                        attempt_id,
+                        Some(reason),
+                    );
+                }
+            }
+        }
+
+        Ok(run)
+    }
+
+    fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
+        let _ = request_cancel(attempt_dir, now_rfc3339_like());
+        let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
+    }
+
+    fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
         let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) else {
             return;
         };

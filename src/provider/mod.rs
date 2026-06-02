@@ -118,6 +118,7 @@ pub struct PromptOutputContract {
     pub artifact: String,
     pub kind: String,
     pub schema: Option<serde_json::Value>,
+    pub schema_text: Option<String>,
     pub success_condition: Option<String>,
 }
 
@@ -622,9 +623,14 @@ fn runtime_output_contract_context(
         artifact: contract.artifact.clone(),
         kind: contract.kind.clone(),
         schema: contract
-            .schema
-            .as_ref()
-            .map(|schema| serde_json::to_string_pretty(schema).expect("serialize output schema"))
+            .schema_text
+            .clone()
+            .or_else(|| {
+                contract
+                    .schema
+                    .as_ref()
+                    .map(|schema| serde_json::to_string_pretty(schema).expect("serialize output schema"))
+            })
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
     }

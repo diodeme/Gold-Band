@@ -43,6 +43,7 @@ fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
         artifact: output.artifact.clone(),
         kind: format!("{:?}", output.kind).to_ascii_lowercase(),
         schema: output.schema.clone(),
+        schema_text: None,
         success_condition: worker
             .success_condition
             .as_ref()

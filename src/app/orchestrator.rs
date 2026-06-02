@@ -31,7 +31,7 @@ use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
 };
-use crate::prompts::{AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN, AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN, AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN, AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN, RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template};
+use crate::prompts::{AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN, AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN, AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN, AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN, AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN, RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template};
 use crate::provider::{
     PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, StreamMode, WorkerInvocation,
@@ -1319,11 +1319,20 @@ fn dynamic_runtime_context(
     }
 }
 
-fn dynamic_output_contract() -> PromptOutputContract {
+fn dynamic_output_contract(language: DesktopLanguage) -> PromptOutputContract {
     PromptOutputContract {
         artifact: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
         kind: "json".to_string(),
         schema: Some(dynamic_completion_schema()),
+        schema_text: Some(
+            prompt_by_language(
+                language,
+                AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
+                AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
+            )
+            .trim()
+            .to_string(),
+        ),
         success_condition: None,
     }
 }
@@ -1773,7 +1782,7 @@ fn execute_dynamic_worker(
             graph,
             &node,
             &attempt_id,
-            Some(dynamic_output_contract()),
+            Some(dynamic_output_contract(ctx.app.config.desktop_language)),
             session_mode,
             continue_ref.clone(),
             resume_prompt.take(),
@@ -3578,9 +3587,8 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
         .iter()
         .map(|snapshot| {
             format!(
-                "- workflowId={} snapshotId={} name={} containsAiDynamic={}",
+                "- workflowId={} name={} containsAiDynamic={}",
                 snapshot.workflow_id,
-                snapshot.snapshot_id,
                 snapshot.name,
                 snapshot.contains_ai_dynamic,
             )

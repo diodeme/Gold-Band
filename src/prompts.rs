@@ -34,6 +34,8 @@ pub const AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN: &str = include_str!("prompts/zh-
 pub const AI_DYNAMIC_WORKFLOW_INVOCATION_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/workflow_invocation.md");
 pub const AI_DYNAMIC_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/ai-dynamic/system.md");
 pub const AI_DYNAMIC_SYSTEM_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/system.md");
+pub const AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/ai-dynamic/output_protocol.md");
+pub const AI_DYNAMIC_OUTPUT_PROTOCOL_EN: &str = include_str!("prompts/en/runtime/ai-dynamic/output_protocol.md");
 
 pub fn render<T: Serialize>(template: &str, context: T) -> Result<String> {
     let mut env = Environment::new();

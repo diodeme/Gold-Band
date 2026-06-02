@@ -392,11 +392,19 @@ pub struct DynamicGroupVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DynamicProposalValidationErrorVm {
+    pub code: String,
+    pub message: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DynamicProposalVm {
     pub id: String,
     pub source_node_id: String,
     pub validation_status: String,
-    pub validation_errors: Vec<String>,
+    pub validation_errors: Vec<DynamicProposalValidationErrorVm>,
     pub artifact_path: String,
     pub created_at: String,
 }
@@ -1813,7 +1821,15 @@ fn dynamic_detail_vm(
                 id: proposal.id.clone(),
                 source_node_id: proposal.source_node_id.clone(),
                 validation_status: enum_label(&proposal.validation_status),
-                validation_errors: proposal.validation_errors.clone(),
+                validation_errors: proposal
+                    .validation_errors
+                    .iter()
+                    .map(|error| DynamicProposalValidationErrorVm {
+                        code: error.code.clone(),
+                        message: error.message.clone(),
+                        params: error.params.clone(),
+                    })
+                    .collect(),
                 artifact_path: proposal.artifact_path.to_string(),
                 created_at: proposal.created_at.clone(),
             })

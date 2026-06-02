@@ -1140,7 +1140,7 @@ V1 先做成功路径，但失败不能隐式。
   -> AI-DYNAMIC paused/error-blocked 或 failure
 
 任一 proposal invalid（无论是非法 JSON 还是业务校验失败）
-  -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于本轮聚合出的全部校验错误一次性自修复；业务校验错误以结构化错误对象持久化，但 repair prompt 默认仍渲染为稳定的文本列表（包含 error code + message）；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
+  -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于本轮聚合出的全部校验错误一次性自修复；业务校验错误以结构化错误对象持久化，但 repair prompt 默认仍渲染为稳定的文本列表（包含 error code + message）；正常首次执行时，runtime 还会通过 output contract 注入 `src/prompts/<lang>/runtime/ai-dynamic/output_protocol.md` 中的完整输出协议文本，作为前置引导；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
 
 merge failure
   -> AI-DYNAMIC paused/error-blocked

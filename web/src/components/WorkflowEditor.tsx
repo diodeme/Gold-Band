@@ -17,7 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, DynamicAgentConfigDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   NEW_ROUND_NODE,
@@ -307,8 +307,6 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       goal: null,
       control: defaultDynamicControl(),
       allowedWorkflows: [],
-      merge: { provider: null, profile: null, goal: null },
-      acceptance: { provider: null, profile: null, goal: null },
     };
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
     syncWorkflow(next);
@@ -800,9 +798,6 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
   const templates = workflowTemplates?.templates ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
-  const updateAgentConfig = (key: 'merge' | 'acceptance', patch: Partial<DynamicAgentConfigDsl>) => {
-    updateDynamic({ [key]: { ...(node[key] ?? {}), ...patch, profile: null, goal: null } } as Partial<WorkflowAiDynamicNodeDsl>);
-  };
   const updateControl = (patch: Partial<DynamicControlDsl>) => {
     updateDynamic({ control: { ...control, ...patch } } as Partial<WorkflowAiDynamicNodeDsl>);
   };
@@ -877,12 +872,6 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           </Select>
         </Field>
       </WorkflowEditorSection>
-      <WorkflowEditorSection title={t('workflowEditor.mergeAgent')}>
-        <DynamicAgentInspector config={node.merge} agents={agents} errorsFor={(field) => errorsFor(`merge.${field}`)} onChange={(patch) => updateAgentConfig('merge', patch)} t={t} />
-      </WorkflowEditorSection>
-      <WorkflowEditorSection title={t('workflowEditor.acceptanceAgent')}>
-        <DynamicAgentInspector config={node.acceptance} agents={agents} errorsFor={(field) => errorsFor(`acceptance.${field}`)} onChange={(patch) => updateAgentConfig('acceptance', patch)} t={t} />
-      </WorkflowEditorSection>
     </div>
   );
 }
@@ -898,19 +887,6 @@ function WorkflowEditorSection({ title, children }: { title: string; children: R
         {children}
       </CollapsibleContent>
     </Collapsible>
-  );
-}
-
-function DynamicAgentInspector({ config, agents, errorsFor, onChange, t }: { config: DynamicAgentConfigDsl; agents: ManagedAgentVm[]; errorsFor: (field: string) => string[]; onChange: (patch: Partial<DynamicAgentConfigDsl>) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
-  return (
-    <div className="space-y-3">
-      <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
-        <Select value={config.provider ?? ''} onValueChange={(provider) => onChange({ provider, profile: null, goal: null })}>
-          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-          <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
-        </Select>
-      </Field>
-    </div>
   );
 }
 
@@ -1439,8 +1415,6 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           goal: null,
           control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>) },
           allowedWorkflows: node.allowedWorkflows ?? [],
-          merge: { ...(node.merge ?? {}), profile: null, goal: null },
-          acceptance: { ...(node.acceptance ?? {}), profile: null, goal: null },
         };
       }
       const normalizedNode = { ...(node as WorkflowWorkerNodeDsl & { primary_artifact?: unknown }) };
@@ -1543,11 +1517,6 @@ export function validateWorkflowForSave(
   const nodeField = (node: WorkflowNodeDsl, field: string) => `node:${node.id}:${field}`;
   const edgeField = (index: number, field: string) => `edge:${index}:${field}`;
   const controlField = (field: string) => `control:${field}`;
-  const validateAgentConfig = (node: WorkflowNodeDsl, nodeLabel: string, prefix: 'merge' | 'acceptance', config: DynamicAgentConfigDsl) => {
-    if (!config.provider?.trim()) addIssue(t('workflowEditor.validationDynamicAgentProviderRequired', { node: nodeLabel, agent: t(`workflowEditor.${prefix}Agent`) }), nodeField(node, `${prefix}.provider`), node.id);
-    else if (!agentIds.has(config.provider)) addIssue(t('workflowEditor.validationDynamicAgentProviderUnavailable', { node: nodeLabel, agent: t(`workflowEditor.${prefix}Agent`) }), nodeField(node, `${prefix}.provider`), node.id);
-  };
-
   if (!workflow.id.trim()) addIssue(t('workflowEditor.validationWorkflowIdRequired'));
   else if (duplicateConflictTemplates.length > 0) {
     addIssue(
@@ -1584,8 +1553,6 @@ export function validateWorkflowForSave(
     }
     if (node.type === 'ai-dynamic') {
       validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, nodeField, addIssue, t);
-      validateAgentConfig(node, nodeLabel, 'merge', node.merge ?? {});
-      validateAgentConfig(node, nodeLabel, 'acceptance', node.acceptance ?? {});
       return;
     }
 

@@ -946,15 +946,7 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => [
-            dynamic.provider.as_ref(),
-            dynamic.merge.provider.as_ref(),
-            dynamic.acceptance.provider.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect(),
+        NodeDsl::AiDynamic(dynamic) => dynamic.provider.iter().cloned().collect(),
     }
 }
 

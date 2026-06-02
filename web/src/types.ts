@@ -204,8 +204,6 @@ export interface WorkflowAiDynamicNodeDsl {
   goal?: string | null;
   control: DynamicControlDsl;
   allowedWorkflows: AllowedWorkflowRefDsl[];
-  merge: DynamicAgentConfigDsl;
-  acceptance: DynamicAgentConfigDsl;
 }
 
 export interface DynamicControlDsl {
@@ -220,12 +218,6 @@ export interface DynamicControlDsl {
 
 export interface AllowedWorkflowRefDsl {
   workflowId: string;
-}
-
-export interface DynamicAgentConfigDsl {
-  provider?: string | null;
-  profile?: string | null;
-  goal?: string | null;
 }
 
 export interface WorkflowOutputContractDsl {

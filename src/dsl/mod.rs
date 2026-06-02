@@ -259,10 +259,6 @@ pub struct AiDynamicNode {
     pub control: DynamicControlDsl,
     #[serde(default)]
     pub allowed_workflows: Vec<AllowedWorkflowRefDsl>,
-    #[serde(default)]
-    pub merge: DynamicAgentConfigDsl,
-    #[serde(default)]
-    pub acceptance: DynamicAgentConfigDsl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,14 +298,6 @@ impl Default for DynamicControlDsl {
 #[serde(rename_all = "camelCase")]
 pub struct AllowedWorkflowRefDsl {
     pub workflow_id: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DynamicAgentConfigDsl {
-    pub provider: Option<String>,
-    pub profile: Option<String>,
-    pub goal: Option<String>,
 }
 
 fn default_max_dynamic_nodes() -> u32 {
@@ -504,8 +492,6 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         node.control.max_workflow_invocations > 0,
         "ai-dynamic node `{id}` maxWorkflowInvocations must be positive"
     );
-    validate_dynamic_agent_config(&node.merge, id, "merge")?;
-    validate_dynamic_agent_config(&node.acceptance, id, "acceptance")?;
     let mut workflows = HashSet::new();
     for allowed in &node.allowed_workflows {
         let workflow_id = allowed.workflow_id.trim();
@@ -518,21 +504,6 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             "ai-dynamic node `{id}` allowed workflow `{workflow_id}` is duplicated"
         );
     }
-    Ok(())
-}
-
-fn validate_dynamic_agent_config(
-    config: &DynamicAgentConfigDsl,
-    node_id: &str,
-    name: &str,
-) -> Result<()> {
-    ensure!(
-        config
-            .provider
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty()),
-        "ai-dynamic node `{node_id}` {name} provider cannot be blank"
-    );
     Ok(())
 }
 

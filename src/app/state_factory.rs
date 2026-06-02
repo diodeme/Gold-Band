@@ -1,6 +1,6 @@
 use crate::config::ResolvedProfileRef;
 use crate::domain::{ResolvedConfig, RunStatus, VERSION};
-use crate::dsl::{DynamicAgentConfigDsl, JsonConditionDsl, NodeDsl};
+use crate::dsl::{JsonConditionDsl, NodeDsl};
 use crate::runtime::NodeState;
 
 use super::ids::now_rfc3339_like;
@@ -135,8 +135,6 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::to_value(&dynamic.allowed_workflows)
                     .expect("serialize allowed workflows"),
             );
-            insert_dynamic_agent_config(&mut config, "merge", &dynamic.merge);
-            insert_dynamic_agent_config(&mut config, "acceptance", &dynamic.acceptance);
             config.insert("manualCheck".to_string(), serde_json::Value::Bool(false));
             config.insert(
                 "sessionMode".to_string(),
@@ -147,15 +145,3 @@ pub(crate) fn resolved_config_for_node(
     config
 }
 
-fn insert_dynamic_agent_config(
-    config: &mut ResolvedConfig,
-    prefix: &str,
-    agent: &DynamicAgentConfigDsl,
-) {
-    if let Some(provider) = &agent.provider {
-        config.insert(
-            format!("{prefix}Provider"),
-            serde_json::Value::String(provider.clone()),
-        );
-    }
-}

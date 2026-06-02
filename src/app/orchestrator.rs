@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc;
 use std::thread;
 
@@ -21,7 +22,8 @@ use crate::dynamic::{
     DynamicCompletionStatus, DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext,
     DynamicNodeCompletion, DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec,
     DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus, DynamicProposalState,
-    DynamicProposalValidationStatus, DynamicRunState, DynamicRunStatus, WorkspaceMode,
+    DynamicProposalValidationError, DynamicProposalValidationStatus, DynamicRunState,
+    DynamicRunStatus, WorkspaceMode,
     WorkspacePolicy, dynamic_completion_schema, validate_dynamic_group_state,
     validate_dynamic_node_state, validate_dynamic_run_state,
 };
@@ -64,6 +66,22 @@ struct NextExecution {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+
+fn dynamic_validation_error(
+    code: &str,
+    message: impl Into<String>,
+    params: serde_json::Value,
+) -> DynamicProposalValidationError {
+    DynamicProposalValidationError::new(code, message, params)
+}
+
+fn dynamic_validation_error_lines(errors: &[DynamicProposalValidationError]) -> String {
+    errors
+        .iter()
+        .map(|error| format!("- [{}] {}", error.code, error.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn localized_continue_prompt(language: DesktopLanguage) -> String {
     match language {
@@ -1800,7 +1818,8 @@ fn execute_dynamic_worker(
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
-                let validation_error = proposal.validation_errors.join("\n");
+                let validation_error = dynamic_validation_error_lines(&proposal.validation_errors);
+                let validation_errors = proposal.validation_errors.clone();
                 proposals.push(proposal);
                 let Some(repair_continue_ref) = repair_continue_ref else {
                     append_dynamic_event(
@@ -1812,6 +1831,7 @@ fn execute_dynamic_worker(
                             "repairAttempts": proposal_repair_prompts,
                             "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                             "error": validation_error,
+                            "validationErrors": validation_errors,
                         }),
                     )?;
                     return Ok(DynamicExecutionResult { node, proposals });
@@ -1826,11 +1846,12 @@ fn execute_dynamic_worker(
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "error": validation_error,
+                        "validationErrors": validation_errors,
                     }),
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, validation_error));
+                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, &validation_errors));
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -1838,7 +1859,8 @@ fn execute_dynamic_worker(
                 continue;
             }
             Ok(proposal) => {
-                let validation_error = proposal.validation_errors.join("\n");
+                let validation_error = dynamic_validation_error_lines(&proposal.validation_errors);
+                let validation_errors = proposal.validation_errors.clone();
                 proposals.push(proposal);
                 append_dynamic_event(
                     ctx,
@@ -1849,6 +1871,7 @@ fn execute_dynamic_worker(
                         "repairAttempts": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "error": validation_error,
+                        "validationErrors": validation_errors,
                     }),
                 )?;
                 return Ok(DynamicExecutionResult { node, proposals });
@@ -1874,7 +1897,7 @@ fn execute_dynamic_worker(
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, err.to_string()));
+                resume_prompt = Some(dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()));
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -2313,17 +2336,9 @@ fn build_dynamic_completion_proposal(
             .join("events.jsonl")
     });
     let parsed = serde_json::to_value(&completion)?;
-    match validate_dynamic_completion(&graph, index, &completion).and_then(|_| {
-        ensure!(
-            !graph.proposals.iter().any(|proposal| {
-                proposal.source_node_id == source_node_id
-                    && proposal.validation_status == DynamicProposalValidationStatus::Accepted
-            }),
-            "dynamic node `{source_node_id}` already has an accepted completion proposal"
-        );
-        Ok(())
-    }) {
-        Ok(()) => Ok(DynamicProposalState {
+    let validation_errors = validate_dynamic_completion(ctx, &graph, index, &completion);
+    if validation_errors.is_empty() {
+        Ok(DynamicProposalState {
             version: VERSION.to_string(),
             id: proposal_id,
             dynamic_run_id: graph.run.id,
@@ -2335,218 +2350,461 @@ fn build_dynamic_completion_proposal(
             validation_errors: Vec::new(),
             materialized_event_ids: Vec::new(),
             created_at: now_rfc3339_like(),
-        }),
-        Err(err) => {
-            append_dynamic_event(
-                ctx,
-                "dynamic_proposal_rejected",
-                serde_json::json!({
-                    "proposalId": proposal_id,
-                    "sourceNodeId": source_node_id,
-                    "error": err.to_string(),
-                }),
-            )?;
-            Ok(DynamicProposalState {
-                version: VERSION.to_string(),
-                id: proposal_id,
-                dynamic_run_id: graph.run.id,
-                source_node_id,
-                artifact_path: proposal_artifact_path,
-                raw_output_path: proposal_raw_output_path,
-                parsed,
-                validation_status: DynamicProposalValidationStatus::Rejected,
-                validation_errors: vec![err.to_string()],
-                materialized_event_ids: Vec::new(),
-                created_at: now_rfc3339_like(),
-            })
-        }
+        })
+    } else {
+        let error_message = dynamic_validation_error_lines(&validation_errors);
+        append_dynamic_event(
+            ctx,
+            "dynamic_proposal_rejected",
+            serde_json::json!({
+                "proposalId": proposal_id,
+                "sourceNodeId": source_node_id,
+                "error": error_message,
+                "validationErrors": validation_errors,
+            }),
+        )?;
+        Ok(DynamicProposalState {
+            version: VERSION.to_string(),
+            id: proposal_id,
+            dynamic_run_id: graph.run.id,
+            source_node_id,
+            artifact_path: proposal_artifact_path,
+            raw_output_path: proposal_raw_output_path,
+            parsed,
+            validation_status: DynamicProposalValidationStatus::Rejected,
+            validation_errors,
+            materialized_event_ids: Vec::new(),
+            created_at: now_rfc3339_like(),
+        })
     }
 }
 
 fn validate_dynamic_completion(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     source_index: usize,
     completion: &DynamicNodeCompletion,
-) -> Result<()> {
-    ensure!(
-        completion.version == VERSION,
-        "unsupported dynamic completion version"
-    );
-    ensure!(
-        completion.kind == DynamicNodeCompletionKind::DynamicNodeCompletion,
-        "dynamic completion kind must be dynamic-node-completion"
-    );
-    ensure!(
-        completion.status == DynamicCompletionStatus::Success,
-        "dynamic completion status must be success"
-    );
-    ensure!(
-        !completion.summary.trim().is_empty(),
-        "dynamic completion summary cannot be blank"
-    );
-    let source = graph
+) -> Vec<DynamicProposalValidationError> {
+    let mut errors = Vec::new();
+    if completion.version != VERSION {
+        errors.push(dynamic_validation_error(
+            "dynamic.version.unsupported",
+            "unsupported dynamic completion version",
+            serde_json::json!({
+                "field": "version",
+                "value": completion.version,
+                "expected": VERSION,
+            }),
+        ));
+    }
+    if completion.kind != DynamicNodeCompletionKind::DynamicNodeCompletion {
+        errors.push(dynamic_validation_error(
+            "dynamic.kind.invalid",
+            "dynamic completion kind must be dynamic-node-completion",
+            serde_json::json!({
+                "field": "kind",
+                "value": completion.kind,
+            }),
+        ));
+    }
+    if completion.status != DynamicCompletionStatus::Success {
+        errors.push(dynamic_validation_error(
+            "dynamic.status.invalid",
+            "dynamic completion status must be success",
+            serde_json::json!({
+                "field": "status",
+                "value": completion.status,
+            }),
+        ));
+    }
+    if completion.summary.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            "dynamic.summary.blank",
+            "dynamic completion summary cannot be blank",
+            serde_json::json!({
+                "field": "summary",
+            }),
+        ));
+    }
+    let source_node_id = graph
         .nodes
         .get(source_index)
-        .ok_or_else(|| anyhow!("dynamic source node missing"))?;
+        .map(|node| node.id.clone())
+        .unwrap_or_default();
+    if graph.proposals.iter().any(|proposal| {
+        proposal.source_node_id == source_node_id
+            && proposal.validation_status == DynamicProposalValidationStatus::Accepted
+    }) {
+        let node_id = graph
+            .nodes
+            .get(source_index)
+            .map(|node| node.id.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        errors.push(dynamic_validation_error(
+            "dynamic.proposal.duplicate-accepted",
+            format!("dynamic node `{node_id}` already has an accepted completion proposal"),
+            serde_json::json!({
+                "nodeId": node_id,
+            }),
+        ));
+    }
+    let Some(source) = graph.nodes.get(source_index) else {
+        errors.push(dynamic_validation_error(
+            "dynamic.source.missing",
+            "dynamic source node missing",
+            serde_json::json!({}),
+        ));
+        return errors;
+    };
     match &completion.next {
-        DynamicNext::End => Ok(()),
-        DynamicNext::Single { node } => validate_dynamic_node_spec(graph, source, node, 1),
+        DynamicNext::End => {}
+        DynamicNext::Single { node } => {
+            errors.extend(validate_dynamic_node_spec(ctx, graph, source, node, 1));
+        }
         DynamicNext::Fanout {
             group_id,
             nodes,
             merge,
             acceptance,
         } => {
-            ensure!(
-                !group_id.trim().is_empty(),
-                "dynamic fanout groupId cannot be blank"
-            );
-            ensure!(
-                !graph.groups.iter().any(|group| group.id == *group_id),
-                "dynamic fanout group `{group_id}` already exists"
-            );
-            ensure!(
-                !nodes.is_empty(),
-                "dynamic fanout must create at least one node"
-            );
-            ensure!(
-                nodes.len() as u32 <= graph.run.control.max_fanout,
-                "dynamic fanout exceeds maxFanout"
-            );
-            ensure_dynamic_agent_task_spec(merge, "merge")?;
-            ensure_dynamic_agent_task_spec(acceptance, "acceptance")?;
+            if group_id.trim().is_empty() {
+                errors.push(dynamic_validation_error(
+                    "dynamic.fanout.group-id.blank",
+                    "dynamic fanout groupId cannot be blank",
+                    serde_json::json!({
+                        "field": "next.groupId",
+                    }),
+                ));
+            }
+            if graph.groups.iter().any(|group| group.id == *group_id) {
+                errors.push(dynamic_validation_error(
+                    "dynamic.fanout.group-id.duplicate",
+                    format!("dynamic fanout group `{group_id}` already exists"),
+                    serde_json::json!({
+                        "field": "next.groupId",
+                        "groupId": group_id,
+                    }),
+                ));
+            }
+            if nodes.is_empty() {
+                errors.push(dynamic_validation_error(
+                    "dynamic.fanout.nodes.empty",
+                    "dynamic fanout must create at least one node",
+                    serde_json::json!({
+                        "field": "next.nodes",
+                    }),
+                ));
+            }
+            if nodes.len() as u32 > graph.run.control.max_fanout {
+                errors.push(dynamic_validation_error(
+                    "dynamic.fanout.max-fanout-exceeded",
+                    "dynamic fanout exceeds maxFanout",
+                    serde_json::json!({
+                        "field": "next.nodes",
+                        "limit": graph.run.control.max_fanout,
+                        "actual": nodes.len(),
+                    }),
+                ));
+            }
+            errors.extend(validate_dynamic_agent_task_spec(ctx, merge, "merge"));
+            errors.extend(validate_dynamic_agent_task_spec(ctx, acceptance, "acceptance"));
             let group_depth = source
                 .group_id
                 .as_deref()
                 .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
                 .map(|group| group.depth + 1)
                 .unwrap_or(1);
-            ensure!(
-                group_depth <= graph.run.control.max_group_depth,
-                "dynamic fanout exceeds maxGroupDepth"
-            );
-            ensure_dynamic_node_budget(graph, nodes.len() + 2)?;
-            let mut ids = std::collections::HashSet::new();
-            for node in nodes {
-                ensure!(
-                    ids.insert(node.id.trim().to_string()),
-                    "dynamic fanout node id is duplicated"
-                );
-                validate_dynamic_node_spec(graph, source, node, nodes.len())?;
+            if group_depth > graph.run.control.max_group_depth {
+                errors.push(dynamic_validation_error(
+                    "dynamic.fanout.max-group-depth-exceeded",
+                    "dynamic fanout exceeds maxGroupDepth",
+                    serde_json::json!({
+                        "limit": graph.run.control.max_group_depth,
+                        "actual": group_depth,
+                    }),
+                ));
             }
-            Ok(())
+            if graph.nodes.len() + nodes.len() + 2 > graph.run.control.max_dynamic_nodes as usize {
+                errors.push(dynamic_validation_error(
+                    "dynamic.graph.max-nodes-exceeded",
+                    "dynamic graph exceeds maxDynamicNodes",
+                    serde_json::json!({
+                        "limit": graph.run.control.max_dynamic_nodes,
+                        "actual": graph.nodes.len() + nodes.len() + 2,
+                    }),
+                ));
+            }
+            let mut ids = HashSet::new();
+            for node in nodes {
+                if !ids.insert(node.id.trim().to_string()) {
+                    errors.push(dynamic_validation_error(
+                        "dynamic.fanout.node-id.duplicate",
+                        "dynamic fanout node id is duplicated",
+                        serde_json::json!({
+                            "nodeId": node.id,
+                        }),
+                    ));
+                }
+                errors.extend(validate_dynamic_node_spec(ctx, graph, source, node, nodes.len()));
+            }
         }
     }
+    errors
 }
 
 fn validate_dynamic_node_spec(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     source: &DynamicNodeState,
     spec: &DynamicNodeSpec,
     additional_nodes: usize,
-) -> Result<()> {
-    ensure!(
-        !spec.id.trim().is_empty(),
-        "dynamic node id cannot be blank"
-    );
-    ensure!(
-        !graph.nodes.iter().any(|node| node.id == spec.id),
-        "dynamic node `{}` already exists",
-        spec.id
-    );
-    ensure!(
-        !spec.title.trim().is_empty(),
-        "dynamic node `{}` title cannot be blank",
-        spec.id
-    );
-    ensure!(
-        !spec.task.trim().is_empty(),
-        "dynamic node `{}` task cannot be blank",
-        spec.id
-    );
-    ensure!(
-        source.depth + 1 <= graph.run.control.max_depth,
-        "dynamic node `{}` exceeds maxDepth",
-        spec.id
-    );
-    ensure_dynamic_node_budget(graph, additional_nodes)?;
+) -> Vec<DynamicProposalValidationError> {
+    let mut errors = Vec::new();
+    if spec.id.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            "dynamic.node.id.blank",
+            "dynamic node id cannot be blank",
+            serde_json::json!({
+                "field": "id",
+            }),
+        ));
+    }
+    if graph.nodes.iter().any(|node| node.id == spec.id) {
+        errors.push(dynamic_validation_error(
+            "dynamic.node.id.duplicate",
+            format!("dynamic node `{}` already exists", spec.id),
+            serde_json::json!({
+                "nodeId": spec.id,
+                "field": "id",
+            }),
+        ));
+    }
+    if spec.title.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            "dynamic.node.title.blank",
+            format!("dynamic node `{}` title cannot be blank", spec.id),
+            serde_json::json!({
+                "nodeId": spec.id,
+                "field": "title",
+            }),
+        ));
+    }
+    if spec.task.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            "dynamic.node.task.blank",
+            format!("dynamic node `{}` task cannot be blank", spec.id),
+            serde_json::json!({
+                "nodeId": spec.id,
+                "field": "task",
+            }),
+        ));
+    }
+    if source.depth + 1 > graph.run.control.max_depth {
+        errors.push(dynamic_validation_error(
+            "dynamic.node.max-depth-exceeded",
+            format!("dynamic node `{}` exceeds maxDepth", spec.id),
+            serde_json::json!({
+                "nodeId": spec.id,
+                "limit": graph.run.control.max_depth,
+                "actual": source.depth + 1,
+            }),
+        ));
+    }
+    if graph.nodes.len() + additional_nodes > graph.run.control.max_dynamic_nodes as usize {
+        errors.push(dynamic_validation_error(
+            "dynamic.graph.max-nodes-exceeded",
+            "dynamic graph exceeds maxDynamicNodes",
+            serde_json::json!({
+                "limit": graph.run.control.max_dynamic_nodes,
+                "actual": graph.nodes.len() + additional_nodes,
+            }),
+        ));
+    }
     for dependency in &spec.depends_on {
-        ensure!(
-            graph.nodes.iter().any(|node| node.id == *dependency),
-            "dynamic node `{}` depends on unknown node `{dependency}`",
-            spec.id
-        );
+        if !graph.nodes.iter().any(|node| node.id == *dependency) {
+            errors.push(dynamic_validation_error(
+                "dynamic.node.depends-on.unknown",
+                format!("dynamic node `{}` depends on unknown node `{dependency}`", spec.id),
+                serde_json::json!({
+                    "nodeId": spec.id,
+                    "dependency": dependency,
+                }),
+            ));
+        }
     }
     match spec.kind {
-        DynamicNodeSpecKind::Worker => {
-            ensure!(
-                spec.provider
-                    .as_deref()
-                    .is_some_and(|provider| !provider.trim().is_empty()),
-                "dynamic worker `{}` provider cannot be blank",
-                spec.id
-            );
-        }
+        DynamicNodeSpecKind::Worker => match spec.provider.as_deref() {
+            Some(provider) if !provider.trim().is_empty() => {
+                if ctx.app.provider_for_id(provider).is_err() {
+                    errors.push(dynamic_validation_error(
+                        "dynamic.node.provider.unknown",
+                        format!("dynamic worker `{}` references unknown provider `{provider}`", spec.id),
+                        serde_json::json!({
+                            "nodeId": spec.id,
+                            "provider": provider,
+                        }),
+                    ));
+                }
+            }
+            _ => errors.push(dynamic_validation_error(
+                "dynamic.node.provider.blank",
+                format!("dynamic worker `{}` provider cannot be blank", spec.id),
+                serde_json::json!({
+                    "nodeId": spec.id,
+                    "field": "provider",
+                }),
+            )),
+        },
         DynamicNodeSpecKind::WorkflowInvocation => {
-            let workflow_id = spec.workflow_id.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "workflow invocation `{}` workflowId cannot be blank",
-                    spec.id
-                )
-            })?;
-            let snapshot = graph
-                .run
-                .allowed_workflow_snapshots
-                .iter()
-                .find(|snapshot| snapshot.workflow_id == workflow_id)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "workflow invocation `{}` references unallowed workflow `{workflow_id}`",
-                        spec.id
-                    )
-                })?;
-            ensure!(
-                graph.run.control.allow_nested_dynamic || !snapshot.contains_ai_dynamic,
-                "workflow invocation `{}` references nested AI-DYNAMIC snapshot",
-                spec.id
-            );
+            let workflow_id = spec.workflow_id.as_deref();
+            match workflow_id {
+                Some(workflow_id) if !workflow_id.trim().is_empty() => {
+                    match graph
+                        .run
+                        .allowed_workflow_snapshots
+                        .iter()
+                        .find(|snapshot| snapshot.workflow_id == workflow_id)
+                    {
+                        Some(snapshot) => {
+                            if !graph.run.control.allow_nested_dynamic && snapshot.contains_ai_dynamic {
+                                errors.push(dynamic_validation_error(
+                                    "dynamic.workflow-invocation.nested-dynamic-disallowed",
+                                    format!("workflow invocation `{}` references nested AI-DYNAMIC snapshot", spec.id),
+                                    serde_json::json!({
+                                        "nodeId": spec.id,
+                                        "workflowId": workflow_id,
+                                    }),
+                                ));
+                            }
+                        }
+                        None => errors.push(dynamic_validation_error(
+                            "dynamic.workflow-invocation.workflow-unallowed",
+                            format!("workflow invocation `{}` references unallowed workflow `{workflow_id}`", spec.id),
+                            serde_json::json!({
+                                "nodeId": spec.id,
+                                "workflowId": workflow_id,
+                            }),
+                        )),
+                    }
+                }
+                _ => errors.push(dynamic_validation_error(
+                    "dynamic.workflow-invocation.workflow-id.blank",
+                    format!("workflow invocation `{}` workflowId cannot be blank", spec.id),
+                    serde_json::json!({
+                        "nodeId": spec.id,
+                        "field": "workflowId",
+                    }),
+                )),
+            }
             let invocation_count = graph
                 .nodes
                 .iter()
                 .filter(|node| node.kind == DynamicNodeKind::WorkflowInvocation)
                 .count()
                 + 1;
-            ensure!(
-                invocation_count as u32 <= graph.run.control.max_workflow_invocations,
-                "workflow invocation count exceeds maxWorkflowInvocations"
-            );
+            if invocation_count as u32 > graph.run.control.max_workflow_invocations {
+                errors.push(dynamic_validation_error(
+                    "dynamic.workflow-invocation.max-invocations-exceeded",
+                    "workflow invocation count exceeds maxWorkflowInvocations",
+                    serde_json::json!({
+                        "limit": graph.run.control.max_workflow_invocations,
+                        "actual": invocation_count,
+                    }),
+                ));
+            }
         }
     }
-    Ok(())
+    if let Some(profile) = spec.profile.as_deref() {
+        errors.extend(validate_dynamic_profile_reference(
+            ctx,
+            profile,
+            &format!("dynamic node `{}`", spec.id),
+            serde_json::json!({
+                "nodeId": spec.id,
+                "field": "profile",
+                "profile": profile,
+            }),
+        ));
+    }
+    errors
 }
 
-fn ensure_dynamic_agent_task_spec(spec: &DynamicAgentTaskSpec, name: &str) -> Result<()> {
-    ensure!(
-        !spec.title.trim().is_empty(),
-        "dynamic {name} title cannot be blank"
-    );
-    ensure!(
-        !spec.provider.trim().is_empty(),
-        "dynamic {name} provider cannot be blank"
-    );
-    ensure!(
-        !spec.task.trim().is_empty(),
-        "dynamic {name} task cannot be blank"
-    );
-    Ok(())
+fn validate_dynamic_agent_task_spec(
+    ctx: &DynamicExecutionContext<'_>,
+    spec: &DynamicAgentTaskSpec,
+    name: &str,
+) -> Vec<DynamicProposalValidationError> {
+    let mut errors = Vec::new();
+    if spec.title.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.title.blank"),
+            format!("dynamic {name} title cannot be blank"),
+            serde_json::json!({
+                "field": "title",
+                "stage": name,
+            }),
+        ));
+    }
+    if spec.provider.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.provider.blank"),
+            format!("dynamic {name} provider cannot be blank"),
+            serde_json::json!({
+                "field": "provider",
+                "stage": name,
+            }),
+        ));
+    } else if ctx.app.provider_for_id(&spec.provider).is_err() {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.provider.unknown"),
+            format!("dynamic {name} references unknown provider `{}`", spec.provider),
+            serde_json::json!({
+                "provider": spec.provider,
+                "stage": name,
+            }),
+        ));
+    }
+    if spec.task.trim().is_empty() {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.task.blank"),
+            format!("dynamic {name} task cannot be blank"),
+            serde_json::json!({
+                "field": "task",
+                "stage": name,
+            }),
+        ));
+    }
+    errors.extend(validate_dynamic_profile_reference(
+        ctx,
+        &spec.profile,
+        &format!("dynamic {name}"),
+        serde_json::json!({
+            "field": "profile",
+            "stage": name,
+            "profile": spec.profile,
+        }),
+    ));
+    errors
 }
 
-fn ensure_dynamic_node_budget(graph: &DynamicGraphState, additional_nodes: usize) -> Result<()> {
-    ensure!(
-        graph.nodes.len() + additional_nodes <= graph.run.control.max_dynamic_nodes as usize,
-        "dynamic graph exceeds maxDynamicNodes"
-    );
-    Ok(())
+fn validate_dynamic_profile_reference(
+    ctx: &DynamicExecutionContext<'_>,
+    profile: &str,
+    owner: &str,
+    params: serde_json::Value,
+) -> Vec<DynamicProposalValidationError> {
+    if profile.trim().is_empty() {
+        return Vec::new();
+    }
+    if ctx.app.profile_show(profile).is_ok() {
+        Vec::new()
+    } else {
+        vec![dynamic_validation_error(
+            "dynamic.profile.unknown",
+            format!("{owner} references unknown profile `{profile}`"),
+            params,
+        )]
+    }
 }
 
 fn materialize_dynamic_next(
@@ -3217,7 +3475,7 @@ fn dynamic_proposal_repair_prompt(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
-    error: String,
+    errors: &[DynamicProposalValidationError],
 ) -> String {
     render_template(
         prompt_by_language(
@@ -3226,7 +3484,34 @@ fn dynamic_proposal_repair_prompt(
             AI_DYNAMIC_PROPOSAL_REPAIR_EN,
         ),
         serde_json::json!({
-            "validation_errors": format!("- {error}"),
+            "validation_errors": dynamic_validation_error_lines(errors),
+            "remaining_budget": dynamic_remaining_budget_summary(graph, node),
+        }),
+    )
+    .expect("prompt template renders")
+}
+
+fn dynamic_text_repair_prompt(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+    error: String,
+) -> String {
+    let validation_errors = error
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    render_template(
+        prompt_by_language(
+            ctx.app.config.desktop_language,
+            AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN,
+            AI_DYNAMIC_PROPOSAL_REPAIR_EN,
+        ),
+        serde_json::json!({
+            "validation_errors": validation_errors,
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
         }),
     )

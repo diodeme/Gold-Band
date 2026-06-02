@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{OnceLock, RwLock};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StoragePathConfig {
@@ -661,8 +663,22 @@ pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
-    let content = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    const MAX_ATTEMPTS: usize = 5;
+    for attempt in 0..MAX_ATTEMPTS {
+        let content = std::fs::read_to_string(path)?;
+        match serde_json::from_str(&content) {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt + 1 < MAX_ATTEMPTS
+                    && (content.trim().is_empty()
+                        || matches!(error.classify(), serde_json::error::Category::Eof)) =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("read_json should have returned within retry loop")
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {

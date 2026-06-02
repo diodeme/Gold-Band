@@ -144,6 +144,26 @@ pub struct DynamicGroupState {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("{message}")]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicProposalValidationError {
+    pub code: String,
+    pub message: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+impl DynamicProposalValidationError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            params,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicProposalState {
@@ -155,7 +175,7 @@ pub struct DynamicProposalState {
     pub raw_output_path: Utf8PathBuf,
     pub parsed: serde_json::Value,
     pub validation_status: DynamicProposalValidationStatus,
-    pub validation_errors: Vec<String>,
+    pub validation_errors: Vec<DynamicProposalValidationError>,
     pub materialized_event_ids: Vec<String>,
     pub created_at: String,
 }

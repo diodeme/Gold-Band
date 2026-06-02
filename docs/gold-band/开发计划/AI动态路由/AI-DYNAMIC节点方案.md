@@ -1061,7 +1061,8 @@ continue outer run
 
 ## 18. 校验规则
 
-runtime 必须校验每个 proposal。
+runtime 必须校验每个 proposal，并在一次校验中尽可能聚合全部问题，一次性返回给 internal worker 修复。
+proposal 的 rejected 结果使用结构化错误对象而不是裸字符串，至少包含 `code`、`message`、`params`。
 
 ### 18.1 节点校验
 
@@ -1070,6 +1071,7 @@ runtime 必须校验每个 proposal。
 - kind 合法
 - title/task 非空
 - provider 可用；internal worker、merge、acceptance 的角色与任务约束由 `src/prompts` 内置 prompt 提供
+- profile 合法；proposal 中引用的 profile 必须是当前可解析的已注册 profile，非法 profile 视为 proposal 业务校验失败
 - workspace mode 合法
 - dependsOn 指向已存在节点
 - 不形成环
@@ -1137,8 +1139,8 @@ V1 先做成功路径，但失败不能隐式。
 任一 internal node failure
   -> AI-DYNAMIC paused/error-blocked 或 failure
 
-任一 proposal invalid
-  -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于校验错误自修复；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
+任一 proposal invalid（无论是非法 JSON 还是业务校验失败）
+  -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于本轮聚合出的全部校验错误一次性自修复；业务校验错误以结构化错误对象持久化，但 repair prompt 默认仍渲染为稳定的文本列表（包含 error code + message）；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
 
 merge failure
   -> AI-DYNAMIC paused/error-blocked

@@ -273,7 +273,10 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(760px, calc(100vw - 32px))', maxWidth: 'min(760px, calc(100vw - 32px))' }}
+        resizeStorageKey={`round-detail/node-detail/${activeTab}`}
+        defaultSize={760}
+        minSize={560}
+        maxSize={1120}
         closeLabel={t('common.close')}
         showOverlay={false}
       >
@@ -452,7 +455,10 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
     <Sheet modal={false} open={Boolean(asset)} onOpenChange={(open) => { if (!open) onBack(); }}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(680px, calc(100vw - 128px))', maxWidth: 'min(680px, calc(100vw - 128px))' }}
+        resizeStorageKey={`round-detail/asset-detail/${asset?.kind ?? 'unknown'}`}
+        defaultSize={680}
+        minSize={480}
+        maxSize={1040}
         closeLabel={t('common.close')}
         showOverlay={false}
       >
@@ -604,7 +610,10 @@ function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolea
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(860px, calc(100vw - 96px))', maxWidth: 'min(860px, calc(100vw - 96px))' }}
+        resizeStorageKey="round-detail/log-drawer"
+        defaultSize={860}
+        minSize={620}
+        maxSize={1280}
         closeLabel={t('common.close')}
         showOverlay={false}
       >

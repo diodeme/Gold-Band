@@ -272,7 +272,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
         onOpenChange={setRequirementOpen}
       />
       <Sheet modal={false} open={workflowDrawerOpen} onOpenChange={(open) => !open && closeWorkflowDrawer()}>
-        <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')} showOverlay={false}>
+        <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey={`workflow-page/workflow-drawer/${workflowDrawerMode ?? 'view'}`} defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')} showOverlay={false}>
           <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
             <SheetDescription className="sr-only">{t('workflow.drawerDescription')}</SheetDescription>
             <div className="flex min-w-0 flex-wrap items-center gap-3 pr-8">

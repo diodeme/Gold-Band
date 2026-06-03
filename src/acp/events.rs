@@ -23,6 +23,22 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -316,6 +332,17 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
         })
         .map(str::to_string)
+}
+
+/// 从 usage_update 事件的 raw JSON 中提取结构化 usage 字段。
+/// 返回 (used, size, cost_amount_usd)
+pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
+    let used = raw.get("used").and_then(Value::as_u64);
+    let size = raw.get("size").and_then(Value::as_u64);
+    let cost_amount = raw
+        .pointer("/cost/amount")
+        .and_then(Value::as_f64);
+    (used, size, cost_amount)
 }
 
 fn extract_status(value: &Value) -> Option<String> {

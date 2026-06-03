@@ -50,6 +50,15 @@ pub struct AcpPromptRun {
     pub final_text: String,
     pub final_outputs: Vec<String>,
     pub restored: bool,
+    pub used_tokens: Option<u64>,
+    pub context_window_size: Option<u64>,
+    pub total_cost_usd: Option<f64>,
+    pub accumulated_used_tokens: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_read_tokens: Option<u64>,
+    pub cached_write_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 struct AcpRuntime {
@@ -68,6 +77,15 @@ struct AcpRuntime {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    used_tokens: Option<u64>,
+    context_window_size: Option<u64>,
+    total_cost_usd: Option<f64>,
+    accumulated_used_tokens: u64,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_read_tokens: Option<u64>,
+    cached_write_tokens: Option<u64>,
+    total_tokens: Option<u64>,
 }
 
 pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: bool) -> Result<Value> {
@@ -157,6 +175,15 @@ pub fn run_prompt(
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
         restored,
+        used_tokens: runtime.used_tokens,
+        context_window_size: runtime.context_window_size,
+        total_cost_usd: runtime.total_cost_usd,
+        accumulated_used_tokens: runtime.accumulated_used_tokens,
+        input_tokens: runtime.input_tokens,
+        output_tokens: runtime.output_tokens,
+        cached_read_tokens: runtime.cached_read_tokens,
+        cached_write_tokens: runtime.cached_write_tokens,
+        total_tokens: runtime.total_tokens,
     };
     runtime.shutdown();
     Ok(run)
@@ -333,6 +360,15 @@ impl AcpRuntime {
             models: None,
             modes: None,
             config_options: None,
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            accumulated_used_tokens: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
         })
     }
 
@@ -571,6 +607,15 @@ impl AcpRuntime {
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
         )?;
+        // Capture session-end usage breakdown (inputTokens / outputTokens / …)
+        // that the adapter returns alongside the stopReason.
+        if let Some(usage) = result.get("usage") {
+            self.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
+            self.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
+            self.cached_read_tokens = usage.get("cachedReadTokens").and_then(Value::as_u64);
+            self.cached_write_tokens = usage.get("cachedWriteTokens").and_then(Value::as_u64);
+            self.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
+        }
         Ok(result
             .get("stopReason")
             .and_then(Value::as_str)
@@ -694,6 +739,31 @@ impl AcpRuntime {
             .and_then(Value::as_str)
             .map(str::to_string);
         let update = params.get("update").cloned().unwrap_or(params);
+
+        // Track usage from usage_update events so we can persist them at prompt end.
+        if update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            == Some("usage_update")
+        {
+            let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
+            if let Some(u) = used {
+                // Accumulate positive deltas so compaction-driven resets
+                // don't lose track of the session's total token spend.
+                let prev = self.used_tokens.unwrap_or(0);
+                if u > prev {
+                    self.accumulated_used_tokens += u - prev;
+                }
+                self.used_tokens = Some(u);
+            }
+            if size.is_some() {
+                self.context_window_size = size;
+            }
+            if cost.is_some() {
+                self.total_cost_usd = cost;
+            }
+        }
+
         self.seq += 1;
         for event in normalize_session_update(self.seq, session_id, &update) {
             if contributes_to_final_text(&event.kind) {
@@ -825,6 +895,14 @@ impl AcpRuntime {
                 models: self.models.clone(),
                 modes: self.modes.clone(),
                 config_options: self.config_options.clone(),
+                used_tokens: self.used_tokens,
+                context_window_size: self.context_window_size,
+                total_cost_usd: self.total_cost_usd,
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+                cached_read_tokens: self.cached_read_tokens,
+                cached_write_tokens: self.cached_write_tokens,
+                total_tokens: self.total_tokens,
                 created_at,
                 updated_at: now,
             },

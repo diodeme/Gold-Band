@@ -1,6 +1,6 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AcpSessionVm, AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
+import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
 import { getLogPage, showArtifact, showAttachment } from '../api';
 import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
@@ -305,9 +305,47 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
   );
 }
 
+function resolveTokenUsage(detail: NodeDetailVm): AcpUsageVm | null {
+  const session = detail.acpConversations?.find((c) => c.key === detail.selectedConversationKey)
+    ?? detail.acpConversations?.[0];
+  const attempt = session?.attempts.find((a) => a.attemptId === session.activeAttemptId)
+    ?? session?.attempts.at(-1);
+  const usage = attempt?.acpSession?.usage ?? detail.acpSession?.usage;
+  if (!usage || (usage.inputTokens == null && usage.outputTokens == null
+    && usage.cachedReadTokens == null && usage.totalTokens == null)) return null;
+  return usage;
+}
+
+function formatLargeToken(n: number | null | undefined): string {
+  if (n == null) return '-';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; controlFailure?: RoundDetailVm['controlFailure']; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   const detailDisplayStatus = displayPausedRuntimeStatus(detail.outcome ?? detail.status, detail.current ? runPauseReason : null);
+  const acpUsage = resolveTokenUsage(detail);
+  const baseItems: Array<[ReactNode, ReactNode]> = [
+    [t('roundDetail.nodeId'), detail.nodeId],
+    [t('roundDetail.sequence'), detail.sequence ?? '-'],
+    [t('agentManagement.agentType'), detail.provider ?? '-'],
+    [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
+    [t('roundDetail.attemptId'), detail.attemptId],
+    [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
+    [t('roundDetail.startedAt'), detail.startedAt || '-'],
+    [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
+    [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
+    [t('common.artifacts'), detail.artifactCount],
+    [t('common.attachments'), detail.attachmentCount],
+  ];
+  if (acpUsage) {
+    baseItems.push([t('acp.usagePanel.input'), formatLargeToken(acpUsage.inputTokens)]);
+    baseItems.push([t('acp.usagePanel.output'), formatLargeToken(acpUsage.outputTokens)]);
+    baseItems.push([t('acp.usagePanel.cacheRead'), formatLargeToken(acpUsage.cachedReadTokens)]);
+    baseItems.push([t('acp.usagePanel.total'), formatLargeToken(acpUsage.totalTokens)]);
+  }
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
@@ -315,19 +353,7 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
         <Badge variant="secondary" className="rounded-full px-3">{displayStatus(t, detail.nodeType)}</Badge>
         {detail.current ? <Badge className="rounded-full px-3">{t('graph.current')}</Badge> : null}
       </div>
-      <InfoGrid items={[
-        [t('roundDetail.nodeId'), detail.nodeId],
-        [t('roundDetail.sequence'), detail.sequence ?? '-'],
-        [t('agentManagement.agentType'), detail.provider ?? '-'],
-        [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
-        [t('roundDetail.attemptId'), detail.attemptId],
-        [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
-        [t('roundDetail.startedAt'), detail.startedAt || '-'],
-        [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
-        [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
-        [t('common.artifacts'), detail.artifactCount],
-        [t('common.attachments'), detail.attachmentCount],
-      ]} />
+      <InfoGrid items={baseItems} />
       {controlFailure ? <ControlFailureDetail failure={controlFailure} /> : null}
       <AssetList title={t('common.artifacts')} items={detail.artifacts} emptyLabel={t('roundDetail.noArtifacts')} onOpenAsset={onOpenAsset} />
       <AssetList title={t('common.attachments')} items={detail.attachments} emptyLabel={t('roundDetail.noAttachments')} onOpenAsset={onOpenAsset} />

@@ -52,6 +52,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 function providerToIconKey(provider: string): string | undefined {
   const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode' };
@@ -1106,7 +1107,7 @@ function ProfilePicker({ profiles, value, invalid = false, onChange, t }: { prof
                       <span className="flex items-center justify-between gap-2 font-medium"><span className="truncate">{profile.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{profileScopeText(t, profile.scope)}</span></span>
                       <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{profile.id}</span>
                       <span className="mt-1 block truncate text-xs text-muted-foreground" title={profile.summary}>{profile.summary}</span>
-                      <span className="mt-1 block text-[11px] text-muted-foreground">{profile.createdAt} / {profile.updatedAt}</span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</span>
                     </span>
                   </CommandItem>
                 ))}
@@ -1134,7 +1135,7 @@ function ProfileSummaryTooltip({ profile }: { profile: ProfileVm }) {
             <p className="font-semibold">{profile.name}</p>
             <p className="font-mono text-[11px] text-neutral-300">{profile.id}</p>
             <p>{profile.summary}</p>
-            <p className="text-neutral-400">{profile.createdAt} / {profile.updatedAt}</p>
+            <p className="text-neutral-400">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</p>
           </div>
         </TooltipContent>
       </Tooltip>

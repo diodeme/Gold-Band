@@ -6,6 +6,7 @@
 - 前端新增 ACP session / event / permission / diagnostics 类型，数据来自 Tauri `AcpSessionVm`。
 - `ACPChatDialog` 展示压缩 session header、消息流、thought、tool call、plan、permission、raw frames 和 composer。
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。
+- 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。
@@ -214,7 +215,7 @@ Raw 视图用于排障：
 - 普通 session 返回的 UI event raw 只能保留渲染 tool、plan、permission 所需的摘要字段，超长字符串和超大 raw payload 必须截断；完整原始内容只通过 Raw frames 分页查看。
 - 最新 ACP error diagnostic 或 Raw frame 中的 JSON-RPC `frame.error.message` 必须显示为会话顶部错误横幅，不再重复插入消息流；若该错误时间之后出现新的正常 agent 输出，横幅自动消失。
 - ACP stop 写入取消标记后最多允许 15 秒停止窗口；运行中的 ACP runtime 观察到标记后，必须发送不带 `id` 的 JSON-RPC notification `session/cancel`，不能把它当 request 等待响应；超时仍未收敛时清理 provider pid / cancel 标记，将 session 标记为 `cancelled`，并把当前 run / round / node 收敛到 `paused + process_interrupted`，避免 composer 永久显示“停止中”。
-- Raw frames 按 JSONL 一行一个 frame 的形式由后端分页展示，默认加载最新页（page 0），页内按行号升序展示；摘要默认单行截断，点击该行后以 pretty JSON 或纯文本多行展开，使用克制的暗色代码面板和柔和选中态；短 frame 自然展开不显示内层滚动条，只有超长 frame 才限制高度并显示细滚动条；超长连续字符主动切分换行，内容必须在容器内显示，不能撑出窗口。
+- Raw frames 按 JSONL 一行一个 frame 的形式由后端分页展示，默认加载最新页（page 0），页内按行号升序展示；摘要默认单行截断，时间统一显示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；点击该行后以 pretty JSON 或纯文本多行展开，使用克制的暗色代码面板和柔和选中态；短 frame 自然展开不显示内层滚动条，只有超长 frame 才限制高度并显示细滚动条；超长连续字符主动切分换行，内容必须在容器内显示，不能撑出窗口，且展开正文跟随应用设置字体。
 - 支持服务端关键词检索，不把全量 `acp.raw.jsonl` 传给前端。
 - 支持按 direction（inbound/outbound）和 kind/method 过滤。
 - 支持关联到会话流中的消息、tool call 或 permission request。

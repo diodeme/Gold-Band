@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils';
 import { normalizeAcpEventForAttempt } from '@/lib/acp-event-normalization';
 import { formatCurrentNode } from '@/lib/nodes';
 import { normalizeTone } from '@/lib/status';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 interface RoundDetailPageProps {
   vm: RoundDetailVm | null;
@@ -324,8 +325,8 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
         ['Continue From', detail.continueFromNodeId ?? '-'],
         [t('roundDetail.attemptId'), detail.attemptId],
         [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
-        [t('roundDetail.startedAt'), detail.startedAt || '-'],
-        [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
+        [t('roundDetail.startedAt'), formatLocalDateTime(detail.startedAt)],
+        [t('roundDetail.finishedAt'), formatLocalDateTime(detail.finishedAt)],
         [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
         [t('common.artifacts'), detail.artifactCount],
         [t('common.attachments'), detail.attachmentCount],
@@ -684,7 +685,7 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
 function LogRow({ item, compact }: { item: LogEntryVm; compact?: boolean }) {
   return (
     <div className={cn('grid gap-3 px-2 py-2.5 text-sm', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
-      <span className="truncate text-muted-foreground" title={item.timestamp}>{item.timestamp || '-'}</span>
+      <span className="truncate text-muted-foreground" title={formatLocalDateTime(item.timestamp)}>{formatLocalDateTime(item.timestamp)}</span>
       <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{item.entryType}</Badge></span>
       {!compact ? <span className="truncate text-muted-foreground" title={item.nodeId ?? undefined}>{item.nodeId ?? '-'}</span> : null}
       {!compact ? <span className="truncate text-muted-foreground" title={item.stage ?? undefined}>{item.stage ?? '-'}</span> : null}

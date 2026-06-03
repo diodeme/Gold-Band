@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, CheckCircle2, CircleHelp, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 interface AgentManagementPageProps {
   vm: AgentRegistryVm | null;
@@ -303,7 +304,7 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         <Info label={t('agentManagement.command')} value={agent.command} mono />
         <Info label={t('agentManagement.args')} value={agent.args.length > 0 ? agent.args.join(' ') : '-'} mono />
         <Info label={t('agentManagement.env')} value={agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-'} />
-        <Info label={t('agentManagement.lastChecked')} value={formatLocalTimestamp(diagnostic?.checkedAt)} />
+        <Info label={t('agentManagement.lastChecked')} value={formatLocalDateTime(diagnostic?.checkedAt)} />
       </div>
       {diagnostic?.reason ? <div className="rounded-xl border border-border/60 bg-muted/20 px-3 py-3 text-sm text-muted-foreground">{diagnostic.reason}</div> : null}
       <div className="flex flex-wrap justify-end gap-2">
@@ -413,15 +414,6 @@ function parseEnv(value: string) {
     const index = line.indexOf('=');
     return index === -1 ? [line, ''] : [line.slice(0, index).trim(), line.slice(index + 1).trim()];
   }).filter(([key]) => key));
-}
-
-function formatLocalTimestamp(value?: string | null) {
-  if (!value) return '-';
-  const epoch = /^(\d+)Z?$/.exec(value.trim());
-  const date = epoch ? new Date(Number(epoch[1]) * 1000) : new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (part: number) => part.toString().padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnostic'] }) {

@@ -111,7 +111,7 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .config = config;
-        self.clear_agent_diagnostics()?;
+        self.prune_agent_diagnostics()?;
         Ok(())
     }
 
@@ -213,6 +213,19 @@ impl DesktopState {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
             diagnostics.remove(&agent_type);
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)
+    }
+
+    pub fn prune_agent_diagnostics(&self) -> Result<()> {
+        let managed_agent_types = self.app()?.managed_agents().keys().copied().collect::<std::collections::BTreeSet<_>>();
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            diagnostics.retain(|agent_type, _| managed_agent_types.contains(agent_type));
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)

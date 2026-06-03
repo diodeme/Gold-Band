@@ -26,6 +26,7 @@ import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucid
 import { checkLocalClaude, getSystemFonts } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
 
@@ -461,12 +462,7 @@ function formatBytes(bytes: number) {
 }
 
 function formatCheckedAt(value: string) {
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
-  const epochMatch = value.match(/^(\d+)Z?$/);
-  const date = epochMatch ? new Date(Number(epochMatch[1]) * 1000) : new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (item: number) => String(item).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return formatLocalDateTime(value, value);
 }
 
 function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {

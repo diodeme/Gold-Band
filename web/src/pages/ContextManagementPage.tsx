@@ -24,6 +24,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles';
@@ -346,8 +347,8 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
       <CardContent className="flex flex-1 flex-col px-4 pb-0">
         <CardDescription className="line-clamp-3 leading-6">{profile.summary}</CardDescription>
         <dl className="mt-auto grid gap-1 pt-4 text-xs text-muted-foreground">
-          <div className="flex gap-1"><dt>{t('contextManagement.createdAt')}:</dt><dd>{profile.createdAt}</dd></div>
-          <div className="flex gap-1"><dt>{t('contextManagement.updatedAt')}:</dt><dd>{profile.updatedAt}</dd></div>
+          <div className="flex gap-1"><dt>{t('contextManagement.createdAt')}:</dt><dd>{formatLocalDateTime(profile.createdAt)}</dd></div>
+          <div className="flex gap-1"><dt>{t('contextManagement.updatedAt')}:</dt><dd>{formatLocalDateTime(profile.updatedAt)}</dd></div>
         </dl>
       </CardContent>
       <CardFooter className="justify-end gap-2 px-4 py-4">
@@ -509,8 +510,8 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                     <CardContent className="grid gap-3 p-3 text-sm md:grid-cols-2">
                       <ProfileMeta label="ID" value={profile.id} />
                       <ProfileMeta label={t('contextManagement.scope')} value={profileScopeLabel(t, profile.scope)} />
-                      <ProfileMeta label={t('contextManagement.createdAt')} value={profile.createdAt} />
-                      <ProfileMeta label={t('contextManagement.updatedAt')} value={profile.updatedAt} />
+                      <ProfileMeta label={t('contextManagement.createdAt')} value={formatLocalDateTime(profile.createdAt)} />
+                      <ProfileMeta label={t('contextManagement.updatedAt')} value={formatLocalDateTime(profile.updatedAt)} />
                     </CardContent>
                   </Card>
                   <Card className="bg-card/40 py-0">

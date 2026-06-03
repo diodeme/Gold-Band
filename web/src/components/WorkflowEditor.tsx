@@ -43,7 +43,6 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -428,7 +427,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
                             <CircleHelp className="size-3.5" />
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent showArrow={false} className="max-w-72 border border-amber-400/25 bg-neutral-950/95 px-3 py-2 text-[12px] leading-relaxed text-neutral-100 shadow-2xl shadow-black/60 ring-1 ring-white/10 backdrop-blur-md">
+                        <TooltipContent className="max-w-72 whitespace-pre-wrap break-words text-[12px] leading-relaxed" side="bottom" sideOffset={8}>
                           {t('workflowEditor.aiDynamicHelp')}
                         </TooltipContent>
                       </Tooltip>
@@ -775,7 +774,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
                         <Sparkles className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent showArrow={false} className="rounded-md border border-border/70 bg-popover px-2 py-1 text-xs text-popover-foreground shadow-lg">
+                    <TooltipContent>
                       {t('workflowEditor.outputSchemaBeautify')}
                     </TooltipContent>
                   </Tooltip>
@@ -1063,11 +1062,11 @@ function ProfileLabel({ t, onOpenProfileManagement }: { t: (key: string) => stri
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button type="button" variant="ghost" size="icon-xs" onClick={(event) => event.preventDefault()} aria-label={t('workflowEditor.profileHelp')}>
-              <Info className="size-3.5" />
+            <Button type="button" variant="ghost" size="icon-xs" className="rounded-full text-muted-foreground hover:text-foreground" onClick={(event) => event.preventDefault()} aria-label={t('workflowEditor.profileHelp')}>
+              <CircleHelp className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent showArrow={false} className="max-w-80 border border-amber-400/25 bg-neutral-950/95 px-3.5 py-2.5 text-[12px] leading-relaxed text-neutral-100 shadow-2xl shadow-black/60 ring-1 ring-white/10 backdrop-blur-md">{t('workflowEditor.profileHelp')}</TooltipContent>
+          <TooltipContent className="max-w-80 whitespace-pre-wrap break-words text-[12px] leading-relaxed" side="bottom" sideOffset={8}>{t('workflowEditor.profileHelp')}</TooltipContent>
         </Tooltip>
       </TooltipProvider>
       {onOpenProfileManagement ? <Button type="button" variant="link" size="xs" className="h-auto px-0" onClick={(event) => { event.preventDefault(); onOpenProfileManagement(); }}>{t('workflowEditor.manageProfiles')}</Button> : null}
@@ -1106,7 +1105,14 @@ function ProfilePicker({ profiles, value, invalid = false, onChange, t }: { prof
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between gap-2 font-medium"><span className="truncate">{profile.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{profileScopeText(t, profile.scope)}</span></span>
                       <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{profile.id}</span>
-                      <span className="mt-1 block truncate text-xs text-muted-foreground" title={profile.summary}>{profile.summary}</span>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="mt-1 block truncate text-xs text-muted-foreground">{profile.summary}</span>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-80 whitespace-pre-wrap break-words text-xs" sideOffset={6}>{profile.summary}</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                       <span className="mt-1 block text-[11px] text-muted-foreground">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</span>
                     </span>
                   </CommandItem>
@@ -1130,13 +1136,11 @@ function ProfileSummaryTooltip({ profile }: { profile: ProfileVm }) {
             <Info className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent showArrow={false} className="max-w-80 border border-amber-400/25 bg-neutral-950/95 px-3.5 py-2.5 text-[12px] leading-relaxed text-neutral-100 shadow-2xl shadow-black/60 ring-1 ring-white/10 backdrop-blur-md">
-          <div className="space-y-1">
-            <p className="font-semibold">{profile.name}</p>
-            <p className="font-mono text-[11px] text-neutral-300">{profile.id}</p>
-            <p>{profile.summary}</p>
-            <p className="text-neutral-400">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</p>
-          </div>
+        <TooltipContent align="end" side="bottom" sideOffset={8} className="max-w-80 space-y-1 whitespace-pre-wrap break-words p-3 text-[12px] leading-relaxed">
+          <p className="font-semibold text-foreground">{profile.name}</p>
+          <p className="font-mono text-[11px] text-muted-foreground">{profile.id}</p>
+          <p className="whitespace-pre-wrap break-words">{profile.summary}</p>
+          <p className="text-muted-foreground">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</p>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -1233,7 +1237,7 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete,
 function Field({ label, children, errors = [] }: { label: React.ReactNode; children: React.ReactNode; errors?: string[] }) {
   return (
     <div className="grid gap-1.5 text-sm">
-      <Label className={cn('text-xs text-muted-foreground', errors.length > 0 && 'text-destructive')}>{label}</Label>
+      <div className={cn('flex items-center gap-2 text-xs font-medium text-muted-foreground', errors.length > 0 && 'text-destructive')}>{label}</div>
       {children}
       {errors.map((error) => <span key={error} className="text-xs text-destructive">{error}</span>)}
     </div>
@@ -1253,17 +1257,17 @@ function HelpLabel({ label, help }: { label: string; help: string }) {
           <TooltipTrigger asChild>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="icon-xs"
+              className="rounded-full text-muted-foreground hover:text-foreground"
               aria-label={help}
               onClick={(event) => event.preventDefault()}
             >
-              ?
+              <CircleHelp className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent
-            showArrow={false}
-            className="max-w-80 border border-amber-400/25 bg-neutral-950/95 px-3.5 py-2.5 text-[12px] leading-relaxed text-neutral-100 shadow-2xl shadow-black/60 ring-1 ring-white/10 backdrop-blur-md"
+            className="max-w-80 whitespace-pre-wrap break-words text-[12px] leading-relaxed"
             side="top"
             sideOffset={10}
           >

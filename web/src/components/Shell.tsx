@@ -35,13 +35,18 @@ export function Shell({ active, appName, repoRoot, needsWorkspace, showSettingsU
             </a>
           </Button>
 
-          <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace} title={needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}>
-            <span className="min-w-0">
-              <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
-              <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
-            </span>
-            <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace}>
+                <span className="min-w-0">
+                  <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
+                  <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}</TooltipContent>
+          </Tooltip>
 
           <nav className="mt-6 flex flex-1 flex-col gap-2">
             <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />

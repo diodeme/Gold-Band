@@ -93,7 +93,7 @@
 - 工作流校验错误在桌面 VM 中以 `code + params` 结构返回，前端按 i18n 渲染可见文案；后端不返回直接展示给用户的本地化句子，也不要求前端解析后端英文错误字符串。
 - 新建 / 修改 / 修复模式进入作者态画布编辑器，基于 `@xyflow/react` 支持新增节点、连接边、选择节点/边并在右侧 Inspector 配置；节点坐标不写入 workflow DSL，由系统根据节点和边自动排布为规整的从左到右结构。
 - 画布左上角提供浮动结构工具条，用于新增节点与删除当前选中节点；右侧 Inspector 只承载工作流控制、节点配置和边配置。
-- 工作流编辑器通过 `allowAiDynamic` 能力开关控制是否允许新增 `AI-DYNAMIC` 节点；开启后工具条显示本地化的 AI 动态节点新增按钮，旁侧问号提示“AI动态节点，节点内部由AI自行设计动态工作流来实现节点目标”，关闭时只允许新增普通 worker 节点。
+- 工作流编辑器通过 `allowAiDynamic` 能力开关控制是否允许新增 `AI-DYNAMIC` 节点；开启后工具条显示本地化的 AI 动态节点新增按钮，旁侧问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 展示“AI动态节点，节点内部由AI自行设计动态工作流来实现节点目标”，关闭时只允许新增普通 worker 节点。
 - `AI-DYNAMIC` 节点 Inspector 默认展示节点 ID，并提供两个默认收起的编辑块：基础信息、Fan-out Agent。基础信息包含 allowed workflows 与动态控制限制；agent 块只配置 provider，角色和目标由 runtime 内置 prompt 提供。
 - allowed workflows 使用可搜索多选下拉栏，分为“可选择的工作流”和“不可选择的工作流”。不可选择项禁用并展示原因，例如 `workflow.id` 重复、`workflow.id` 为空、包含 AI-DYNAMIC 但未允许嵌套；默认工作流不做重复 ID 豁免。触发器内以标签展示已选 workflow 名称与 DSL `workflow.id`，标签可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
 - 保存 workflow 时，前端校验 AI-DYNAMIC 的控制限制必须为正整数、allowed workflow 必须存在且不重复、`allowNestedDynamic=false` 时不得选择包含 AI-DYNAMIC 的 workflow；后端保存和 run start 时会再次校验并冻结 snapshot。
@@ -114,7 +114,7 @@
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
-- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁提供问号说明指导用户填写；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。
+- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
 - 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。

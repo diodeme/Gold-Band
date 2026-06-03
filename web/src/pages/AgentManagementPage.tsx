@@ -182,7 +182,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         )}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 xl:p-5">
         {notice ? (
         <Alert
           className={cn(
@@ -201,7 +201,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       {error && !sheetOpen ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {vm && vm.agents.length > 0 ? (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {vm.agents.map((agent) => (
             <AgentCard
               key={agent.agentType}
@@ -281,45 +281,44 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
   const { t } = useTranslation();
   const diagnostic = agent.diagnostic;
   return (
-    <AppCard className="gap-5 px-5 sm:px-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-4">
-          <span className="grid size-12 shrink-0 place-items-center rounded-2xl border border-border/60 bg-background">
-            <img src={agentIconSrc(agent.iconKey)} alt="" className="size-8 object-contain" />
+    <AppCard className="h-full gap-3 px-4 py-4 sm:px-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
+            <img src={agentIconSrc(agent.iconKey)} alt="" className="size-6 object-contain" />
           </span>
-          <div className="min-w-0 space-y-2">
+          <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="truncate text-base font-semibold text-foreground">{agent.displayName}</h3>
-              <Badge variant="secondary" className="rounded-full px-2.5">{agent.agentType}</Badge>
+              <h3 className="truncate text-sm font-semibold text-foreground">{agent.displayName}</h3>
+              <Badge variant="secondary" className="rounded-full px-2 py-0 text-[11px]">{agent.agentType}</Badge>
             </div>
-            <div className="font-mono text-xs text-muted-foreground">{agent.command} {agent.args.join(' ')}</div>
+            <div className="min-h-10 overflow-hidden font-mono text-[11px] leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{agent.command} {agent.args.join(' ')}</div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           <DiagnosticBadge diagnostic={diagnostic} />
-          {diagnostic?.status === 'unhealthy' ? <RegistryHelp /> : null}
+          {diagnostic?.status === 'unhealthy' ? <RegistryHelp reason={diagnostic.reason} /> : null}
         </div>
       </div>
-      <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+      <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
         <Info label={t('agentManagement.command')} value={agent.command} mono />
         <Info label={t('agentManagement.args')} value={agent.args.length > 0 ? agent.args.join(' ') : '-'} mono />
         <Info label={t('agentManagement.env')} value={agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-'} />
         <Info label={t('agentManagement.lastChecked')} value={formatLocalDateTime(diagnostic?.checkedAt)} />
       </div>
-      {diagnostic?.reason ? <div className="rounded-xl border border-border/60 bg-muted/20 px-3 py-3 text-sm text-muted-foreground">{diagnostic.reason}</div> : null}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="outline" disabled={diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
+      <div className="mt-auto flex flex-wrap justify-end gap-2 pt-1">
+        <Button size="sm" variant="outline" disabled={diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
           {diagnosing ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}
           {diagnosing ? t('agentManagement.diagnosing') : t('agentManagement.diagnose')}
         </Button>
-        <Button variant="outline" onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
-        <Button variant="outline" onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
+        <Button size="sm" variant="outline" onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
+        <Button size="sm" variant="outline" onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
   );
 }
 
-function RegistryHelp() {
+function RegistryHelp({ reason }: { reason?: string | null }) {
   const { t } = useTranslation();
   const openRegistry = async () => {
     try {
@@ -336,23 +335,32 @@ function RegistryHelp() {
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button type="button" variant="ghost" size="icon" className="size-7 rounded-full text-muted-foreground hover:text-foreground" aria-label={t('agentManagement.registryHelpLabel')} onClick={() => void openRegistry()}>
+          <Button type="button" variant="ghost" size="icon" className="size-7 rounded-full text-muted-foreground hover:text-foreground" aria-label={t('agentManagement.registryHelpLabel')}>
             <CircleHelp className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="left" className="max-w-72 text-sm leading-5">
-          <Trans
-            i18nKey="agentManagement.registryHelp"
-            components={{
-              registry: (
-                <a
-                  className="font-medium text-primary underline-offset-4 hover:underline"
-                  href={ACP_REGISTRY_URL}
-                  onClick={openRegistryLink}
-                />
-              ),
-            }}
-          />
+        <TooltipContent side="left" sideOffset={8} className="w-56 space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-[12px] leading-[1.45]">
+          {reason ? (
+            <div className="w-full space-y-1">
+              <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('status.error')}</div>
+              <div className="whitespace-pre-wrap break-words [text-wrap:wrap]">{reason}</div>
+            </div>
+          ) : null}
+          <div className="w-full space-y-1 border-t border-border/60 pt-3">
+            <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('agentManagement.registryHelpLabel')}</div>
+            <Trans
+              i18nKey="agentManagement.registryHelp"
+              components={{
+                registry: (
+                  <a
+                    className="font-medium text-primary underline-offset-4 hover:underline"
+                    href={ACP_REGISTRY_URL}
+                    onClick={openRegistryLink}
+                  />
+                ),
+              }}
+            />
+          </div>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -381,9 +389,9 @@ function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-muted/10 px-3 py-3">
-      <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
-      <div className={cn('mt-1.5 min-w-0 break-all text-sm text-foreground', mono && 'font-mono text-xs')}>{value}</div>
+    <div className="min-h-[84px] rounded-xl border border-border/60 bg-muted/10 px-3 py-2.5">
+      <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
+      <div className={cn('mt-1 min-w-0 overflow-hidden text-[13px] leading-5 text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]', mono && 'font-mono text-[11px]')}>{value}</div>
     </div>
   );
 }
@@ -424,7 +432,7 @@ function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnost
     : status === 'unhealthy'
       ? <AlertTriangle className="size-4 text-destructive" />
       : <CircleHelp className="size-4 text-muted-foreground" />;
-  return <Badge variant="outline" className="rounded-full px-2.5">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
+  return <Badge variant="outline" className="rounded-full px-2 py-0 text-[11px]">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
 }
 
 function agentIconSrc(iconKey: string) {

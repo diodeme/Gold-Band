@@ -9,7 +9,8 @@ import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { CodeBlock, EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
+import { CodeBlock, EmptyState, Metric, MetricsBar, OverflowTooltip, Page, PageHeader } from '@/components/PageScaffold';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '@/components/RequirementDisclosure';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -198,7 +199,20 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                   <Button variant="outline" size="sm" onClick={() => setSortDir((value) => value === 'asc' ? 'desc' : 'asc')}>{t('common.sort')} {sortDir === 'asc' ? '↑' : '↓'}</Button>
                 </div>
               </div>
-              <Button className="w-full shrink-0 sm:w-auto" disabled={startRunDisabled} title={startRunTitle} onClick={handleStartRun}>{t('common.startRun')}</Button>
+              {startRunTitle ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="w-full shrink-0 sm:w-auto">
+                      <Button className="w-full sm:w-auto" disabled={startRunDisabled} onClick={handleStartRun}>{t('common.startRun')}</Button>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{startRunTitle}</TooltipContent>
+                </Tooltip>
+              ) : (
+                <div className="w-full shrink-0 sm:w-auto">
+                  <Button className="w-full sm:w-auto" disabled={startRunDisabled} onClick={handleStartRun}>{t('common.startRun')}</Button>
+                </div>
+              )}
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col px-3 py-2">
               <div className="min-h-0 flex-1" style={{ minHeight: historyBodyMinHeight }}>
@@ -409,12 +423,13 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun,
 }
 
 function HistoryCell({ label, value, title, className }: { label: ReactNode; value: ReactNode; title?: string | null; className?: string }) {
-  return (
-    <div className={cn('min-w-0 space-y-0.5', className)} title={title ?? undefined}>
+  const content = (
+    <div className={cn('min-w-0 space-y-0.5', className)}>
       <span className="block truncate text-[11px] font-medium text-muted-foreground/70">{label}</span>
       <strong className="block min-w-0 truncate text-sm font-medium text-foreground">{value}</strong>
     </div>
   );
+  return title ? <OverflowTooltip className="min-w-0" content={title}>{content}</OverflowTooltip> : content;
 }
 
 function RoundList({ id, runId, graph, rounds, onOpenRound, t }: {

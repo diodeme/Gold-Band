@@ -382,7 +382,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       </div>
       <div className="flex min-h-0 flex-1 items-center gap-3 px-4 py-1">
         {hasStatus ? (
-          <span aria-label={statusLabel} title={statusLabel} className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm', statusMarkClass(tone), running && 'workflow-running-mark')}>
+          <span aria-label={statusLabel} className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm', statusMarkClass(tone), running && 'workflow-running-mark')}>
             {statusMark(displayStatusValue, tone)}
           </span>
         ) : null}

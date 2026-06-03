@@ -9,7 +9,7 @@ import { GraphView } from '../components/GraphView';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
+import { EmptyState, Metric, MetricsBar, OverflowTooltip, Page, PageHeader } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -417,7 +417,9 @@ function InfoGrid({ items }: { items: Array<[ReactNode, ReactNode]> }) {
       {items.map(([label, value], index) => (
         <div className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3" key={index}>
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-          <div className="mt-1.5 min-w-0 truncate text-sm font-medium text-foreground" title={String(value)}>{value}</div>
+          <OverflowTooltip className="mt-1.5 min-w-0" content={String(value)}>
+            <div className="min-w-0 truncate text-sm font-medium text-foreground">{value}</div>
+          </OverflowTooltip>
         </div>
       ))}
     </div>
@@ -685,11 +687,11 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
 function LogRow({ item, compact }: { item: LogEntryVm; compact?: boolean }) {
   return (
     <div className={cn('grid gap-3 px-2 py-2.5 text-sm', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
-      <span className="truncate text-muted-foreground" title={formatLocalDateTime(item.timestamp)}>{formatLocalDateTime(item.timestamp)}</span>
+      <OverflowTooltip className="min-w-0" content={formatLocalDateTime(item.timestamp)}><span className="block truncate text-muted-foreground">{formatLocalDateTime(item.timestamp)}</span></OverflowTooltip>
       <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{item.entryType}</Badge></span>
-      {!compact ? <span className="truncate text-muted-foreground" title={item.nodeId ?? undefined}>{item.nodeId ?? '-'}</span> : null}
-      {!compact ? <span className="truncate text-muted-foreground" title={item.stage ?? undefined}>{item.stage ?? '-'}</span> : null}
-      <span className="min-w-0 truncate" title={item.summary}>{item.summary}</span>
+      {!compact ? <OverflowTooltip className="min-w-0" content={item.nodeId ?? '-'}><span className="block truncate text-muted-foreground">{item.nodeId ?? '-'}</span></OverflowTooltip> : null}
+      {!compact ? <OverflowTooltip className="min-w-0" content={item.stage ?? '-'}><span className="block truncate text-muted-foreground">{item.stage ?? '-'}</span></OverflowTooltip> : null}
+      <OverflowTooltip className="min-w-0" content={item.summary}><span className="block min-w-0 truncate">{item.summary}</span></OverflowTooltip>
     </div>
   );
 }

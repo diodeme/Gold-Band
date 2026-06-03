@@ -5,7 +5,7 @@
 本轮已完成 V1 成功路径的可运行闭环：
 
 - DSL 已支持 `worker | ai-dynamic`，并校验 AI-DYNAMIC fan-out provider、动态控制限制与 allowed workflow 引用；fan-out proposal 中的 merge/acceptance spec 由 runtime 在执行时校验。
-- workflow 编辑器已通过 `allowAiDynamic` 能力开关控制 AI-DYNAMIC 节点新增入口；新增按钮与默认节点名走 i18n，按钮旁提供问号说明。
+- workflow 编辑器已通过 `allowAiDynamic` 能力开关控制 AI-DYNAMIC 节点新增入口；新增按钮与默认节点名走 i18n，按钮旁说明统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可出现，不再复用自定义 tooltip 大面板。
 - AI-DYNAMIC Inspector 已调整为“节点 ID + 两个默认收起编辑块”：基础信息、Fan-out Agent；merge/acceptance 不再由用户预配置，而是由 fan-out proposal 在运行时自主生成。
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。

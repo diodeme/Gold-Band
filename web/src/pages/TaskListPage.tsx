@@ -634,7 +634,6 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                                   size="icon"
                                   className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
                                   disabled={isDefaultTemplate || saving}
-                                  title={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
                                   aria-label={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
                                   onClick={() => {
                                     if (isDefaultTemplate) return;

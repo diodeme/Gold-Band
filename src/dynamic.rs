@@ -1,4 +1,4 @@
-use crate::domain::{NodeOutcome, PauseReason, RunOutcome, VERSION};
+use crate::domain::{NodeOutcome, PauseReason, RunOutcome, SessionMode, VERSION};
 use crate::dsl::{DynamicControlDsl, WorkflowDsl};
 use anyhow::{Result, ensure};
 use camino::Utf8PathBuf;
@@ -117,6 +117,8 @@ pub struct DynamicNodeState {
     pub workspace_path: Option<Utf8PathBuf>,
     pub provider: Option<String>,
     pub profile: Option<String>,
+    pub session_mode: SessionMode,
+    pub continue_from_node_id: Option<String>,
     pub workflow_id: Option<String>,
     pub workflow_snapshot_id: Option<String>,
     pub child_run_id: Option<String>,
@@ -208,6 +210,10 @@ pub struct DynamicNodeSpec {
     pub provider: Option<String>,
     pub profile: Option<String>,
     #[serde(default)]
+    pub session_mode: SessionMode,
+    #[serde(default)]
+    pub continue_from_node_id: Option<String>,
+    #[serde(default)]
     pub workspace: WorkspacePolicy,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -268,6 +274,12 @@ pub enum DynamicNext {
         merge: DynamicAgentTaskSpec,
         acceptance: DynamicAgentTaskSpec,
     },
+}
+
+impl Default for SessionMode {
+    fn default() -> Self {
+        Self::New
+    }
 }
 
 pub fn dynamic_completion_schema() -> serde_json::Value {

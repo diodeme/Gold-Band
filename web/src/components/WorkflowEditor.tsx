@@ -17,7 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   NEW_ROUND_NODE,
@@ -302,9 +302,10 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     const node: WorkflowAiDynamicNodeDsl = {
       type: 'ai-dynamic',
       id,
-      provider: null,
-      profile: null,
-      goal: null,
+      agentStrategy: {
+        mode: 'fixed',
+        provider: '',
+      },
       control: defaultDynamicControl(),
       allowedWorkflows: [],
     };
@@ -796,10 +797,16 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
   const templates = workflowTemplates?.templates ?? [];
+  const strategy = node.agentStrategy.mode === 'dynamic'
+    ? node.agentStrategy
+    : node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const updateControl = (patch: Partial<DynamicControlDsl>) => {
     updateDynamic({ control: { ...control, ...patch } } as Partial<WorkflowAiDynamicNodeDsl>);
+  };
+  const updateAgentStrategy = (agentStrategy: WorkflowAiDynamicNodeDsl['agentStrategy']) => {
+    updateDynamic({ agentStrategy });
   };
   const parseLimit = (value: string) => {
     const parsed = Number(value);
@@ -841,37 +848,83 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           }}
         />
       </Field>
-      <WorkflowEditorSection title={t('workflowEditor.aiDynamicBasicInfo')}>
-        <Field label={t('workflowEditor.allowedWorkflows')} errors={errorsFor('allowedWorkflows')}>
-          <AllowedWorkflowMultiSelect
-            templates={templates}
-            selectedWorkflowIds={(node.allowedWorkflows ?? []).map((item) => item.workflowId)}
-            allowNestedDynamic={control.allowNestedDynamic}
-            invalid={errorsFor('allowedWorkflows').length > 0}
-            onChange={(workflowIds) => updateDynamic({ allowedWorkflows: workflowIds.map((workflowId) => ({ workflowId })) })}
-            t={t}
-          />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          {dynamicControlFields(t).map((field) => (
-            <Field key={field.key} label={field.label} errors={errorsFor(`control.${field.key}`)}>
-              <Input className={errorClass(errorsFor(`control.${field.key}`))} type="number" min={1} step={1} value={String(control[field.key])} onChange={(event) => updateControl({ [field.key]: parseLimit(event.target.value) } as Partial<DynamicControlDsl>)} />
-            </Field>
-          ))}
-        </div>
-        <label className="flex items-center justify-between gap-3 rounded-md border bg-background/55 px-3 py-2 text-sm">
-          <span>{t('workflowEditor.allowNestedDynamic')}</span>
-          <input type="checkbox" checked={control.allowNestedDynamic} onChange={(event) => updateControl({ allowNestedDynamic: event.target.checked })} />
-        </label>
-      </WorkflowEditorSection>
-      <WorkflowEditorSection title={t('workflowEditor.fanoutAgent')}>
-        <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
-          <Select value={node.provider ?? ''} onValueChange={(provider) => updateDynamic({ provider, profile: null, goal: null })}>
-            <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+      <Field label={t('workflowEditor.dynamicAgentStrategy')} errors={errorsFor('agentStrategy.mode')}>
+        <Select
+          value={node.agentStrategy.mode}
+          onValueChange={(mode) => {
+            if (mode === 'fixed') {
+              const nextProvider = node.agentStrategy.mode === 'fixed'
+                ? node.agentStrategy.provider
+                : node.agentStrategy.bootstrapProvider;
+              updateAgentStrategy({ mode: 'fixed', provider: nextProvider });
+              return;
+            }
+            const nextBootstrapProvider = node.agentStrategy.mode === 'dynamic'
+              ? node.agentStrategy.bootstrapProvider
+              : node.agentStrategy.provider;
+            const nextRoutingPrompt = node.agentStrategy.mode === 'dynamic'
+              ? node.agentStrategy.routingPrompt
+              : '';
+            updateAgentStrategy({
+              mode: 'dynamic',
+              bootstrapProvider: nextBootstrapProvider,
+              routingPrompt: nextRoutingPrompt,
+            });
+          }}
+        >
+          <SelectTrigger className={errorClass(errorsFor('agentStrategy.mode'))}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="fixed">{t('workflowEditor.dynamicAgentStrategyFixed')}</SelectItem>
+            <SelectItem value="dynamic">{t('workflowEditor.dynamicAgentStrategyDynamic')}</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      {node.agentStrategy.mode === 'fixed' ? (
+        <Field label={t('workflowEditor.agent')} errors={errorsFor('agentStrategy.provider')}>
+          <Select value={node.agentStrategy.provider} onValueChange={(provider) => updateAgentStrategy({ mode: 'fixed', provider })}>
+            <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
             <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
           </Select>
         </Field>
-      </WorkflowEditorSection>
+      ) : (
+        <>
+          <Field label={t('workflowEditor.dynamicBootstrapAgent')} errors={errorsFor('agentStrategy.bootstrapProvider')}>
+            <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider })}>
+              <SelectTrigger className={errorClass(errorsFor('agentStrategy.bootstrapProvider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+              <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label={t('workflowEditor.dynamicAgentRoutingPrompt')} errors={errorsFor('agentStrategy.routingPrompt')}>
+            <Textarea
+              className={errorClass(errorsFor('agentStrategy.routingPrompt'))}
+              value={node.agentStrategy.routingPrompt}
+              placeholder={t('workflowEditor.dynamicAgentRoutingPromptPlaceholder')}
+              onChange={(event) => updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), routingPrompt: event.target.value })}
+            />
+          </Field>
+        </>
+      )}
+      <Field label={t('workflowEditor.allowedWorkflows')} errors={errorsFor('allowedWorkflows')}>
+        <AllowedWorkflowMultiSelect
+          templates={templates}
+          selectedWorkflowIds={(node.allowedWorkflows ?? []).map((item) => item.workflowId)}
+          allowNestedDynamic={control.allowNestedDynamic}
+          invalid={errorsFor('allowedWorkflows').length > 0}
+          onChange={(workflowIds) => updateDynamic({ allowedWorkflows: workflowIds.map((workflowId) => ({ workflowId })) })}
+          t={t}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        {dynamicControlFields(t).map((field) => (
+          <Field key={field.key} label={field.label} errors={errorsFor(`control.${field.key}`)}>
+            <Input className={errorClass(errorsFor(`control.${field.key}`))} type="number" min={1} step={1} value={String(control[field.key])} onChange={(event) => updateControl({ [field.key]: parseLimit(event.target.value) } as Partial<DynamicControlDsl>)} />
+          </Field>
+        ))}
+      </div>
+      <label className="flex items-center justify-between gap-3 rounded-md border bg-background/55 px-3 py-2 text-sm">
+        <span>{t('workflowEditor.allowNestedDynamic')}</span>
+        <input type="checkbox" checked={control.allowNestedDynamic} onChange={(event) => updateControl({ allowNestedDynamic: event.target.checked })} />
+      </label>
     </div>
   );
 }
@@ -1409,10 +1462,19 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
     control,
     nodes: workflow.nodes.map((node) => {
       if (node.type === 'ai-dynamic') {
+        const rawNode = node as WorkflowAiDynamicNodeDsl & {
+          provider?: string | null;
+          profile?: string | null;
+          goal?: string | null;
+          agentStrategy?: WorkflowAiDynamicNodeDsl['agentStrategy'];
+        };
+        const normalizedStrategy = rawNode.agentStrategy ?? {
+          mode: 'fixed',
+          provider: rawNode.provider ?? '',
+        };
         return {
           ...node,
-          profile: null,
-          goal: null,
+          agentStrategy: normalizedStrategy,
           control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>) },
           allowedWorkflows: node.allowedWorkflows ?? [],
         };
@@ -1543,44 +1605,45 @@ export function validateWorkflowForSave(
     if ([END_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
 
+    if (node.type === 'ai-dynamic') {
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, agentIds, nodeField, addIssue, t);
+      return;
+    }
     if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
     else if (!agentIds.has(node.provider)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (node.type === 'worker' && node.permission_mode?.trim()) {
+    else if (node.permission_mode?.trim()) {
       const supportedModeIds = new Set((agentById.get(node.provider)?.supportedModes ?? []).map((mode) => mode.id));
       if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
     }
-    if (node.type === 'ai-dynamic') {
-      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, nodeField, addIssue, t);
-      return;
-    }
 
-    if (!node.profile?.trim()) {
-      addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
-    } else if (!profileIds.has(node.profile)) {
-      addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(node, 'profile'), node.id);
+    const workerNode = node as WorkflowWorkerNodeDsl;
+    if (!workerNode.profile?.trim()) {
+      addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
+    } else if (!profileIds.has(workerNode.profile)) {
+      addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
       const sanitized = sanitizedWorkflow.nodes[nodeIndex];
-      if (sanitized) sanitized.profile = null;
+      if (sanitized && sanitized.type === 'worker') sanitized.profile = null;
     }
-    if (!node.goal?.trim()) addIssue(t('workflowEditor.validationNodeGoalRequired', { node: nodeLabel }), nodeField(node, 'goal'), node.id);
+    if (!workerNode.goal?.trim()) addIssue(t('workflowEditor.validationNodeGoalRequired', { node: nodeLabel }), nodeField(workerNode, 'goal'), workerNode.id);
 
-    const validationEnabled = Boolean(node.output || node.success_condition);
-    if (validationEnabled && node.manual_check) {
-      addIssue(t('workflowEditor.validationResultModeExclusive', { node: nodeLabel }), nodeField(node, 'success_condition'), node.id);
+    const validationEnabled = Boolean(workerNode.output || workerNode.success_condition);
+    if (validationEnabled && workerNode.manual_check) {
+      addIssue(t('workflowEditor.validationResultModeExclusive', { node: nodeLabel }), nodeField(workerNode, 'success_condition'), workerNode.id);
     }
     if (validationEnabled) {
-      if (!node.output?.artifact?.trim()) addIssue(t('workflowEditor.validationOutputArtifactRequired', { node: nodeLabel }), nodeField(node, 'output.artifact'), node.id);
-      if (!node.success_condition) addIssue(t('workflowEditor.validationSuccessExpressionRequired', { node: nodeLabel }), nodeField(node, 'success_condition'), node.id);
+      if (!workerNode.output?.artifact?.trim()) addIssue(t('workflowEditor.validationOutputArtifactRequired', { node: nodeLabel }), nodeField(workerNode, 'output.artifact'), workerNode.id);
+      if (!workerNode.success_condition) addIssue(t('workflowEditor.validationSuccessExpressionRequired', { node: nodeLabel }), nodeField(workerNode, 'success_condition'), workerNode.id);
       let path: PathSegment[] | null = null;
-      if (node.success_condition) {
+      if (workerNode.success_condition) {
         try {
-          path = successConditionPath(node.success_condition);
+          path = successConditionPath(workerNode.success_condition);
         } catch {
-          addIssue(t('workflowEditor.saveErrorInvalidExpression', { node: nodeLabel }), nodeField(node, 'success_condition'), node.id);
+          addIssue(t('workflowEditor.saveErrorInvalidExpression', { node: nodeLabel }), nodeField(workerNode, 'success_condition'), workerNode.id);
         }
       }
-      const schema = node.output?.schema;
+      const schema = workerNode.output?.schema;
       if (schema && looksLikeJsonSchema(schema)) {
         addIssue(t('workflowEditor.saveErrorLegacySchema', { node: nodeLabel }), nodeField(node, 'output.schema'), node.id);
       }
@@ -1617,11 +1680,30 @@ function validateAiDynamicNodeForSave(
   node: WorkflowAiDynamicNodeDsl,
   nodeLabel: string,
   workflowTemplates: WorkflowTemplateStore | null | undefined,
+  agentIds: Set<string>,
   nodeField: (node: WorkflowNodeDsl, field: string) => string,
   addIssue: (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number) => void,
   t: (key: string, options?: Record<string, unknown>) => string,
 ) {
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
+  if (node.agentStrategy.mode === 'fixed') {
+    const provider = node.agentStrategy.provider?.trim();
+    if (!provider) {
+      addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.provider'), node.id);
+    } else if (!agentIds.has(provider)) {
+      addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'agentStrategy.provider'), node.id);
+    }
+  } else {
+    const bootstrapProvider = node.agentStrategy.bootstrapProvider?.trim();
+    if (!bootstrapProvider) {
+      addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.bootstrapProvider'), node.id);
+    } else if (!agentIds.has(bootstrapProvider)) {
+      addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'agentStrategy.bootstrapProvider'), node.id);
+    }
+    if (!node.agentStrategy.routingPrompt?.trim()) {
+      addIssue(t('workflowEditor.validationDynamicRoutingPromptRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.routingPrompt'), node.id);
+    }
+  }
   dynamicControlFields(t).forEach((field) => {
     if ((control[field.key] ?? 0) <= 0) {
       addIssue(t('workflowEditor.validationDynamicLimitPositive', { node: nodeLabel, field: field.label }), nodeField(node, `control.${field.key}`), node.id);

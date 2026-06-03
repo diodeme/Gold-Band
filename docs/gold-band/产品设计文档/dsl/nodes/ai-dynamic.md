@@ -9,7 +9,10 @@
 {
   "id": "router",
   "type": "ai-dynamic",
-  "provider": "claude-acp",
+  "agentStrategy": {
+    "mode": "fixed",
+    "provider": "claude-acp"
+  },
   "control": {
     "maxDynamicNodes": 20,
     "maxFanout": 5,
@@ -35,6 +38,7 @@
 - 外层 `ai-dynamic` DSL 不再配置 `merge` 或 `acceptance`。当内部节点输出 `next.type=fanout` 时，proposal 中必须同时给出该 group 的 `merge` 与 `acceptance` 可执行 spec；runtime 直接使用 proposal 中的 provider/title/task 创建节点，角色仍由 `src/prompts/<lang>/runtime/ai-dynamic/merge.md` 与 `src/prompts/<lang>/runtime/ai-dynamic/acceptance.md` 提供。
 - 内部 worker / workflow-invocation 只能提交 `dynamic-node-completion` proposal；子线程负责执行并产出 proposal，主线程负责校验、记录 accepted/rejected proposal，并作为 graph 的唯一写入者执行 materialize。
 - runtime 通过通用 output contract 机制把 artifact 名称、类型以及完整的 AI-DYNAMIC 输出协议文本注入 prompt；这份面向模型的协议说明统一放在 `src/prompts/<lang>/runtime/ai-dynamic/output_protocol.md`，并按 `end / single / fanout` 场景分别给出 JSON 示例，用于前置引导 agent 按规范输出 DSL。
+- internal worker 在 prompt 中还会额外拿到一段“当前链路可复用会话节点”列表，只包含当前 dynamic graph、当前 chain、且位于最近 fan-out 边界之内的可继续节点；列表字段最小化为 `nodeId / title / goal`。若 proposal 中某个后继节点声明 `sessionMode=continue`，则必须同时提供 `continueFromNodeId`，并且只能引用这份列表中的 worker 节点；`workflow-invocation` 不允许继续会话。
 - proposal 校验失败与非法 JSON 解析失败统一进入同一个 repair 回路：runtime 会把本轮发现的全部问题一次性回传给当前 internal worker 做隐藏修复，最多重试 3 次；耗尽后外层 AI-DYNAMIC 进入 `paused/error-blocked`。
 - proposal 的业务校验会尽可能聚合错误，而不是命中第一条就返回。典型错误包括 profile 不存在、provider 不可用、fanout 超出 `maxFanout`、group depth 超出 `maxGroupDepth`、workflowId 不在 allowed snapshot、merge/acceptance spec 不完整等。
 - rejected proposal 不再只保存字符串错误，而是保存结构化错误对象：至少包含 `code`、`message`、`params`。其中 `code` 用于稳定识别错误类型，`message` 给人读，`params` 提供 nodeId / field / profile / provider / limit / actual 等上下文字段，便于后续 UI、日志和 prompt 复用。

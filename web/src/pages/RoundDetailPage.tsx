@@ -320,6 +320,8 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
         [t('roundDetail.sequence'), detail.sequence ?? '-'],
         [t('agentManagement.agentType'), detail.provider ?? '-'],
         [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
+        [t('workflowEditor.sessionMode'), detail.sessionMode ?? '-'],
+        ['Continue From', detail.continueFromNodeId ?? '-'],
         [t('roundDetail.attemptId'), detail.attemptId],
         [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
         [t('roundDetail.startedAt'), detail.startedAt || '-'],
@@ -328,10 +330,68 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
         [t('common.artifacts'), detail.artifactCount],
         [t('common.attachments'), detail.attachmentCount],
       ]} />
+      {detail.dynamic ? <DynamicDetailSection detail={detail} /> : null}
       {controlFailure ? <ControlFailureDetail failure={controlFailure} /> : null}
       <AssetList title={t('common.artifacts')} items={detail.artifacts} emptyLabel={t('roundDetail.noArtifacts')} onOpenAsset={onOpenAsset} />
       <AssetList title={t('common.attachments')} items={detail.attachments} emptyLabel={t('roundDetail.noAttachments')} onOpenAsset={onOpenAsset} />
     </div>
+  );
+}
+
+function DynamicDetailSection({ detail }: { detail: NodeDetailVm }) {
+  const { t } = useTranslation();
+  const dynamic = detail.dynamic;
+  if (!dynamic) return null;
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Dynamic Graph</h3>
+        <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.summary.internalNodeCount}</Badge>
+      </div>
+      <div className="rounded-xl border border-border/70 bg-muted/10 p-3">
+        <div className="mb-3 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Status</div><div className="mt-1 text-sm font-medium">{displayStatus(t, dynamic.summary.status)}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Groups</div><div className="mt-1 text-sm font-medium">{dynamic.summary.groupCount}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Proposals</div><div className="mt-1 text-sm font-medium">{dynamic.summary.proposalCount}</div></div>
+        </div>
+        <div className="h-[320px] overflow-hidden rounded-xl border border-border/70 bg-background/80 p-2">
+          <GraphView graph={dynamic.graph} variant="actual" />
+        </div>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-semibold">Groups</h4>
+            <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.groups.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {dynamic.groups.map((group) => (
+              <div key={group.id} className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3"><span className="font-medium">{group.id}</span><Badge variant="secondary" className="rounded-full px-2.5">{displayStatus(t, group.status)}</Badge></div>
+                <div className="mt-2 text-xs text-muted-foreground">roots: {group.rootNodeIds.join(', ') || '-'} · terminals: {group.terminalNodeIds.join(', ') || '-'}</div>
+              </div>
+            ))}
+            {dynamic.groups.length === 0 ? <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 py-6 text-center text-sm text-muted-foreground">No groups</div> : null}
+          </div>
+        </section>
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-semibold">Proposals</h4>
+            <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.proposals.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {dynamic.proposals.map((proposal) => (
+              <div key={proposal.id} className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3"><span className="font-medium">{proposal.id}</span><Badge variant="secondary" className="rounded-full px-2.5">{displayStatus(t, proposal.validationStatus)}</Badge></div>
+                <div className="mt-2 text-xs text-muted-foreground">source: {proposal.sourceNodeId}</div>
+                {proposal.validationErrors.length > 0 ? <div className="mt-2 space-y-1">{proposal.validationErrors.map((error) => <div key={`${proposal.id}:${error.code}:${error.message}`} className="rounded-lg border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-xs text-destructive">[{error.code}] {error.message}</div>)}</div> : null}
+              </div>
+            ))}
+            {dynamic.proposals.length === 0 ? <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 py-6 text-center text-sm text-muted-foreground">No proposals</div> : null}
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }
 

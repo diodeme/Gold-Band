@@ -11,7 +11,7 @@ use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
 };
-use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus};
+use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeKind};
 use gold_band::provider::supported_modes_from_capabilities;
@@ -300,6 +300,8 @@ pub struct GraphNodeVm {
     pub attachment_count: usize,
     pub current: bool,
     pub icon_key: Option<String>,
+    pub session_mode: Option<String>,
+    pub continue_from_node_id: Option<String>,
     pub dynamic_summary: Option<DynamicSummaryVm>,
 }
 
@@ -362,6 +364,8 @@ pub struct NodeDetailVm {
     pub has_worker_ref: bool,
     pub manual_check_enabled: bool,
     pub manual_check_pending: bool,
+    pub session_mode: Option<String>,
+    pub continue_from_node_id: Option<String>,
     pub acp_session: Option<AcpSessionVm>,
     pub acp_conversations: Vec<AcpConversationVm>,
     pub selected_conversation_key: Option<String>,
@@ -1353,6 +1357,8 @@ fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 attachment_count: 0,
                 current: false,
                 icon_key: node.provider().and_then(provider_icon_key),
+                session_mode: None,
+                continue_from_node_id: None,
                 dynamic_summary: None,
             })
             .collect(),
@@ -1528,6 +1534,8 @@ fn round_trace_graph_vm(
                     .and_then(|v| v.as_str())
                     .and_then(provider_icon_key)
             }),
+            session_mode: None,
+            continue_from_node_id: None,
             dynamic_summary,
         });
     }
@@ -1746,6 +1754,8 @@ fn dynamic_internal_graph_vm(
                 attachment_count,
                 current: graph.run.current_node_ids.iter().any(|id| id == &node.id),
                 icon_key: node.provider.as_deref().and_then(provider_icon_key),
+                session_mode: Some(enum_label(&node.session_mode)),
+                continue_from_node_id: node.continue_from_node_id.clone(),
                 dynamic_summary: None,
             }
         })
@@ -1762,6 +1772,18 @@ fn dynamic_internal_graph_vm(
                 last_outcome: None,
                 blocked_reason: None,
             });
+        }
+        if node.session_mode == SessionMode::Continue {
+            if let Some(continue_from_node_id) = &node.continue_from_node_id {
+                edges.push(GraphEdgeVm {
+                    from: continue_from_node_id.clone(),
+                    to: node.id.clone(),
+                    label: "continue".to_string(),
+                    traversal_count: 1,
+                    last_outcome: None,
+                    blocked_reason: None,
+                });
+            }
         }
         if node.kind == DynamicNodeKind::WorkflowInvocation {
             if let Some(child_run_id) = &node.child_run_id {
@@ -1912,6 +1934,8 @@ fn round_node_graph_vm(
             .get("provider")
             .and_then(|v| v.as_str())
             .and_then(provider_icon_key),
+        session_mode: None,
+        continue_from_node_id: None,
         dynamic_summary,
     })
 }
@@ -2106,6 +2130,8 @@ fn selected_node_detail_vm(
         has_worker_ref: worker_ref_exists,
         manual_check_enabled,
         manual_check_pending: node.manual_check_pending,
+        session_mode: None,
+        continue_from_node_id: None,
         acp_session,
         acp_conversations,
         selected_conversation_key,
@@ -3754,7 +3780,7 @@ fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<Strin
 fn node_label(node: &NodeDsl) -> String {
     match node {
         NodeDsl::Worker(node) => node.goal.clone().unwrap_or_else(|| node.id.clone()),
-        NodeDsl::AiDynamic(node) => node.goal.clone().unwrap_or_else(|| node.id.clone()),
+        NodeDsl::AiDynamic(node) => node.id.clone(),
     }
 }
 

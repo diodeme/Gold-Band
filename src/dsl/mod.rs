@@ -2,7 +2,7 @@ use crate::domain::{NodeType, SessionMode};
 use crate::provider::supports_continue_session;
 use anyhow::{Result, anyhow, bail, ensure};
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 
 pub const END_NODE: &str = "$end";
@@ -215,14 +215,14 @@ impl NodeDsl {
     pub fn provider(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.provider.as_deref(),
-            Self::AiDynamic(node) => node.provider.as_deref(),
+            Self::AiDynamic(node) => node.bootstrap_provider(),
         }
     }
 
     pub fn profile(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.profile.as_deref(),
-            Self::AiDynamic(node) => node.profile.as_deref(),
+            Self::AiDynamic(_) => None,
         }
     }
 
@@ -248,17 +248,78 @@ pub struct WorkerNode {
     pub manual_check: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiDynamicNode {
     pub id: String,
-    pub provider: Option<String>,
-    pub profile: Option<String>,
-    pub goal: Option<String>,
+    pub agent_strategy: AiDynamicAgentStrategy,
     #[serde(default)]
     pub control: DynamicControlDsl,
     #[serde(default)]
     pub allowed_workflows: Vec<AllowedWorkflowRefDsl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiDynamicNodeCompat {
+    pub id: String,
+    #[serde(default)]
+    pub agent_strategy: Option<AiDynamicAgentStrategy>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub control: DynamicControlDsl,
+    #[serde(default)]
+    pub allowed_workflows: Vec<AllowedWorkflowRefDsl>,
+}
+
+impl<'de> Deserialize<'de> for AiDynamicNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = AiDynamicNodeCompat::deserialize(deserializer)?;
+        let agent_strategy = match raw.agent_strategy {
+            Some(strategy) => strategy,
+            None => {
+                let provider = raw
+                    .provider
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| serde::de::Error::missing_field("agentStrategy"))?;
+                AiDynamicAgentStrategy::Fixed { provider }
+            }
+        };
+        Ok(Self {
+            id: raw.id,
+            agent_strategy,
+            control: raw.control,
+            allowed_workflows: raw.allowed_workflows,
+        })
+    }
+}
+
+impl AiDynamicNode {
+    pub fn bootstrap_provider(&self) -> Option<&str> {
+        match &self.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider } => Some(provider.as_str()),
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider, ..
+            } => Some(bootstrap_provider.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum AiDynamicAgentStrategy {
+    Fixed {
+        provider: String,
+    },
+    Dynamic {
+        bootstrap_provider: String,
+        routing_prompt: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,16 +519,27 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
 }
 
 fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
-    let provider = node
-        .provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("ai-dynamic node `{id}` provider cannot be blank"))?;
-    ensure!(
-        !provider.is_empty(),
-        "ai-dynamic node `{id}` provider cannot be blank"
-    );
+    match &node.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider } => {
+            ensure!(
+                !provider.trim().is_empty(),
+                "ai-dynamic node `{id}` fixed provider cannot be blank"
+            );
+        }
+        AiDynamicAgentStrategy::Dynamic {
+            bootstrap_provider,
+            routing_prompt,
+        } => {
+            ensure!(
+                !bootstrap_provider.trim().is_empty(),
+                "ai-dynamic node `{id}` bootstrapProvider cannot be blank"
+            );
+            ensure!(
+                !routing_prompt.trim().is_empty(),
+                "ai-dynamic node `{id}` routingPrompt cannot be blank"
+            );
+        }
+    }
     ensure!(
         node.control.max_dynamic_nodes > 0,
         "ai-dynamic node `{id}` maxDynamicNodes must be positive"

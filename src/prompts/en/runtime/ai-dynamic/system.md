@@ -23,15 +23,21 @@ AI-DYNAMIC filesystem rules:
 AI-DYNAMIC remaining budget:
 - Allowed workflow snapshots:
 {{ allowed_workflow_snapshots }}
+- Dynamic node agent strategy: {{ agent_strategy_mode }}
+- Bootstrap agent: {{ bootstrap_provider }}
+{% if agent_strategy_mode == "dynamic" %}- Node agent routing guidance:
+{{ agent_routing_prompt }}
 - Available providers:
 {{ available_providers }}
-- Available profiles:
+{% endif %}- Available profiles:
 {{ available_profiles }}
 - Remaining budget:
 {{ remaining_budget }}
 
 AI-DYNAMIC execution summary:
 {{ graph_summary }}
+- Resumable session nodes in the current chain:
+{{ resumable_sessions }}
 - dependsOn: {{ depends_on }}
 - kind-specific context:
 {{ kind_specific_context }}

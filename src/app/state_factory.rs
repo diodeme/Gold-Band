@@ -108,13 +108,9 @@ pub(crate) fn resolved_config_for_node(
         }
         NodeDsl::AiDynamic(dynamic) => {
             config.insert(
-                "provider".to_string(),
-                serde_json::Value::String(
-                    dynamic
-                        .provider
-                        .clone()
-                        .expect("validated ai-dynamic provider must exist"),
-                ),
+                "agentStrategy".to_string(),
+                serde_json::to_value(&dynamic.agent_strategy)
+                    .expect("serialize ai-dynamic agent strategy"),
             );
             if let Some(profile) = resolved_profile.as_ref() {
                 config.insert(

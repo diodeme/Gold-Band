@@ -23,15 +23,21 @@ AI-DYNAMIC 文件系统规则：
 AI-DYNAMIC 当前剩余预算：
 - Allowed workflow snapshots：
 {{ allowed_workflow_snapshots }}
+- 动态节点 agent 策略：{{ agent_strategy_mode }}
+- 初始分发节点 agent：{{ bootstrap_provider }}
+{% if agent_strategy_mode == "dynamic" %}- 节点 agent 选择说明：
+{{ agent_routing_prompt }}
 - 可用 providers：
 {{ available_providers }}
-- 可用 profiles：
+{% endif %}- 可用 profiles：
 {{ available_profiles }}
 - 剩余预算：
 {{ remaining_budget }}
 
 AI-DYNAMIC 执行摘要：
 {{ graph_summary }}
+- 当前链路可复用会话节点：
+{{ resumable_sessions }}
 - dependsOn：{{ depends_on }}
 - 类型特定上下文：
 {{ kind_specific_context }}

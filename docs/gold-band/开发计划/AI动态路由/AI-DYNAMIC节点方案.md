@@ -10,6 +10,7 @@
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
+- AI-DYNAMIC internal worker 的 system prompt 会额外注入“当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；invalid proposal 会写入 rejected proposal 并让 run 进入 error-blocked pause。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
@@ -201,7 +202,10 @@ type NodeDsl = WorkerNode | AiDynamicNode;
 {
   "id": "ai-dynamic",
   "type": "ai-dynamic",
-  "provider": "claude-acp",
+  "agentStrategy": {
+    "mode": "fixed",
+    "provider": "claude-acp"
+  },
   "control": {
     "maxDynamicNodes": 20,
     "maxFanout": 5,

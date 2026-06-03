@@ -21,6 +21,8 @@ enum DynamicScenario {
     InvalidWorkflowInvocation,
     FanoutRepair,
     MultiValidationRepair,
+    SessionContinuePrompt,
+    InvalidSessionContinue,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
     WorkflowInvocationPauseThenContinue { workflow_id: Arc<Mutex<String>> },
 }
@@ -57,6 +59,14 @@ impl DynamicProvider {
 
     fn multi_validation_repair() -> Self {
         Self::new(DynamicScenario::MultiValidationRepair)
+    }
+
+    fn session_continue_prompt() -> Self {
+        Self::new(DynamicScenario::SessionContinuePrompt)
+    }
+
+    fn invalid_session_continue() -> Self {
+        Self::new(DynamicScenario::InvalidSessionContinue)
     }
 
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
@@ -185,6 +195,13 @@ impl DynamicProvider {
             (DynamicScenario::MultiValidationRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
             }
+            (DynamicScenario::SessionContinuePrompt, "bootstrap") => {
+                Some(session_continue_fanout_completion())
+            }
+            (DynamicScenario::SessionContinuePrompt, "branch-a") => Some(end_completion("branch A done")),
+            (DynamicScenario::SessionContinuePrompt, "branch-b") => Some(session_continue_single_completion()),
+            (DynamicScenario::SessionContinuePrompt, "branch-c") => Some(end_completion("branch C done")),
+            (DynamicScenario::InvalidSessionContinue, "bootstrap") => Some(invalid_session_continue_completion()),
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
             | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") => {
                 let workflow_id = workflow_id.lock().unwrap().clone();
@@ -443,6 +460,103 @@ fn invalid_profile_and_overflow_completion() -> String {
         .to_string()
 }
 
+fn session_continue_fanout_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "split into branches and leave one follow-up",
+            "next": {
+                "type": "fanout",
+                "groupId": "group-core",
+                "nodes": [
+                    {
+                        "id": "branch-a",
+                        "kind": "worker",
+                        "title": "Branch A",
+                        "task": "Finish branch A",
+                        "provider": "claude-acp",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    },
+                    {
+                        "id": "branch-b",
+                        "kind": "worker",
+                        "title": "Branch B",
+                        "task": "Finish branch B then continue same chat for final wrap-up",
+                        "provider": "claude-acp",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    }
+                ],
+                "merge": {
+                    "title": "Merge core",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-dev",
+                    "task": "Merge branch outputs"
+                },
+                "acceptance": {
+                    "title": "Accept core",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-dev",
+                    "task": "Accept merged branch outputs"
+                }
+            }
+        }"#
+        .to_string()
+}
+
+fn session_continue_single_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "continue branch B conversation into final wrap-up node",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "branch-c",
+                    "kind": "worker",
+                    "title": "Branch C",
+                    "task": "Continue branch B conversation and wrap up remaining branch work",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-dev",
+                    "sessionMode": "continue",
+                    "continueFromNodeId": "branch-b",
+                    "workspace": { "mode": "readonly" },
+                    "dependsOn": ["branch-b"]
+                }
+            }
+        }"#
+        .to_string()
+}
+
+fn invalid_session_continue_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "try invalid continue target",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "child-flow-node",
+                    "kind": "workflow-invocation",
+                    "title": "Run child flow with invalid continue",
+                    "task": "Try to continue a workflow invocation session",
+                    "sessionMode": "continue",
+                    "continueFromNodeId": "bootstrap",
+                    "workspace": { "mode": "readonly" },
+                    "dependsOn": ["bootstrap"],
+                    "workflowId": "missing-workflow"
+                }
+            }
+        }"#
+        .to_string()
+}
+
 fn workflow_invocation_completion(workflow_id: &str) -> String {
     format!(
         r#"{{
@@ -497,7 +611,10 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                     {{
                         "id": "router",
                         "type": "ai-dynamic",
-                        "provider": "claude-acp",
+                        "agentStrategy": {
+                            "mode": "fixed",
+                            "provider": "claude-acp"
+                        },
                         "control": {{
                             "maxDynamicNodes": 10,
                             "maxFanout": 2,
@@ -907,6 +1024,65 @@ fn ai_dynamic_repairs_multiple_validation_errors_in_one_retry() {
     let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
     assert!(resume_prompt.contains("maxFanout"));
     assert!(resume_prompt.contains("unknown profile `missing-profile`"));
+}
+
+#[test]
+fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-session-continue";
+    let provider = DynamicProvider::session_continue_prompt();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.nodes.iter().any(|node| node.id == "branch-c" && node.session_mode == SessionMode::Continue));
+    assert!(graph.nodes.iter().any(|node| node.id == "branch-c" && node.continue_from_node_id.as_deref() == Some("branch-b")));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let branch_b = render_prompt_bundle(
+        invocations
+            .iter()
+            .find(|invocation| invocation.runtime_context.node_id == "branch-b")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(branch_b.system_prompt.contains("branch-a"));
+    assert!(branch_b.system_prompt.contains("branch-b"));
+    assert!(!branch_b.system_prompt.contains("bootstrap title="));
+    let branch_c = invocations
+        .iter()
+        .find(|invocation| invocation.runtime_context.node_id == "branch-c")
+        .unwrap();
+    assert_eq!(branch_c.session_mode, SessionMode::Continue);
+    assert!(branch_c.continue_ref.is_some());
+}
+
+#[test]
+fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-invalid-session-continue";
+    let provider = DynamicProvider::invalid_session_continue();
+    let app = App::with_provider(repo_root, Box::new(provider));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ErrorBlocked));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.proposals.iter().any(|proposal| {
+        proposal.validation_errors.iter().any(|error| error.code == "dynamic.node.session.workflow-invocation-disallowed")
+    }));
 }
 
 #[test]

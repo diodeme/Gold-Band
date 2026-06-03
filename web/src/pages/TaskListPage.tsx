@@ -307,7 +307,10 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         setSaveTemplateName('');
         if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
       })
-      .catch((err) => setFormError(displayAppError(t, err)));
+      .catch((err) => {
+        setFormError(displayAppError(t, err));
+        setWorkflowError(displayAppError(t, err));
+      });
   }, [open]);
 
   const applyImportedRequirement = async (file: File) => {

@@ -196,12 +196,23 @@ export interface WorkflowWorkerNodeDsl {
   manual_check?: boolean | null;
 }
 
+export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrategyDsl | WorkflowAiDynamicDynamicAgentStrategyDsl;
+
+export interface WorkflowAiDynamicFixedAgentStrategyDsl {
+  mode: 'fixed';
+  provider: string;
+}
+
+export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
+  mode: 'dynamic';
+  bootstrapProvider: string;
+  routingPrompt: string;
+}
+
 export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
-  provider?: string | null;
-  profile?: string | null;
-  goal?: string | null;
+  agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
   control: DynamicControlDsl;
   allowedWorkflows: AllowedWorkflowRefDsl[];
 }
@@ -380,6 +391,9 @@ export interface GraphNodeVm {
   attachmentCount: number;
   current: boolean;
   iconKey?: string | null;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
+  dynamicSummary?: DynamicSummaryVm | null;
 }
 
 export interface GraphAttemptVm {
@@ -399,6 +413,48 @@ export interface GraphEdgeVm {
   traversalCount?: number;
   lastOutcome?: string | null;
   blockedReason?: ControlFailureVm | null;
+}
+
+export interface DynamicSummaryVm {
+  status: string;
+  outcome?: string | null;
+  internalNodeCount: number;
+  groupCount: number;
+  proposalCount: number;
+  currentNodeIds: string[];
+}
+
+export interface DynamicGroupVm {
+  id: string;
+  status: string;
+  depth: number;
+  parentGroupId?: string | null;
+  rootNodeIds: string[];
+  terminalNodeIds: string[];
+  mergeNodeId?: string | null;
+  acceptanceNodeId?: string | null;
+}
+
+export interface DynamicProposalValidationErrorVm {
+  code: string;
+  message: string;
+  params: Record<string, unknown>;
+}
+
+export interface DynamicProposalVm {
+  id: string;
+  sourceNodeId: string;
+  validationStatus: string;
+  validationErrors: DynamicProposalValidationErrorVm[];
+  artifactPath: string;
+  createdAt: string;
+}
+
+export interface DynamicDetailVm {
+  summary: DynamicSummaryVm;
+  graph: GraphVm;
+  groups: DynamicGroupVm[];
+  proposals: DynamicProposalVm[];
 }
 
 export interface NodeDetailVm {
@@ -424,9 +480,12 @@ export interface NodeDetailVm {
   hasWorkerRef: boolean;
   manualCheckEnabled: boolean;
   manualCheckPending: boolean;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
   acpSession?: AcpSessionVm | null;
   acpConversations?: AcpConversationVm[];
   selectedConversationKey?: string | null;
+  dynamic?: DynamicDetailVm | null;
 }
 
 export interface AcpConversationVm {

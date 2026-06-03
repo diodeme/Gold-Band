@@ -62,7 +62,7 @@ export function RequirementDetailSheet({ open, title, description, requirement, 
 
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[560px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[560px]" closeLabel={closeLabel} showOverlay={false}>
+      <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey={onBack ? 'requirement/detail/nested' : 'requirement/detail'} defaultSize={560} minSize={420} maxSize={920} closeLabel={closeLabel} showOverlay={false}>
         <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
           {onBack ? (
             <Button variant="ghost" size="sm" className="h-8 w-fit px-2 text-muted-foreground" onClick={onBack}>

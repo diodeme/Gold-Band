@@ -522,7 +522,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')}>
+      <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="task-list/create-task" defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-9">
             <div className="min-w-0 space-y-1">
@@ -884,7 +884,11 @@ function TaskPreviewSheet({ task, open, onOpenChange, onNavigate }: { task: Task
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        className="w-[440px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[440px]"
+        className="gap-0 overflow-hidden p-0"
+        resizeStorageKey="task-list/task-preview"
+        defaultSize={440}
+        minSize={360}
+        maxSize={720}
         closeLabel={t('common.close')}
         onInteractOutside={(event) => {
           const target = event.target as HTMLElement | null;

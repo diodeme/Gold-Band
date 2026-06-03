@@ -220,7 +220,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       )}
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-[720px] max-w-[96vw] gap-0 overflow-hidden sm:max-w-[720px]">
+        <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="agent-management/editor" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b border-border/60 px-6 py-4">
             <SheetTitle>{editorMode === 'create' ? t('agentManagement.createTitle') : t('agentManagement.editTitle')}</SheetTitle>
             <SheetDescription>{editorMode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>

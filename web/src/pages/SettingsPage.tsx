@@ -241,7 +241,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                     onOpen={() => openThemeDrawer('all')}
                   />
                 )}
-                <SheetContent className="w-[760px] max-w-[92vw] sm:max-w-[760px]" closeLabel={t('common.close')}>
+                <SheetContent className="overflow-hidden" resizeStorageKey={`settings/theme-drawer/${themeDrawerMode ?? 'all'}`} defaultSize={760} minSize={560} maxSize={980} closeLabel={t('common.close')}>
                   <SheetHeader className="border-b px-5 py-4">
                     <SheetTitle>{themeDrawerMode === 'light' ? t('settings.chooseLightTheme') : themeDrawerMode === 'dark' ? t('settings.chooseDarkTheme') : t('settings.themeDrawerTitle')}</SheetTitle>
                   </SheetHeader>

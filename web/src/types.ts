@@ -88,6 +88,19 @@ export interface AcpModeVm {
   name: string;
 }
 
+export interface AcpUsageVm {
+  used?: number | null;
+  /** Accumulated (never-reset) total across compaction boundaries */
+  accumulatedUsed?: number | null;
+  size?: number | null;
+  costAmountUsd?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cachedReadTokens?: number | null;
+  cachedWriteTokens?: number | null;
+  totalTokens?: number | null;
+}
+
 export interface AgentEnvEntryVm {
   key: string;
   value: string;
@@ -444,7 +457,7 @@ export interface AcpSessionVm {
   eventPage: AcpEventPageVm;
   pendingPermissions: AcpPermissionRequestVm[];
   availableCommands?: unknown[] | null;
-  usage?: unknown | null;
+  usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
 }
 

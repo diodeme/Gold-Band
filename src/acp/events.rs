@@ -23,6 +23,22 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -318,6 +334,17 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 从 usage_update 事件的 raw JSON 中提取结构化 usage 字段。
+/// 返回 (used, size, cost_amount_usd)
+pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
+    let used = raw.get("used").and_then(Value::as_u64);
+    let size = raw.get("size").and_then(Value::as_u64);
+    let cost_amount = raw
+        .pointer("/cost/amount")
+        .and_then(Value::as_f64);
+    (used, size, cost_amount)
+}
+
 fn extract_status(value: &Value) -> Option<String> {
     value
         .get("status")
@@ -334,7 +361,134 @@ fn extract_status(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::user_prompt_event;
+    use super::{extract_usage_fields, kind_to_ui_kind, user_prompt_event};
+    use serde_json::json;
+
+    // --- extract_usage_fields ---
+
+    #[test]
+    fn extract_usage_all_fields() {
+        let raw = json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
+        let (used, size, cost) = extract_usage_fields(&raw);
+        assert_eq!(used, Some(12345));
+        assert_eq!(size, Some(200000));
+        assert!(cost.is_some());
+        assert!((cost.unwrap() - 0.1234).abs() < 0.0001);
+    }
+
+    #[test]
+    fn extract_usage_only_used_and_size() {
+        let raw = json!({"used": 5000, "size": 200000});
+        let (used, size, cost) = extract_usage_fields(&raw);
+        assert_eq!(used, Some(5000));
+        assert_eq!(size, Some(200000));
+        assert_eq!(cost, None);
+    }
+
+    #[test]
+    fn extract_usage_post_compaction() {
+        let raw = json!({"used": 0, "size": 200000});
+        let (used, size, cost) = extract_usage_fields(&raw);
+        assert_eq!(used, Some(0));
+        assert_eq!(size, Some(200000));
+        assert_eq!(cost, None);
+    }
+
+    #[test]
+    fn extract_usage_empty_object() {
+        let raw = json!({});
+        let (used, size, cost) = extract_usage_fields(&raw);
+        assert_eq!(used, None);
+        assert_eq!(size, None);
+        assert_eq!(cost, None);
+    }
+
+    #[test]
+    fn extract_usage_missing_cost_amount() {
+        let raw = json!({"used": 100, "cost": {"currency": "USD"}});
+        let (used, size, cost) = extract_usage_fields(&raw);
+        assert_eq!(used, Some(100));
+        assert_eq!(size, None);
+        assert_eq!(cost, None);
+    }
+
+    #[test]
+    fn extract_usage_used_is_not_string() {
+        // used is a string instead of a number — should return None
+        let raw = json!({"used": "abc", "size": 200000});
+        let (used, size, _cost) = extract_usage_fields(&raw);
+        assert_eq!(used, None);
+        assert_eq!(size, Some(200000));
+    }
+
+    // --- kind_to_ui_kind ---
+
+    #[test]
+    fn kind_to_ui_agent_message_chunk() {
+        assert_eq!(kind_to_ui_kind("agent_message_chunk"), "textDelta");
+    }
+
+    #[test]
+    fn kind_to_ui_user_message_chunk() {
+        assert_eq!(kind_to_ui_kind("user_message_chunk"), "userTextDelta");
+    }
+
+    #[test]
+    fn kind_to_ui_agent_thought_chunk() {
+        assert_eq!(kind_to_ui_kind("agent_thought_chunk"), "thoughtDelta");
+    }
+
+    #[test]
+    fn kind_to_ui_tool_call() {
+        assert_eq!(kind_to_ui_kind("tool_call"), "toolCall");
+    }
+
+    #[test]
+    fn kind_to_ui_tool_call_update() {
+        assert_eq!(kind_to_ui_kind("tool_call_update"), "toolCallUpdate");
+    }
+
+    #[test]
+    fn kind_to_ui_plan() {
+        assert_eq!(kind_to_ui_kind("plan"), "plan");
+    }
+
+    #[test]
+    fn kind_to_ui_usage_update() {
+        assert_eq!(kind_to_ui_kind("usage_update"), "usageUpdate");
+    }
+
+    #[test]
+    fn kind_to_ui_available_commands_update() {
+        assert_eq!(kind_to_ui_kind("available_commands_update"), "availableCommands");
+    }
+
+    #[test]
+    fn kind_to_ui_current_mode_update() {
+        assert_eq!(kind_to_ui_kind("current_mode_update"), "modeUpdate");
+    }
+
+    #[test]
+    fn kind_to_ui_config_option_update() {
+        assert_eq!(kind_to_ui_kind("config_option_update"), "configUpdate");
+    }
+
+    #[test]
+    fn kind_to_ui_session_info_update() {
+        assert_eq!(kind_to_ui_kind("session_info_update"), "sessionInfo");
+    }
+
+    #[test]
+    fn kind_to_ui_unknown_falls_back_to_raw_diagnostic() {
+        assert_eq!(kind_to_ui_kind("some_future_event"), "rawDiagnostic");
+    }
+
+    #[test]
+    fn kind_to_ui_empty_string_is_raw_diagnostic() {
+        assert_eq!(kind_to_ui_kind(""), "rawDiagnostic");
+    }
+
+    // --- existing tests ---
 
     #[test]
     fn user_prompt_event_persists_prompt_id_metadata() {

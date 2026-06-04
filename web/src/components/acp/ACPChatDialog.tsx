@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, User, UsersRound } from 'lucide-react';
+import { ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,10 +13,13 @@ import { Message, MessageContent } from '@/components/prompt-kit/message';
 import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
 import { cn } from '@/lib/utils';
+import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
+import { AcpMessageTokenBadge } from '@/components/acp/AcpMessageTokenBadge';
+import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
 import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
 import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
 import { displayAppError, displayStatus } from '@/i18n';
-import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm } from '@/types';
+import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm } from '@/types';
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
@@ -711,6 +714,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       </div>
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
+          <AcpUsagePanel usage={effective?.usage} isRunning={isSessionActive(effective.status)} />
           {showManualCheckActions ? (
             <AcpManualCheckPanel
               submitting={manualCheckSubmitting}
@@ -970,12 +974,12 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
 }
 
 export function ACPEventRenderer({ event, onLayoutChange }: { event: AcpTimelineItem; onLayoutChange?: () => void }) {
-  if (isChildAgentGroup(event)) return <AssistantTimelineRow><ChildAgentGroupCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
+  if (isChildAgentGroup(event)) return <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}><ChildAgentGroupCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
   if (event.kind === 'attemptSeparator') return <AttemptSeparator event={event} />;
   if (event.kind === 'textDelta' || event.kind === 'userTextDelta') return <MessageBubble event={event} />;
-  if (event.kind === 'thoughtDelta') return <AssistantTimelineRow><ThoughtBlock event={event} /></AssistantTimelineRow>;
-  if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <AssistantTimelineRow><ToolCallCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
-  if (event.kind === 'plan') return <AssistantTimelineRow><PlanBlock event={event} /></AssistantTimelineRow>;
+  if (event.kind === 'thoughtDelta') return <AssistantTimelineRow timestamp={event.timestamp}><ThoughtBlock event={event} /></AssistantTimelineRow>;
+  if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <AssistantTimelineRow timestamp={event.timestamp}><ToolCallCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
+  if (event.kind === 'plan') return <AssistantTimelineRow timestamp={event.timestamp}><PlanBlock event={event} /></AssistantTimelineRow>;
   return null;
 }
 
@@ -1056,10 +1060,10 @@ function ChildAgentMeta({ label, value, className }: { label: string; value: str
   );
 }
 
-function AssistantTimelineRow({ children }: { children: React.ReactNode }) {
+function AssistantTimelineRow({ children, timestamp }: { children: React.ReactNode; timestamp?: string | null }) {
   return (
     <Message className="min-w-0 items-start justify-start gap-2">
-      <div className="size-7 shrink-0" aria-hidden="true" />
+      <AcpAvatarWithTime tone="assistant" timestamp={timestamp} />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
   );
@@ -1098,9 +1102,12 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();
   const isUser = event.kind === 'userTextDelta';
   const failed = event.status === 'failed';
+  const messageTokens = !isUser
+    ? (event.raw as Record<string, unknown> | null | undefined)?._goldBand as { tokens?: number } | undefined
+    : undefined;
   return (
     <Message className={cn('min-w-0 items-start gap-2', isUser ? 'justify-end' : 'justify-start')}>
-      {!isUser ? <MessageAvatar tone="assistant" /> : null}
+      {!isUser ? <AcpAvatarWithTime tone="assistant" timestamp={event.timestamp} /> : null}
       <div className={cn('min-w-0 max-w-[82%] space-y-1', isUser && 'items-end')}>
         <MessageContent className={cn(
           'rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]',
@@ -1109,13 +1116,14 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
         )}>
           {isUser ? event.content : <Markdown>{event.content ?? ''}</Markdown>}
         </MessageContent>
+        {!isUser && !event.optimistic && !failed ? <AcpMessageTokenBadge tokens={messageTokens?.tokens} /> : null}
         {event.optimistic || failed ? (
           <div className={cn('flex px-1 text-xs text-muted-foreground', isUser && 'justify-end text-right')}>
             {failed ? t('acp.sendFailed') : <span className="inline-flex items-center">{event.status === 'processing' ? t('acp.processing') : t('acp.sending')}<AnimatedEllipsis /></span>}
           </div>
         ) : null}
       </div>
-      {isUser ? <MessageAvatar tone="user" /> : null}
+      {isUser ? <AcpAvatarWithTime tone="user" timestamp={event.timestamp} /> : null}
     </Message>
   );
 }
@@ -1130,17 +1138,6 @@ function AnimatedEllipsis() {
   );
 }
 
-function MessageAvatar({ tone }: { tone: 'assistant' | 'user' }) {
-  const Icon = tone === 'assistant' ? Bot : User;
-  return (
-    <div className={cn(
-      'mt-1 flex size-7 shrink-0 items-center justify-center rounded-full border',
-      tone === 'assistant' ? 'bg-card text-muted-foreground' : 'bg-primary/10 text-primary',
-    )}>
-      <Icon className="size-3.5" />
-    </div>
-  );
-}
 
 export function ThoughtBlock({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();

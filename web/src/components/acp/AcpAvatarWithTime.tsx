@@ -48,4 +48,4 @@ export function AcpAvatarWithTime({ tone, timestamp, className }: AcpAvatarWithT
   );
 }
 
-export { formatMessageTime };
+export { formatMessageTime, parseAcpTimestampMs };

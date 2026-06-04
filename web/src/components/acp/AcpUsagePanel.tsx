@@ -9,16 +9,16 @@ export interface AcpUsagePanelProps {
   isRunning: boolean;
 }
 
-function formatTokenCount(n: number): string {
+export function formatTokenCount(n: number): string {
   return n.toLocaleString();
 }
 
-function usageRatio(used: number, size: number): number {
+export function usageRatio(used: number, size: number): number {
   if (size <= 0) return 0;
   return Math.min(used / size, 1);
 }
 
-function ratioPercent(ratio: number): string {
+export function ratioPercent(ratio: number): string {
   return `${(ratio * 100).toFixed(1)}%`;
 }
 

@@ -48,6 +48,7 @@ fn invocation() -> WorkerInvocation {
                 "result": "boolean",
                 "reason": "string"
             })),
+            schema_text: None,
             success_condition: Some("JSON field `$.result` equals `true`".to_string()),
         }),
         runtime_context: runtime_context(),

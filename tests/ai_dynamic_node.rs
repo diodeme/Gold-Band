@@ -611,10 +611,10 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                     {{
                         "id": "router",
                         "type": "ai-dynamic",
-                        "agentStrategy": {
+                        "agentStrategy": {{
                             "mode": "fixed",
                             "provider": "claude-acp"
-                        },
+                        }},
                         "control": {{
                             "maxDynamicNodes": 10,
                             "maxFanout": 2,

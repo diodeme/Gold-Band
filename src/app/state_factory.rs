@@ -137,6 +137,17 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::to_value(&dynamic.allowed_workflows)
                     .expect("serialize allowed workflows"),
             );
+            config.insert(
+                "allowedProfiles".to_string(),
+                serde_json::to_value(&dynamic.allowed_profiles)
+                    .expect("serialize allowed profiles"),
+            );
+            if let Some(global_goal) = &dynamic.global_goal {
+                config.insert(
+                    "globalGoal".to_string(),
+                    serde_json::Value::String(global_goal.clone()),
+                );
+            }
             config.insert("manualCheck".to_string(), serde_json::Value::Bool(false));
             config.insert(
                 "sessionMode".to_string(),

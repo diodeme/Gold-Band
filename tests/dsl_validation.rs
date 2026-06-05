@@ -81,6 +81,28 @@ fn rejects_workflow_without_end_node() {
 }
 
 #[test]
+fn rejects_unreachable_node() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "unreachable-node",
+            "entry": "router",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "router", "type": "worker", "provider": "claude-acp" },
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "router", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let error = validate_workflow(workflow).expect_err("workflow should reject unreachable node");
+    assert!(error.to_string().contains("node `accept` is unreachable from entry"));
+}
+
+#[test]
 fn rejects_success_edge_to_new_round() {
     let workflow = parse_workflow(
         r#"{

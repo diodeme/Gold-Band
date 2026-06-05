@@ -14,6 +14,8 @@ const RESERVED_NODE_IDS: &[&str] = &[END_NODE, NEW_ROUND_NODE];
 pub enum WorkflowValidationError {
     #[error("workflow must include an edge targeting `$end`")]
     MissingEndNode,
+    #[error("node `{node_id}` is unreachable from entry")]
+    UnreachableNode { node_id: String },
     #[error("edge `{from}` cannot target `$new-round` on success")]
     SuccessNewRoundTarget { from: String },
     #[error("workflow `{workflow_name}` id `{workflow_id}` is duplicated with {conflicts}")]
@@ -262,6 +264,10 @@ pub struct AiDynamicNode {
         alias = "permissionMode"
     )]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_profiles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_goal: Option<String>,
     #[serde(default)]
     pub control: DynamicControlDsl,
     #[serde(default)]
@@ -278,6 +284,10 @@ struct AiDynamicNodeCompat {
     pub provider: Option<String>,
     #[serde(default, rename = "permission_mode", alias = "permissionMode")]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub allowed_profiles: Vec<String>,
+    #[serde(default)]
+    pub global_goal: Option<String>,
     #[serde(default)]
     pub control: DynamicControlDsl,
     #[serde(default)]
@@ -308,6 +318,16 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                 .permission_mode
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            allowed_profiles: raw
+                .allowed_profiles
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
+            global_goal: raw
+                .global_goal
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             control: raw.control,
             allowed_workflows: raw.allowed_workflows,
         })
@@ -326,6 +346,10 @@ impl AiDynamicNode {
 
     pub fn permission_mode(&self) -> Option<&str> {
         self.permission_mode.as_deref()
+    }
+
+    pub fn global_goal(&self) -> Option<&str> {
+        self.global_goal.as_deref()
     }
 }
 
@@ -591,6 +615,24 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         node.control.max_workflow_invocations > 0,
         "ai-dynamic node `{id}` maxWorkflowInvocations must be positive"
     );
+    let mut profiles = HashSet::new();
+    for profile in &node.allowed_profiles {
+        let profile_id = profile.trim();
+        ensure!(
+            !profile_id.is_empty(),
+            "ai-dynamic node `{id}` allowed profile cannot be blank"
+        );
+        ensure!(
+            profiles.insert(profile_id.to_string()),
+            "ai-dynamic node `{id}` allowed profile `{profile_id}` is duplicated"
+        );
+    }
+    if let Some(global_goal) = &node.global_goal {
+        ensure!(
+            !global_goal.trim().is_empty(),
+            "ai-dynamic node `{id}` globalGoal cannot be blank"
+        );
+    }
     let mut workflows = HashSet::new();
     for allowed in &node.allowed_workflows {
         let workflow_id = allowed.workflow_id.trim();
@@ -710,6 +752,26 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
 
     if !has_end_target {
         return Err(WorkflowValidationError::MissingEndNode.into());
+    }
+
+    let mut reachable = HashSet::new();
+    let mut pending = vec![workflow.entry.clone()];
+    while let Some(node_id) = pending.pop() {
+        if !reachable.insert(node_id.clone()) {
+            continue;
+        }
+        workflow
+            .edges
+            .iter()
+            .filter(|edge| edge.from == node_id)
+            .filter(|edge| edge.to != END_NODE && edge.to != NEW_ROUND_NODE)
+            .for_each(|edge| pending.push(edge.to.clone()));
+    }
+    if let Some(node_id) = nodes_by_id.keys().find(|node_id| !reachable.contains(*node_id)) {
+        return Err(WorkflowValidationError::UnreachableNode {
+            node_id: node_id.clone(),
+        }
+        .into());
     }
 
     Ok(ValidatedWorkflow {

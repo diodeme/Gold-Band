@@ -2788,6 +2788,24 @@ fn validate_dynamic_node_spec(
                         }
                     }
                 }
+                if let Some(profile) = spec.profile.as_deref() {
+                    let allowed = ctx
+                        .dynamic
+                        .allowed_profiles
+                        .iter()
+                        .map(|item| item.as_str())
+                        .collect::<std::collections::HashSet<_>>();
+                    if !allowed.is_empty() && !allowed.contains(profile) {
+                        errors.push(dynamic_validation_error(
+                            "dynamic.node.profile.unallowed",
+                            format!("dynamic worker `{}` profile `{profile}` is not allowed by this AI-DYNAMIC node", spec.id),
+                            serde_json::json!({
+                                "nodeId": spec.id,
+                                "profile": profile,
+                            }),
+                        ));
+                    }
+                }
             }
             _ => errors.push(dynamic_validation_error(
                 "dynamic.node.provider.blank",
@@ -3775,7 +3793,18 @@ fn dynamic_task_instruction(ctx: &DynamicExecutionContext<'_>, _graph: &DynamicG
         }),
     )
     .expect("prompt template renders");
-    format!("{}\n\n{}", node.task.trim(), metadata.trim())
+    let task = if let Some(global_goal) = ctx.dynamic.global_goal() {
+        if global_goal.trim().is_empty() {
+            node.task.trim().to_string()
+        } else if node.task.trim().is_empty() {
+            global_goal.trim().to_string()
+        } else {
+            format!("{}\n\n---\n\n{}", global_goal.trim(), node.task.trim())
+        }
+    } else {
+        node.task.trim().to_string()
+    };
+    format!("{}\n\n{}", task, metadata.trim())
 }
 
 fn dynamic_predecessor_contexts(
@@ -3857,13 +3886,28 @@ fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
 
 fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
     match ctx.app.profiles() {
-        Ok(list) if !list.profiles.is_empty() => list
-            .profiles
-            .into_iter()
-            .map(|profile| format!("- {} ({})", profile.name, profile.id))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Ok(_) | Err(_) => "none".to_string(),
+        Ok(list) => {
+            let allowed = ctx
+                .dynamic
+                .allowed_profiles
+                .iter()
+                .map(|profile| profile.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            let profiles = list
+                .profiles
+                .into_iter()
+                .filter(|profile| allowed.is_empty() || allowed.contains(profile.id.as_str()))
+                .collect::<Vec<_>>();
+            if profiles.is_empty() {
+                return "none".to_string();
+            }
+            profiles
+                .into_iter()
+                .map(|profile| format!("- {} ({})", profile.name, profile.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Err(_) => "none".to_string(),
     }
 }
 

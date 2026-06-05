@@ -717,6 +717,7 @@ pub async fn send_acp_prompt(
                 permission_mode,
                 continue_ref,
                 app.config.use_local_claude,
+                app.config.acp_session_title_refresh_enabled,
             )
             .map_err(command_error)?;
             return dynamic_acp_session_vm(
@@ -782,6 +783,7 @@ pub async fn send_acp_prompt(
             permission_mode,
             continue_ref,
             app.config.use_local_claude,
+            app.config.acp_session_title_refresh_enabled,
         )
         .map_err(command_error)?;
         acp_session_vm(

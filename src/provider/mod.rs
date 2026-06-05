@@ -261,14 +261,21 @@ pub struct AcpProvider {
     provider_id: String,
     adapter_config: AcpAdapterConfig,
     use_local_claude: bool,
+    acp_session_title_refresh_enabled: bool,
 }
 
 impl AcpProvider {
-    pub fn new(provider_id: impl Into<String>, adapter_config: AcpAdapterConfig, use_local_claude: bool) -> Self {
+    pub fn new(
+        provider_id: impl Into<String>,
+        adapter_config: AcpAdapterConfig,
+        use_local_claude: bool,
+        acp_session_title_refresh_enabled: bool,
+    ) -> Self {
         Self {
             provider_id: provider_id.into(),
             adapter_config,
             use_local_claude,
+            acp_session_title_refresh_enabled,
         }
     }
 }
@@ -329,6 +336,7 @@ impl ProviderAdapter for AcpProvider {
             req.permission_mode.clone(),
             req.continue_ref.clone(),
             self.use_local_claude,
+            self.acp_session_title_refresh_enabled,
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {
@@ -672,7 +680,12 @@ pub fn provider_capabilities_for_type(
         bail!("unsupported agent type: {}", agent_type.as_str());
     }
     Ok(
-        AcpProvider::new(agent_type.as_str(), agent_type.default_adapter_config(), false)
+        AcpProvider::new(
+            agent_type.as_str(),
+            agent_type.default_adapter_config(),
+            false,
+            false,
+        )
             .describe_provider()
             .capabilities,
     )
@@ -686,6 +699,7 @@ pub fn provider_from_agent(
     agent_type: ManagedAgentType,
     config: &ManagedAgentConfig,
     use_local_claude: bool,
+    acp_session_title_refresh_enabled: bool,
 ) -> Result<Box<dyn ProviderAdapter>> {
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
@@ -694,17 +708,27 @@ pub fn provider_from_agent(
         agent_type.as_str(),
         config.adapter.clone(),
         use_local_claude,
+        acp_session_title_refresh_enabled,
     )))
 }
 
-pub fn provider_from_id(provider_id: &str, use_local_claude: bool) -> Result<Box<dyn ProviderAdapter>> {
+pub fn provider_from_id(
+    provider_id: &str,
+    use_local_claude: bool,
+    acp_session_title_refresh_enabled: bool,
+) -> Result<Box<dyn ProviderAdapter>> {
     let agent_type = ManagedAgentType::from_str(provider_id)?;
     let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
-    provider_from_agent(agent_type, &config, use_local_claude)
+    provider_from_agent(
+        agent_type,
+        &config,
+        use_local_claude,
+        acp_session_title_refresh_enabled,
+    )
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
-    provider_from_id(DEFAULT_PROVIDER, false).expect("default provider must be supported")
+    provider_from_id(DEFAULT_PROVIDER, false, false).expect("default provider must be supported")
 }
 
 #[cfg(test)]

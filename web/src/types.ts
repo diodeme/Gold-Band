@@ -533,6 +533,7 @@ export interface AcpAttemptSessionVm {
 
 export interface AcpSessionVm {
   sessionId?: string | null;
+  title?: string | null;
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;

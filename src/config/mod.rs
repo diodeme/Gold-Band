@@ -305,6 +305,12 @@ pub struct StateConfig {
     pub recent_desktop_workspaces: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFeatureFlags {
+    pub acp_session_title_refresh_enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub log_level: RuntimeLogLevel,
@@ -321,6 +327,7 @@ pub struct RuntimeConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
+    pub acp_session_title_refresh_enabled: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -345,6 +352,7 @@ impl Default for RuntimeConfig {
             desktop_available_update: None,
             agents,
             use_local_claude: false,
+            acp_session_title_refresh_enabled: false,
         }
     }
 }
@@ -385,6 +393,13 @@ impl RuntimeConfig {
         self
     }
 
+    pub fn apply_feature_flags(mut self, flags: &ProjectFeatureFlags) -> Self {
+        if let Some(acp_session_title_refresh_enabled) = flags.acp_session_title_refresh_enabled {
+            self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
+        }
+        self
+    }
+
     pub fn apply_state(mut self, state: &StateConfig) -> Self {
         self.desktop_updater_last_checked_at = state.desktop_updater_last_checked_at.clone();
         self.desktop_update_badges = state.desktop_update_badges.clone();
@@ -397,7 +412,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        DesktopUpdateBadgeState, ProjectFeatureFlags, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::str::FromStr;
 
@@ -553,6 +568,16 @@ mod tests {
     }
 
     #[test]
+    fn project_feature_flags_roundtrip_json() {
+        let flags = ProjectFeatureFlags {
+            acp_session_title_refresh_enabled: Some(true),
+        };
+        let json = serde_json::to_string_pretty(&flags).unwrap();
+        let roundtripped: ProjectFeatureFlags = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
+    }
+
+    #[test]
     fn apply_state_overrides_defaults() {
         let config = RuntimeConfig::default().apply_state(&StateConfig {
             desktop_updater_last_checked_at: Some("2026-05-27 10:00:00".to_string()),
@@ -591,6 +616,14 @@ mod tests {
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
         assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+    }
+
+    #[test]
+    fn apply_feature_flags_overrides_defaults() {
+        let config = RuntimeConfig::default().apply_feature_flags(&ProjectFeatureFlags {
+            acp_session_title_refresh_enabled: Some(true),
+        });
+        assert!(config.acp_session_title_refresh_enabled);
     }
 
     #[test]

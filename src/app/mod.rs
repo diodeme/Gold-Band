@@ -12,7 +12,7 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage,
     DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
-    RuntimeConfig, SettingsConfig, StateConfig,
+    ProjectFeatureFlags, RuntimeConfig, SettingsConfig, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -473,7 +473,13 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
-        Self::with_config(repo_root, RuntimeConfig::default())
+        let paths = GoldBandPaths::new(repo_root.clone());
+        let feature_flags: ProjectFeatureFlags =
+            read_json(&paths.repo_feature_flags_file()).unwrap_or_default();
+        Self::with_config(
+            repo_root,
+            RuntimeConfig::default().apply_feature_flags(&feature_flags),
+        )
     }
 
     pub(crate) fn clone_for_background(&self) -> Self {
@@ -852,6 +858,7 @@ impl App {
             agent_type,
             config,
             self.config.use_local_claude,
+            self.config.acp_session_title_refresh_enabled,
         )?))
     }
 

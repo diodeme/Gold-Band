@@ -13,6 +13,8 @@ pub struct AcpSessionMetadata {
     pub adapter_id: String,
     pub adapter_display_name: String,
     pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub status: String,
     pub restored: bool,
     pub stop_reason: Option<String>,

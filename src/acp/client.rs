@@ -29,6 +29,7 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -77,6 +78,7 @@ struct AcpRuntime {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    session_title: Option<String>,
     used_tokens: Option<u64>,
     context_window_size: Option<u64>,
     total_cost_usd: Option<f64>,
@@ -113,6 +115,7 @@ pub fn run_prompt(
     permission_mode: Option<String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
+    acp_session_title_refresh_enabled: bool,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude)?;
@@ -131,7 +134,23 @@ pub fn run_prompt(
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
-    let prompt_result = runtime.prompt(provider_id, prompt);
+    if acp_session_title_refresh_enabled {
+        runtime.refresh_session_title_and_persist(
+            &workspace_dir,
+            "running",
+            restored,
+            None,
+            &capabilities,
+        );
+    }
+    let prompt_result = runtime.prompt(
+        provider_id,
+        &workspace_dir,
+        prompt,
+        restored,
+        &capabilities,
+        acp_session_title_refresh_enabled,
+    );
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => ("completed", stop_reason),
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -360,6 +379,7 @@ impl AcpRuntime {
             models: None,
             modes: None,
             config_options: None,
+            session_title: None,
             used_tokens: None,
             context_window_size: None,
             total_cost_usd: None,
@@ -587,7 +607,65 @@ impl AcpRuntime {
         Ok(())
     }
 
-    fn prompt(&mut self, provider_id: &str, prompt: &PromptBundle) -> Result<Option<String>> {
+    fn refresh_session_title(&mut self, workspace_dir: &Utf8Path) -> Result<()> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Ok(());
+        };
+        let result = self.request(
+            "session/list",
+            json!({
+                "cwd": workspace_dir.as_str(),
+            }),
+        )?;
+        let title = result
+            .get("sessions")
+            .and_then(Value::as_array)
+            .and_then(|sessions| {
+                sessions.iter().find(|session| {
+                    session.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str())
+                })
+            })
+            .and_then(|session| session.get("title"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string);
+        self.session_title = title;
+        Ok(())
+    }
+
+    fn refresh_session_title_best_effort(&mut self, workspace_dir: &Utf8Path) {
+        if let Err(error) = self.refresh_session_title(workspace_dir) {
+            let _ = append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                format!("failed to refresh ACP session title via session/list: {error}"),
+                None,
+            );
+        }
+    }
+
+    fn refresh_session_title_and_persist(
+        &mut self,
+        workspace_dir: &Utf8Path,
+        status: &str,
+        restored: bool,
+        stop_reason: Option<String>,
+        capabilities: &Value,
+    ) {
+        self.refresh_session_title_best_effort(workspace_dir);
+        let _ = self.write_session(status, restored, stop_reason, capabilities.clone());
+    }
+
+    fn prompt(
+        &mut self,
+        provider_id: &str,
+        workspace_dir: &Utf8Path,
+        prompt: &PromptBundle,
+        restored: bool,
+        capabilities: &Value,
+        acp_session_title_refresh_enabled: bool,
+    ) -> Result<Option<String>> {
         let session_id = self
             .session_id
             .clone()
@@ -603,9 +681,12 @@ impl AcpRuntime {
                 prompt.visibility == PromptVisibility::Hidden,
             ),
         )?;
-        let result = self.request(
+        let result = self.request_with_progress(
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
+            None,
+            acp_session_title_refresh_enabled
+                .then_some((workspace_dir, "running", restored, None, capabilities)),
         )?;
         // Capture session-end usage breakdown (inputTokens / outputTokens / …)
         // that the adapter returns alongside the stopReason.
@@ -616,6 +697,15 @@ impl AcpRuntime {
             self.cached_write_tokens = usage.get("cachedWriteTokens").and_then(Value::as_u64);
             self.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
         }
+        if acp_session_title_refresh_enabled {
+            self.refresh_session_title_and_persist(
+                workspace_dir,
+                "running",
+                restored,
+                None,
+                capabilities,
+            );
+        }
         Ok(result
             .get("stopReason")
             .and_then(Value::as_str)
@@ -623,7 +713,7 @@ impl AcpRuntime {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.request_with_timeout(method, params, None)
+        self.request_with_progress(method, params, None, None)
     }
 
     fn request_with_timeout(
@@ -631,6 +721,16 @@ impl AcpRuntime {
         method: &str,
         params: Value,
         timeout: Option<Duration>,
+    ) -> Result<Value> {
+        self.request_with_progress(method, params, timeout, None)
+    }
+
+    fn request_with_progress(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+        title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -643,6 +743,7 @@ impl AcpRuntime {
         self.send_frame(&frame)?;
         let started_at = Instant::now();
         let mut cancel_started_at = None;
+        let mut last_title_refresh_at = Instant::now();
         loop {
             let wait_for = match timeout {
                 Some(timeout) => match timeout.checked_sub(started_at.elapsed()) {
@@ -675,7 +776,22 @@ impl AcpRuntime {
                     }
                     self.handle_inbound(value)?;
                 }
-                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Some((workspace_dir, status, restored, ref stop_reason, capabilities)) =
+                        title_refresh
+                    {
+                        if last_title_refresh_at.elapsed() >= SESSION_TITLE_REFRESH_INTERVAL {
+                            self.refresh_session_title_and_persist(
+                                workspace_dir,
+                                status,
+                                restored,
+                                stop_reason.clone(),
+                                capabilities,
+                            );
+                            last_title_refresh_at = Instant::now();
+                        }
+                    }
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     if cancel_started_at.is_some() || is_cancel_requested(&self.paths.attempt_dir) {
                         return Err(anyhow!(AcpCancelled));
@@ -888,6 +1004,7 @@ impl AcpRuntime {
                 adapter_id: self.adapter.adapter_id.clone(),
                 adapter_display_name: self.adapter.display_name.clone(),
                 cwd: self.paths.attempt_dir.to_string(),
+                title: self.session_title.clone(),
                 status: status.to_string(),
                 restored,
                 stop_reason,

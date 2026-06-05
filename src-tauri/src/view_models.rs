@@ -472,6 +472,7 @@ pub struct AcpUsageVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionVm {
     pub session_id: Option<String>,
+    pub title: Option<String>,
     pub provider: String,
     pub adapter_id: Option<String>,
     pub adapter_display_name: Option<String>,
@@ -2747,7 +2748,7 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let mut session = if session_path.exists() {
+    let session = if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
@@ -2825,6 +2826,10 @@ pub fn dynamic_acp_session_vm(
                     .or_else(|| session.get("sessionId"))
                     .and_then(|value| value.as_str())
             })
+            .map(str::to_string),
+        title: session
+            .get("title")
+            .and_then(|value| value.as_str())
             .map(str::to_string),
         provider,
         adapter_id: continue_ref
@@ -3040,6 +3045,10 @@ pub fn acp_session_vm(
                     .or_else(|| session.get("sessionId"))
                     .and_then(|value| value.as_str())
             })
+            .map(str::to_string),
+        title: session
+            .get("title")
+            .and_then(|value| value.as_str())
             .map(str::to_string),
         provider,
         adapter_id: continue_ref

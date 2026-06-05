@@ -43,6 +43,7 @@ fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
         artifact: output.artifact.clone(),
         kind: format!("{:?}", output.kind).to_ascii_lowercase(),
         schema: output.schema.clone(),
+        schema_text: None,
         success_condition: worker
             .success_condition
             .as_ref()
@@ -65,6 +66,7 @@ fn runtime_prompt_context(
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        language: app.config.desktop_language,
         run_dir: app.paths.run_dir(task_id, run_id),
         round_dir: app.paths.round_dir(task_id, run_id, round_id),
         node_dir: app.paths.node_dir(task_id, run_id, round_id, node_id),
@@ -176,6 +178,7 @@ fn output_artifact_for_predecessor(
             .output
             .as_ref()
             .map(|output| output.artifact.as_str()),
+        NodeDsl::AiDynamic(_) => None,
     }?;
     let path = app.paths.artifact_file(
         task_id,
@@ -243,6 +246,7 @@ fn build_predecessor_contexts(
                 });
             let branch_reason = match node_dsl {
                 NodeDsl::Worker(worker) => output_contract_reason(worker),
+                NodeDsl::AiDynamic(_) => None,
             };
             Some(PromptPredecessorContext {
                 round_id: trace_ref.round_id.clone(),
@@ -302,6 +306,9 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             Vec::new(),
         ),
+        NodeDsl::AiDynamic(_) => {
+            bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
+        }
     };
 
     let profile_content = profile
@@ -325,6 +332,7 @@ pub(crate) fn build_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
+        extra_system_sections: Vec::new(),
         task_instruction,
         session_mode,
         permission_mode,
@@ -607,6 +615,24 @@ pub(crate) fn finalize_ai_attempt(
     result: ProviderRunResult,
 ) -> Result<NodeState> {
     node.finished_at = Some(now_rfc3339_like());
+    if let Some(seed) = result.worker_ref_seed.clone() {
+        let worker_ref = WorkerRefState {
+            version: VERSION.to_string(),
+            provider: seed.provider,
+            mode: seed.mode,
+            supports_open_session: seed.supports_open_session,
+            supports_continue_session: seed.supports_continue_session,
+            continue_ref: seed.continue_ref,
+            open_command: seed.open_command,
+        };
+        validate_worker_ref_state(&worker_ref)?;
+        write_json(
+            &app.paths
+                .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
+            &worker_ref,
+        )?;
+    }
+
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
@@ -626,24 +652,6 @@ pub(crate) fn finalize_ai_attempt(
                     )?;
                     std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
                 }
-            }
-
-            if let Some(seed) = result.worker_ref_seed {
-                let worker_ref = WorkerRefState {
-                    version: VERSION.to_string(),
-                    provider: seed.provider,
-                    mode: seed.mode,
-                    supports_open_session: seed.supports_open_session,
-                    supports_continue_session: seed.supports_continue_session,
-                    continue_ref: seed.continue_ref,
-                    open_command: seed.open_command,
-                };
-                validate_worker_ref_state(&worker_ref)?;
-                write_json(
-                    &app.paths
-                        .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
-                    &worker_ref,
-                )?;
             }
 
             let needs_output_artifact = node.resolved_config.contains_key("outputArtifact");

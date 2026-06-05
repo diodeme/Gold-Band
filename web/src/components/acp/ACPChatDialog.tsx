@@ -17,6 +17,7 @@ import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
 import { AcpMessageTokenBadge } from '@/components/acp/AcpMessageTokenBadge';
 import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
 import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
+import { formatLocalDateTime } from '@/lib/datetime';
 import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
 import { displayAppError, displayStatus } from '@/i18n';
 import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm } from '@/types';
@@ -28,6 +29,8 @@ interface ACPChatDialogProps {
   roundId: string;
   nodeId: string;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   runtimeStatus?: string | null;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
@@ -155,7 +158,7 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
   const sessionIdentity = `${sessionKey}:${eventIdPrefix ?? ''}:${session?.sessionId ?? ''}`;
@@ -343,7 +346,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     let active = true;
     const refreshSession = async () => {
       try {
-        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, undefined, latestSessionRef.current);
+        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, undefined, latestSessionRef.current, outerNodeId, outerAttemptId);
         if (active) applySessionUpdate(updated);
       } catch {
         // The send or stop request owns user-visible error handling.
@@ -484,7 +487,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setIsAtBottom(false);
     setLoadingOlder(true);
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       captureHistoryScrollAnchor();
       setCurrentSession(updated);
@@ -508,7 +511,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const newestSeq = loadedEvents[loadedEvents.length - 1].seq;
     loadingNewerRef.current = true;
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       setCurrentSession(updated);
       setHasNewerEvents(updated.eventPage.hasNewer);
@@ -539,7 +542,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     setSending(true);
     try {
-      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null);
+      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
       if (updated) {
         updateOptimisticEvents((current) => current.filter((event) => !hasMatchingUserPrompt(updated.events, event)));
@@ -584,7 +587,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCancelError(null);
     setAwaitingResponse(true);
     try {
-      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null);
+      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
     } catch (error) {
       setCancelError(displayAppError(t, error));
@@ -612,7 +615,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setPermissionError(null);
     setDismissedPermissionIds((current) => new Set(current).add(request.requestId));
     try {
-      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective);
+      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
     } catch (error) {
       setDismissedPermissionIds((current) => {
@@ -635,7 +638,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const loadRawFrames = async (query: AcpRawFrameQueryInput) => {
     setRawLoading(true);
     try {
-      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query);
+      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
       setRawPage(next);
       setRawQuery({
         page: next.page,
@@ -934,7 +937,7 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
             </Select>
           ) : null}
           {content ? (
-            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-mono text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
+            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
           ) : (
             <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t('acp.systemPromptEmpty')}</div>
           )}
@@ -1011,7 +1014,7 @@ function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGr
               <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><UsersRound className="size-4" /></span>
               <span className="min-w-0 flex-1 truncate text-left text-sm">
                 <span className="font-semibold text-foreground">{t('acp.subAgent')}</span>
-                {input.subagentType ? <span className="ml-2 font-mono text-xs text-muted-foreground">{input.subagentType}</span> : null}
+                {input.subagentType ? <span className="ml-2 text-xs text-muted-foreground">{input.subagentType}</span> : null}
                 {description ? <span className="ml-2 text-xs text-muted-foreground">{description}</span> : null}
               </span>
             </div>
@@ -1040,7 +1043,7 @@ function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGr
               {output ? (
                 <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 p-2.5 text-xs">
                   <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{t('acp.subAgentResult')}</div>
-                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground [overflow-wrap:anywhere]">{formatToolValue(output)}</pre>
+                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-foreground [overflow-wrap:anywhere]">{formatToolValue(output)}</pre>
                 </div>
               ) : null}
             </div>
@@ -1325,16 +1328,16 @@ function RawFrameRow({ frame, onLayoutChange }: { frame: AcpRawFrameVm; onLayout
   const display = rawFrameDisplay(frame.content);
   const scrollable = isLongRawFrame(display.expanded);
   return (
-    <details onToggle={onLayoutChange} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 font-mono text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
+    <details onToggle={onLayoutChange} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
       <summary className="flex w-full min-w-0 cursor-pointer list-none items-center gap-2 overflow-hidden px-3 py-2 text-muted-foreground outline-none transition-colors marker:hidden hover:bg-muted/20 focus-visible:bg-muted/20">
         <span className="shrink-0 select-none tabular-nums text-muted-foreground/80">#{frame.lineNumber}</span>
-        {frame.timestamp ? <span className="hidden shrink-0 tabular-nums text-muted-foreground/70 sm:inline">{frame.timestamp}</span> : null}
+        {frame.timestamp ? <span className="hidden shrink-0 tabular-nums text-muted-foreground/70 sm:inline">{formatLocalDateTime(frame.timestamp)}</span> : null}
         {frame.direction ? <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{displayRawDirection(t, frame.direction)}</span> : null}
         <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">{displayRawKind(t, frame.kind)}</span>
-        <code className="block min-w-0 flex-1 truncate text-foreground/75">{truncateFrameLine(display.compact)}</code>
+        <span className="block min-w-0 flex-1 truncate text-foreground/75">{truncateFrameLine(display.compact)}</span>
         {frame.contentTruncated ? <span className="shrink-0 text-[10px] text-amber-600 dark:text-amber-300">truncated</span> : null}
       </summary>
-      <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{display.expanded}</pre>
+      <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 font-sans text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{display.expanded}</pre>
     </details>
   );
 }
@@ -1969,22 +1972,22 @@ function parseAcpTimestamp(value?: string | null) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function formatThinkingDuration(t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
+function formatThinkingDuration(_t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
   if (durationMs == null) return null;
   const seconds = Math.max(1, Math.round(durationMs / 1000));
-  return t('acp.thinkingDuration', { seconds });
+  return formatElapsedDuration(seconds);
 }
 
 function formatElapsedDuration(totalSeconds: number) {
   const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
-  if (minutes < 60) return restSeconds ? `${minutes} 分 ${restSeconds} 秒` : `${minutes} 分`;
+  if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
-  if (hours < 24) return restMinutes ? `${hours} 时 ${restMinutes} 分` : `${hours} 时`;
+  if (hours < 24) return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
-  return restHours ? `${days} 天 ${restHours} 时` : `${days} 天`;
+  return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }

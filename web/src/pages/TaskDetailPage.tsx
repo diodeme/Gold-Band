@@ -5,6 +5,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
 import { CodeBlock, EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
+import { formatLocalDateTime } from '@/lib/datetime';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -63,7 +64,7 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
             <Metric label="workflow 校验" value={vm.task.workflowValid ? 'valid' : vm.task.workflowExists ? 'invalid' : 'missing'} compact />
             <Metric label="resumable run" value={resumable ?? '-'} compact />
             <Metric label="latest outcome" value={vm.task.latestRun?.outcome ?? vm.task.latestRun?.status ?? '-'} compact />
-            <Metric label="latest updated" value={vm.task.latestRun?.updatedAt ?? '-'} compact />
+            <Metric label="latest updated" value={formatLocalDateTime(vm.task.latestRun?.updatedAt)} compact />
           </CardContent>
         </AppCard>
 
@@ -78,7 +79,7 @@ export function TaskDetailPage({ vm, labels, busy, onNavigate, onStartRun, onCon
                   <TableCell><StatusBadge value={run.status} /></TableCell>
                   <TableCell><StatusBadge value={run.outcome} /></TableCell>
                   <TableCell className="text-muted-foreground">{run.currentRound ?? '-'}</TableCell>
-                  <TableCell className="text-muted-foreground">{run.updatedAt}</TableCell>
+                  <TableCell className="text-muted-foreground">{formatLocalDateTime(run.updatedAt)}</TableCell>
                   <TableCell className="text-right"><Button variant="link" size="sm" onClick={(event) => { event.stopPropagation(); onNavigate({ kind: 'workflow', taskId: vm.task.id }); }}>{labels.openRun}</Button></TableCell>
                 </TableRow>
               ))}

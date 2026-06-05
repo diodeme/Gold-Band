@@ -73,6 +73,19 @@ export function Metric({ label, value, tooltip, compact = false, className }: { 
   );
 }
 
+export function OverflowTooltip({ children, content, className, contentClassName, sideOffset = 6 }: { children: ReactNode; content: ReactNode; className?: string; contentClassName?: string; sideOffset?: number }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className={className}>{children}</div>
+      </TooltipTrigger>
+      <TooltipContent className={cn('max-w-[360px] whitespace-pre-wrap break-words', contentClassName)} sideOffset={sideOffset}>
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function EmptyState({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn('grid min-h-28 place-items-center rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center text-sm text-muted-foreground', className)}>{children}</div>;
 }

@@ -289,7 +289,10 @@ export function App() {
     pushRoute('task-orchestration', page);
   };
 
-  const runAction = async <T,>(action: () => Promise<T>) => {
+  const runAction = async <T,>(
+    action: () => Promise<T>,
+    options?: { surfaceError?: boolean; rethrow?: boolean },
+  ) => {
     setBusy(true);
     setError(null);
     try {
@@ -297,7 +300,12 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
-      setError(displayAppError(t, err));
+      if (options?.surfaceError !== false) {
+        setError(displayAppError(t, err));
+      }
+      if (options?.rethrow) {
+        throw err;
+      }
       return undefined;
     } finally {
       setBusy(false);
@@ -311,15 +319,21 @@ export function App() {
   };
 
   const onCreateTask = async (input: CreateTaskInput) => {
-    const created = await runAction(() => createTask(input));
+    const created = await runAction(() => createTask(input), { surfaceError: false, rethrow: true });
     if (created) setWorkflow(created);
     return created;
   };
 
   const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl) => {
-    const saved = await runAction(() => saveTaskWorkflow(taskId, workflow));
-    if (saved) setWorkflow(saved);
-    return saved;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await saveTaskWorkflow(taskId, workflow);
+      setWorkflow(saved);
+      return saved;
+    } finally {
+      setBusy(false);
+    }
   };
 
   const applyWorkspace = (nextBootstrap: AppBootstrapVm) => {

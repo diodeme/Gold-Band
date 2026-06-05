@@ -130,36 +130,36 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
   return getRuntimeApi().getLogPage(query);
 }
 
-export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[5], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6]) {
-  return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback);
+export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[5], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7]) {
-  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback);
+export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7]) {
-  return getRuntimeApi().respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback);
+export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[5]) {
-  return getRuntimeApi().cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, fallback);
+export function cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpRawFrames']>[5]) {
-  return getRuntimeApi().getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query);
+export function getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpRawFrames']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }
 
-export function showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string) {
-  return getRuntimeApi().showArtifact(taskId, runId, roundId, nodeId, attemptId, name);
+export function showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showArtifact(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
-export function showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string) {
-  return getRuntimeApi().showAttachment(taskId, runId, roundId, nodeId, attemptId, name);
+export function showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showAttachment(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
-export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
-  return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId);
+export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3]) {

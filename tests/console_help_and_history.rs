@@ -558,7 +558,7 @@ fn theme_command_persists_theme_and_preserves_screen() {
     assert!(vm.overlay_body.contains("Console theme switched to cyber"));
     assert!(vm.overlay_body.contains("Persisted user theme: cyber"));
 
-    let persisted = app.load_user_config().unwrap();
+    let persisted = app.load_settings().unwrap();
     assert_eq!(persisted.console_theme, Some(ConsoleThemeName::Cyber));
 }
 

@@ -195,7 +195,7 @@ export interface WorkflowControlDsl {
   max_rounds?: number | null;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -207,6 +207,44 @@ export interface WorkflowWorkerNodeDsl {
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
   manual_check?: boolean | null;
+}
+
+export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrategyDsl | WorkflowAiDynamicDynamicAgentStrategyDsl;
+
+export interface WorkflowAiDynamicFixedAgentStrategyDsl {
+  mode: 'fixed';
+  provider: string;
+}
+
+export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
+  mode: 'dynamic';
+  bootstrapProvider: string;
+  routingPrompt: string;
+}
+
+export interface WorkflowAiDynamicNodeDsl {
+  type: 'ai-dynamic';
+  id: string;
+  agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
+  permission_mode?: string | null;
+  allowedProfiles?: string[];
+  globalGoal?: string | null;
+  control: DynamicControlDsl;
+  allowedWorkflows: AllowedWorkflowRefDsl[];
+}
+
+export interface DynamicControlDsl {
+  maxDynamicNodes: number;
+  maxFanout: number;
+  maxDepth: number;
+  maxParallel: number;
+  maxGroupDepth: number;
+  maxWorkflowInvocations: number;
+  allowNestedDynamic: boolean;
+}
+
+export interface AllowedWorkflowRefDsl {
+  workflowId: string;
 }
 
 export interface WorkflowOutputContractDsl {
@@ -363,12 +401,18 @@ export interface GraphNodeVm {
   status?: string | null;
   outcome?: string | null;
   attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   attemptCount?: number;
   attempts?: GraphAttemptVm[];
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
   iconKey?: string | null;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
+  dynamicSummary?: DynamicSummaryVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface GraphAttemptVm {
@@ -390,6 +434,48 @@ export interface GraphEdgeVm {
   blockedReason?: ControlFailureVm | null;
 }
 
+export interface DynamicSummaryVm {
+  status: string;
+  outcome?: string | null;
+  internalNodeCount: number;
+  groupCount: number;
+  proposalCount: number;
+  currentNodeIds: string[];
+}
+
+export interface DynamicGroupVm {
+  id: string;
+  status: string;
+  depth: number;
+  parentGroupId?: string | null;
+  rootNodeIds: string[];
+  terminalNodeIds: string[];
+  mergeNodeId?: string | null;
+  acceptanceNodeId?: string | null;
+}
+
+export interface DynamicProposalValidationErrorVm {
+  code: string;
+  message: string;
+  params: Record<string, unknown>;
+}
+
+export interface DynamicProposalVm {
+  id: string;
+  sourceNodeId: string;
+  validationStatus: string;
+  validationErrors: DynamicProposalValidationErrorVm[];
+  artifactPath: string;
+  createdAt: string;
+}
+
+export interface DynamicDetailVm {
+  summary: DynamicSummaryVm;
+  graph: GraphVm;
+  groups: DynamicGroupVm[];
+  proposals: DynamicProposalVm[];
+}
+
 export interface NodeDetailVm {
   id: string;
   nodeId: string;
@@ -401,6 +487,8 @@ export interface NodeDetailVm {
   status: string;
   outcome?: string | null;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   current: boolean;
   startedAt: string;
   finishedAt?: string | null;
@@ -413,9 +501,13 @@ export interface NodeDetailVm {
   hasWorkerRef: boolean;
   manualCheckEnabled: boolean;
   manualCheckPending: boolean;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
   acpSession?: AcpSessionVm | null;
   acpConversations?: AcpConversationVm[];
   selectedConversationKey?: string | null;
+  dynamic?: DynamicDetailVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface AcpConversationVm {
@@ -633,7 +725,7 @@ type RoundSelectionContext = { contextNodeId?: string };
 export type RoundSelection = RoundSelectionContext & (
   | { kind: 'round' }
   | { kind: 'requirement' }
-  | { kind: 'node'; nodeId: string; attemptId?: string }
+  | { kind: 'node'; nodeId: string; attemptId?: string; outerNodeId?: string; outerAttemptId?: string }
   | { kind: 'artifact'; nodeId: string; attemptId: string; name: string }
   | { kind: 'attachment'; nodeId: string; attemptId: string; name: string }
   | { kind: 'worker-ref'; nodeId: string; attemptId: string }

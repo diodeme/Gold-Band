@@ -24,8 +24,9 @@ import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getSystemFonts } from '../api';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
 
@@ -240,7 +241,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                     onOpen={() => openThemeDrawer('all')}
                   />
                 )}
-                <SheetContent className="w-[760px] max-w-[92vw] sm:max-w-[760px]" closeLabel={t('common.close')}>
+                <SheetContent className="overflow-hidden" resizeStorageKey={`settings/theme-drawer/${themeDrawerMode ?? 'all'}`} defaultSize={760} minSize={560} maxSize={980} closeLabel={t('common.close')}>
                   <SheetHeader className="border-b px-5 py-4">
                     <SheetTitle>{themeDrawerMode === 'light' ? t('settings.chooseLightTheme') : themeDrawerMode === 'dark' ? t('settings.chooseDarkTheme') : t('settings.themeDrawerTitle')}</SheetTitle>
                   </SheetHeader>
@@ -311,16 +312,18 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
             <SettingsSection title={t('settings.advanced')}>
               <div className="flex items-center gap-3 py-2">
                 <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                      <CircleHelp className="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="max-w-64 text-xs">
-                    {t('settings.useLocalClaude.tooltip')}
-                  </TooltipContent>
-                </Tooltip>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <CircleHelp className="size-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent align="start" side="top" sideOffset={8} className="max-w-64 whitespace-pre-wrap break-words text-xs leading-5">
+                      {t('settings.useLocalClaude.tooltip')}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <button
                   type="button"
                   role="switch"
@@ -362,26 +365,38 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                     <div className="min-w-0 break-all font-mono text-xs text-foreground">{updaterSettings.effectiveUrl}</div>
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-1">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="size-8"
-                      title={editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}
-                      disabled={busy}
-                      onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
-                    >
-                      {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="size-8"
-                      title={t('settings.updater.resetToBuiltIn')}
-                      disabled={busy}
-                      onClick={() => void resetUpdaterOverride()}
-                    >
-                      <RotateCcw className="size-4" />
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            disabled={busy}
+                            onClick={() => editingUpdaterUrl ? void saveUpdaterOverride() : setEditingUpdaterUrl(true)}
+                          >
+                            {editingUpdaterUrl ? <Save className="size-4" /> : <Pencil className="size-4" />}
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-64 whitespace-pre-wrap break-words text-xs">{editingUpdaterUrl ? t('settings.updater.saveOverride') : t('settings.updater.editUrl')}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            disabled={busy}
+                            onClick={() => void resetUpdaterOverride()}
+                          >
+                            <RotateCcw className="size-4" />
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-64 whitespace-pre-wrap break-words text-xs">{t('settings.updater.resetToBuiltIn')}</TooltipContent>
+                    </Tooltip>
                   </div>
                 </div>
                 <div className="flex">
@@ -461,12 +476,7 @@ function formatBytes(bytes: number) {
 }
 
 function formatCheckedAt(value: string) {
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
-  const epochMatch = value.match(/^(\d+)Z?$/);
-  const date = epochMatch ? new Date(Number(epochMatch[1]) * 1000) : new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (item: number) => String(item).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return formatLocalDateTime(value, value);
 }
 
 function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {

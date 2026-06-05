@@ -99,29 +99,29 @@ export const desktopApi: RuntimeApi = {
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });
   },
-  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput) {
-    return invokeCommand<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId, query });
+  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId });
+  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId });
   },
-  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string) {
-    return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId });
+  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },
-  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
-    return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { taskId, runId, roundId, nodeId, attemptId });
+  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput) {
-    return invokeCommand('get_acp_raw_frames', { taskId, runId, roundId, nodeId, attemptId, query });
+  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('get_acp_raw_frames', { taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string) {
-    return invokeCommand('show_artifact', { taskId, runId, roundId, nodeId, attemptId, name });
+  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('show_artifact', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
-  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string) {
-    return invokeCommand('show_attachment', { taskId, runId, roundId, nodeId, attemptId, name });
+  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('show_attachment', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
-  showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
-    return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId });
+  showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) {
     return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude });

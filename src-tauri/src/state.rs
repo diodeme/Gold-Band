@@ -30,7 +30,7 @@ impl DesktopContext {
 
     pub fn from_workspace(repo_root: Utf8PathBuf) -> Result<Self> {
         let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, state) = load_configs(&paths);
+        let (settings, _) = load_configs(&paths);
         let needs_workspace = resolve_configured_workspace(&settings).is_none()
             && find_workspace_root(&repo_root).is_none();
         let repo_root = resolve_configured_workspace(&settings)
@@ -111,7 +111,7 @@ impl DesktopState {
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .config = config;
-        self.clear_agent_diagnostics()?;
+        self.prune_agent_diagnostics()?;
         Ok(())
     }
 
@@ -150,7 +150,11 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn mark_update_badge_seen(&self, target: UpdateBadgeSeenTarget, version: String) -> Result<RuntimeConfig> {
+    pub fn mark_update_badge_seen(
+        &self,
+        target: UpdateBadgeSeenTarget,
+        version: String,
+    ) -> Result<RuntimeConfig> {
         let mut guard = self
             .context
             .lock()
@@ -209,6 +213,19 @@ impl DesktopState {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
             diagnostics.remove(&agent_type);
+            diagnostics.clone()
+        };
+        self.persist_agent_diagnostics(&snapshot)
+    }
+
+    pub fn prune_agent_diagnostics(&self) -> Result<()> {
+        let managed_agent_types = self.app()?.managed_agents().keys().copied().collect::<std::collections::BTreeSet<_>>();
+        let snapshot = {
+            let mut diagnostics = self
+                .agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            diagnostics.retain(|agent_type, _| managed_agent_types.contains(agent_type));
             diagnostics.clone()
         };
         self.persist_agent_diagnostics(&snapshot)
@@ -290,9 +307,8 @@ impl DesktopState {
         *self
             .update_status
             .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = initial_update_status(
-            next_context.config.desktop_updater_last_checked_at.clone(),
-        );
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? =
+            initial_update_status(next_context.config.desktop_updater_last_checked_at.clone());
         Ok(next_context)
     }
 
@@ -337,9 +353,8 @@ fn resolve_configured_workspace(settings: &SettingsConfig) -> Option<Utf8PathBuf
 }
 
 fn find_workspace_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
-    nearest_parent_containing(start, ".git").or_else(|| {
-        nearest_parent_containing(start, active_storage_path_config().config_dir_name)
-    })
+    nearest_parent_containing(start, ".git")
+        .or_else(|| nearest_parent_containing(start, active_storage_path_config().config_dir_name))
 }
 
 fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathBuf> {

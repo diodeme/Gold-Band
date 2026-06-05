@@ -24,6 +24,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles';
@@ -209,7 +210,7 @@ export function ContextManagementPage() {
             <ScrollArea className="min-h-0 flex-1">
               {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
               {vm && profileListTab === 'built-in' ? (
-                <div className="grid gap-3 p-4 xl:grid-cols-2 2xl:grid-cols-3">
+                <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
                   {builtInProfiles.map((profile) => (
                     <BuiltInProfileCard
                       key={`${profile.scope}:${profile.id}`}
@@ -309,20 +310,20 @@ export function ContextManagementPage() {
 function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: () => void; onEdit: () => void }) {
   const { t } = useTranslation();
   return (
-    <Card className="gap-0 bg-card/45 py-0">
-      <CardHeader className="px-4 py-4">
+    <Card className="h-full min-h-52 gap-0 bg-card/45 py-0">
+      <CardHeader className="px-4 py-4 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="truncate text-sm">{profile.name}</CardTitle>
-            <CardDescription className="mt-1 truncate font-mono text-[11px]">{profile.id}</CardDescription>
+            <CardTitle className="truncate text-base">{profile.name}</CardTitle>
+            <CardDescription className="mt-1 truncate font-mono text-xs">{profile.id}</CardDescription>
           </div>
           <Badge variant="secondary" className="shrink-0">{profileScopeLabel(t, profile.scope)}</Badge>
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-0">
-        <CardDescription className="line-clamp-2 text-xs leading-5">{profile.summary}</CardDescription>
+      <CardContent className="flex flex-1 flex-col px-4 pb-0">
+        <CardDescription className="line-clamp-3 leading-6">{profile.summary}</CardDescription>
       </CardContent>
-      <CardFooter className="justify-end gap-2 px-4 py-4">
+      <CardFooter className="mt-auto justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
         <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
       </CardFooter>
@@ -333,8 +334,8 @@ function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; o
 function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: ProfileVm; onView: () => void; onEdit: () => void; onDelete: () => void }) {
   const { t } = useTranslation();
   return (
-    <Card className="min-h-52 gap-0 bg-card/50 py-0">
-      <CardHeader className="px-4 py-4">
+    <Card className="h-full min-h-52 gap-0 bg-card/50 py-0">
+      <CardHeader className="px-4 py-4 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className="truncate text-base">{profile.name}</CardTitle>
@@ -345,18 +346,17 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
       </CardHeader>
       <CardContent className="flex flex-1 flex-col px-4 pb-0">
         <CardDescription className="line-clamp-3 leading-6">{profile.summary}</CardDescription>
-        <dl className="mt-auto grid gap-1 pt-4 text-xs text-muted-foreground">
-          <div className="flex gap-1"><dt>{t('contextManagement.createdAt')}:</dt><dd>{profile.createdAt}</dd></div>
-          <div className="flex gap-1"><dt>{t('contextManagement.updatedAt')}:</dt><dd>{profile.updatedAt}</dd></div>
+        <dl className="mt-auto grid gap-1 pt-3 text-xs text-muted-foreground">
+          <div className="flex gap-1"><dt>{t('contextManagement.createdAt')}:</dt><dd>{formatLocalDateTime(profile.createdAt)}</dd></div>
+          <div className="flex gap-1"><dt>{t('contextManagement.updatedAt')}:</dt><dd>{formatLocalDateTime(profile.updatedAt)}</dd></div>
         </dl>
       </CardContent>
-      <CardFooter className="justify-end gap-2 px-4 py-4">
+      <CardFooter className="justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
         <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
         <Button
           variant="outline"
           size="sm"
-          title={t('contextManagement.deleteProfile', { name: profile.name })}
           aria-label={t('contextManagement.deleteProfile', { name: profile.name })}
           onClick={onDelete}
         >
@@ -430,7 +430,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
   return (
     <>
       <Sheet open={mode !== null} onOpenChange={onOpenChange}>
-        <SheetContent className="w-[min(720px,calc(100vw-2rem))] max-w-[min(720px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(720px,calc(100vw-2rem))]">
+        <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
             {editing ? (
@@ -509,8 +509,8 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                     <CardContent className="grid gap-3 p-3 text-sm md:grid-cols-2">
                       <ProfileMeta label="ID" value={profile.id} />
                       <ProfileMeta label={t('contextManagement.scope')} value={profileScopeLabel(t, profile.scope)} />
-                      <ProfileMeta label={t('contextManagement.createdAt')} value={profile.createdAt} />
-                      <ProfileMeta label={t('contextManagement.updatedAt')} value={profile.updatedAt} />
+                      <ProfileMeta label={t('contextManagement.createdAt')} value={formatLocalDateTime(profile.createdAt)} />
+                      <ProfileMeta label={t('contextManagement.updatedAt')} value={formatLocalDateTime(profile.updatedAt)} />
                     </CardContent>
                   </Card>
                   <Card className="bg-card/40 py-0">

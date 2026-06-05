@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{OnceLock, RwLock};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StoragePathConfig {
@@ -410,6 +412,178 @@ impl GoldBandPaths {
         self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
             .join("acp.diagnostics.jsonl")
     }
+
+    pub fn dynamic_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("dynamic")
+    }
+
+    pub fn dynamic_run_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("dynamic-run.json")
+    }
+
+    pub fn dynamic_allowed_workflow_snapshots_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("allowed-workflow-snapshots.json")
+    }
+
+    pub fn dynamic_graph_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("graph.json")
+    }
+
+    pub fn dynamic_events_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("events.jsonl")
+    }
+
+    pub fn dynamic_group_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        group_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("groups")
+            .join(format!("{group_id}.json"))
+    }
+
+    pub fn dynamic_node_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("nodes")
+            .join(dynamic_node_id)
+    }
+
+    pub fn dynamic_node_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
+            .join("node.json")
+    }
+
+    pub fn dynamic_node_attempt_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
+            .join(dynamic_attempt_id)
+    }
+
+    pub fn dynamic_node_artifacts_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
+            .join("artifacts")
+    }
+
+    pub fn dynamic_node_artifact_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+        name: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_artifacts_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
+            .join(format!("{name}.json"))
+    }
+
+    pub fn dynamic_node_attachments_dir(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
+            .join("attachments")
+    }
+
+    pub fn dynamic_node_worker_ref_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
+            .join("worker-ref.json")
+    }
 }
 
 fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> Utf8PathBuf {
@@ -489,8 +663,22 @@ pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
-    let content = std::fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
+    const MAX_ATTEMPTS: usize = 5;
+    for attempt in 0..MAX_ATTEMPTS {
+        let content = std::fs::read_to_string(path)?;
+        match serde_json::from_str(&content) {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt + 1 < MAX_ATTEMPTS
+                    && (content.trim().is_empty()
+                        || matches!(error.classify(), serde_json::error::Category::Eof)) =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("read_json should have returned within retry loop")
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {

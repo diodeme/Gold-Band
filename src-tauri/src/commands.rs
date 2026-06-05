@@ -1297,6 +1297,10 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
         WorkflowValidationError::MissingEndNode => {
             CommandErrorVm::new("workflow.missing-end-node", serde_json::json!({}))
         }
+        WorkflowValidationError::UnreachableNode { node_id } => CommandErrorVm::new(
+            "workflow.unreachable-node",
+            serde_json::json!({ "nodeId": node_id }),
+        ),
         WorkflowValidationError::SuccessNewRoundTarget { from } => CommandErrorVm::new(
             "workflow.success-new-round-target",
             serde_json::json!({ "from": from }),

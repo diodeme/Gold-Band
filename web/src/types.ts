@@ -227,6 +227,8 @@ export interface WorkflowAiDynamicNodeDsl {
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
   permission_mode?: string | null;
+  allowedProfiles?: string[];
+  globalGoal?: string | null;
   control: DynamicControlDsl;
   allowedWorkflows: AllowedWorkflowRefDsl[];
 }

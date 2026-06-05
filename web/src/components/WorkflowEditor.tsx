@@ -793,7 +793,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
   );
 }
 
-function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, onUpdate, t }: { node: WorkflowAiDynamicNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fieldErrors, onUpdate, t }: { node: WorkflowAiDynamicNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   const [nodeIdDraft, setNodeIdDraft] = useState(node.id);
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
@@ -853,7 +853,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           }}
         />
       </Field>
-      <Field label={t('workflowEditor.dynamicAgentStrategy')} errors={errorsFor('agentStrategy.mode')}>
+      <Field label={<HelpLabel label={t('workflowEditor.dynamicAgentStrategy')} help={t('workflowEditor.dynamicAgentStrategyHelp')} />} errors={errorsFor('agentStrategy.mode')}>
         <Select
           value={node.agentStrategy.mode}
           onValueChange={(mode) => {
@@ -887,7 +887,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
         </Select>
       </Field>
       {node.agentStrategy.mode === 'fixed' ? (
-        <Field label={t('workflowEditor.agent')} errors={errorsFor('agentStrategy.provider')}>
+        <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} errors={errorsFor('agentStrategy.provider')}>
           <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider }); }}>
             <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
             <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
@@ -895,13 +895,13 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
         </Field>
       ) : (
         <>
-          <Field label={t('workflowEditor.dynamicBootstrapAgent')} errors={errorsFor('agentStrategy.bootstrapProvider')}>
+          <Field label={<HelpLabel label={t('workflowEditor.dynamicBootstrapAgent')} help={t('workflowEditor.dynamicBootstrapAgentHelp')} />} errors={errorsFor('agentStrategy.bootstrapProvider')}>
             <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider }); }}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.bootstrapProvider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
               <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
-          <Field label={t('workflowEditor.dynamicAgentRoutingPrompt')} errors={errorsFor('agentStrategy.routingPrompt')}>
+          <Field label={<HelpLabel label={t('workflowEditor.dynamicAgentRoutingPrompt')} help={t('workflowEditor.dynamicAgentRoutingPromptHelp')} />} errors={errorsFor('agentStrategy.routingPrompt')}>
             <Textarea
               className={errorClass(errorsFor('agentStrategy.routingPrompt'))}
               value={node.agentStrategy.routingPrompt}
@@ -911,7 +911,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           </Field>
         </>
       )}
-      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
+      <Field label={<HelpLabel label={t('workflowEditor.permissionMode')} help={t('workflowEditor.dynamicPermissionModeHelp')} />} errors={errorsFor('permission_mode')}>
         <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => updateDynamic({ permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value } as Partial<WorkflowAiDynamicNodeDsl>)}>
           <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
             <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
@@ -922,27 +922,40 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           </SelectContent>
         </Select>
       </Field>
-      <Field label={t('workflowEditor.allowedWorkflows')} errors={errorsFor('allowedWorkflows')}>
+      <Field label={<HelpLabel label={t('workflowEditor.allowedWorkflows')} help={t('workflowEditor.allowedWorkflowsHelp')} />} errors={errorsFor('allowedWorkflows')}>
         <AllowedWorkflowMultiSelect
           templates={templates}
           selectedWorkflowIds={(node.allowedWorkflows ?? []).map((item) => item.workflowId)}
-          allowNestedDynamic={control.allowNestedDynamic}
+          allowNestedDynamic={false}
           invalid={errorsFor('allowedWorkflows').length > 0}
           onChange={(workflowIds) => updateDynamic({ allowedWorkflows: workflowIds.map((workflowId) => ({ workflowId })) })}
           t={t}
         />
       </Field>
+      <Field label={<HelpLabel label={t('workflowEditor.allowedProfiles')} help={t('workflowEditor.allowedProfilesHelp')} />} errors={errorsFor('allowedProfiles')}>
+        <ProfileMultiSelect
+          profiles={profiles}
+          selectedProfileIds={node.allowedProfiles ?? []}
+          invalid={errorsFor('allowedProfiles').length > 0}
+          onChange={(profileIds) => updateDynamic({ allowedProfiles: profileIds })}
+          t={t}
+        />
+      </Field>
+      <Field label={<HelpLabel label={t('workflowEditor.globalGoal')} help={t('workflowEditor.globalGoalHelp')} />} errors={errorsFor('globalGoal')}>
+        <Textarea
+          className={errorClass(errorsFor('globalGoal'))}
+          value={node.globalGoal ?? ''}
+          placeholder={t('workflowEditor.globalGoalPlaceholder')}
+          onChange={(event) => updateDynamic({ globalGoal: event.target.value || null } as Partial<WorkflowAiDynamicNodeDsl>)}
+        />
+      </Field>
       <div className="grid grid-cols-2 gap-3">
         {dynamicControlFields(t).map((field) => (
-          <Field key={field.key} label={field.label} errors={errorsFor(`control.${field.key}`)}>
+          <Field key={field.key} label={<HelpLabel label={field.label} help={field.help} />} errors={errorsFor(`control.${field.key}`)}>
             <Input className={errorClass(errorsFor(`control.${field.key}`))} type="number" min={1} step={1} value={String(control[field.key])} onChange={(event) => updateControl({ [field.key]: parseLimit(event.target.value) } as Partial<DynamicControlDsl>)} />
           </Field>
         ))}
       </div>
-      <label className="flex items-center justify-between gap-3 rounded-md border bg-background/55 px-3 py-2 text-sm">
-        <span>{t('workflowEditor.allowNestedDynamic')}</span>
-        <input type="checkbox" checked={control.allowNestedDynamic} onChange={(event) => updateControl({ allowNestedDynamic: event.target.checked })} />
-      </label>
     </div>
   );
 }
@@ -958,6 +971,89 @@ function WorkflowEditorSection({ title, children }: { title: string; children: R
         {children}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t }: { profiles: ProfileVm[]; selectedProfileIds: string[]; invalid: boolean; onChange: (profileIds: string[]) => void; t: (key: string) => string }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const selected = new Set(selectedProfileIds);
+  const profileById = new Map(profiles.map((profile) => [profile.id, profile] as const));
+  const selectedProfiles = selectedProfileIds
+    .map((profileId) => profileById.get(profileId))
+    .filter((profile): profile is ProfileVm => Boolean(profile));
+  const invalidProfileIds = selectedProfileIds.filter((profileId) => !profileById.has(profileId));
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredProfiles = normalizedSearch
+    ? profiles.filter((profile) => profileSearchText(profile).includes(normalizedSearch))
+    : profiles;
+  const toggleProfile = (profileId: string) => {
+    const next = selected.has(profileId)
+      ? selectedProfileIds.filter((item) => item !== profileId)
+      : [...selectedProfileIds, profileId];
+    onChange(next);
+  };
+  const removeProfile = (profileId: string) => onChange(selectedProfileIds.filter((item) => item !== profileId));
+
+  return (
+    <Popover open={open} onOpenChange={(nextOpen) => {
+      setOpen(nextOpen);
+      if (!nextOpen) setSearch('');
+    }} modal>
+      <PopoverTrigger asChild>
+        <Button variant="outline" role="combobox" aria-expanded={open} className={cn('h-auto min-h-9 w-full justify-between px-2 py-1.5 font-normal', invalid && 'border-destructive text-destructive focus-visible:ring-destructive')}>
+          <span className="flex min-w-0 flex-1 flex-wrap gap-1">
+            {selectedProfiles.map((profile) => (
+              <Badge key={profile.id} variant="secondary" className="max-w-full gap-1">
+                <span className="max-w-40 truncate">{profile.name}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">{profile.id}</span>
+                <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeProfile(profile.id); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeProfile(profile.id); }}>
+                  <X className="size-3" />
+                </span>
+              </Badge>
+            ))}
+            {invalidProfileIds.map((profileId) => (
+              <Badge key={profileId} variant="destructive" className="max-w-full gap-1">
+                <span className="max-w-44 truncate font-mono text-[10px]">{profileId}</span>
+                <span role="button" tabIndex={0} className="rounded-full" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeProfile(profileId); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeProfile(profileId); }}>
+                  <X className="size-3" />
+                </span>
+              </Badge>
+            ))}
+            {selectedProfiles.length === 0 && invalidProfileIds.length === 0 ? <span className="px-1 text-muted-foreground">{t('workflowEditor.selectAllowedProfiles')}</span> : null}
+          </span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput value={search} onValueChange={setSearch} placeholder={t('workflowEditor.searchProfiles')} />
+          <CommandList>
+            {filteredProfiles.length === 0 ? <CommandEmpty>{t('workflowEditor.noProfiles')}</CommandEmpty> : null}
+            <CommandGroup>
+              {filteredProfiles.map((profile) => (
+                <CommandItem key={`${profile.scope}:${profile.id}`} value={profile.id} onSelect={() => toggleProfile(profile.id)} className="items-start py-2">
+                  <Check className={cn('mt-0.5 size-4', selected.has(profile.id) ? 'opacity-100' : 'opacity-0')} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-2 font-medium"><span className="truncate">{profile.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{profileScopeText(t, profile.scope)}</span></span>
+                    <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{profile.id}</span>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="mt-1 block truncate text-xs text-muted-foreground">{profile.summary}</span>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-80 whitespace-pre-wrap break-words text-xs" sideOffset={6}>{profile.summary}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                    <span className="mt-1 block text-[11px] text-muted-foreground">{formatLocalDateTime(profile.createdAt)} / {formatLocalDateTime(profile.updatedAt)}</span>
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1058,14 +1154,14 @@ function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNeste
   );
 }
 
-function dynamicControlFields(t: (key: string) => string): Array<{ key: Exclude<keyof DynamicControlDsl, 'allowNestedDynamic'>; label: string }> {
+function dynamicControlFields(t: (key: string) => string): Array<{ key: Exclude<keyof DynamicControlDsl, 'allowNestedDynamic'>; label: string; help: string }> {
   return [
-    { key: 'maxDynamicNodes', label: t('workflowEditor.maxDynamicNodes') },
-    { key: 'maxFanout', label: t('workflowEditor.maxFanout') },
-    { key: 'maxDepth', label: t('workflowEditor.maxDepth') },
-    { key: 'maxParallel', label: t('workflowEditor.maxParallel') },
-    { key: 'maxGroupDepth', label: t('workflowEditor.maxGroupDepth') },
-    { key: 'maxWorkflowInvocations', label: t('workflowEditor.maxWorkflowInvocations') },
+    { key: 'maxDynamicNodes', label: t('workflowEditor.maxDynamicNodes'), help: t('workflowEditor.maxDynamicNodesHelp') },
+    { key: 'maxFanout', label: t('workflowEditor.maxFanout'), help: t('workflowEditor.maxFanoutHelp') },
+    { key: 'maxDepth', label: t('workflowEditor.maxDepth'), help: t('workflowEditor.maxDepthHelp') },
+    { key: 'maxParallel', label: t('workflowEditor.maxParallel'), help: t('workflowEditor.maxParallelHelp') },
+    { key: 'maxGroupDepth', label: t('workflowEditor.maxGroupDepth'), help: t('workflowEditor.maxGroupDepthHelp') },
+    { key: 'maxWorkflowInvocations', label: t('workflowEditor.maxWorkflowInvocations'), help: t('workflowEditor.maxWorkflowInvocationsHelp') },
   ];
 }
 
@@ -1178,7 +1274,7 @@ function profileScopeText(t: (key: string) => string, scope: ProfileVm['scope'])
 }
 
 function profileSearchText(profile: ProfileVm) {
-  return [profile.id, profile.name, profile.summary, profile.content, profile.scope].join('\n').toLowerCase();
+  return [profile.id, profile.name, profile.scope].join('\n').toLowerCase();
 }
 
 function profileCommandScore(itemValue: string, search: string) {
@@ -1491,6 +1587,8 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           goal?: string | null;
           agentStrategy?: WorkflowAiDynamicNodeDsl['agentStrategy'];
           permissionMode?: string | null;
+          allowedProfiles?: string[];
+          globalGoal?: string | null;
         };
         const normalizedStrategy = rawNode.agentStrategy ?? {
           mode: 'fixed',
@@ -1500,7 +1598,9 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           ...node,
           agentStrategy: normalizedStrategy,
           permission_mode: node.permission_mode ?? rawNode.permissionMode ?? null,
-          control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>) },
+          allowedProfiles: node.allowedProfiles ?? rawNode.allowedProfiles ?? [],
+          globalGoal: node.globalGoal ?? rawNode.globalGoal ?? null,
+          control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>), allowNestedDynamic: false },
           allowedWorkflows: node.allowedWorkflows ?? [],
         };
       }
@@ -1585,6 +1685,18 @@ export function validateWorkflowForSave(
     : [];
   const duplicateConflictTemplates = duplicateWorkflowTemplates.filter((template) => template.id !== currentTemplateId);
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
+  const incomingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
+    if (edge.to.trim() && ![END_NODE, NEW_ROUND_NODE].includes(edge.to)) {
+      counts[edge.to] = (counts[edge.to] ?? 0) + 1;
+    }
+    return counts;
+  }, {});
+  const outgoingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
+    if (edge.from.trim()) {
+      counts[edge.from] = (counts[edge.from] ?? 0) + 1;
+    }
+    return counts;
+  }, {});
   const edgeOutcomeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim() && ['success', 'failure'].includes(edge.on)) {
       const key = `${edge.from}\0${edge.on}`;
@@ -1631,9 +1743,15 @@ export function validateWorkflowForSave(
     if (!node.id.trim()) addIssue(t('workflowEditor.validationNodeIdRequired', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ([END_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
+    if (node.id !== workflow.entry && (incomingEdgeCounts[node.id] ?? 0) === 0) {
+      addIssue(t('workflowEditor.validationUnreachableNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
+    }
+    if ((outgoingEdgeCounts[node.id] ?? 0) === 0) {
+      addIssue(t('workflowEditor.validationDanglingNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
+    }
 
     if (node.type === 'ai-dynamic') {
-      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, agentIds, agentById, nodeField, addIssue, t);
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, agentIds, agentById, nodeField, addIssue, t);
       return;
     }
     if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
@@ -1705,6 +1823,7 @@ function validateAiDynamicNodeForSave(
   node: WorkflowAiDynamicNodeDsl,
   nodeLabel: string,
   workflowTemplates: WorkflowTemplateStore | null | undefined,
+  profiles: ProfileVm[],
   agentIds: Set<string>,
   agentById: Map<string, ManagedAgentVm>,
   nodeField: (node: WorkflowNodeDsl, field: string) => string,
@@ -1738,6 +1857,26 @@ function validateAiDynamicNodeForSave(
     if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
       addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
     }
+  }
+  const knownProfileIds = new Set(profiles.map((profile) => profile.id));
+  const seenProfiles = new Set<string>();
+  (node.allowedProfiles ?? []).forEach((profileId) => {
+    const value = profileId?.trim();
+    if (!value) {
+      addIssue(t('workflowEditor.validationAllowedProfileRequired', { node: nodeLabel }), nodeField(node, 'allowedProfiles'), node.id);
+      return;
+    }
+    if (seenProfiles.has(value)) {
+      addIssue(t('workflowEditor.validationAllowedProfileDuplicated', { node: nodeLabel, profile: value }), nodeField(node, 'allowedProfiles'), node.id);
+      return;
+    }
+    seenProfiles.add(value);
+    if (!knownProfileIds.has(value)) {
+      addIssue(t('workflowEditor.validationAllowedProfileMissing', { node: nodeLabel, profile: value }), nodeField(node, 'allowedProfiles'), node.id);
+    }
+  });
+  if (node.globalGoal !== undefined && node.globalGoal !== null && !node.globalGoal.trim()) {
+    addIssue(t('workflowEditor.validationGlobalGoalBlank', { node: nodeLabel }), nodeField(node, 'globalGoal'), node.id);
   }
   dynamicControlFields(t).forEach((field) => {
     if ((control[field.key] ?? 0) <= 0) {

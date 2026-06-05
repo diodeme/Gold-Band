@@ -1075,6 +1075,10 @@ fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
             code: "workflow.missing-end-node".to_string(),
             params: serde_json::json!({}),
         }),
+        Some(WorkflowValidationError::UnreachableNode { node_id }) => Some(WorkflowErrorVm {
+            code: "workflow.unreachable-node".to_string(),
+            params: serde_json::json!({ "nodeId": node_id }),
+        }),
         Some(WorkflowValidationError::SuccessNewRoundTarget { from }) => Some(WorkflowErrorVm {
             code: "workflow.success-new-round-target".to_string(),
             params: serde_json::json!({ "from": from }),

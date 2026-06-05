@@ -12,6 +12,8 @@ const RESERVED_NODE_IDS: &[&str] = &[END_NODE, NEW_ROUND_NODE];
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WorkflowValidationError {
+    #[error("workflow must include an edge targeting `$end`")]
+    MissingEndNode,
     #[error("edge `{from}` cannot target `$new-round` on success")]
     SuccessNewRoundTarget { from: String },
     #[error("workflow `{workflow_name}` id `{workflow_id}` is duplicated with {conflicts}")]
@@ -253,6 +255,13 @@ pub struct WorkerNode {
 pub struct AiDynamicNode {
     pub id: String,
     pub agent_strategy: AiDynamicAgentStrategy,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "permission_mode",
+        alias = "permissionMode"
+    )]
+    pub permission_mode: Option<String>,
     #[serde(default)]
     pub control: DynamicControlDsl,
     #[serde(default)]
@@ -267,6 +276,8 @@ struct AiDynamicNodeCompat {
     pub agent_strategy: Option<AiDynamicAgentStrategy>,
     #[serde(default)]
     pub provider: Option<String>,
+    #[serde(default, rename = "permission_mode", alias = "permissionMode")]
+    pub permission_mode: Option<String>,
     #[serde(default)]
     pub control: DynamicControlDsl,
     #[serde(default)]
@@ -293,6 +304,10 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
         Ok(Self {
             id: raw.id,
             agent_strategy,
+            permission_mode: raw
+                .permission_mode
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             control: raw.control,
             allowed_workflows: raw.allowed_workflows,
         })
@@ -308,14 +323,20 @@ impl AiDynamicNode {
             } => Some(bootstrap_provider.as_str()),
         }
     }
+
+    pub fn permission_mode(&self) -> Option<&str> {
+        self.permission_mode.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum AiDynamicAgentStrategy {
+    #[serde(rename_all = "camelCase")]
     Fixed {
         provider: String,
     },
+    #[serde(rename_all = "camelCase")]
     Dynamic {
         bootstrap_provider: String,
         routing_prompt: String,
@@ -540,6 +561,12 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             );
         }
     }
+    if let Some(permission_mode) = &node.permission_mode {
+        ensure!(
+            !permission_mode.trim().is_empty(),
+            "ai-dynamic node `{id}` permissionMode cannot be blank"
+        );
+    }
     ensure!(
         node.control.max_dynamic_nodes > 0,
         "ai-dynamic node `{id}` maxDynamicNodes must be positive"
@@ -630,6 +657,7 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         workflow.entry
     );
     let mut edge_outcomes_by_source = HashSet::new();
+    let mut has_end_target = false;
     for edge in &workflow.edges {
         ensure!(
             nodes_by_id.contains_key(&edge.from),
@@ -641,6 +669,9 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             "edge target not found: {}",
             edge.to
         );
+        if edge.to == END_NODE {
+            has_end_target = true;
+        }
         if edge.to == NEW_ROUND_NODE && edge.on == EdgeOutcome::Success {
             return Err(WorkflowValidationError::SuccessNewRoundTarget {
                 from: edge.from.clone(),
@@ -675,6 +706,10 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
                 "session=continue currently only supports agents with continue-session capability"
             );
         }
+    }
+
+    if !has_end_target {
+        return Err(WorkflowValidationError::MissingEndNode.into());
     }
 
     Ok(ValidatedWorkflow {

@@ -29,6 +29,8 @@ interface ACPChatDialogProps {
   roundId: string;
   nodeId: string;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   runtimeStatus?: string | null;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
@@ -156,7 +158,7 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
   const sessionIdentity = `${sessionKey}:${eventIdPrefix ?? ''}:${session?.sessionId ?? ''}`;
@@ -344,7 +346,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     let active = true;
     const refreshSession = async () => {
       try {
-        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, undefined, latestSessionRef.current);
+        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, undefined, latestSessionRef.current, outerNodeId, outerAttemptId);
         if (active) applySessionUpdate(updated);
       } catch {
         // The send or stop request owns user-visible error handling.
@@ -485,7 +487,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setIsAtBottom(false);
     setLoadingOlder(true);
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       captureHistoryScrollAnchor();
       setCurrentSession(updated);
@@ -509,7 +511,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const newestSeq = loadedEvents[loadedEvents.length - 1].seq;
     loadingNewerRef.current = true;
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       setCurrentSession(updated);
       setHasNewerEvents(updated.eventPage.hasNewer);
@@ -540,7 +542,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     setSending(true);
     try {
-      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null);
+      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
       if (updated) {
         updateOptimisticEvents((current) => current.filter((event) => !hasMatchingUserPrompt(updated.events, event)));
@@ -585,7 +587,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCancelError(null);
     setAwaitingResponse(true);
     try {
-      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null);
+      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
     } catch (error) {
       setCancelError(displayAppError(t, error));
@@ -613,7 +615,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setPermissionError(null);
     setDismissedPermissionIds((current) => new Set(current).add(request.requestId));
     try {
-      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective);
+      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
     } catch (error) {
       setDismissedPermissionIds((current) => {
@@ -636,7 +638,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const loadRawFrames = async (query: AcpRawFrameQueryInput) => {
     setRawLoading(true);
     try {
-      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query);
+      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
       setRawPage(next);
       setRawQuery({
         page: next.page,

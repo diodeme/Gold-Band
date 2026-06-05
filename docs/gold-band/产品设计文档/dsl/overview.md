@@ -74,7 +74,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：外层 wo
 ## 6. 关键约束
 - `version` 首版固定为 `0.1`。
 - `entry` 可以指向真实 `worker` 或 `ai-dynamic` 节点。
-- `$end` 只能作为边目标，不能作为节点 id；edge `on` 只接受 `success` / `failure`。
+- 工作流必须至少包含一条指向 `$end` 的边；`$end` 只能作为边目标，不能作为节点 id；edge `on` 只接受 `success` / `failure`。
 - `session=continue` 只能指向真实 worker 节点，并且目标 provider 必须支持 continue session。
 - `control.max_attempts` / `control.max_rounds` 都是可选正整数；不填表示不限制。
 - `max_attempts` 按当前 round 内 `failure` 触发的修复跳转计数，正常 `success` 前进不消耗次数；`output.schema` 自动隐藏修复不新增 attempt；`max_rounds` 只统计 `$new-round` 打开的新 round。

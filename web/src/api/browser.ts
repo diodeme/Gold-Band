@@ -161,19 +161,19 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null) {
+  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null) {
+  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null) {
+  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null) {
+  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput) {
+  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     const empty: AcpRawFramePageVm = {
       items: [],
       page: query?.page ?? 0,
@@ -188,13 +188,13 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(empty);
   },
-  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: name });
   },
-  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
   },
-  showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string) {
+  showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, _useLocalClaude: boolean) {

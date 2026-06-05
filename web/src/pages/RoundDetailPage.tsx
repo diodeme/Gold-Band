@@ -58,7 +58,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
     let cancelled = false;
     setAssetLoading(true);
     const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
-    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name)
+    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
       .then((content) => { if (!cancelled) setAssetContent(content); })
       .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: displayAppError(t, error), metadata: {} }); })
       .finally(() => { if (!cancelled) setAssetLoading(false); });
@@ -78,7 +78,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
 
   const openNodeDrawer = (node: GraphNodeVm, tab: NodeDrawerTab = 'detail') => {
     const nodeId = canonicalNodeId(node);
-    onSelect({ kind: 'node', nodeId, attemptId: node.attemptId ?? undefined });
+    onSelect({ kind: 'node', nodeId, attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined });
     setNodeDrawerTab(tab);
     setNodeDrawerOpen(true);
     setAsset(null);
@@ -86,7 +86,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   };
 
   const openGraphNodeLog = (node: GraphNodeVm) => {
-    onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined });
+    onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined });
     setLogDrawerOpen(true);
   };
 
@@ -193,7 +193,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
               selectedNodeId={selectedNodeId}
               activeNodeId={vm.round.currentNode ?? vm.run.currentNode}
               activeStatus={roundDisplayStatus}
-              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined })}
+              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined })}
               onNodeOpenDetail={(node) => openNodeDrawer(node, 'detail')}
               onNodeOpenSession={(node) => openNodeDrawer(node, 'session')}
               onNodeOpenLog={openGraphNodeLog}
@@ -553,6 +553,8 @@ function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOpt
           roundId={vm.round.id}
           nodeId={detail.nodeId}
           attemptId={attemptId}
+          outerNodeId={detail.outerNodeId}
+          outerAttemptId={detail.outerAttemptId}
           runtimeStatus={runtimeStatus}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
@@ -743,6 +745,16 @@ function exportLogItems(items: LogEntryVm[]) {
 
 function canonicalNodeId(node: GraphNodeVm) {
   return node.nodeId ?? node.id;
+}
+
+function nodeDetailOuterNodeId(asset: AssetItemVm, detail?: NodeDetailVm | null) {
+  if (!detail || detail.nodeId !== asset.nodeId || detail.attemptId !== asset.attemptId) return undefined;
+  return detail.outerNodeId ?? undefined;
+}
+
+function nodeDetailOuterAttemptId(asset: AssetItemVm, detail?: NodeDetailVm | null) {
+  if (!detail || detail.nodeId !== asset.nodeId || detail.attemptId !== asset.attemptId) return undefined;
+  return detail.outerAttemptId ?? undefined;
 }
 
 function formatLimit(value: number | null | undefined, t: (key: string) => string) {

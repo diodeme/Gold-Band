@@ -226,6 +226,7 @@ export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
+  permission_mode?: string | null;
   control: DynamicControlDsl;
   allowedWorkflows: AllowedWorkflowRefDsl[];
 }
@@ -398,6 +399,8 @@ export interface GraphNodeVm {
   status?: string | null;
   outcome?: string | null;
   attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   attemptCount?: number;
   attempts?: GraphAttemptVm[];
   artifactCount: number;
@@ -407,6 +410,7 @@ export interface GraphNodeVm {
   sessionMode?: string | null;
   continueFromNodeId?: string | null;
   dynamicSummary?: DynamicSummaryVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface GraphAttemptVm {
@@ -481,6 +485,8 @@ export interface NodeDetailVm {
   status: string;
   outcome?: string | null;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   current: boolean;
   startedAt: string;
   finishedAt?: string | null;
@@ -499,6 +505,7 @@ export interface NodeDetailVm {
   acpConversations?: AcpConversationVm[];
   selectedConversationKey?: string | null;
   dynamic?: DynamicDetailVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface AcpConversationVm {
@@ -716,7 +723,7 @@ type RoundSelectionContext = { contextNodeId?: string };
 export type RoundSelection = RoundSelectionContext & (
   | { kind: 'round' }
   | { kind: 'requirement' }
-  | { kind: 'node'; nodeId: string; attemptId?: string }
+  | { kind: 'node'; nodeId: string; attemptId?: string; outerNodeId?: string; outerAttemptId?: string }
   | { kind: 'artifact'; nodeId: string; attemptId: string; name: string }
   | { kind: 'attachment'; nodeId: string; attemptId: string; name: string }
   | { kind: 'worker-ref'; nodeId: string; attemptId: string }

@@ -124,13 +124,14 @@ interface WorkflowEditorProps {
   workflowTemplates?: WorkflowTemplateStore | null;
   currentTemplateId?: string | null;
   currentTemplateName?: string | null;
+  validateTemplateDuplicateId?: boolean;
   allowAiDynamic?: boolean;
   saving?: boolean;
   showSaveAction?: boolean;
   validationRequestId?: number;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
   const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
@@ -169,7 +170,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   useEffect(() => {
     if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName);
+    const validation = validateWorkflowForSave(workflow, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
@@ -260,7 +261,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       setWorkflow(workflowToSave);
       onChange?.(workflowToSave);
     }
-    const validation = validateWorkflowForSave(workflowToSave, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName);
+    const validation = validateWorkflowForSave(workflowToSave, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -288,7 +289,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       type: 'worker',
       id,
       provider: null,
-      goal: t('workflowEditor.defaultNodeGoal'),
+      goal: null,
     };
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
     syncWorkflow(next);
@@ -708,7 +709,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         </Select>
       </Field>
       <Field label={t('workflowEditor.goal')} errors={errorsFor('goal')}>
-        <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} onChange={(event) => updateWorker({ goal: event.target.value })} />
+        <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} placeholder={t('workflowEditor.defaultNodeGoal')} onChange={(event) => updateWorker({ goal: event.target.value })} />
       </Field>
       <div className="space-y-3 rounded-lg border bg-muted/10 p-3">
         <div className="space-y-1">
@@ -800,6 +801,10 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
   const strategy = node.agentStrategy.mode === 'dynamic'
     ? node.agentStrategy
     : node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
+  const permissionModeAgentId = node.agentStrategy.mode === 'fixed'
+    ? node.agentStrategy.provider
+    : node.agentStrategy.bootstrapProvider;
+  const permissionModes = agents.find((agent) => agent.agentType === permissionModeAgentId)?.supportedModes ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const updateControl = (patch: Partial<DynamicControlDsl>) => {
@@ -856,6 +861,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
               const nextProvider = node.agentStrategy.mode === 'fixed'
                 ? node.agentStrategy.provider
                 : node.agentStrategy.bootstrapProvider;
+              updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
               updateAgentStrategy({ mode: 'fixed', provider: nextProvider });
               return;
             }
@@ -865,6 +871,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
             const nextRoutingPrompt = node.agentStrategy.mode === 'dynamic'
               ? node.agentStrategy.routingPrompt
               : '';
+            updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
             updateAgentStrategy({
               mode: 'dynamic',
               bootstrapProvider: nextBootstrapProvider,
@@ -881,7 +888,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
       </Field>
       {node.agentStrategy.mode === 'fixed' ? (
         <Field label={t('workflowEditor.agent')} errors={errorsFor('agentStrategy.provider')}>
-          <Select value={node.agentStrategy.provider} onValueChange={(provider) => updateAgentStrategy({ mode: 'fixed', provider })}>
+          <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider }); }}>
             <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
             <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
           </Select>
@@ -889,7 +896,7 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
       ) : (
         <>
           <Field label={t('workflowEditor.dynamicBootstrapAgent')} errors={errorsFor('agentStrategy.bootstrapProvider')}>
-            <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider })}>
+            <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider }); }}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.bootstrapProvider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
               <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
             </Select>
@@ -904,6 +911,17 @@ function AiDynamicNodeInspector({ node, agents, workflowTemplates, fieldErrors, 
           </Field>
         </>
       )}
+      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
+        <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => updateDynamic({ permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value } as Partial<WorkflowAiDynamicNodeDsl>)}>
+          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
+            <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={DEFAULT_PERMISSION_MODE}>{t('workflowEditor.permissionModeDefault')}</SelectItem>
+            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Field>
       <Field label={t('workflowEditor.allowedWorkflows')} errors={errorsFor('allowedWorkflows')}>
         <AllowedWorkflowMultiSelect
           templates={templates}
@@ -1472,6 +1490,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           profile?: string | null;
           goal?: string | null;
           agentStrategy?: WorkflowAiDynamicNodeDsl['agentStrategy'];
+          permissionMode?: string | null;
         };
         const normalizedStrategy = rawNode.agentStrategy ?? {
           mode: 'fixed',
@@ -1480,6 +1499,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
         return {
           ...node,
           agentStrategy: normalizedStrategy,
+          permission_mode: node.permission_mode ?? rawNode.permissionMode ?? null,
           control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>) },
           allowedWorkflows: node.allowedWorkflows ?? [],
         };
@@ -1550,6 +1570,7 @@ export function validateWorkflowForSave(
   workflowTemplates: WorkflowTemplateStore | null = null,
   currentTemplateId: string | null = null,
   currentTemplateName: string | null = null,
+  validateTemplateDuplicateId = true,
 ): WorkflowValidationResult {
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
@@ -1585,7 +1606,7 @@ export function validateWorkflowForSave(
   const edgeField = (index: number, field: string) => `edge:${index}:${field}`;
   const controlField = (field: string) => `control:${field}`;
   if (!workflow.id.trim()) addIssue(t('workflowEditor.validationWorkflowIdRequired'));
-  else if (duplicateConflictTemplates.length > 0) {
+  else if (validateTemplateDuplicateId && duplicateConflictTemplates.length > 0) {
     addIssue(
       t('errors.workflow.duplicate-id', {
         workflowName: currentTemplateName ?? duplicateWorkflowTemplates.find((template) => template.id === currentTemplateId)?.name ?? workflow.id.trim(),
@@ -1597,6 +1618,7 @@ export function validateWorkflowForSave(
   if (!workflow.entry.trim()) addIssue(t('workflowEditor.validationEntryRequired'));
   else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
+  if (!workflow.edges.some((edge) => edge.to === END_NODE)) addIssue(t('workflowEditor.validationEndNodeRequired'));
   if (sanitizedWorkflow.control.max_attempts != null && sanitizedWorkflow.control.max_attempts <= 0) {
     addIssue(t('workflowEditor.validationMaxAttemptsPositive'), controlField('max_attempts'));
   }
@@ -1611,7 +1633,7 @@ export function validateWorkflowForSave(
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
 
     if (node.type === 'ai-dynamic') {
-      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, agentIds, nodeField, addIssue, t);
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, agentIds, agentById, nodeField, addIssue, t);
       return;
     }
     if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
@@ -1631,8 +1653,6 @@ export function validateWorkflowForSave(
       const sanitized = sanitizedWorkflow.nodes[nodeIndex];
       if (sanitized && sanitized.type === 'worker') sanitized.profile = null;
     }
-    if (!workerNode.goal?.trim()) addIssue(t('workflowEditor.validationNodeGoalRequired', { node: nodeLabel }), nodeField(workerNode, 'goal'), workerNode.id);
-
     const validationEnabled = Boolean(workerNode.output || workerNode.success_condition);
     if (validationEnabled && workerNode.manual_check) {
       addIssue(t('workflowEditor.validationResultModeExclusive', { node: nodeLabel }), nodeField(workerNode, 'success_condition'), workerNode.id);
@@ -1686,11 +1706,15 @@ function validateAiDynamicNodeForSave(
   nodeLabel: string,
   workflowTemplates: WorkflowTemplateStore | null | undefined,
   agentIds: Set<string>,
+  agentById: Map<string, ManagedAgentVm>,
   nodeField: (node: WorkflowNodeDsl, field: string) => string,
   addIssue: (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number) => void,
   t: (key: string, options?: Record<string, unknown>) => string,
 ) {
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
+  const permissionAgentId = node.agentStrategy.mode === 'fixed'
+    ? node.agentStrategy.provider?.trim()
+    : node.agentStrategy.bootstrapProvider?.trim();
   if (node.agentStrategy.mode === 'fixed') {
     const provider = node.agentStrategy.provider?.trim();
     if (!provider) {
@@ -1707,6 +1731,12 @@ function validateAiDynamicNodeForSave(
     }
     if (!node.agentStrategy.routingPrompt?.trim()) {
       addIssue(t('workflowEditor.validationDynamicRoutingPromptRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.routingPrompt'), node.id);
+    }
+  }
+  if (node.permission_mode?.trim() && permissionAgentId) {
+    const supportedModeIds = new Set((agentById.get(permissionAgentId)?.supportedModes ?? []).map((mode) => mode.id));
+    if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
+      addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
     }
   }
   dynamicControlFields(t).forEach((field) => {

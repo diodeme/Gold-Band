@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use self::ids::{next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
-    run_continue as orchestrator_run_continue,
+    build_dynamic_prompt_bundle, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
@@ -1742,6 +1742,32 @@ impl App {
             PromptVisibility::Visible,
         )?;
         render_prompt_bundle(&invocation)
+    }
+
+    pub fn dynamic_acp_prompt_bundle_for_attempt(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+        prompt: String,
+        continue_ref: Option<serde_json::Value>,
+    ) -> Result<PromptBundle> {
+        build_dynamic_prompt_bundle(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+            prompt,
+            continue_ref,
+        )
     }
 
     pub fn run_continue(

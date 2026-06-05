@@ -33,8 +33,8 @@ use crate::observability::{
 };
 use crate::prompts::{AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN, AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN, AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN, AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN, AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN, RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template};
 use crate::provider::{
-    PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
-    ProviderRunStatus, StreamMode, WorkerInvocation,
+    PromptBundle, PromptOutputContract, PromptRuntimeContext, PromptVisibility,
+    ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation, render_prompt_bundle,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState, validate_round_state,
@@ -1473,6 +1473,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         workspace_path: Some(ctx.app.paths.repo_root.clone()),
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
+        permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -2767,6 +2768,25 @@ fn validate_dynamic_node_spec(
                             "provider": provider,
                         }),
                     ));
+                } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
+                    if let Ok(doctor) = ctx.app.provider_doctor(provider) {
+                        let supported_mode_ids = doctor
+                            .supported_modes()
+                            .into_iter()
+                            .map(|mode| mode.id)
+                            .collect::<std::collections::HashSet<_>>();
+                        if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
+                            errors.push(dynamic_validation_error(
+                                "dynamic.node.permission-mode.unsupported",
+                                format!("dynamic worker `{}` permissionMode `{}` is not supported by provider `{provider}`", spec.id, permission_mode),
+                                serde_json::json!({
+                                    "nodeId": spec.id,
+                                    "provider": provider,
+                                    "permissionMode": permission_mode,
+                                }),
+                            ));
+                        }
+                    }
                 }
             }
             _ => errors.push(dynamic_validation_error(
@@ -2886,6 +2906,25 @@ fn validate_dynamic_agent_task_spec(
                 "stage": name,
             }),
         ));
+    } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
+        if let Ok(doctor) = ctx.app.provider_doctor(&spec.provider) {
+            let supported_mode_ids = doctor
+                .supported_modes()
+                .into_iter()
+                .map(|mode| mode.id)
+                .collect::<std::collections::HashSet<_>>();
+            if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
+                errors.push(dynamic_validation_error(
+                    &format!("dynamic.{name}.permission-mode.unsupported"),
+                    format!("dynamic {name} permissionMode `{}` is not supported by provider `{}`", permission_mode, spec.provider),
+                    serde_json::json!({
+                        "provider": spec.provider,
+                        "stage": name,
+                        "permissionMode": permission_mode,
+                    }),
+                ));
+            }
+        }
     }
     if spec.task.trim().is_empty() {
         errors.push(dynamic_validation_error(
@@ -2956,6 +2995,7 @@ fn materialize_dynamic_next(
                 node,
                 source.group_id.clone(),
                 source.chain_id.clone(),
+                ctx.dynamic.permission_mode().map(ToOwned::to_owned),
             )?;
             append_dynamic_event(
                 ctx,
@@ -3009,6 +3049,7 @@ fn materialize_dynamic_next(
                     node,
                     Some(group_id.clone()),
                     chain_id,
+                    ctx.dynamic.permission_mode().map(ToOwned::to_owned),
                 )?;
                 append_dynamic_event(
                     ctx,
@@ -3043,6 +3084,7 @@ fn dynamic_node_state_from_spec(
     spec: DynamicNodeSpec,
     group_id: Option<String>,
     chain_id: String,
+    inherited_permission_mode: Option<String>,
 ) -> Result<DynamicNodeState> {
     let kind = match spec.kind {
         DynamicNodeSpecKind::Worker => DynamicNodeKind::Worker,
@@ -3073,6 +3115,7 @@ fn dynamic_node_state_from_spec(
         workspace_path: None,
         provider: spec.provider,
         profile: spec.profile,
+        permission_mode: inherited_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -3400,6 +3443,7 @@ fn create_dynamic_merge_node(
         workspace_path: None,
         provider: Some(group.merge.provider.clone()),
         profile: None,
+        permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3456,6 +3500,7 @@ fn create_dynamic_acceptance_node(
         workspace_path: None,
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
+        permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3504,6 +3549,74 @@ fn dynamic_graph_completed(graph: &DynamicGraphState) -> bool {
             .all(|node| accepted_completion_exists(graph, &node.id))
 }
 
+pub(crate) fn build_dynamic_prompt_bundle(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    dynamic_node_id: &str,
+    dynamic_attempt_id: &str,
+    prompt: String,
+    continue_ref: Option<serde_json::Value>,
+) -> Result<PromptBundle> {
+    let workflow = load_run_workflow(app, task_id, run_id)?;
+    let validated = validate_workflow(workflow)?;
+    let dynamic = match validated.get_node(outer_node_id) {
+        Some(NodeDsl::AiDynamic(dynamic)) => dynamic,
+        _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
+    };
+    let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
+    validate_round_state(&round)?;
+    let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    ))?;
+    let node: DynamicNodeState = read_json(&app.paths.dynamic_node_file(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        dynamic_node_id,
+    ))?;
+    let ctx = DynamicExecutionContext {
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        dynamic,
+    };
+    let output_contract = match node.kind {
+        DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
+            Some(dynamic_output_contract(app.config.desktop_language, dynamic))
+        }
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => None,
+    };
+    let invocation = build_dynamic_worker_invocation(
+        &ctx,
+        &graph,
+        &node,
+        dynamic_attempt_id,
+        output_contract,
+        if continue_ref.is_some() {
+            SessionMode::Continue
+        } else {
+            SessionMode::New
+        },
+        continue_ref,
+        Some(prompt),
+        PromptVisibility::Visible,
+    )?;
+    render_prompt_bundle(&invocation)
+}
+
 fn build_dynamic_worker_invocation(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -3546,7 +3659,10 @@ fn build_dynamic_worker_invocation(
         extra_system_sections,
         task_instruction: Some(dynamic_task_instruction(ctx, graph, node)),
         session_mode,
-        permission_mode: None,
+        permission_mode: node
+            .permission_mode
+            .clone()
+            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
         continue_ref,
         resume_prompt,
         resume_prompt_id: None,

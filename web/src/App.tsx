@@ -325,9 +325,15 @@ export function App() {
   };
 
   const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl) => {
-    const saved = await runAction(() => saveTaskWorkflow(taskId, workflow), { surfaceError: false, rethrow: true });
-    if (saved) setWorkflow(saved);
-    return saved;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await saveTaskWorkflow(taskId, workflow);
+      setWorkflow(saved);
+      return saved;
+    } finally {
+      setBusy(false);
+    }
   };
 
   const applyWorkspace = (nextBootstrap: AppBootstrapVm) => {

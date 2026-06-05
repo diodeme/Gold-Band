@@ -6,7 +6,8 @@
 
 - DSL 已支持 `worker | ai-dynamic`，并校验 AI-DYNAMIC fan-out provider、动态控制限制与 allowed workflow 引用；fan-out proposal 中的 merge/acceptance spec 由 runtime 在执行时校验。
 - workflow 编辑器已通过 `allowAiDynamic` 能力开关控制 AI-DYNAMIC 节点新增入口；新增按钮与默认节点名走 i18n，按钮旁说明统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可出现，不再复用自定义 tooltip 大面板。
-- AI-DYNAMIC Inspector 已调整为“节点 ID + 两个默认收起编辑块”：基础信息、Fan-out Agent；merge/acceptance 不再由用户预配置，而是由 fan-out proposal 在运行时自主生成。
+- AI-DYNAMIC Inspector 已调整为“节点 ID + 两个默认收起编辑块”：基础信息、Fan-out Agent；同时补齐与普通 worker 一致的权限模式下拉。该权限模式作为整个 AI-DYNAMIC 内部派生节点的默认权限继承源；merge/acceptance 不再由用户预配置，而是由 fan-out proposal 在运行时自主生成。
+- AI-DYNAMIC 节点作者态权限字段的编辑与回显统一使用 `permission_mode`。前端回显层需要兼容历史持久化数据中的 `permissionMode`，而 Rust DSL 的序列化/反序列化也必须兼容两种键名但统一持久化输出 `permission_mode`，否则用户保存自定义工作流后重新打开 Inspector 会看到权限模式被错误回退到“默认 / 不设置”。
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
@@ -14,7 +15,8 @@
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；invalid proposal 会写入 rejected proposal 并让 run 进入 error-blocked pause。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
-- view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals，外层 graph 保持单个复合节点。
+- view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals；同时 Round 详情主图已改为把 AI-DYNAMIC 内部实际执行节点内联到主执行图中，点击后复用普通节点详情 / 会话 / 产物链路。
+- 动态内联节点的详情与 ACP 会话定位必须读取真实 dynamic attempt 目录，并与主图边关系保持一致；不能把所有内部节点固定映射成同一个 attempt，否则会出现节点看似运行但会话/边信息错位。
 - 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot；同时通过 `cargo test`、`npm run web:test`、`npm run web:build`。
 
 V1 仍保持以下边界：不做 direct mode、triage-result、route-decision/replan、nested AI-DYNAMIC 和局部失败恢复。

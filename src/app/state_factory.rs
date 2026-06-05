@@ -112,6 +112,12 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::to_value(&dynamic.agent_strategy)
                     .expect("serialize ai-dynamic agent strategy"),
             );
+            if let Some(permission_mode) = &dynamic.permission_mode {
+                config.insert(
+                    "permissionMode".to_string(),
+                    serde_json::Value::String(permission_mode.clone()),
+                );
+            }
             if let Some(profile) = resolved_profile.as_ref() {
                 config.insert(
                     "profileSource".to_string(),

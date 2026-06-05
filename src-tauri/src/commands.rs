@@ -37,9 +37,9 @@ use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
     RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, log_page_vm,
-    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm,
-    workflow_vm,
+    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
+    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, preferences_vm, round_detail_vm, run_detail_vm,
+    run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
@@ -558,15 +558,32 @@ pub fn show_artifact(
     node_id: String,
     attempt_id: String,
     name: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    app.artifact_show(&task_id, &run_id, &round_id, &node_id, &attempt_id, &name)
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+        let path = app.paths.dynamic_node_artifact_file(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+            &name,
+        );
+        app.artifact_show_path(&path)
+    } else {
+        app.artifact_show(&task_id, &run_id, &round_id, &node_id, &attempt_id, &name)
+    };
+    content
         .map(|content| ContentVm {
             title: labels.format("detail.artifact", &name),
             kind: "artifact".to_string(),
             content,
-            metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id }),
+            metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id, "outerNodeId": outer_node_id, "outerAttemptId": outer_attempt_id }),
         })
         .map_err(command_error)
 }
@@ -589,8 +606,24 @@ pub fn get_acp_session(
     node_id: String,
     attempt_id: String,
     query: Option<AcpSessionQueryInput>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
+    if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        return dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+            query,
+        )
+        .map_err(command_error);
+    }
     acp_session_vm(
         &app,
         &task_id,
@@ -613,9 +646,92 @@ pub async fn send_acp_prompt(
     attempt_id: String,
     prompt: String,
     prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+        {
+            let attempt_dir = app.paths.dynamic_node_attempt_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+            );
+            let worker_ref_path = app.paths.dynamic_node_worker_ref_file(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+            );
+            let node_path = app.paths.dynamic_node_file(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+            );
+            let node = read_json::<gold_band::dynamic::DynamicNodeState>(&node_path)
+                .map_err(command_error)?;
+            let provider = node.provider.as_deref().ok_or_else(|| {
+                CommandErrorVm::new("acp.missing-provider", serde_json::json!({}))
+            })?;
+            let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
+            let permission_mode = node.permission_mode.clone();
+            let (session_mode, continue_ref) = if worker_ref_path.exists() {
+                let worker_ref =
+                    read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
+                (worker_ref.mode, worker_ref.continue_ref)
+            } else {
+                (SessionMode::New, None)
+            };
+            let prompt_bundle = app
+                .dynamic_acp_prompt_bundle_for_attempt(
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &node_id,
+                    &attempt_id,
+                    prompt,
+                    continue_ref.clone(),
+                )
+                .map_err(command_error)?;
+            client::run_prompt(
+                provider,
+                &agent_config.adapter,
+                app.paths.repo_root.clone(),
+                attempt_dir,
+                &prompt_bundle,
+                session_mode,
+                permission_mode,
+                continue_ref,
+                app.config.use_local_claude,
+            )
+            .map_err(command_error)?;
+            return dynamic_acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+                None,
+            )
+            .map_err(command_error);
+        }
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
@@ -693,8 +809,50 @@ pub fn respond_acp_permission(
     attempt_id: String,
     request_id: String,
     option_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        );
+        write_permission_response(
+            &attempt_dir,
+            &request_id,
+            option_id.clone(),
+            false,
+            current_timestamp(),
+        )
+        .map_err(command_error)?;
+        let events_path = attempt_dir.join("acp.events.jsonl");
+        let seq = next_acp_event_seq(&events_path);
+        append_ui_event(
+            &events_path,
+            &permission_decision_event(seq, request_id, option_id),
+        )
+        .map_err(command_error)?;
+        return dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+            None,
+        )
+        .map_err(command_error);
+    }
     let attempt_dir = app
         .paths
         .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
@@ -750,8 +908,38 @@ pub fn cancel_acp_session(
     round_id: String,
     node_id: String,
     attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        );
+        let requested_at = current_timestamp();
+        request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
+        cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+        return dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+            None,
+        )
+        .map_err(command_error);
+    }
     let attempt_dir = app
         .paths
         .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
@@ -779,9 +967,33 @@ pub async fn get_acp_raw_frames(
     node_id: String,
     attempt_id: String,
     query: Option<AcpRawFrameQueryInput>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<AcpRawFramePageVm> {
     let app = state.app().map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+            let path = app.paths.dynamic_node_attempt_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+            ).join("acp.raw.jsonl");
+            return super::view_models::acp_raw_frame_page_vm_for_path(
+                &path,
+                query.unwrap_or(AcpRawFrameQueryInput {
+                    page: None,
+                    page_size: None,
+                    search: None,
+                    kind: None,
+                    direction: None,
+                }),
+            )
+            .map_err(command_error);
+        }
         acp_raw_frame_page_vm(
             &app,
             &task_id,
@@ -812,15 +1024,31 @@ pub fn show_attachment(
     node_id: String,
     attempt_id: String,
     name: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    app.attachment_show(&task_id, &run_id, &round_id, &node_id, &attempt_id, &name)
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+        let path = app.paths.dynamic_node_attachments_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        ).join(&name);
+        app.artifact_show_path(&path)
+    } else {
+        app.attachment_show(&task_id, &run_id, &round_id, &node_id, &attempt_id, &name)
+    };
+    content
         .map(|content| ContentVm {
             title: labels.format("detail.attachment", &name),
             kind: "attachment".to_string(),
             content,
-            metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id }),
+            metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id, "outerNodeId": outer_node_id, "outerAttemptId": outer_attempt_id }),
         })
         .map_err(command_error)
 }
@@ -833,17 +1061,39 @@ pub fn show_worker_ref(
     round_id: String,
     node_id: String,
     attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    app.worker_ref_show(&task_id, &run_id, &round_id, &node_id, &attempt_id)
-        .map(|content| ContentVm {
-            title: labels.format("detail.workerRef", &node_id),
-            kind: "worker-ref".to_string(),
-            content: content.unwrap_or_else(|| labels.tr("fallback.missingWorkerRef")),
-            metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id }),
-        })
-        .map_err(command_error)
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+        let path = app.paths.dynamic_node_worker_ref_file(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        );
+        if path.exists() {
+            Some(
+                std::fs::read_to_string(path.as_std_path())
+                    .map_err(|error| command_error(error.into()))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        app.worker_ref_show(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+            .map_err(command_error)?
+    };
+    Ok(ContentVm {
+        title: labels.format("detail.workerRef", &node_id),
+        kind: "worker-ref".to_string(),
+        content: content.unwrap_or_else(|| labels.tr("fallback.missingWorkerRef")),
+        metadata: serde_json::json!({ "nodeId": node_id, "attemptId": attempt_id, "outerNodeId": outer_node_id, "outerAttemptId": outer_attempt_id }),
+    })
 }
 
 #[tauri::command]
@@ -1044,6 +1294,9 @@ fn updater_command_error_code(message: &str) -> Option<&'static str> {
 
 fn workflow_validation_command_error(error: &WorkflowValidationError) -> CommandErrorVm {
     match error {
+        WorkflowValidationError::MissingEndNode => {
+            CommandErrorVm::new("workflow.missing-end-node", serde_json::json!({}))
+        }
         WorkflowValidationError::SuccessNewRoundTarget { from } => CommandErrorVm::new(
             "workflow.success-new-round-target",
             serde_json::json!({ "from": from }),

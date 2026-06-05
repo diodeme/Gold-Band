@@ -23,6 +23,7 @@ import {
   NODE_HEIGHT,
   runtimeNodeOrder,
   computeBackwardLanes,
+  isRuntimePrimaryEdge,
   layoutSuccessPath,
   runtimeEdgeColor,
   topLeft,
@@ -243,7 +244,7 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
   const nodeIds = new Set(graph.nodes.map((n) => n.id));
   const layoutPositions = layoutSuccessPath(
     graph.nodes.map((n) => ({ id: n.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT })),
-    graph.edges.map((e) => ({ from: e.from, to: e.to, on: e.label?.toLowerCase() ?? '' })),
+    graph.edges.map((e) => ({ from: e.from, to: e.to, on: isRuntimePrimaryEdge(e, nodeOrder) ? 'success' : e.label?.toLowerCase() ?? '' })),
     nodeIds,
     nodeOrder,
   );
@@ -359,10 +360,12 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
   const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
   const hasStatus = Boolean(displayStatusValue);
   const tone = normalizeTone(displayStatusValue);
+  const isDynamicNode = (node.nodeType ?? '').startsWith('dynamic-');
   return (
     <div
       className={cn(
         'relative flex h-[138px] w-[226px] flex-col overflow-hidden rounded-xl border border-border/65 bg-card text-card-foreground shadow-sm transition-shadow',
+        isDynamicNode && 'border-accent/35 bg-accent/5',
         selected && 'border-primary/80 bg-primary/5 ring-2 ring-primary/25 shadow-[0_0_0_1px_rgba(245,158,11,0.26),0_10px_28px_rgba(245,158,11,0.12)]',
         active && !running && !selected && 'border-border/80 bg-card shadow-sm',
         running && 'workflow-node-running border-gold-running/70 bg-gold-running/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--gold-running)_24%,transparent),0_14px_34px_color-mix(in_srgb,var(--gold-running)_16%,transparent)]',
@@ -374,6 +377,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       <div className="pointer-events-none absolute left-3 right-3 top-2 z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {iconKey ? <img src={`/agent-icons/${iconKey}.svg`} alt="" className="size-4 shrink-0 rounded-sm" /> : null}
+          {isDynamicNode ? <Badge variant="outline" className="h-5 border-accent/35 bg-accent/10 px-1.5 text-[10px] text-accent-foreground">AI-DYNAMIC</Badge> : null}
           {node.attemptCount && node.attemptCount > 1 ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">attempt ×{node.attemptCount}</Badge> : null}
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}

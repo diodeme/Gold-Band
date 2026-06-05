@@ -144,8 +144,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     setSavingWorkflow(true);
     try {
       setWorkflowSaveError(null);
-      const saved = await onSaveWorkflow(vm.task.id, workflow);
-      if (!saved) return;
+      await onSaveWorkflow(vm.task.id, workflow);
       setWorkflowDraft(null);
       setWorkflowDrawerMode(null);
     } catch (error) {
@@ -297,7 +296,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 workflowDraft ? (
                   <>
                     {workflowSaveError ? <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">{workflowSaveError}</div> : null}
-                    <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} />
+                    <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} />
                   </>
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (

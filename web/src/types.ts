@@ -90,8 +90,6 @@ export interface AcpModeVm {
 
 export interface AcpUsageVm {
   used?: number | null;
-  /** Accumulated (never-reset) total across compaction boundaries */
-  accumulatedUsed?: number | null;
   size?: number | null;
   costAmountUsd?: number | null;
   inputTokens?: number | null;

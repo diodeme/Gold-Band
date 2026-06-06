@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
 import { getLogPage, showArtifact, showAttachment } from '../api';
+import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
 import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
@@ -309,28 +310,10 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
   );
 }
 
-function resolveTokenUsage(detail: NodeDetailVm): AcpUsageVm | null {
-  const session = detail.acpConversations?.find((c) => c.key === detail.selectedConversationKey)
-    ?? detail.acpConversations?.[0];
-  const attempt = session?.attempts.find((a) => a.attemptId === session.activeAttemptId)
-    ?? session?.attempts.at(-1);
-  const usage = attempt?.acpSession?.usage ?? detail.acpSession?.usage;
-  if (!usage || (usage.inputTokens == null && usage.outputTokens == null
-    && usage.cachedReadTokens == null && usage.totalTokens == null)) return null;
-  return usage;
-}
-
-function formatLargeToken(n: number | null | undefined): string {
-  if (n == null) return '-';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
-
 function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; controlFailure?: RoundDetailVm['controlFailure']; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   const detailDisplayStatus = displayPausedRuntimeStatus(detail.outcome ?? detail.status, detail.current ? runPauseReason : null);
-  const acpUsage = resolveTokenUsage(detail);
+  const acpUsage = resolveNodeTokenUsage(detail);
   const baseItems: Array<[ReactNode, ReactNode]> = [
     [t('roundDetail.nodeId'), detail.nodeId],
     [t('roundDetail.sequence'), detail.sequence ?? '-'],
@@ -347,10 +330,13 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
     [t('common.attachments'), detail.attachmentCount],
   ];
   if (acpUsage) {
-    baseItems.push([t('acp.usagePanel.input'), formatLargeToken(acpUsage.inputTokens)]);
-    baseItems.push([t('acp.usagePanel.output'), formatLargeToken(acpUsage.outputTokens)]);
-    baseItems.push([t('acp.usagePanel.cacheRead'), formatLargeToken(acpUsage.cachedReadTokens)]);
-    baseItems.push([t('acp.usagePanel.total'), formatLargeToken(acpUsage.totalTokens)]);
+    if (acpUsage.used != null && acpUsage.size != null) {
+      baseItems.push([t('acp.usagePanel.contextWindow'), `${formatDisplayToken(acpUsage.used)} / ${formatDisplayToken(acpUsage.size)}`]);
+    }
+    baseItems.push([t('acp.usagePanel.input'), formatDisplayToken(acpUsage.inputTokens)]);
+    baseItems.push([t('acp.usagePanel.output'), formatDisplayToken(acpUsage.outputTokens)]);
+    baseItems.push([t('acp.usagePanel.cacheRead'), formatDisplayToken(acpUsage.cachedReadTokens)]);
+    baseItems.push([t('acp.usagePanel.total'), formatDisplayToken(acpUsage.totalTokens)]);
   }
   return (
     <div className="space-y-5">

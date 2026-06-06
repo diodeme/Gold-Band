@@ -48,7 +48,7 @@ use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profile
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
-use super::{App, is_run_continuable};
+use super::{AcpLiveEventContext, App, is_run_continuable};
 
 struct PreparedRun {
     validated: ValidatedWorkflow,
@@ -1267,6 +1267,22 @@ fn freeze_allowed_workflow_snapshots(
     Ok(snapshots)
 }
 
+fn dynamic_acp_live_event_context(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+) -> AcpLiveEventContext {
+    AcpLiveEventContext {
+        task_id: ctx.task_id.to_string(),
+        run_id: ctx.run_id.to_string(),
+        round_id: ctx.round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: Some(ctx.outer_node_id.to_string()),
+        outer_attempt_id: Some(ctx.outer_attempt_id.to_string()),
+    }
+}
+
 fn dynamic_runtime_context(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
@@ -1812,6 +1828,8 @@ fn execute_dynamic_worker(
     let mut proposals = Vec::new();
 
     loop {
+        let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
+        let live_update = ctx.app.acp_live_update_for(live_update_context);
         let invocation = build_dynamic_worker_invocation(
             ctx,
             graph,
@@ -1838,7 +1856,7 @@ fn execute_dynamic_worker(
             .app
             .provider_for_id(&provider_id)
             .map_err(|error| anyhow!("failed to resolve provider `{}` for `{}`: {error}", provider_id, node.id))?
-            .run_worker(invocation)
+            .run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))
             .map_err(|error| anyhow!("provider `{}` failed to run `{}`: {error}", provider_id, node.id))?;
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
         if node.outcome != Some(NodeOutcome::Success) {
@@ -1985,6 +2003,8 @@ fn execute_dynamic_agent_stage(
     } else {
         None
     };
+    let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
+    let live_update = ctx.app.acp_live_update_for(live_update_context);
     let invocation = build_dynamic_worker_invocation(
         ctx,
         graph,
@@ -2011,7 +2031,7 @@ fn execute_dynamic_agent_stage(
     let result = ctx
         .app
         .provider_for_id(provider_id)?
-        .run_worker(invocation)?;
+        .run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
     finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
     if node.status == DynamicNodeStatus::Paused {
         return Ok(DynamicExecutionResult {

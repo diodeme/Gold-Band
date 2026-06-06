@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -56,6 +56,13 @@ impl DesktopContext {
 
     pub fn app(&self) -> App {
         App::with_config(self.repo_root.clone(), self.config.clone())
+    }
+
+    pub fn app_with_acp_live_update(
+        &self,
+        live_update: Arc<dyn Fn(gold_band::app::AcpLiveEventContext, gold_band::acp::events::AcpUiEvent) -> anyhow::Result<()> + Send + Sync>,
+    ) -> App {
+        self.app().with_acp_live_update(live_update)
     }
 }
 

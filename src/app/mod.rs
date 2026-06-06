@@ -345,6 +345,18 @@ pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
+    acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpLiveEventContext {
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
@@ -482,12 +494,26 @@ impl App {
         )
     }
 
-    pub(crate) fn clone_for_background(&self) -> Self {
+    pub fn clone_for_background(&self) -> Self {
         Self {
             paths: self.paths.clone(),
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
+            acp_live_update: self.acp_live_update.clone(),
         }
+    }
+
+    pub fn with_acp_live_update(
+        mut self,
+        live_update: Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.acp_live_update = Some(live_update);
+        self
+    }
+
+    pub fn acp_live_update_for<'a>(&'a self, context: AcpLiveEventContext) -> Option<impl Fn(&crate::acp::events::AcpUiEvent) -> Result<()> + 'a> {
+        let live_update = self.acp_live_update.as_ref()?.clone();
+        Some(move |event: &crate::acp::events::AcpUiEvent| live_update(context.clone(), event.clone()))
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -901,6 +927,7 @@ impl App {
             paths,
             config,
             provider_override: None,
+            acp_live_update: None,
         }
     }
 
@@ -920,6 +947,7 @@ impl App {
             paths,
             config,
             provider_override: Some(Arc::from(provider)),
+            acp_live_update: None,
         }
     }
 

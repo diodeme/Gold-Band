@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
@@ -5,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::storage::{append_jsonl, write_json};
+use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,14 +82,30 @@ pub struct AcpUiEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimelineItem {
+    pub item: AcpUiEvent,
 }
 
 #[derive(Debug, Clone)]
 pub struct AcpAttemptPaths {
     pub attempt_dir: Utf8PathBuf,
     pub session: Utf8PathBuf,
+    pub snapshot: Utf8PathBuf,
     pub events: Utf8PathBuf,
+    pub timeline: Utf8PathBuf,
     pub raw: Utf8PathBuf,
     pub diagnostics: Utf8PathBuf,
     pub provider_pid: Utf8PathBuf,
@@ -98,7 +115,9 @@ impl AcpAttemptPaths {
     pub fn from_attempt_dir(attempt_dir: Utf8PathBuf) -> Self {
         Self {
             session: attempt_dir.join("acp.session.json"),
+            snapshot: attempt_dir.join("acp.snapshot.json"),
             events: attempt_dir.join("acp.events.jsonl"),
+            timeline: attempt_dir.join("acp.timeline.jsonl"),
             raw: attempt_dir.join("acp.raw.jsonl"),
             diagnostics: attempt_dir.join("acp.diagnostics.jsonl"),
             provider_pid: attempt_dir.join("provider.pid"),
@@ -147,6 +166,69 @@ pub fn append_ui_event(path: &Utf8Path, event: &AcpUiEvent) -> Result<()> {
     append_jsonl(path, event)
 }
 
+pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()> {
+    ensure_parent_dir(path)?;
+    let mut file = std::fs::File::create(path.as_std_path())?;
+    for item in items {
+        serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+        use std::io::Write as _;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+        return Ok(Vec::new());
+    };
+    let mut legacy_latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
+    let mut final_items = Vec::<AcpUiEvent>::new();
+    let mut saw_legacy_patch = false;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+            final_items.push(entry.item);
+            continue;
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyPatch {
+            patch_type: String,
+            item_id: String,
+            revision: u64,
+            op: String,
+            item: AcpUiEvent,
+        }
+        let Ok(patch) = serde_json::from_str::<LegacyPatch>(&line) else {
+            continue;
+        };
+        if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+            continue;
+        }
+        saw_legacy_patch = true;
+        let should_replace = legacy_latest_by_item
+            .get(&patch.item_id)
+            .map(|(revision, _)| patch.revision >= *revision)
+            .unwrap_or(true);
+        if should_replace {
+            legacy_latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+        }
+    }
+    if saw_legacy_patch {
+        let mut items = legacy_latest_by_item
+            .into_values()
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
+        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+        return Ok(items);
+    }
+    final_items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+    Ok(final_items)
+}
+
 pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return 0;
@@ -156,6 +238,15 @@ pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
         .map_while(std::result::Result::ok)
         .filter(|line| !line.trim().is_empty())
         .count() as u64
+}
+
+pub fn latest_timeline_source_seq(path: &Utf8Path) -> u64 {
+    load_timeline_items(path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.ended_seq.or(item.started_seq).unwrap_or(item.seq))
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {
@@ -184,6 +275,10 @@ pub fn normalize_session_update(
         title: extract_title(update),
         tool_call_id: extract_tool_call_id(update),
         status: extract_status(update),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
         raw,
     };
 
@@ -213,6 +308,10 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         title: extract_title(&params).or_else(|| Some("Permission required".to_string())),
         tool_call_id: extract_tool_call_id(&params),
         status: Some("pending".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
         raw: Some(params),
     }
 }
@@ -232,6 +331,10 @@ pub fn permission_decision_event(
         title: Some("Permission answered".to_string()),
         tool_call_id: None,
         status: Some("selected".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
         raw: Some(serde_json::json!({
             "requestId": request_id,
             "optionId": option_id,
@@ -271,6 +374,10 @@ pub fn user_prompt_event(
         }),
         tool_call_id: None,
         status: Some("completed".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
         raw: Some(raw),
     }
 }

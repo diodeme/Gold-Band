@@ -1,4 +1,4 @@
-use crate::acp::client;
+use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
@@ -187,10 +187,15 @@ impl Default for PromptVisibility {
     }
 }
 
+pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
+
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
     fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult>;
+    fn run_worker_with_live_update(&self, req: WorkerInvocation, _live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
+        self.run_worker(req)
+    }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
 }
@@ -314,6 +319,10 @@ impl ProviderAdapter for AcpProvider {
     }
 
     fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+        self.run_worker_with_live_update(req, None)
+    }
+
+    fn run_worker_with_live_update(&self, req: WorkerInvocation, live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -337,6 +346,7 @@ impl ProviderAdapter for AcpProvider {
             req.continue_ref.clone(),
             self.use_local_claude,
             self.acp_session_title_refresh_enabled,
+            live_update,
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {

@@ -42,7 +42,7 @@ provider adapter 可以返回 `worker-ref` 原材料，但 canonical 的 `worker
     "adapterId": "claude-agent-acp",
     "adapterDisplayName": "Claude ACP",
     "cwd": "<workspace>",
-    "sessionFile": "<attempt>/acp.session.json",
+    "snapshotFile": "<attempt>/acp.snapshot.json",
     "lastStopReason": "end_turn",
     "restored": false
   },

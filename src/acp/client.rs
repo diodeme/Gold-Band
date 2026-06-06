@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -9,11 +10,20 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::{Value, json};
 use tracing::debug;
 
+#[derive(Debug, Clone)]
+struct AcpTimelineStreamState {
+    item_id: String,
+    started_seq: u64,
+    started_at: String,
+    content: String,
+}
+
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::events::{
-    AcpAttemptPaths, AcpSessionMetadata, append_diagnostic, append_raw_frame, append_ui_event,
-    current_timestamp, initial_acp_event_seq, normalize_session_update, permission_request_event,
-    user_prompt_event, write_session_metadata,
+    AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
+    append_ui_event, current_timestamp, initial_acp_event_seq, latest_timeline_source_seq,
+    load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
+    write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
     acp_permission_response_result, clear_cancel_request, is_cancel_requested,
@@ -62,7 +72,7 @@ pub struct AcpPromptRun {
     pub total_tokens: Option<u64>,
 }
 
-struct AcpRuntime {
+struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
     child: Child,
     adapter: ResolvedAcpAdapter,
@@ -70,6 +80,8 @@ struct AcpRuntime {
     rx: Receiver<Value>,
     next_id: u64,
     seq: u64,
+    timeline_revision: u64,
+    timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
     final_text: String,
     final_outputs: Vec<String>,
@@ -88,12 +100,16 @@ struct AcpRuntime {
     cached_read_tokens: Option<u64>,
     cached_write_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    active_text_stream: Option<AcpTimelineStreamState>,
+    active_thought_stream: Option<AcpTimelineStreamState>,
+    active_plan_stream: Option<AcpTimelineStreamState>,
+    live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
 }
 
 pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: bool) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
     let mut runtime =
-        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude)?;
+        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude, None)?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
         runtime.setup_session(cwd, None, None, "", false)?;
@@ -116,9 +132,10 @@ pub fn run_prompt(
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
-    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude)?;
+    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude, live_update)?;
     let capabilities = runtime.initialize()?;
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = runtime.setup_session(
@@ -260,12 +277,13 @@ fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
     prompt.user_prompt.clone()
 }
 
-impl AcpRuntime {
+impl<'a> AcpRuntime<'a> {
     fn start(
         config: &AcpAdapterConfig,
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
         use_local_claude: bool,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
@@ -362,7 +380,12 @@ impl AcpRuntime {
                 }
             }
         });
-        let seq = initial_acp_event_seq(&paths.events);
+        let seq = initial_acp_source_seq(&paths);
+        let timeline_items = load_timeline_items(&paths.timeline)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let timeline_revision = timeline_items.len() as u64;
         Ok(Self {
             paths,
             child,
@@ -371,6 +394,8 @@ impl AcpRuntime {
             rx,
             next_id: 1,
             seq,
+            timeline_revision,
+            timeline_items,
             session_id: None,
             final_text: String::new(),
             final_outputs: Vec::new(),
@@ -389,6 +414,10 @@ impl AcpRuntime {
             cached_read_tokens: None,
             cached_write_tokens: None,
             total_tokens: None,
+            active_text_stream: None,
+            active_thought_stream: None,
+            active_plan_stream: None,
+            live_update,
         })
     }
 
@@ -671,16 +700,14 @@ impl AcpRuntime {
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
         self.seq += 1;
-        append_ui_event(
-            &self.paths.events,
-            &user_prompt_event(
-                self.seq,
-                session_id.clone(),
-                prompt.user_prompt.clone(),
-                prompt.prompt_id.clone(),
-                prompt.visibility == PromptVisibility::Hidden,
-            ),
-        )?;
+        let user_event = user_prompt_event(
+            self.seq,
+            session_id.clone(),
+            prompt.user_prompt.clone(),
+            prompt.prompt_id.clone(),
+            prompt.visibility == PromptVisibility::Hidden,
+        );
+        self.persist_event(&user_event)?;
         let result = self.request_with_progress(
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
@@ -896,7 +923,7 @@ impl AcpRuntime {
             } else {
                 self.collecting_text_output = false;
             }
-            append_ui_event(&self.paths.events, &event)?;
+            self.persist_event(&event)?;
         }
         Ok(())
     }
@@ -916,7 +943,7 @@ impl AcpRuntime {
             current_timestamp(),
         )?;
         let event = permission_request_event(self.seq, request_id.clone(), params);
-        append_ui_event(&self.paths.events, &event)?;
+        self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
         let result = acp_permission_response_result(response)?;
         self.send_frame(&json!({
@@ -973,7 +1000,7 @@ impl AcpRuntime {
                 "adapterId": self.adapter.adapter_id.clone(),
                 "adapterDisplayName": self.adapter.display_name.clone(),
                 "cwd": workspace_dir.as_str(),
-                "sessionFile": self.paths.session.as_str(),
+                "snapshotFile": self.paths.snapshot.as_str(),
                 "lastStopReason": stop_reason,
                 "restored": restored,
             })),
@@ -990,40 +1017,177 @@ impl AcpRuntime {
         stop_reason: Option<String>,
         capabilities: Value,
     ) -> Result<()> {
+        let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
+        write_session_metadata(&self.paths.snapshot, &metadata)
+    }
+
+    fn session_metadata(
+        &self,
+        status: &str,
+        restored: bool,
+        stop_reason: Option<String>,
+        capabilities: Value,
+    ) -> AcpSessionMetadata {
         let now = current_timestamp();
-        let created_at = if self.paths.session.exists() {
+        let created_at = if self.paths.snapshot.exists() {
+            read_json::<AcpSessionMetadata>(&self.paths.snapshot)
+                .map(|session| session.created_at)
+                .unwrap_or_else(|_| now.clone())
+        } else if self.paths.session.exists() {
             read_json::<AcpSessionMetadata>(&self.paths.session)
                 .map(|session| session.created_at)
                 .unwrap_or_else(|_| now.clone())
         } else {
             now.clone()
         };
-        write_session_metadata(
-            &self.paths.session,
-            &AcpSessionMetadata {
-                adapter_id: self.adapter.adapter_id.clone(),
-                adapter_display_name: self.adapter.display_name.clone(),
-                cwd: self.paths.attempt_dir.to_string(),
-                title: self.session_title.clone(),
-                status: status.to_string(),
-                restored,
-                stop_reason,
-                capabilities,
-                models: self.models.clone(),
-                modes: self.modes.clone(),
-                config_options: self.config_options.clone(),
-                used_tokens: self.used_tokens,
-                context_window_size: self.context_window_size,
-                total_cost_usd: self.total_cost_usd,
-                input_tokens: self.input_tokens,
-                output_tokens: self.output_tokens,
-                cached_read_tokens: self.cached_read_tokens,
-                cached_write_tokens: self.cached_write_tokens,
-                total_tokens: self.total_tokens,
-                created_at,
-                updated_at: now,
-            },
-        )
+        AcpSessionMetadata {
+            adapter_id: self.adapter.adapter_id.clone(),
+            adapter_display_name: self.adapter.display_name.clone(),
+            cwd: self.paths.attempt_dir.to_string(),
+            title: self.session_title.clone(),
+            status: status.to_string(),
+            restored,
+            stop_reason,
+            capabilities,
+            models: self.models.clone(),
+            modes: self.modes.clone(),
+            config_options: self.config_options.clone(),
+            used_tokens: self.used_tokens,
+            context_window_size: self.context_window_size,
+            total_cost_usd: self.total_cost_usd,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cached_read_tokens: self.cached_read_tokens,
+            cached_write_tokens: self.cached_write_tokens,
+            total_tokens: self.total_tokens,
+            created_at,
+            updated_at: now,
+        }
+    }
+
+    fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
+        if should_write_legacy_events(&self.paths) {
+            append_ui_event(&self.paths.events, event)?;
+        }
+        let timeline_item = self.timeline_item_for_event(event);
+        self.timeline_items
+            .insert(timeline_item.id.clone(), timeline_item.clone());
+        self.timeline_revision = self.timeline_items.len() as u64;
+        self.persist_timeline_items()?;
+        if let Some(live_update) = self.live_update {
+            live_update(&timeline_item)?;
+        }
+        Ok(())
+    }
+
+    fn persist_timeline_items(&self) -> Result<()> {
+        let mut items = self.timeline_items.values().cloned().collect::<Vec<_>>();
+        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+        write_timeline_items(&self.paths.timeline, &items)
+    }
+
+    fn timeline_item_for_event(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+    ) -> crate::acp::events::AcpUiEvent {
+        let mut item = event.clone();
+        let timestamp = item.timestamp.clone();
+        let seq = item.seq;
+        match item.kind.as_str() {
+            "textDelta" => {
+                let stream = self.active_text_stream.get_or_insert_with(|| AcpTimelineStreamState {
+                    item_id: stable_message_item_id(&item),
+                    started_seq: seq,
+                    started_at: timestamp.clone(),
+                    content: String::new(),
+                });
+                if let Some(content) = item.content.as_deref() {
+                    append_bounded(&mut stream.content, content, 256_000);
+                }
+                item.id = stream.item_id.clone();
+                item.content = Some(stream.content.clone());
+                item.started_seq = Some(stream.started_seq);
+                item.ended_seq = Some(seq);
+                item.started_at = Some(stream.started_at.clone());
+                item.ended_at = Some(timestamp);
+            }
+            "thoughtDelta" => {
+                let stream = self.active_thought_stream.get_or_insert_with(|| AcpTimelineStreamState {
+                    item_id: stable_thought_item_id(&item),
+                    started_seq: seq,
+                    started_at: timestamp.clone(),
+                    content: String::new(),
+                });
+                if let Some(content) = item.content.as_deref() {
+                    append_bounded(&mut stream.content, content, 256_000);
+                }
+                item.id = stream.item_id.clone();
+                item.content = Some(stream.content.clone());
+                item.started_seq = Some(stream.started_seq);
+                item.ended_seq = Some(seq);
+                item.started_at = Some(stream.started_at.clone());
+                item.ended_at = Some(timestamp);
+            }
+            "toolCall" | "toolCallUpdate" => {
+                self.active_text_stream = None;
+                self.active_thought_stream = None;
+                self.active_plan_stream = None;
+                if let Some(tool_call_id) = item.tool_call_id.clone() {
+                    item.id = format!("tool-call-{tool_call_id}");
+                }
+                item.kind = "toolCall".to_string();
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.ended_seq = Some(seq);
+                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
+            "permissionRequest" => {
+                self.active_text_stream = None;
+                self.active_thought_stream = None;
+                self.active_plan_stream = None;
+                item.id = format!("permission-{}", item.id);
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.ended_seq = Some(seq);
+                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
+            "plan" => {
+                let stream = self.active_plan_stream.get_or_insert_with(|| AcpTimelineStreamState {
+                    item_id: stable_plan_item_id(&item),
+                    started_seq: seq,
+                    started_at: timestamp.clone(),
+                    content: String::new(),
+                });
+                if let Some(content) = item.content.as_deref() {
+                    append_bounded(&mut stream.content, content, 64_000);
+                    item.content = Some(stream.content.clone());
+                }
+                item.id = stream.item_id.clone();
+                item.started_seq = Some(stream.started_seq);
+                item.ended_seq = Some(seq);
+                item.started_at = Some(stream.started_at.clone());
+                item.ended_at = Some(timestamp);
+            }
+            _ => {
+                self.active_text_stream = None;
+                self.active_thought_stream = None;
+                self.active_plan_stream = None;
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.ended_seq = Some(seq);
+                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
+        }
+        if item.kind != "textDelta" {
+            self.active_text_stream = None;
+        }
+        if item.kind != "thoughtDelta" {
+            self.active_thought_stream = None;
+        }
+        if item.kind != "plan" {
+            self.active_plan_stream = None;
+        }
+        item
     }
 
     fn shutdown(mut self) {
@@ -1033,12 +1197,54 @@ impl AcpRuntime {
     }
 }
 
-impl Drop for AcpRuntime {
+impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
             self.kill_adapter_process();
         }
     }
+}
+
+fn should_write_legacy_events(paths: &AcpAttemptPaths) -> bool {
+    paths.events.exists() && !paths.timeline.exists()
+}
+
+fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
+    if paths.timeline.exists() || !paths.events.exists() {
+        latest_timeline_source_seq(&paths.timeline)
+    } else {
+        initial_acp_event_seq(&paths.events)
+    }
+}
+
+fn stable_message_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("messageId"))
+        .and_then(Value::as_str)
+        .map(|message_id| format!("assistant-message-{message_id}"))
+        .unwrap_or_else(|| format!("assistant-message-{}", event.id))
+}
+
+fn stable_thought_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("messageId"))
+        .and_then(Value::as_str)
+        .map(|message_id| format!("assistant-thought-{message_id}"))
+        .unwrap_or_else(|| format!("assistant-thought-{}", event.id))
+}
+
+fn stable_plan_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(|session_id| format!("session-plan-{session_id}"))
+        .unwrap_or_else(|| format!("session-plan-{}", event.id))
 }
 
 fn contributes_to_final_text(kind: &str) -> bool {

@@ -557,7 +557,10 @@ export interface AcpSessionVm {
 export interface AcpSessionQueryInput {
   beforeSeq?: number;
   afterSeq?: number;
+  beforeCursor?: string;
+  afterCursor?: string;
   eventLimit?: number;
+  pageSize?: number;
 }
 
 export interface AcpEventPageVm {
@@ -567,6 +570,8 @@ export interface AcpEventPageVm {
   newestSeq?: number | null;
   hasOlder: boolean;
   hasNewer: boolean;
+  oldestCursor?: string | null;
+  newestCursor?: string | null;
 }
 
 export interface AcpSessionConfigVm {
@@ -589,6 +594,10 @@ export interface AcpUiEventVm {
   title?: string | null;
   toolCallId?: string | null;
   status?: string | null;
+  startedSeq?: number | null;
+  endedSeq?: number | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
   raw?: unknown;
 }
 

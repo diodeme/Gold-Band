@@ -498,7 +498,10 @@ pub struct AcpSessionVm {
 pub struct AcpSessionQueryInput {
     pub before_seq: Option<u64>,
     pub after_seq: Option<u64>,
+    pub before_cursor: Option<String>,
+    pub after_cursor: Option<String>,
     pub event_limit: Option<usize>,
+    pub page_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -510,6 +513,10 @@ pub struct AcpEventPageVm {
     pub newest_seq: Option<u64>,
     pub has_older: bool,
     pub has_newer: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -536,6 +543,10 @@ pub struct AcpUiEventVm {
     pub title: Option<String>,
     pub tool_call_id: Option<String>,
     pub status: Option<String>,
+    pub started_seq: Option<u64>,
+    pub ended_seq: Option<u64>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
     pub raw: Option<serde_json::Value>,
 }
 
@@ -2737,18 +2748,24 @@ pub fn dynamic_acp_session_vm(
         node_id,
         attempt_id,
     );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
+    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
-    if !session_path.exists()
+    if !snapshot_path.exists()
+        && !session_path.exists()
+        && !timeline_path.exists()
         && !events_path.exists()
         && !raw_path.exists()
         && !diagnostics_path.exists()
     {
         return Ok(None);
     }
-    let session = if session_path.exists() {
+    let session = if snapshot_path.exists() {
+        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+    } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
@@ -2787,7 +2804,11 @@ pub fn dynamic_acp_session_vm(
         metadata_status
     }
     .to_string();
-    let event_scan = scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?;
+    let event_scan = if timeline_path.exists() {
+        scan_acp_timeline(&timeline_path, query.clone(), is_acp_session_active_status(&status))?
+    } else {
+        scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?
+    };
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -2920,9 +2941,15 @@ pub fn acp_session_vm(
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
+    let snapshot_path = app
+        .paths
+        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
     let session_path = app
         .paths
         .acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
+    let timeline_path = app
+        .paths
+        .acp_timeline_file(task_id, run_id, round_id, node_id, attempt_id);
     let events_path = app
         .paths
         .acp_events_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -2932,7 +2959,9 @@ pub fn acp_session_vm(
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
-    if !session_path.exists()
+    if !snapshot_path.exists()
+        && !session_path.exists()
+        && !timeline_path.exists()
         && !events_path.exists()
         && !raw_path.exists()
         && !diagnostics_path.exists()
@@ -2940,7 +2969,9 @@ pub fn acp_session_vm(
         return Ok(None);
     }
 
-    let mut session = if session_path.exists() {
+    let mut session = if snapshot_path.exists() {
+        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+    } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
@@ -3003,7 +3034,11 @@ pub fn acp_session_vm(
         metadata_status
     }
     .to_string();
-    let event_scan = scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?;
+    let event_scan = if timeline_path.exists() {
+        scan_acp_timeline(&timeline_path, query.clone(), is_acp_session_active_status(&status))?
+    } else {
+        scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?
+    };
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -3155,6 +3190,234 @@ struct AcpRawErrorScan {
     timestamp: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpTimelineItemVm {
+    item: AcpUiEventVm,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpTimelinePatchVm {
+    patch_type: String,
+    item_id: String,
+    revision: u64,
+    op: String,
+    item: AcpUiEventVm,
+}
+
+fn scan_acp_timeline(
+    path: &camino::Utf8Path,
+    query: Option<AcpSessionQueryInput>,
+    session_active: bool,
+) -> Result<AcpEventScan> {
+    const DEFAULT_EVENT_LIMIT: usize = 30;
+    const MIN_EVENT_LIMIT: usize = 10;
+    const MAX_EVENT_LIMIT: usize = 100;
+
+    let query = query.unwrap_or(AcpSessionQueryInput {
+        before_seq: None,
+        after_seq: None,
+        before_cursor: None,
+        after_cursor: None,
+        event_limit: None,
+        page_size: None,
+    });
+    let limit = query
+        .page_size
+        .or(query.event_limit)
+        .unwrap_or(DEFAULT_EVENT_LIMIT)
+        .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
+    let before_seq = query
+        .before_cursor
+        .as_deref()
+        .and_then(parse_timeline_cursor)
+        .or(query.before_seq);
+    let after_seq = query
+        .after_cursor
+        .as_deref()
+        .and_then(parse_timeline_cursor)
+        .or(query.after_seq);
+    let mut latest_by_item = HashMap::<String, (u64, AcpUiEventVm)>::new();
+    let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
+    let mut available_commands = None;
+    let mut usage = None;
+    let mut last_used: Option<u64> = None;
+    let mut accumulated_used: u64 = 0;
+    let mut session_elapsed = AcpSessionElapsedState::default();
+    let mut event_count = 0usize;
+    let mut final_items = Vec::<AcpUiEventVm>::new();
+    let mut saw_legacy_patch = false;
+
+    if path.exists() {
+        let file = fs::File::open(path.as_std_path())?;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) {
+                event_count += 1;
+                final_item.item.seq = final_item
+                    .item
+                    .ended_seq
+                    .or(final_item.item.started_seq)
+                    .unwrap_or(final_item.item.seq);
+                session_elapsed.observe_event(&final_item.item);
+                if final_item.item.kind == "permissionRequest" {
+                    latest_permission_events
+                        .insert(final_item.item.id.clone(), final_item.item.clone());
+                }
+                if let Some(raw) = final_item.item.raw.as_ref() {
+                    if is_session_update(&final_item.item, "available_commands_update") {
+                        available_commands = raw
+                            .get("availableCommands")
+                            .and_then(|value| value.as_array())
+                            .cloned();
+                    } else if is_session_update(&final_item.item, "usage_update") {
+                        let (used, size, cost_amount) =
+                            gold_band::acp::events::extract_usage_fields(raw);
+                        if let Some(u) = used {
+                            let prev = last_used.unwrap_or(0);
+                            if u > prev {
+                                accumulated_used += u - prev;
+                            }
+                            last_used = Some(u);
+                        }
+                        usage = Some(AcpUsageVm {
+                            used,
+                            size,
+                            cost_amount_usd: cost_amount,
+                            accumulated_used: Some(accumulated_used),
+                            ..Default::default()
+                        });
+                    }
+                }
+                if is_hidden_from_chat(&final_item.item) || !is_session_timeline_event(&final_item.item)
+                {
+                    continue;
+                }
+                final_items.push(compact_event_for_session(final_item.item));
+                continue;
+            }
+
+            let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) else {
+                continue;
+            };
+            if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                continue;
+            }
+            saw_legacy_patch = true;
+            event_count += 1;
+            patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
+            session_elapsed.observe_event(&patch.item);
+            if patch.item.kind == "permissionRequest" {
+                latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+            }
+            if let Some(raw) = patch.item.raw.as_ref() {
+                if is_session_update(&patch.item, "available_commands_update") {
+                    available_commands = raw
+                        .get("availableCommands")
+                        .and_then(|value| value.as_array())
+                        .cloned();
+                } else if is_session_update(&patch.item, "usage_update") {
+                    let (used, size, cost_amount) = gold_band::acp::events::extract_usage_fields(raw);
+                    if let Some(u) = used {
+                        let prev = last_used.unwrap_or(0);
+                        if u > prev {
+                            accumulated_used += u - prev;
+                        }
+                        last_used = Some(u);
+                    }
+                    usage = Some(AcpUsageVm {
+                        used,
+                        size,
+                        cost_amount_usd: cost_amount,
+                        accumulated_used: Some(accumulated_used),
+                        ..Default::default()
+                    });
+                }
+            }
+            if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
+                continue;
+            }
+            let compacted = compact_event_for_session(patch.item);
+            let should_replace = latest_by_item
+                .get(&patch.item_id)
+                .map(|(revision, _)| patch.revision >= *revision)
+                .unwrap_or(true);
+            if should_replace {
+                latest_by_item.insert(patch.item_id, (patch.revision, compacted));
+            }
+        }
+    }
+
+    let mut all_events = if saw_legacy_patch {
+        latest_by_item
+            .into_values()
+            .map(|(_, event)| event)
+            .collect::<Vec<_>>()
+    } else {
+        final_items
+    };
+    all_events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+    let total = all_events.len();
+    let filtered = if let Some(cursor) = after_seq {
+        all_events
+            .iter()
+            .filter(|event| event.started_seq.unwrap_or(event.seq) > cursor)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else if let Some(cursor) = before_seq {
+        let mut page = all_events
+            .iter()
+            .filter(|event| event.started_seq.unwrap_or(event.seq) < cursor)
+            .cloned()
+            .collect::<Vec<_>>();
+        if page.len() > limit {
+            page = page.split_off(page.len() - limit);
+        }
+        page
+    } else if total > limit {
+        all_events[total - limit..].to_vec()
+    } else {
+        all_events.clone()
+    };
+    let oldest_seq = filtered.first().map(|event| event.started_seq.unwrap_or(event.seq));
+    let newest_seq = filtered.last().map(|event| event.ended_seq.unwrap_or(event.seq));
+    let oldest_index = oldest_seq.and_then(|seq| {
+        all_events
+            .iter()
+            .position(|event| event.started_seq.unwrap_or(event.seq) == seq)
+    });
+    let newest_index = newest_seq.and_then(|seq| {
+        all_events
+            .iter()
+            .rposition(|event| event.ended_seq.unwrap_or(event.seq) == seq)
+    });
+    let event_page = AcpEventPageVm {
+        loaded_count: filtered.len(),
+        total,
+        oldest_seq,
+        newest_seq,
+        has_older: oldest_index.is_some_and(|index| index > 0),
+        has_newer: newest_index.is_some_and(|index| index + 1 < total),
+        oldest_cursor: oldest_seq.map(format_timeline_cursor),
+        newest_cursor: newest_seq.map(format_timeline_cursor),
+    };
+
+    Ok(AcpEventScan {
+        events: filtered,
+        event_page,
+        event_count,
+        session_elapsed_seconds: session_elapsed.finish(session_active),
+        latest_permission_events,
+        available_commands,
+        usage,
+    })
+}
+
 fn scan_acp_events(
     path: &camino::Utf8Path,
     query: Option<AcpSessionQueryInput>,
@@ -3167,14 +3430,26 @@ fn scan_acp_events(
     let query = query.unwrap_or(AcpSessionQueryInput {
         before_seq: None,
         after_seq: None,
+        before_cursor: None,
+        after_cursor: None,
         event_limit: None,
+        page_size: None,
     });
     let limit = query
-        .event_limit
+        .page_size
+        .or(query.event_limit)
         .unwrap_or(DEFAULT_EVENT_LIMIT)
         .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
-    let before_seq = query.before_seq;
-    let after_seq = query.after_seq;
+    let before_seq = query
+        .before_cursor
+        .as_deref()
+        .and_then(parse_timeline_cursor)
+        .or(query.before_seq);
+    let after_seq = query
+        .after_cursor
+        .as_deref()
+        .and_then(parse_timeline_cursor)
+        .or(query.after_seq);
     let mut window = VecDeque::<AcpUiEventVm>::with_capacity(limit + 1);
     let mut after_window = Vec::<AcpUiEventVm>::with_capacity(limit);
     let mut raw_event_count = 0usize;
@@ -3317,6 +3592,8 @@ fn scan_acp_events(
         newest_seq,
         has_older,
         has_newer,
+        oldest_cursor: oldest_seq.map(format_timeline_cursor),
+        newest_cursor: newest_seq.map(format_timeline_cursor),
     };
 
     Ok(AcpEventScan {
@@ -3539,6 +3816,14 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
 
 fn current_epoch_timestamp() -> String {
     format!("{}Z", current_epoch_seconds())
+}
+
+fn format_timeline_cursor(seq: u64) -> String {
+    format!("rev:{seq}")
+}
+
+fn parse_timeline_cursor(value: &str) -> Option<u64> {
+    value.strip_prefix("rev:").and_then(|value| value.parse::<u64>().ok())
 }
 
 fn current_epoch_seconds() -> u64 {

@@ -164,6 +164,9 @@ export const browserApi: RuntimeApi = {
   getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
+  subscribeAcpSessionUpdates() {
+    return Promise.resolve(() => {});
+  },
   sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },

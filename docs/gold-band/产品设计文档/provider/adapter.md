@@ -74,7 +74,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `exitCode`
 - `resultPayload`
 - `workerRefSeed`
-- `sessionEvents`（ACP normalized UI events，落盘到 `acp.events.jsonl`）
+- `sessionEvents`（ACP normalized UI projection，聚合 patch 落盘到 `acp.timeline.jsonl`）
 - `rawSession`（ACP raw frame，落盘到 `acp.raw.jsonl`）
 
 说明：

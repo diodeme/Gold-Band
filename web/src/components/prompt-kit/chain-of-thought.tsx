@@ -72,17 +72,21 @@ export const ChainOfThoughtTrigger = ({
 
 export type ChainOfThoughtContentProps = React.ComponentProps<
   typeof CollapsibleContent
->
+> & {
+  animated?: boolean
+}
 
 export const ChainOfThoughtContent = ({
   children,
   className,
+  animated = true,
   ...props
 }: ChainOfThoughtContentProps) => {
   return (
     <CollapsibleContent
       className={cn(
-        "text-popover-foreground data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden",
+        "text-popover-foreground overflow-hidden",
+        animated && "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down",
         className
       )}
       {...props}

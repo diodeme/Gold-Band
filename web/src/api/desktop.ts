@@ -1,8 +1,18 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
-import type { RuntimeApi } from './client';
-import { invokeCommand, toRoundSelectionInput } from './shared';
+import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
+import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  async subscribeAcpSessionUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
   checkLocalClaude() {
     return invokeCommand('check_local_claude');
   },

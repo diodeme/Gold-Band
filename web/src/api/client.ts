@@ -3,6 +3,7 @@ import type {
   AcpRawFrameQueryInput,
   AcpSessionQueryInput,
   AcpSessionVm,
+  AcpUiEventVm,
   AgentRegistryVm,
   AppBootstrapVm,
   ContentVm,
@@ -34,6 +35,18 @@ import type {
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
+
+export interface AcpSessionUpdatedEventVm {
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  session?: AcpSessionVm | null;
+  event?: AcpUiEventVm | null;
+}
 
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
@@ -69,6 +82,7 @@ export interface RuntimeApi {
   killRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;

@@ -277,9 +277,13 @@ attempt-001/
   node.json
   worker-ref.json
   provider.pid
-  acp.session.json
-  acp.events.jsonl
+  acp.snapshot.json
+  acp.timeline.jsonl
   acp.raw.jsonl
+  acp.diagnostics.jsonl
+  # 旧会话目录可额外存在：
+  # acp.session.json
+  # acp.events.jsonl
   acp.diagnostics.jsonl
   acp.permission-request.<id>.json
   acp.permission-response.<id>.json
@@ -305,9 +309,11 @@ attempt-001/
 
 #### ACP 运行态
 
-- `acp.session.json`：UI runtime snapshot，不承担 session identity 权威来源
-- `acp.events.jsonl`：归一化 UI events
+- `acp.snapshot.json`：V2 UI runtime snapshot 与恢复锚点
+- `acp.timeline.jsonl`：V2 聚合 UI timeline final item 列表
 - `acp.raw.jsonl`：ACP 原始 frame
+- `acp.diagnostics.jsonl`：adapter / protocol diagnostics
+- `acp.session.json` / `acp.events.jsonl`：仅历史旧会话可能存在，供 legacy reader 兼容读取
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
 - permission request / response 文件
 - cancel marker

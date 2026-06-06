@@ -44,13 +44,17 @@ export type ToolProps = {
   toolPart: ToolPart
   labels: ToolLabels
   defaultOpen?: boolean
+  open?: boolean
   className?: string
   icon?: React.ReactNode
-  onOpenChange?: () => void
+  onOpenChange?: (open: boolean) => void
+  animated?: boolean
+  renderContent?: boolean
 }
 
-const Tool = ({ toolPart, labels, defaultOpen = false, className, icon, onOpenChange }: ToolProps) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
+const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, onOpenChange, animated = true, renderContent = true }: ToolProps) => {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
+  const isOpen = open ?? uncontrolledOpen
   const { state, input, output, summary } = toolPart
 
   const getStateIcon = () => {
@@ -69,9 +73,9 @@ const Tool = ({ toolPart, labels, defaultOpen = false, className, icon, onOpenCh
     }
   }
 
-  const handleOpenChange = (open: boolean) => {
-    onOpenChange?.()
-    setIsOpen(open)
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (open === undefined) setUncontrolledOpen(nextOpen)
+    onOpenChange?.(nextOpen)
   }
 
   const getStateBadge = () => {
@@ -116,8 +120,8 @@ const Tool = ({ toolPart, labels, defaultOpen = false, className, icon, onOpenCh
             </span>
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="border-border data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down min-w-0 max-w-full overflow-hidden border-t">
-          {isOpen ? (
+        {renderContent && isOpen ? (
+          <CollapsibleContent className={cn("border-border min-w-0 max-w-full overflow-hidden border-t", animated && "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down")}>
             <div className="min-w-0 max-w-full space-y-2 overflow-hidden bg-background/50 p-2.5">
               {input && Object.keys(input).length > 0 ? (
                 <div>
@@ -151,8 +155,8 @@ const Tool = ({ toolPart, labels, defaultOpen = false, className, icon, onOpenCh
                 </div>
               ) : null}
             </div>
-          ) : null}
-        </CollapsibleContent>
+          </CollapsibleContent>
+        ) : null}
       </Collapsible>
     </div>
   )

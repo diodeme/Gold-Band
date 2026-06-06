@@ -462,6 +462,15 @@ attempt-001/
 - `schemars`：后续做 JSON schema
 - `toml` / `serde_yaml`：若以后支持其他配置格式
 
+### 2026-06-06：需求标题归一化实验工具
+- 新增独立可运行的 Rust bin：`src/bin/requirement_title.rs`
+- 目标：接收 requirement 文本文件路径，输出一个约 10 字左右的中文短标题，优先服务 txt / md / 纯文本导入场景
+- 当前实现策略：采用结构优先 + 自然语言回退 + 轻量统计压缩的三层管线，不依赖大模型
+- 具体顺序：先尝试抽取 H1/主标题等强结构信号；若输入缺少结构，则回退到前导主题句；若仍过长，再依据重复度、位置和技术实体显著性压缩标题
+- 当前范围：先只支持中文，作为后续多语言 `language profile` 架构的最小切片
+- 当前仓库主 lib 另有独立编译问题时，可单独用 `rustc --edition=2024 src/bin/requirement_title.rs -o .claude/requirement_title_standalone.exe` 验证该文件逻辑
+- 常规验证方式：`cargo run --bin requirement_title -- <文件路径>`
+
 ---
 
 ## MVP 实现顺序

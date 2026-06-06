@@ -71,6 +71,13 @@ Gold Band 的核心对象是：
 - ACP session events 到会话详情 ViewModel 的映射
 - external CLI handoff 与 ACP session/load 的关系
 
+## 需求标题归一化工具
+- 当前仓库提供一个面向中文 requirement 文本的本地标题归一化实验工具：`src/bin/requirement_title.rs`
+- 输入为 txt / md / 任意纯文本文件路径，输出一个约 10 字左右、可读的短标题
+- 当前版本采用纯 Rust 的分层回退管线，不依赖大模型：优先抽取文档主标题等结构信号；缺少结构时回退到前导主题句；再不行时使用轻量统计压缩候选标题
+- 当前实现尽量依赖通用特征，例如结构层级、位置、重复度、技术实体显著性和长度控制，而不是持续追加业务特殊词表
+- 当前只优先支持中文需求；后续若扩展多语言，应在通用管线之上补 language profile，而不是重写整套流程
+
 当前 MVP 已固定的 capability fallback 包括：
 - 显式请求 `session = continue` 但 provider 不支持时，视为 DSL 校验错误
 - `supportsOpenSession = false` 时，CLI `open-session` 明确报错

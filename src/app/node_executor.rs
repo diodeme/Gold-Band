@@ -17,7 +17,7 @@ use crate::runtime::{
 };
 use crate::storage::{read_json, write_json};
 
-use super::App;
+use super::{AcpLiveEventContext, App};
 use super::ids::now_rfc3339_like;
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
@@ -398,7 +398,17 @@ pub(crate) fn execute_ai_node(
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow!("node `{node_id}` is missing resolved provider"))?;
     tracing::debug!(task_id, run_id, round_id, node_id, attempt_id, provider_id, stage = ?ProgressStage::CallingProvider, "calling provider");
-    let result = app.provider_for_id(provider_id)?.run_worker(invocation)?;
+    let live_update_context = AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    };
+    let live_update = app.acp_live_update_for(live_update_context);
+    let result = app.provider_for_id(provider_id)?.run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
     progress(&format!(
         "normalizing artifact for {}/{}/{}",
         round_id, node_id, attempt_id

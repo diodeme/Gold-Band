@@ -1,5 +1,5 @@
 use gold_band::acp::client;
-use gold_band::acp::events::{append_ui_event, current_timestamp, permission_decision_event};
+use gold_band::acp::events::{AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq, load_timeline_items, permission_decision_event, write_timeline_items};
 use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
@@ -15,6 +15,7 @@ use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader},
     str::FromStr,
+    sync::Arc,
 };
 
 use camino::Utf8PathBuf;
@@ -23,7 +24,7 @@ use gold_band::config::{
     ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
@@ -42,7 +43,23 @@ use crate::view_models::{
     run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 
+const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
+
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpSessionUpdatedEventVm {
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    session: Option<AcpSessionVm>,
+    event: Option<AcpUiEvent>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -479,8 +496,9 @@ pub fn get_round_detail(
 }
 
 #[tauri::command]
-pub fn start_run(state: State<'_, DesktopState>, task_id: String) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
+pub fn start_run(app_handle: AppHandle, state: State<'_, DesktopState>, task_id: String) -> CommandResult<RunSummaryVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -488,12 +506,14 @@ pub fn start_run(state: State<'_, DesktopState>, task_id: String) -> CommandResu
 
 #[tauri::command]
 pub fn continue_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
     app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -501,6 +521,7 @@ pub fn continue_run(
 
 #[tauri::command]
 pub fn submit_manual_check(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
@@ -509,7 +530,8 @@ pub fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -527,11 +549,13 @@ pub fn submit_manual_check(
 
 #[tauri::command]
 pub fn retry_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -597,6 +621,80 @@ pub fn get_log_page(
     log_page_vm(&app, query).map_err(command_error)
 }
 
+fn acp_live_update_emitter(app_handle: AppHandle) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync> {
+    Arc::new(move |context, event| {
+        emit_acp_event_update(
+            &app_handle,
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            context.outer_node_id,
+            context.outer_attempt_id,
+            event,
+        );
+        Ok(())
+    })
+}
+
+fn emit_acp_session_update(
+    app_handle: &AppHandle,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    session: Option<AcpSessionVm>,
+) {
+    emit_acp_update(app_handle, task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id, session, None);
+}
+
+fn emit_acp_event_update(
+    app_handle: &AppHandle,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    event: AcpUiEvent,
+) {
+    emit_acp_update(app_handle, task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id, None, Some(event));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_acp_update(
+    app_handle: &AppHandle,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    session: Option<AcpSessionVm>,
+    event: Option<AcpUiEvent>,
+) {
+    let _ = app_handle.emit(
+        ACP_SESSION_EVENT,
+        AcpSessionUpdatedEventVm {
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            outer_node_id,
+            outer_attempt_id,
+            session,
+            event,
+        },
+    );
+}
+
 #[tauri::command]
 pub fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -638,6 +736,7 @@ pub fn get_acp_session(
 
 #[tauri::command]
 pub async fn send_acp_prompt(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
@@ -650,7 +749,15 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let task_id_for_emit = task_id.clone();
+    let run_id_for_emit = run_id.clone();
+    let round_id_for_emit = round_id.clone();
+    let node_id_for_emit = node_id.clone();
+    let attempt_id_for_emit = attempt_id.clone();
+    let outer_node_id_for_emit = outer_node_id.clone();
+    let outer_attempt_id_for_emit = outer_attempt_id.clone();
+    let app_handle_for_task = app_handle.clone();
+    let session = tauri::async_runtime::spawn_blocking(move || {
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -707,6 +814,14 @@ pub async fn send_acp_prompt(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            let app_handle_for_live = app_handle_for_task.clone();
+            let task_id_for_live = task_id.clone();
+            let run_id_for_live = run_id.clone();
+            let round_id_for_live = round_id.clone();
+            let node_id_for_live = node_id.clone();
+            let attempt_id_for_live = attempt_id.clone();
+            let outer_node_id_for_live = Some(outer_node_id.to_string());
+            let outer_attempt_id_for_live = Some(outer_attempt_id.to_string());
             client::run_prompt(
                 provider,
                 &agent_config.adapter,
@@ -718,6 +833,20 @@ pub async fn send_acp_prompt(
                 continue_ref,
                 app.config.use_local_claude,
                 app.config.acp_session_title_refresh_enabled,
+                Some(&|event| {
+                    emit_acp_event_update(
+                        &app_handle_for_live,
+                        &task_id_for_live,
+                        &run_id_for_live,
+                        &round_id_for_live,
+                        &node_id_for_live,
+                        &attempt_id_for_live,
+                        outer_node_id_for_live.clone(),
+                        outer_attempt_id_for_live.clone(),
+                        event.clone(),
+                    );
+                    Ok(())
+                }),
             )
             .map_err(command_error)?;
             return dynamic_acp_session_vm(
@@ -773,6 +902,12 @@ pub async fn send_acp_prompt(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        let app_handle_for_live = app_handle_for_task.clone();
+        let task_id_for_live = task_id.clone();
+        let run_id_for_live = run_id.clone();
+        let round_id_for_live = round_id.clone();
+        let node_id_for_live = node_id.clone();
+        let attempt_id_for_live = attempt_id.clone();
         client::run_prompt(
             provider,
             &agent_config.adapter,
@@ -784,6 +919,20 @@ pub async fn send_acp_prompt(
             continue_ref,
             app.config.use_local_claude,
             app.config.acp_session_title_refresh_enabled,
+            Some(&|event| {
+                emit_acp_event_update(
+                    &app_handle_for_live,
+                    &task_id_for_live,
+                    &run_id_for_live,
+                    &round_id_for_live,
+                    &node_id_for_live,
+                    &attempt_id_for_live,
+                    None,
+                    None,
+                    event.clone(),
+                );
+                Ok(())
+            }),
         )
         .map_err(command_error)?;
         acp_session_vm(
@@ -798,11 +947,24 @@ pub async fn send_acp_prompt(
         .map_err(command_error)
     })
     .await
-    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
+    emit_acp_session_update(
+        &app_handle,
+        &task_id_for_emit,
+        &run_id_for_emit,
+        &round_id_for_emit,
+        &node_id_for_emit,
+        &attempt_id_for_emit,
+        outer_node_id_for_emit,
+        outer_attempt_id_for_emit,
+        session.clone(),
+    );
+    Ok(session)
 }
 
 #[tauri::command]
 pub fn respond_acp_permission(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
@@ -815,7 +977,7 @@ pub fn respond_acp_permission(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
         let attempt_dir = app.paths.dynamic_node_attempt_dir(
@@ -836,13 +998,8 @@ pub fn respond_acp_permission(
         )
         .map_err(command_error)?;
         let events_path = attempt_dir.join("acp.events.jsonl");
-        let seq = next_acp_event_seq(&events_path);
-        append_ui_event(
-            &events_path,
-            &permission_decision_event(seq, request_id, option_id),
-        )
-        .map_err(command_error)?;
-        return dynamic_acp_session_vm(
+        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        dynamic_acp_session_vm(
             &app,
             &task_id,
             &run_id,
@@ -853,38 +1010,46 @@ pub fn respond_acp_permission(
             &attempt_id,
             None,
         )
-        .map_err(command_error);
-    }
-    let attempt_dir = app
-        .paths
-        .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-    write_permission_response(
-        &attempt_dir,
-        &request_id,
-        option_id.clone(),
-        false,
-        current_timestamp(),
-    )
-    .map_err(command_error)?;
-    let events_path =
-        app.paths
-            .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-    let seq = next_acp_event_seq(&events_path);
-    append_ui_event(
-        &events_path,
-        &permission_decision_event(seq, request_id, option_id),
-    )
-    .map_err(command_error)?;
-    acp_session_vm(
-        &app,
+        .map_err(command_error)?
+    } else {
+        let attempt_dir = app
+            .paths
+            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        write_permission_response(
+            &attempt_dir,
+            &request_id,
+            option_id.clone(),
+            false,
+            current_timestamp(),
+        )
+        .map_err(command_error)?;
+        let events_path =
+            app.paths
+                .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+        )
+        .map_err(command_error)?
+    };
+    emit_acp_session_update(
+        &app_handle,
         &task_id,
         &run_id,
         &round_id,
         &node_id,
         &attempt_id,
-        None,
-    )
-    .map_err(command_error)
+        outer_node_id,
+        outer_attempt_id,
+        session.clone(),
+    );
+    Ok(session)
 }
 
 fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
@@ -902,8 +1067,49 @@ fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
         + 1
 }
 
+fn should_append_legacy_permission_event(events_path: &camino::Utf8Path, timeline_path: &camino::Utf8Path) -> bool {
+    events_path.exists() && !timeline_path.exists()
+}
+
+fn append_permission_decision_artifacts(
+    attempt_dir: &camino::Utf8Path,
+    events_path: &camino::Utf8Path,
+    request_id: String,
+    option_id: Option<String>,
+) -> CommandResult<()> {
+    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+    let source_seq = if timeline_path.exists() || !events_path.exists() {
+        latest_timeline_source_seq(&timeline_path) + 1
+    } else {
+        next_acp_event_seq(events_path)
+    };
+    let mut event = permission_decision_event(source_seq, request_id.clone(), option_id);
+    event.id = format!("permission-{request_id}");
+    event.started_seq = Some(source_seq);
+    event.ended_seq = Some(source_seq);
+    event.started_at = Some(event.timestamp.clone());
+    event.ended_at = Some(event.timestamp.clone());
+
+    if should_append_legacy_permission_event(events_path, &timeline_path) {
+        append_ui_event(events_path, &event).map_err(command_error)?;
+    }
+
+    let mut items = load_timeline_items(&timeline_path).map_err(command_error)?;
+    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
+        event.started_seq = existing.started_seq.or(event.started_seq);
+        event.started_at = existing.started_at.clone().or(event.started_at.clone());
+        *existing = event;
+    } else {
+        items.push(event);
+    }
+    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+    write_timeline_items(&timeline_path, &items).map_err(command_error)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn cancel_acp_session(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
@@ -914,7 +1120,7 @@ pub fn cancel_acp_session(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
         let attempt_dir = app.paths.dynamic_node_attempt_dir(
@@ -929,7 +1135,7 @@ pub fn cancel_acp_session(
         let requested_at = current_timestamp();
         request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
         cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
-        return dynamic_acp_session_vm(
+        dynamic_acp_session_vm(
             &app,
             &task_id,
             &run_id,
@@ -940,24 +1146,37 @@ pub fn cancel_acp_session(
             &attempt_id,
             None,
         )
-        .map_err(command_error);
-    }
-    let attempt_dir = app
-        .paths
-        .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-    let requested_at = current_timestamp();
-    request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
-    cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
-    acp_session_vm(
-        &app,
+        .map_err(command_error)?
+    } else {
+        let attempt_dir = app
+            .paths
+            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        let requested_at = current_timestamp();
+        request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
+        cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+        acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+        )
+        .map_err(command_error)?
+    };
+    emit_acp_session_update(
+        &app_handle,
         &task_id,
         &run_id,
         &round_id,
         &node_id,
         &attempt_id,
-        None,
-    )
-    .map_err(command_error)
+        outer_node_id,
+        outer_attempt_id,
+        session.clone(),
+    );
+    Ok(session)
 }
 
 #[tauri::command]

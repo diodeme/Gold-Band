@@ -544,7 +544,7 @@ function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOpt
       <div className="min-h-0 flex-1">
         <SessionErrorBoundary>
           <ACPChatDialog
-          key={`${selectedConversation?.key ?? 'current'}:${attemptId}:${session?.sessionId ?? ''}`}
+          key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}`}
           session={session}
           systemPromptOptions={selectedConversation?.attempts.map((attempt) => ({ attemptId: attempt.attemptId, prompt: attempt.acpSession?.systemPromptAppend }))}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
@@ -615,12 +615,9 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
     restored: conversation.attempts.some((attempt) => attempt.acpSession?.restored),
     events,
     eventPage: {
+      ...base.eventPage,
       loadedCount: events.length,
-      total: events.length,
-      oldestSeq: events[0]?.seq ?? null,
-      newestSeq: events.at(-1)?.seq ?? null,
-      hasOlder: false,
-      hasNewer: false,
+      total: Math.max(base.eventPage.total, events.length),
     },
   };
 }

@@ -47,29 +47,29 @@ acp.raw.jsonl
 - 仅用于排障和 raw viewer。
 - UI 默认不直接依赖其字段做业务判断。
 
-### 3.2 ACP events
+### 3.2 ACP timeline
 
 建议 attempt 级保留：
 
 ```text
-acp.events.jsonl
+acp.timeline.jsonl
 ```
 
 用途：
 
-- 保存 ACP session 级事件。
-- 尽量保持 ACP 语义，不转换为 Gold Band 自研 progress event。
+- 保存 ACP 会话聚合后的 UI timeline final item。
+- 保持 ACP 语义，但粒度是可直接渲染的逻辑 item，而不是逐 chunk 原始事件或中间修订 patch。
 - 作为会话详情 UI 的主要数据来源。
 
 可包含：
 
-- agent text chunk
-- thought / reasoning chunk
-- tool call
-- tool call update
+- user message
+- assistant message
+- thought / reasoning block
+- tool call 及其原地更新
 - plan
-- permission request
-- mode / config / model update
+- permission request / decision
+- mode / config / model update 投影
 - session info
 - status update
 - error / stop reason
@@ -79,7 +79,7 @@ acp.events.jsonl
 建议 attempt 级保留：
 
 ```text
-acp.session.json
+acp.snapshot.json
 ```
 
 用途：
@@ -92,6 +92,7 @@ acp.session.json
 - stop reason
 - startedAt / finishedAt
 - external CLI handoff 信息摘要
+- timeline / usage / metrics 的当前恢复锚点
 
 ### 3.4 ACP diagnostics
 
@@ -140,7 +141,7 @@ ACP 事件不能直接决定：
 
 当 CLI / 桌面端需要展示某个 attempt 的 agent 过程时：
 
-1. 首选 `acp.events.jsonl` 构建会话详情。
+1. 首选 `acp.snapshot.json` + `acp.timeline.jsonl` 构建会话详情。
 2. 若需要排障，展示 `acp.raw.jsonl`。
 3. 会话详情 composer 的状态以用户可感知阶段为准：调起 ACP 到用户消息写入前是发送中且不计时；用户消息写入到首个非用户帧前是处理中并计时；首帧后按思考、工具调用或回复生成继续计时；plan 决策权限若提供继续规划选项，composer 保持可输入但停止处理中计时，并用输入框 placeholder 引导用户自然语言修订计划。
 4. 若 agent/provider 不支持 ACP，显示 fallback / debug 输出，但不新增 provider-specific UI 协议。
@@ -168,7 +169,7 @@ Gold Band 会话详情必须保留“打开原始 agent 会话 / 跳转外部 CL
 
 - Gold Band 内部负责可视化 ACP session events。
 - 用户仍可跳到原始 provider CLI 继续处理。
-- handoff 信息通过 `worker-ref.json` 或 `acp.session.json` 暴露。
+- handoff 信息通过 `worker-ref.json` 或 `acp.snapshot.json` 暴露。
 - handoff 不改变 Gold Band runtime 的 run / round / node canonical state。
 
 ## 8. 一句话总结

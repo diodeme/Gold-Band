@@ -14,7 +14,6 @@ import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
 import { cn } from '@/lib/utils';
 import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
-import { AcpMessageTokenBadge } from '@/components/acp/AcpMessageTokenBadge';
 import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
 import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
 import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
@@ -1102,9 +1101,6 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();
   const isUser = event.kind === 'userTextDelta';
   const failed = event.status === 'failed';
-  const messageTokens = !isUser
-    ? (event.raw as Record<string, unknown> | null | undefined)?._goldBand as { tokens?: number } | undefined
-    : undefined;
   return (
     <Message className={cn('min-w-0 items-start gap-2', isUser ? 'justify-end' : 'justify-start')}>
       {!isUser ? <AcpAvatarWithTime tone="assistant" timestamp={event.timestamp} /> : null}
@@ -1116,7 +1112,6 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
         )}>
           {isUser ? event.content : <Markdown>{event.content ?? ''}</Markdown>}
         </MessageContent>
-        {!isUser && !event.optimistic && !failed ? <AcpMessageTokenBadge tokens={messageTokens?.tokens} /> : null}
         {event.optimistic || failed ? (
           <div className={cn('flex px-1 text-xs text-muted-foreground', isUser && 'justify-end text-right')}>
             {failed ? t('acp.sendFailed') : <span className="inline-flex items-center">{event.status === 'processing' ? t('acp.processing') : t('acp.sending')}<AnimatedEllipsis /></span>}

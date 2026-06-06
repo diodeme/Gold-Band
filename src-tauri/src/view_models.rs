@@ -384,9 +384,6 @@ pub struct AcpAttemptSessionVm {
 pub struct AcpUsageVm {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used: Option<u64>,
-    /// Accumulated (never-reset) total across compaction boundaries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub accumulated_used: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2144,9 +2141,6 @@ fn scan_acp_events(
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
     let mut usage = None;
-    let mut last_used: Option<u64> = None;
-    let mut last_message_used: Option<u64> = None;
-    let mut accumulated_used: u64 = 0;
     let mut first_seq = None;
     let mut last_seq = None;
     let mut pending_delta: Option<AcpUiEventVm> = None;
@@ -2177,18 +2171,10 @@ fn scan_acp_events(
                 } else if is_session_update(&event, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
-                    if let Some(u) = used {
-                        let prev = last_used.unwrap_or(0);
-                        if u > prev {
-                            accumulated_used += u - prev;
-                        }
-                        last_used = Some(u);
-                    }
                     usage = Some(AcpUsageVm {
                         used,
                         size,
                         cost_amount_usd: cost_amount,
-                        accumulated_used: Some(accumulated_used),
                         ..Default::default()
                     });
                 }
@@ -2213,7 +2199,6 @@ fn scan_acp_events(
             if merge_pending_delta(&mut pending_delta, &event) {
                 continue;
             }
-            inject_token_delta(pending_delta.as_mut(), last_used, &mut last_message_used);
             flush_normalized_event(
                 pending_delta.take(),
                 before_seq,
@@ -2228,8 +2213,7 @@ fn scan_acp_events(
             if is_delta_event(&event) {
                 pending_delta = Some(compact_event_for_session(event));
             } else {
-                let mut compacted = compact_event_for_session(event);
-                inject_token_delta(Some(&mut compacted), last_used, &mut last_message_used);
+                let compacted = compact_event_for_session(event);
                 flush_normalized_event(
                     Some(compacted),
                     before_seq,
@@ -2245,7 +2229,6 @@ fn scan_acp_events(
         }
     }
 
-    inject_token_delta(pending_delta.as_mut(), last_used, &mut last_message_used);
     flush_normalized_event(
         pending_delta.take(),
         before_seq,
@@ -2688,33 +2671,6 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
         last_error,
         last_error_timestamp,
     })
-}
-
-fn inject_token_delta(event: Option<&mut AcpUiEventVm>, last_used: Option<u64>, last_message_used: &mut Option<u64>) {
-    let event = match event {
-        Some(e) => e,
-        None => return,
-    };
-    if event.kind != "textDelta" {
-        return;
-    }
-    let used = match last_used {
-        Some(u) => u,
-        None => return,
-    };
-    // Skip if the value hasn't changed since the last injected message.
-    if last_message_used == &Some(used) {
-        return;
-    }
-    *last_message_used = Some(used);
-    let mut raw = event.raw.take().unwrap_or_else(|| serde_json::json!({}));
-    if let Some(obj) = raw.as_object_mut() {
-        obj.insert(
-            "_goldBand".to_string(),
-            serde_json::json!({ "tokens": used }),
-        );
-    }
-    event.raw = Some(raw);
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {

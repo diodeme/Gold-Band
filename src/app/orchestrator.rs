@@ -378,6 +378,16 @@ pub(crate) fn run_continue(
                     None,
                 ),
                 _ => {
+                    let provider_pid_path = app.paths.provider_pid_file(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    );
+                    if provider_pid_path.exists() {
+                        bail!("current attempt is still stopping; wait for provider shutdown before continuing");
+                    }
                     let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                         task_id,
                         run_id,

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{ManagedAgentType, ProjectFeatureFlags, RuntimeConfig, SettingsConfig, StateConfig};
+use gold_band::config::{ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
@@ -16,6 +16,7 @@ use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 pub struct DesktopContext {
     pub repo_root: Utf8PathBuf,
     pub config: RuntimeConfig,
+    pub app_config: ProjectAppConfig,
     pub recent_workspaces: Vec<String>,
     pub needs_workspace: bool,
 }
@@ -37,10 +38,10 @@ impl DesktopContext {
             .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, state, feature_flags) = load_configs(&paths);
+        let (settings, state, app_config) = load_configs(&paths);
         let config = RuntimeConfig::default()
             .apply_settings(&settings)
-            .apply_feature_flags(&feature_flags)
+            .apply_app_config(&app_config)
             .apply_state(&state);
         let mut recent_workspaces = recent_workspaces(&state, &repo_root);
         if needs_workspace {
@@ -49,6 +50,7 @@ impl DesktopContext {
         Ok(Self {
             repo_root,
             config,
+            app_config,
             recent_workspaces,
             needs_workspace,
         })
@@ -114,11 +116,17 @@ impl DesktopState {
             .clone())
     }
 
-    pub fn update_config(&self, config: RuntimeConfig) -> Result<()> {
-        self.context
+    pub fn update_settings_config(&self, settings: &SettingsConfig) -> Result<()> {
+        let mut guard = self
+            .context
             .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .config = config;
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let state: StateConfig = read_json(&GoldBandPaths::new(guard.repo_root.clone()).user_state_file()).unwrap_or_default();
+        guard.config = RuntimeConfig::default()
+            .apply_settings(settings)
+            .apply_app_config(&guard.app_config)
+            .apply_state(&state);
+        drop(guard);
         self.prune_agent_diagnostics()?;
         Ok(())
     }
@@ -299,13 +307,14 @@ impl DesktopState {
             let app = App::with_config(repo_root.clone(), guard.config.clone());
             let workspace = repo_root.to_string();
             let (settings, state) = app.set_user_desktop_workspace(&workspace)?;
-            let feature_flags: ProjectFeatureFlags =
-                read_json(&GoldBandPaths::new(repo_root.clone()).repo_feature_flags_file())
+            let app_config: ProjectAppConfig =
+                read_json(&GoldBandPaths::new(repo_root.clone()).repo_app_config_file())
                     .unwrap_or_default();
             guard.repo_root = repo_root;
+            guard.app_config = app_config;
             guard.config = RuntimeConfig::default()
                 .apply_settings(&settings)
-                .apply_feature_flags(&feature_flags)
+                .apply_app_config(&guard.app_config)
                 .apply_state(&state);
             guard.recent_workspaces = recent_workspaces(&state, &guard.repo_root);
             guard.needs_workspace = false;
@@ -379,12 +388,11 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
     }
 }
 
-fn load_configs(paths: &GoldBandPaths) -> (SettingsConfig, StateConfig, ProjectFeatureFlags) {
+fn load_configs(paths: &GoldBandPaths) -> (SettingsConfig, StateConfig, ProjectAppConfig) {
     let settings: SettingsConfig = read_json(&paths.user_settings_file()).unwrap_or_default();
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
-    let feature_flags: ProjectFeatureFlags =
-        read_json(&paths.repo_feature_flags_file()).unwrap_or_default();
-    (settings, state, feature_flags)
+    let app_config: ProjectAppConfig = read_json(&paths.repo_app_config_file()).unwrap_or_default();
+    (settings, state, app_config)
 }
 
 fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {

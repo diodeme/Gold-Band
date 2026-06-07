@@ -139,8 +139,8 @@ impl GoldBandPaths {
         self.repo_root.join("configs")
     }
 
-    pub fn repo_feature_flags_file(&self) -> Utf8PathBuf {
-        self.repo_configs_dir().join("feature-flags.json")
+    pub fn repo_app_config_file(&self) -> Utf8PathBuf {
+        self.repo_configs_dir().join("app-config.json")
     }
 
     pub fn user_presets_dir(&self) -> Utf8PathBuf {

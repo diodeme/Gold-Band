@@ -297,6 +297,10 @@ export const mockBootstrap: AppBootstrapVm = {
   persistedAvailableUpdate: null,
   clientVersion: '',
   appInfo: mockAppInfo,
+  appConfig: {
+    acpSessionTitleRefreshEnabled: false,
+    acpChatEventPageSize: 360,
+  },
   needsWorkspace: false,
 };
 

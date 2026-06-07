@@ -2,7 +2,7 @@ use crate::app::App;
 use crate::command::execute::execute_command;
 use crate::command::{ArtifactCommand, Command, CommandResult, RunCommand, TaskCommand};
 use crate::config::{
-    ConsoleThemeName, ProjectFeatureFlags, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+    ConsoleThemeName, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
     StateConfig,
 };
 use crate::console::run_console;
@@ -119,9 +119,9 @@ pub async fn run() -> Result<()> {
     let paths = GoldBandPaths::new(repo_root.clone());
     let settings: SettingsConfig = read_json(&paths.user_settings_file()).unwrap_or_default();
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
-    let feature_flags: ProjectFeatureFlags = read_json(&paths.repo_feature_flags_file()).unwrap_or_default();
+    let app_config: ProjectAppConfig = read_json(&paths.repo_app_config_file()).unwrap_or_default();
     let enable_stderr_progress = !matches!(cli.command, Commands::Console { .. });
-    let config = resolve_runtime_config(&cli, &settings, &state, &feature_flags);
+    let config = resolve_runtime_config(&cli, &settings, &state, &app_config);
     let app = App::with_config(repo_root, config);
     init_tracing(&app.paths, &app.config, enable_stderr_progress);
     touch_log_file_best_effort(&app.paths);
@@ -147,11 +147,11 @@ fn resolve_runtime_config(
     cli: &Cli,
     settings: &SettingsConfig,
     state: &StateConfig,
-    feature_flags: &ProjectFeatureFlags,
+    app_config: &ProjectAppConfig,
 ) -> RuntimeConfig {
     let mut config = RuntimeConfig::default()
         .apply_settings(settings)
-        .apply_feature_flags(feature_flags)
+        .apply_app_config(app_config)
         .apply_state(state);
     config.log_level = cli.log_level;
     if let Commands::Console { theme: Some(theme) } = &cli.command {

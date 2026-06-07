@@ -307,8 +307,9 @@ pub struct StateConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectFeatureFlags {
+pub struct ProjectAppConfig {
     pub acp_session_title_refresh_enabled: Option<bool>,
+    pub acp_chat_event_page_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +329,7 @@ pub struct RuntimeConfig {
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
     pub acp_session_title_refresh_enabled: bool,
+    pub acp_chat_event_page_size: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -353,6 +355,7 @@ impl Default for RuntimeConfig {
             agents,
             use_local_claude: false,
             acp_session_title_refresh_enabled: false,
+            acp_chat_event_page_size: 360,
         }
     }
 }
@@ -393,9 +396,12 @@ impl RuntimeConfig {
         self
     }
 
-    pub fn apply_feature_flags(mut self, flags: &ProjectFeatureFlags) -> Self {
-        if let Some(acp_session_title_refresh_enabled) = flags.acp_session_title_refresh_enabled {
+    pub fn apply_app_config(mut self, app_config: &ProjectAppConfig) -> Self {
+        if let Some(acp_session_title_refresh_enabled) = app_config.acp_session_title_refresh_enabled {
             self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
+        }
+        if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
+            self.acp_chat_event_page_size = acp_chat_event_page_size;
         }
         self
     }
@@ -412,7 +418,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ProjectFeatureFlags, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        DesktopUpdateBadgeState, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::str::FromStr;
 
@@ -568,13 +574,15 @@ mod tests {
     }
 
     #[test]
-    fn project_feature_flags_roundtrip_json() {
-        let flags = ProjectFeatureFlags {
+    fn project_app_config_roundtrip_json() {
+        let app_config = ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
+            acp_chat_event_page_size: Some(240),
         };
-        let json = serde_json::to_string_pretty(&flags).unwrap();
-        let roundtripped: ProjectFeatureFlags = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string_pretty(&app_config).unwrap();
+        let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
+        assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
     }
 
     #[test]
@@ -619,11 +627,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_feature_flags_overrides_defaults() {
-        let config = RuntimeConfig::default().apply_feature_flags(&ProjectFeatureFlags {
+    fn apply_app_config_overrides_defaults() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
+            acp_chat_event_page_size: Some(240),
         });
         assert!(config.acp_session_title_refresh_enabled);
+        assert_eq!(config.acp_chat_event_page_size, 240);
     }
 
     #[test]

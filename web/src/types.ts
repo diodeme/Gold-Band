@@ -56,7 +56,13 @@ export interface AppBootstrapVm {
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   appInfo: AppInfoVm;
+  appConfig: AppConfigVm;
   needsWorkspace: boolean;
+}
+
+export interface AppConfigVm {
+  acpSessionTitleRefreshEnabled: boolean;
+  acpChatEventPageSize: number;
 }
 
 export interface AppInfoVm {

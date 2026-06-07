@@ -12,7 +12,7 @@ use commands::{
     cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_profile, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
-    check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
+    check_update_manual, download_and_install_update, get_run_detail, get_startup_check_result, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
     dismiss_update_announcement, kill_run, mark_settings_advanced_update_seen,
     mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
@@ -116,6 +116,7 @@ fn run() -> anyhow::Result<()> {
             dismiss_update_announcement,
             check_update_manual,
             download_and_install_update,
+            get_startup_check_result,
         ])
         .run(tauri::generate_context!())
         .context("tauri runtime failed")?;

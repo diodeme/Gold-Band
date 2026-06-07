@@ -148,4 +148,7 @@ export const desktopApi: RuntimeApi = {
   downloadAndInstallUpdate() {
     return invokeCommand('download_and_install_update');
   },
+  getStartupCheckResult() {
+    return invokeCommand<import('../types').StartupCheckResult | null>('get_startup_check_result');
+  },
 };

@@ -193,3 +193,7 @@ export function checkUpdateManual() {
 export function downloadAndInstallUpdate() {
   return getRuntimeApi().downloadAndInstallUpdate();
 }
+
+export function getStartupCheckResult() {
+  return getRuntimeApi().getStartupCheckResult();
+}

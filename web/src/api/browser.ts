@@ -236,6 +236,9 @@ export const browserApi: RuntimeApi = {
   downloadAndInstallUpdate() {
     return Promise.resolve();
   },
+  getStartupCheckResult() {
+    return Promise.resolve(null);
+  },
 };
 
 function browserProfileId() {

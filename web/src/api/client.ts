@@ -84,6 +84,7 @@ export interface RuntimeApi {
   dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
   downloadAndInstallUpdate(): Promise<void>;
+  getStartupCheckResult(): Promise<import('../types').StartupCheckResult | null>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

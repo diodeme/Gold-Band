@@ -198,23 +198,37 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
+    if (!isTauriRuntime()) {
+      setStartupPhase('done');
+      return undefined;
+    }
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<StartupCheckResult>('gold-band://startup-update-check', (event) => {
-      if (!active) return;
-      if (event.payload.critical) {
+
+    function handleStartupCheck(result: StartupCheckResult) {
+      if (result.critical) {
         setStartupPhase('downloading');
       } else {
         setStartupPhase('done');
       }
-    }).then((dispose) => {
-      if (active) {
-        unlisten = dispose;
-      } else {
-        dispose();
-      }
+    }
+
+    // check-then-listen：先读后端缓存，消除事件竞态
+    import('./api').then(({ getStartupCheckResult }) => {
+      getStartupCheckResult().then((cached) => {
+        if (!active) return;
+        if (cached) {
+          handleStartupCheck(cached);
+          return;
+        }
+        void listen<StartupCheckResult>('gold-band://startup-update-check', (event) => {
+          if (active) handleStartupCheck(event.payload);
+        }).then((dispose) => {
+          if (active) unlisten = dispose; else dispose();
+        });
+      });
     });
+
     return () => {
       active = false;
       unlisten?.();
@@ -481,6 +495,14 @@ export function App() {
     setPrimaryModule('settings');
     pushRoute('settings', taskPage);
   };
+
+  // 安全超时：15s 内未收到任何事件则自动进入主 UI（防止事件竞态导致 splash 卡死）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setStartupPhase((current) => (current === 'checking' ? 'done' : current));
+    }, 15_000);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (startupPhase !== 'downloading') return;

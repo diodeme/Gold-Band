@@ -269,6 +269,14 @@ async fn fetch_manifest(endpoint: &Url) -> Result<LatestManifest> {
     Ok(manifest)
 }
 
+/// 持久化结果到 DesktopState 并 emit 事件（避免竞态）
+fn emit_startup_check<R: Runtime>(app: &AppHandle<R>, result: &StartupCheckResult) {
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.set_startup_check(result.clone());
+    }
+    let _ = app.emit("gold-band://startup-update-check", result);
+}
+
 /// 获取当前 RuntimeConfig（从 DesktopState 中读取）
 fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
     let state = app.state::<DesktopState>();
@@ -285,10 +293,7 @@ fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
 pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let channel = current_channel_config();
     if !channel.silent_update_enabled {
-        let _ = app.emit(
-            "gold-band://startup-update-check",
-            StartupCheckResult { critical: false, error: None },
-        );
+        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
         return Ok(());
     }
 
@@ -299,20 +304,14 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
     let settings = match get_runtime_config(app) {
         Some(config) => updater_settings(&config),
         None => {
-            let _ = app.emit(
-                "gold-band://startup-update-check",
-                StartupCheckResult { critical: false, error: None },
-            );
+            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
             return Ok(());
         }
     };
     let endpoint = match Url::parse(&settings.effective_url) {
         Ok(url) => url,
         Err(_) => {
-            let _ = app.emit(
-                "gold-band://startup-update-check",
-                StartupCheckResult { critical: false, error: None },
-            );
+            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
             return Ok(());
         }
     };
@@ -326,10 +325,7 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
     {
         Ok(Ok(manifest)) => manifest,
         _ => {
-            let _ = app.emit(
-                "gold-band://startup-update-check",
-                StartupCheckResult { critical: false, error: None },
-            );
+            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
             return Ok(());
         }
     };
@@ -337,37 +333,24 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
     // 已是最新版本 → 放行（防止 latest.json 版本号不匹配导致的死循环）
     let current_version = app.package_info().version.to_string();
     if !version_is_newer(&manifest.version, &current_version) {
-        let _ = app.emit(
-            "gold-band://startup-update-check",
-            StartupCheckResult { critical: false, error: None },
-        );
+        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
         return Ok(());
     }
 
     if !manifest.critical {
-        let _ = app.emit(
-            "gold-band://startup-update-check",
-            StartupCheckResult { critical: false, error: None },
-        );
+        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
         return Ok(());
     }
 
-    // 关键更新：通知前端切换 splash 为下载模式
-    let _ = app.emit(
-        "gold-band://startup-update-check",
-        StartupCheckResult { critical: true, error: None },
-    );
+    emit_startup_check(app, &StartupCheckResult { critical: true, error: None });
 
     // 自动下载并安装（复用现有链路，download-progress 事件正常发送）
     if let Err(e) = download_and_install_update(app).await {
         eprintln!("Startup critical update failed: {e}");
-        let _ = app.emit(
-            "gold-band://startup-update-check",
-            StartupCheckResult {
-                critical: false,
-                error: Some(format!("Update install failed: {e}")),
-            },
-        );
+        emit_startup_check(app, &StartupCheckResult {
+            critical: false,
+            error: Some(format!("Update install failed: {e}")),
+        });
     }
 
     Ok(())

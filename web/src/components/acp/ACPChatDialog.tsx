@@ -409,7 +409,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     if (pinToBottomRef.current) {
       requestAnimationFrame(() => {
         const el = scrollerElementRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el && pinToBottomRef.current) el.scrollTop = el.scrollHeight;
       });
     }
   }, [timeline]);
@@ -668,12 +668,17 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
   const handleScroll = useCallback(() => {
-    // Sync: immediately release pin when user scrolls away from bottom,
-    // so streaming events arriving this frame won't force-scroll back.
     const scroller = scrollerElementRef.current;
     if (scroller && !preservingScrollRef.current) {
-      const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_STICK_THRESHOLD_PX;
-      pinToBottomRef.current = atBottom;
+      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      // Release pin generously — any scroll away from bottom should stop auto-follow
+      if (distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
+        pinToBottomRef.current = false;
+      }
+      // Re-engage pin only at exact bottom, so mid-scroll users don't get snapped
+      if (distanceFromBottom <= 1) {
+        pinToBottomRef.current = true;
+      }
     }
     if (scrollFrameRef.current != null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {

@@ -23,7 +23,7 @@ use commands::{
 };
 use gold_band::storage::configure_storage_paths;
 use state::{DesktopContext, DesktopState};
-use updater::start_update_polling;
+use updater::{start_update_polling, startup_critical_check};
 use tauri::{Manager, WindowEvent};
 
 fn main() {
@@ -50,6 +50,10 @@ fn run() -> anyhow::Result<()> {
                     let _ = state.refresh_all_agent_diagnostics();
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
+            });
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = startup_critical_check(&handle).await;
             });
             start_update_polling(app.handle().clone());
             Ok(())

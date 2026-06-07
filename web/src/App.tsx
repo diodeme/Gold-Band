@@ -40,6 +40,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { StartupSplash, type SplashPhase } from './components/StartupSplash';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -53,6 +54,7 @@ import type {
   PrimaryModule,
   RoundDetailVm,
   RoundSelection,
+  StartupCheckResult,
   TaskListVm,
   TaskPage,
   UpdateStatusVm,
@@ -105,6 +107,9 @@ export function App() {
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
+  const [startupPhase, setStartupPhase] = useState<SplashPhase>('checking');
+  const [splashProgress, setSplashProgress] = useState({ downloaded: 0, total: null as number | null });
+  const [splashUpdateVersion, setSplashUpdateVersion] = useState<string | null>(null);
   const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
@@ -196,9 +201,34 @@ export function App() {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
+    void listen<StartupCheckResult>('gold-band://startup-update-check', (event) => {
+      if (!active) return;
+      if (event.payload.critical) {
+        setStartupPhase('downloading');
+      } else {
+        setStartupPhase('done');
+      }
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let active = true;
+    let unlisten: (() => void) | undefined;
     void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
       if (!active) return;
       setDownloadProgress(event.payload);
+      setSplashProgress(event.payload);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -452,6 +482,14 @@ export function App() {
     pushRoute('settings', taskPage);
   };
 
+  useEffect(() => {
+    if (startupPhase !== 'downloading') return;
+    const { downloaded, total } = splashProgress;
+    if (total !== null && total > 0 && downloaded >= total) {
+      setStartupPhase('installing');
+    }
+  }, [startupPhase, splashProgress]);
+
   const onInstallUpdate = async () => {
     setBusy(true);
     setDownloadProgress(null);
@@ -503,6 +541,16 @@ export function App() {
         : primaryModule === 'knowledge-base'
           ? <ContextManagementPage />
           : renderTaskContent();
+
+  if (startupPhase !== 'done') {
+    return (
+      <StartupSplash
+        phase={startupPhase}
+        progress={splashProgress}
+        version={splashUpdateVersion}
+      />
+    );
+  }
 
   return (
     <Shell

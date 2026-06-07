@@ -12,6 +12,7 @@ pub struct DesktopChannelConfig {
     pub updater_endpoint: &'static str,
     pub updater_public_key: &'static str,
     pub allow_http_updater: bool,
+    pub silent_update_enabled: bool,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -25,6 +26,7 @@ pub fn current_channel_config() -> DesktopChannelConfig {
             .unwrap_or("https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json"),
         updater_public_key: option_env!("GOLD_BAND_UPDATER_PUBLIC_KEY").unwrap_or("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwQkQwNjYyMTA0MjdDQ0IKUldUTGZFSVFZZ2E5OEN3QnY2eHRkM0xVRnlreC9UMFNpSWdXSC9oK0ZWMlpsWXpuZ0hhbEFnWGQK"),
         allow_http_updater: option_env!("GOLD_BAND_ALLOW_HTTP_UPDATER") == Some("true"),
+        silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
     }
 }
 

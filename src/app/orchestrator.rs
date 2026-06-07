@@ -1839,6 +1839,7 @@ fn execute_dynamic_worker(
             session_mode,
             continue_ref.clone(),
             resume_prompt.take(),
+            None,
             resume_prompt_visibility,
         )
         .map_err(|error| anyhow!("failed to build dynamic worker invocation for `{}`: {error}", node.id))?;
@@ -2014,6 +2015,7 @@ fn execute_dynamic_agent_stage(
         session_mode,
         continue_ref,
         resume_prompt,
+        None,
         PromptVisibility::Visible,
     )?;
     let provider_id = node
@@ -3597,6 +3599,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
     dynamic_node_id: &str,
     dynamic_attempt_id: &str,
     prompt: String,
+    prompt_id: Option<String>,
     continue_ref: Option<serde_json::Value>,
 ) -> Result<PromptBundle> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
@@ -3650,6 +3653,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         },
         continue_ref,
         Some(prompt),
+        prompt_id,
         PromptVisibility::Visible,
     )?;
     render_prompt_bundle(&invocation)
@@ -3664,6 +3668,7 @@ fn build_dynamic_worker_invocation(
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
+    resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
 ) -> Result<WorkerInvocation> {
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
@@ -3703,7 +3708,7 @@ fn build_dynamic_worker_invocation(
             .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
         continue_ref,
         resume_prompt,
-        resume_prompt_id: None,
+        resume_prompt_id,
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,

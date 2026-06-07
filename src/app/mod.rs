@@ -12,7 +12,7 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage,
     DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
-    ProjectFeatureFlags, RuntimeConfig, SettingsConfig, StateConfig,
+    ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -486,11 +486,11 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         let paths = GoldBandPaths::new(repo_root.clone());
-        let feature_flags: ProjectFeatureFlags =
-            read_json(&paths.repo_feature_flags_file()).unwrap_or_default();
+        let app_config: ProjectAppConfig =
+            read_json(&paths.repo_app_config_file()).unwrap_or_default();
         Self::with_config(
             repo_root,
-            RuntimeConfig::default().apply_feature_flags(&feature_flags),
+            RuntimeConfig::default().apply_app_config(&app_config),
         )
     }
 
@@ -1691,12 +1691,12 @@ impl App {
         Ok(run)
     }
 
-    fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
+    pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
         let _ = request_cancel(attempt_dir, now_rfc3339_like());
         let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
     }
 
-    fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
+    pub fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
         let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) else {
             return;
         };
@@ -1789,6 +1789,7 @@ impl App {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
         prompt: String,
+        prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PromptBundle> {
         build_dynamic_prompt_bundle(
@@ -1801,6 +1802,7 @@ impl App {
             dynamic_node_id,
             dynamic_attempt_id,
             prompt,
+            prompt_id,
             continue_ref,
         )
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -37,6 +37,7 @@ interface ACPChatDialogProps {
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   eventIdPrefix?: string;
+  eventPageSize?: number;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
@@ -77,8 +78,9 @@ type AcpExpansionControls = {
   onOpenChange: (key: string, open: boolean) => void;
 };
 
-const EVENT_WINDOW_LIMIT = 360;
-const EVENT_PAGE_SIZE = 60;
+const DEFAULT_EVENT_PAGE_SIZE = 360;
+const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
+const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 
@@ -146,23 +148,33 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
 
 const acpLoadedEventStore = new Map<string, AcpUiEventVm[]>();
 
-function restoreAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[]) {
+function restoreAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[], eventPageSize: number) {
   const stored = acpLoadedEventStore.get(sessionKey) ?? [];
-  return limitAcpEvents(stored.length > 0 ? mergeAcpEvents(stored, events) : events, 'start');
+  return limitAcpEvents(stored.length > 0 ? mergeAcpEvents(stored, events) : events, 'start', eventPageSize);
 }
 
-function storeAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[]) {
+function storeAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[], eventPageSize: number) {
   if (events.length === 0) acpLoadedEventStore.delete(sessionKey);
-  else acpLoadedEventStore.set(sessionKey, limitAcpEvents(events, 'start'));
+  else acpLoadedEventStore.set(sessionKey, limitAcpEvents(events, 'start', eventPageSize));
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+function normalizeEventPageSize(value?: number) {
+  return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : DEFAULT_EVENT_PAGE_SIZE;
+}
+
+function loadedEventBufferLimit(eventPageSize: number) {
+  return Math.max(MIN_LOADED_EVENT_BUFFER_LIMIT, Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3));
+}
+
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
   const { t } = useTranslation();
+  const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
+  const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(effectiveEventPageSize);
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
   const eventWindowKey = `${sessionKey}:${outerNodeId ?? ''}:${outerAttemptId ?? ''}:${eventIdPrefix ?? ''}`;
   const sessionIdentity = eventWindowKey;
   const restoredOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
-  const restoredLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? []);
+  const restoredLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? [], effectiveLoadedEventBufferLimit);
   const restoredPromptEvent = latestSendingOptimisticEvent(restoredOptimisticEvents);
   const restoredPrompt = restoredPromptEvent?.content?.trim() || null;
   const restoredPromptId = promptIdFromEvent(restoredPromptEvent);
@@ -226,7 +238,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   useEffect(() => {
     setCurrentSession(session ?? null);
     if (!session) {
-      const restored = restoreAcpLoadedEvents(eventWindowKey, []);
+      const restored = restoreAcpLoadedEvents(eventWindowKey, [], effectiveLoadedEventBufferLimit);
       loadedEventsRef.current = restored;
       setLoadedEvents(restored);
       setHasOlderEvents(false);
@@ -234,7 +246,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       return;
     }
     setLoadedEvents((events) => {
-      const currentEvents = events.length === 0 ? restoreAcpLoadedEvents(eventWindowKey, session.events) : events;
+      const currentEvents = events.length === 0 ? restoreAcpLoadedEvents(eventWindowKey, session.events, effectiveLoadedEventBufferLimit) : events;
       const newestLoadedSeq = currentEvents[currentEvents.length - 1] ? originalSeqFromAcpEvent(currentEvents[currentEvents.length - 1]) : null;
       const newestIncomingSeq = session.eventPage.newestSeq ?? session.events[session.events.length - 1]?.seq ?? null;
       if (!pinToBottomRef.current && newestLoadedSeq != null && newestIncomingSeq != null && newestIncomingSeq > newestLoadedSeq) {
@@ -242,17 +254,17 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         return currentEvents;
       }
       const merged = mergeAcpEvents(currentEvents, session.events);
-      const limited = limitAcpEvents(merged, 'start');
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
       loadedEventsRef.current = limited;
       return limited;
     });
     setHasOlderEvents((current) => current || session.eventPage.hasOlder);
     setHasNewerEvents((current) => current || session.eventPage.hasNewer);
-  }, [eventWindowKey, session]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
 
   useEffect(() => {
     const storedOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
-    const storedLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? []);
+    const storedLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? [], effectiveLoadedEventBufferLimit);
     const storedPromptEvent = latestSendingOptimisticEvent(storedOptimisticEvents);
     setCurrentSession(session ?? null);
     loadedEventsRef.current = storedLoadedEvents;
@@ -283,21 +295,21 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
     setCanvasMode('chat');
-  }, [sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, sessionIdentity]);
 
   useEffect(() => {
     loadedEventsRef.current = loadedEvents;
-    storeAcpLoadedEvents(eventWindowKey, loadedEvents);
-  }, [eventWindowKey, loadedEvents]);
+    storeAcpLoadedEvents(eventWindowKey, loadedEvents, effectiveLoadedEventBufferLimit);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEvents]);
 
   const baseSession = currentSession ?? session;
   const runtimeActive = isRuntimeActiveStatus(runtimeStatus);
   const liveSessionShell = useMemo(() => loadedEvents.length > 0 || runtimeActive ? createLiveAcpSessionShell(loadedEvents) : null, [loadedEvents, runtimeActive]);
   const visibleSession = useMemo(() => baseSession ? { ...baseSession, events: loadedEvents } : liveSessionShell, [baseSession, liveSessionShell, loadedEvents]);
   const pendingOptimisticPrompt = latestSendingOptimisticEvent(optimisticEvents.filter((event) => !hasMatchingUserPrompt(loadedEvents, event)));
-  const waitingForOptimisticPrompt = Boolean(pendingOptimisticPrompt);
   const effective = useMemo(() => mergeOptimisticSession(visibleSession, optimisticEvents), [visibleSession, optimisticEvents]);
   const effectiveEvents = effective?.events ?? [];
+  const waitingForOptimisticPrompt = Boolean(pendingOptimisticPrompt) && !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const pendingPermission = effective?.pendingPermissions?.find((request) => !dismissedPermissionIds.has(request.requestId)) ?? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds);
   const waitingForPermission = Boolean(pendingPermission);
   const planInterventionOption = pendingPermission ? findPlanInterventionOption(pendingPermission) : null;
@@ -365,7 +377,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       }
       setHasNewerEvents(normalized.eventPage.hasNewer);
       const merged = mergeAcpEvents(events, normalized.events);
-      const limited = limitAcpEvents(merged, 'start');
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
       setHasOlderEvents(normalized.eventPage.hasOlder || limited.length < merged.length);
       loadedEventsRef.current = limited;
       return limited;
@@ -384,7 +396,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       }
       setHasNewerEvents(false);
       const merged = mergeAcpEvents(events, [normalized]);
-      const limited = limitAcpEvents(merged, 'start');
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
       setHasOlderEvents((current) => current || limited.length < merged.length);
       loadedEventsRef.current = limited;
       return limited;
@@ -395,7 +407,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     latestSessionRef.current = effective ?? currentSession ?? session ?? null;
   }, [currentSession, effective, session]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const scroller = scrollerElementRef.current;
     if (!scroller) return;
     const anchor = prependAnchorRef.current;
@@ -404,12 +416,21 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       const element = findAcpItemElement(scroller, anchor.key);
       if (element) {
         preservingScrollRef.current = true;
-        scroller.scrollTop += element.getBoundingClientRect().top - anchor.top;
-        window.requestAnimationFrame(() => { preservingScrollRef.current = false; });
+        const delta = element.getBoundingClientRect().top - anchor.top;
+        requestAnimationFrame(() => {
+          const el = scrollerElementRef.current;
+          if (el) el.scrollTop += delta;
+          preservingScrollRef.current = false;
+        });
       }
       return;
     }
-    if (pinToBottomRef.current) scroller.scrollTop = scroller.scrollHeight;
+    if (pinToBottomRef.current) {
+      requestAnimationFrame(() => {
+        const el = scrollerElementRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
   }, [timeline]);
 
   useEffect(() => {
@@ -436,7 +457,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         else applySessionUpdate(event.session ?? null);
       });
       try {
-        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { pageSize: EVENT_PAGE_SIZE, eventLimit: EVENT_PAGE_SIZE }, latestSessionRef.current, outerNodeId, outerAttemptId);
+        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, latestSessionRef.current, outerNodeId, outerAttemptId);
         if (active && sessionRefreshSeqRef.current === refreshSeq) applySessionUpdate(updated);
       } catch {
         if (active) applySessionUpdate(latestSessionRef.current);
@@ -478,13 +499,13 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setIsAtBottom(false);
     setLoadingOlder(true);
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeCursor, beforeSeq: oldestSeq, pageSize: EVENT_PAGE_SIZE, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeCursor, beforeSeq: oldestSeq, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) {
         prependAnchorRef.current = null;
         return;
       }
       const merged = mergeAcpEvents(updated.events, previousEvents);
-      const limited = limitAcpEvents(merged, 'end');
+      const limited = limitAcpEvents(merged, 'end', effectiveLoadedEventBufferLimit);
       setCurrentSession(updated);
       setHasOlderEvents(updated.eventPage.hasOlder);
       setHasNewerEvents(updated.eventPage.hasNewer || limited.length < merged.length);
@@ -503,13 +524,13 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const afterCursor = formatTimelineCursor(newestSeq);
     loadingNewerRef.current = true;
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterCursor, afterSeq: newestSeq, pageSize: EVENT_PAGE_SIZE, eventLimit: EVENT_PAGE_SIZE }, baseSession, outerNodeId, outerAttemptId));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterCursor, afterSeq: newestSeq, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       setCurrentSession(updated);
       setHasNewerEvents(updated.eventPage.hasNewer);
       setLoadedEvents((events) => {
         const merged = mergeAcpEvents(events, updated.events);
-        const limited = limitAcpEvents(merged, 'start');
+        const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
         setHasOlderEvents(updated.eventPage.hasOlder || limited.length < merged.length);
         loadedEventsRef.current = limited;
         return limited;
@@ -653,7 +674,8 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCanvasMode('raw');
   };
 
-  const handleScroll = () => {
+  const handleScrollRef = useRef<(() => void) | null>(null);
+  handleScrollRef.current = () => {
     if (preservingScrollRef.current) return;
     const scroller = scrollerElementRef.current;
     if (!scroller) return;
@@ -663,6 +685,9 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setIsAtBottom(atBottom);
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
+  const handleScroll = useCallback(() => {
+    handleScrollRef.current?.();
+  }, []);
 
   if (!effective) {
     return <AcpErrorState reason={t('acp.missingSessionReason')} />;
@@ -758,14 +783,14 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
                   {canStopSession ? (
                     <PromptInputAction tooltip={t('acp.stopHint')}>
                       <Button className="h-8 gap-1.5 rounded-full px-3" size="sm" variant="secondary" disabled={cancelling} onClick={stopSession}>
-                        {cancelling ? <Loader2 className="size-3.5 animate-spin" /> : <CircleStop className="size-3.5" />}
+                        {cancelling ? <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} /> : <CircleStop className="size-3.5" />}
                         {cancelling ? t('acp.stopping') : t('acp.stop')}
                       </Button>
                     </PromptInputAction>
                   ) : null}
                   <PromptInputAction tooltip={t('acp.send')}>
                     <Button className="h-8 gap-1.5 rounded-full px-3" size="sm" disabled={!canSubmitPrompt} onClick={send}>
-                      {sendButtonBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                      {sendButtonBusy ? <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} /> : <Send className="size-3.5" />}
                       {t('acp.send')}
                     </Button>
                   </PromptInputAction>
@@ -996,7 +1021,7 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
   );
 }
 
-function ACPTimelineItemRenderer({ event, expansionControls }: { event: AcpTimelineItem; expansionControls: AcpExpansionControls }) {
+const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({ event, expansionControls }: { event: AcpTimelineItem; expansionControls: AcpExpansionControls }) {
   if (isChildAgentGroup(event)) return <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}><ChildAgentGroupCard event={event} expansionControls={expansionControls} /></AssistantTimelineRow>;
   if (event.kind === 'attemptSeparator') return <AttemptSeparator event={event} />;
   if (event.kind === 'textDelta' || event.kind === 'userTextDelta') return <MessageBubble event={event} />;
@@ -1004,9 +1029,9 @@ function ACPTimelineItemRenderer({ event, expansionControls }: { event: AcpTimel
   if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <ToolBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === 'plan') return <AssistantTimelineRow timestamp={event.timestamp}><PlanBlock event={event} /></AssistantTimelineRow>;
   return null;
-}
+});
 
-function ChildAgentGroupCard({ event, expansionControls, onLayoutChange }: { event: AcpChildAgentGroup; expansionControls: AcpExpansionControls; onLayoutChange?: () => void }) {
+const ChildAgentGroupCard = memo(function ChildAgentGroupCard({ event, expansionControls, onLayoutChange }: { event: AcpChildAgentGroup; expansionControls: AcpExpansionControls; onLayoutChange?: () => void }) {
   const { t } = useTranslation();
   const itemKey = timelineEventKey(event);
   const open = isTimelineItemOpen(itemKey, expansionControls);
@@ -1072,7 +1097,7 @@ function ChildAgentGroupCard({ event, expansionControls, onLayoutChange }: { eve
       </Collapsible>
     </div>
   );
-}
+});
 
 function ChildAgentMeta({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
@@ -1083,16 +1108,16 @@ function ChildAgentMeta({ label, value, className }: { label: string; value: str
   );
 }
 
-function AssistantTimelineRow({ children, timestamp, density = 'single' }: { children: React.ReactNode; timestamp?: string | null; density?: 'single' | 'start' | 'middle' | 'end' }) {
+const AssistantTimelineRow = memo(function AssistantTimelineRow({ children, timestamp, density = 'single' }: { children: React.ReactNode; timestamp?: string | null; density?: 'single' | 'start' | 'middle' | 'end' }) {
   return (
     <Message className={cn('min-w-0 items-start justify-start gap-2', density !== 'single' && 'mb-0')}>
       <AcpAvatarWithTime tone="assistant" timestamp={timestamp} />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
   );
-}
+});
 
-function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: AcpProcessingKind; active: boolean; startAt?: string | null; sessionSeconds?: number | null }) {
+const AcpComposerStatus = memo(function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: AcpProcessingKind; active: boolean; startAt?: string | null; sessionSeconds?: number | null }) {
   const { t } = useTranslation();
   const [stepStartAt, setStepStartAt] = useState<string | null>(startAt ?? null);
   const previousKind = useRef(kind);
@@ -1111,7 +1136,7 @@ function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: Ac
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
       {active ? (
         <>
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" style={{ willChange: 'transform' }} />
           <span className="font-medium text-foreground">{label}</span>
           {kind === 'sending' ? <AnimatedEllipsis /> : <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.stepElapsed', { duration: formatElapsedDuration(stepSeconds) })}</span>}
         </>
@@ -1119,9 +1144,9 @@ function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: Ac
       {sessionSeconds != null ? <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.sessionElapsed', { duration: formatElapsedDuration(sessionSeconds) })}</span> : null}
     </div>
   );
-}
+});
 
-function MessageBubble({ event }: { event: AcpTimelineEvent }) {
+const MessageBubble = memo(function MessageBubble({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();
   const isUser = event.kind === 'userTextDelta';
   const failed = event.status === 'failed';
@@ -1149,9 +1174,9 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
       {isUser ? <AcpAvatarWithTime tone="user" timestamp={event.timestamp} /> : null}
     </Message>
   );
-}
+});
 
-function AnimatedEllipsis() {
+const AnimatedEllipsis = memo(function AnimatedEllipsis() {
   return (
     <span className="inline-flex w-4 items-center justify-start" aria-hidden="true">
       <span className="animate-pulse">.</span>
@@ -1159,10 +1184,10 @@ function AnimatedEllipsis() {
       <span className="animate-pulse [animation-delay:300ms]">.</span>
     </span>
   );
-}
+});
 
 
-function ThoughtBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
+const ThoughtBlock = memo(function ThoughtBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
   const { t } = useTranslation();
   if (!event.content?.trim()) return null;
   const itemKey = timelineEventKey(event);
@@ -1185,9 +1210,9 @@ function ThoughtBlock({ event, expansionControls }: { event: AcpTimelineEvent; e
       </ChainOfThought>
     </AssistantTimelineRow>
   );
-}
+});
 
-function ToolBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
+const ToolBlock = memo(function ToolBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
   const { t } = useTranslation();
   const details = toolDetails(event);
   const ToolIcon = toolIcon(details.name);
@@ -1215,7 +1240,7 @@ function ToolBlock({ event, expansionControls }: { event: AcpTimelineEvent; expa
       />
     </AssistantTimelineRow>
   );
-}
+});
 
 function toolLabels(t: ReturnType<typeof useTranslation>['t']): ToolLabels {
   return {
@@ -1789,9 +1814,9 @@ function alignAcpDisplaySeq(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
   return originalSeq + (offset ?? separatorSeq ?? 0);
 }
 
-function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end') {
-  if (events.length <= EVENT_WINDOW_LIMIT) return events;
-  return trim === 'start' ? events.slice(events.length - EVENT_WINDOW_LIMIT) : events.slice(0, EVENT_WINDOW_LIMIT);
+function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end', eventPageSize: number) {
+  if (events.length <= eventPageSize) return events;
+  return trim === 'start' ? events.slice(events.length - eventPageSize) : events.slice(0, eventPageSize);
 }
 
 function acpEventKey(event: AcpUiEventVm) {

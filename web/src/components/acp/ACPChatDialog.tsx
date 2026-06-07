@@ -674,6 +674,8 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCanvasMode('raw');
   };
 
+  const scrollFrameRef = useRef<number | null>(null);
+
   const handleScrollRef = useRef<(() => void) | null>(null);
   handleScrollRef.current = () => {
     if (preservingScrollRef.current) return;
@@ -682,11 +684,15 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     if (scroller.scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_STICK_THRESHOLD_PX;
     pinToBottomRef.current = atBottom && !hasNewerEvents;
-    setIsAtBottom(atBottom);
+    setIsAtBottom((current) => current === atBottom ? current : atBottom);
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
   const handleScroll = useCallback(() => {
-    handleScrollRef.current?.();
+    if (scrollFrameRef.current != null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      handleScrollRef.current?.();
+    });
   }, []);
 
   if (!effective) {
@@ -1387,24 +1393,45 @@ export function RawFrameViewer({ page, query, loading, onQueryChange, onLayoutCh
   );
 }
 
-function RawFrameRow({ frame, onLayoutChange }: { frame: AcpRawFrameVm; onLayoutChange?: () => void }) {
+const RawFrameRow = memo(function RawFrameRow({ frame, onLayoutChange }: { frame: AcpRawFrameVm; onLayoutChange?: () => void }) {
   const { t } = useTranslation();
-  const display = rawFrameDisplay(frame.content);
-  const scrollable = isLongRawFrame(display.expanded);
+  const [expandedContent, setExpandedContent] = useState<string | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+
+  const handleToggle = useCallback((e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const open = e.currentTarget.open;
+    setIsOpen(open);
+    onLayoutChange?.();
+    if (open && expandedContent === null) {
+      try {
+        const value = JSON.parse(frame.content);
+        setExpandedContent(wrapLongSegments(JSON.stringify(value, null, 2)));
+      } catch {
+        setExpandedContent(wrapLongSegments(frame.content));
+      }
+    }
+  }, [expandedContent, frame.content, onLayoutChange]);
+
+  const compact = truncateFrameLine(frame.content.trimStart());
+  const displayExpanded = expandedContent ?? frame.content;
+  const scrollable = expandedContent !== null && isLongRawFrame(expandedContent);
+
   return (
-    <details onToggle={onLayoutChange} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
+    <details onToggle={handleToggle} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
       <summary className="flex w-full min-w-0 cursor-pointer list-none items-center gap-2 overflow-hidden px-3 py-2 text-muted-foreground outline-none transition-colors marker:hidden hover:bg-muted/20 focus-visible:bg-muted/20">
         <span className="shrink-0 select-none tabular-nums text-muted-foreground/80">#{frame.lineNumber}</span>
         {frame.timestamp ? <span className="hidden shrink-0 tabular-nums text-muted-foreground/70 sm:inline">{formatLocalDateTime(frame.timestamp)}</span> : null}
         {frame.direction ? <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{displayRawDirection(t, frame.direction)}</span> : null}
         <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">{displayRawKind(t, frame.kind)}</span>
-        <span className="block min-w-0 flex-1 truncate text-foreground/75">{truncateFrameLine(display.compact)}</span>
+        <span className="block min-w-0 flex-1 truncate text-foreground/75">{compact}</span>
         {frame.contentTruncated ? <span className="shrink-0 text-[10px] text-amber-600 dark:text-amber-300">truncated</span> : null}
       </summary>
-      <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 font-sans text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{display.expanded}</pre>
+      {isOpen ? (
+        <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 font-sans text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{displayExpanded}</pre>
+      ) : null}
     </details>
   );
-}
+});
 
 function useElapsedSeconds(active: boolean, startAt?: string | null, endAt?: string | null) {
   const fallbackStart = useRef(Date.now());
@@ -2060,21 +2087,6 @@ function displayRawKind(t: ReturnType<typeof useTranslation>['t'], kind: string)
     'parse-error': t('acp.rawKindParseError'),
   };
   return labels[kind] ?? kind;
-}
-
-function rawFrameDisplay(content: string) {
-  try {
-    const value = JSON.parse(content);
-    return {
-      compact: JSON.stringify(value),
-      expanded: wrapLongSegments(JSON.stringify(value, null, 2)),
-    };
-  } catch {
-    return {
-      compact: content,
-      expanded: wrapLongSegments(content),
-    };
-  }
 }
 
 function rawFramePageSummary(t: ReturnType<typeof useTranslation>['t'], page: AcpRawFramePageVm | null) {

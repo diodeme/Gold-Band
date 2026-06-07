@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
 import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -157,5 +157,60 @@ export const desktopApi: RuntimeApi = {
   },
   downloadAndInstallUpdate() {
     return invokeCommand('download_and_install_update');
+  },
+  // ── Conversation UI ──
+  saveDesktopUiMode(mode) {
+    return invokeCommand('save_desktop_ui_mode', { mode });
+  },
+  getConversationSidebar() {
+    return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  getConversationRun(projectId, taskId, runId, selectedSessionKey) {
+    return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
+  },
+  validateConversationCreate(input) {
+    return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });
+  },
+  createConversationRun(input) {
+    return invokeCommand<ConversationRunVm>('create_conversation_run', { input });
+  },
+  rerunConversationTask(projectId, taskId) {
+    return invokeCommand<ConversationRunVm>('rerun_conversation_task', { projectId, taskId });
+  },
+  updateTaskMetadata(projectId, taskId, title, description) {
+    return invokeCommand('update_task_metadata', { projectId, taskId, title, description });
+  },
+  pinConversation(projectId, taskId) {
+    return invokeCommand<ConversationSidebarVm>('pin_conversation', { projectId, taskId });
+  },
+  unpinConversation(projectId, taskId) {
+    return invokeCommand<ConversationSidebarVm>('unpin_conversation', { projectId, taskId });
+  },
+  reorderPinnedConversations(pins) {
+    return invokeCommand<ConversationSidebarVm>('reorder_pinned_conversations', { ordered: pins.map((p) => ({ project_id: p.projectId, task_id: p.taskId, order: 0 })) });
+  },
+  searchConversationTasks(query, limit) {
+    return invokeCommand<ConversationSearchResultVm[]>('search_conversation_tasks', { query, limit });
+  },
+  getConversationRunMode(projectId) {
+    return invokeCommand<ConversationRunModeVm | null>('get_conversation_run_mode', { projectId });
+  },
+  saveConversationRunMode(projectId, settings) {
+    return invokeCommand('save_conversation_run_mode', { projectId, settings });
+  },
+  chooseConversationWorkspace() {
+    return invokeCommand<ConversationWorkspaceVm>('choose_conversation_workspace');
+  },
+  addConversationWorkspace() {
+    return invokeCommand<ConversationSidebarVm>('add_conversation_workspace');
+  },
+  removeConversationWorkspace(projectId) {
+    return invokeCommand<ConversationSidebarVm>('remove_conversation_workspace', { projectId });
+  },
+  syncConversationWorkspace(workspacePath) {
+    return invokeCommand<ConversationSidebarVm>('sync_conversation_workspace', { workspacePath });
+  },
+  saveConversationPreference(key, value) {
+    return invokeCommand('save_conversation_preference', { key, value });
   },
 };

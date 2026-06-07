@@ -10,7 +10,7 @@ use gold_band::domain::{NodeOutcome, PauseReason, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
-use gold_band::storage::read_json;
+use gold_band::storage::{read_json, write_json};
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::{
     collections::BTreeSet,
@@ -75,7 +75,7 @@ pub struct CommandErrorVm {
 }
 
 impl CommandErrorVm {
-    fn new(code: impl Into<String>, params: serde_json::Value) -> Self {
+    pub fn new(code: impl Into<String>, params: serde_json::Value) -> Self {
         Self {
             code: code.into(),
             params,
@@ -1726,7 +1726,7 @@ fn ensure_workflow_agents_doctor_ready(
     Ok(())
 }
 
-fn command_error(error: anyhow::Error) -> CommandErrorVm {
+pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }

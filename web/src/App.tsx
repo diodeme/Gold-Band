@@ -8,6 +8,8 @@ import {
   dismissUpdateAnnouncement,
   downloadAndInstallUpdate,
   getAgentRegistry,
+  getConversationRun,
+  getConversationSidebar,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -15,11 +17,18 @@ import {
   getTaskList,
   getWorkflow,
   killRun,
+  pinConversation,
   saveDesktopPreferences,
   saveUpdaterSettings,
   saveTaskWorkflow,
   selectRecentWorkspace,
   startRun,
+  unpinConversation,
+  updateTaskMetadata,
+  addConversationWorkspace,
+  removeConversationWorkspace,
+  syncConversationWorkspace,
+  saveDesktopUiMode,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -27,28 +36,38 @@ import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
+import { ConversationHomePage } from './pages/ConversationHomePage';
+import { ConversationRunPage } from './pages/ConversationRunPage';
+import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
+import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskListPage } from './pages/TaskListPage';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
-import { pushRoute, replaceRoute, routeFromPath, taskListPage } from './routes';
+import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
+  ConversationPage,
+  ConversationRunModeVm,
+  ConversationRunVm,
+  ConversationSidebarVm,
   CreateTaskInput,
   DesktopFontPreference,
   DesktopLanguage,
   DesktopThemePreference,
+  DesktopUiMode,
   PreferencesVm,
   UpdateBadgeStateVm,
   PrimaryModule,
@@ -96,9 +115,28 @@ type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
 export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
+  const savedUiMode = (typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-ui-mode')) as DesktopUiMode | null;
+  const [uiMode, setUiMode] = useState<DesktopUiMode>(savedUiMode ?? initialRoute.uiMode);
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
+  const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
+  const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  // Derive active workspace: persisted lastActiveWorkspaceId > explicit state > first workspace
+  const effectiveWorkspaceId =
+    activeWorkspaceId
+    ?? conversationSidebar.lastActiveWorkspaceId
+    ?? conversationSidebar.workspaces[0]?.projectId
+    ?? 'default';
+  const activeWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === effectiveWorkspaceId)
+    ?? conversationSidebar.workspaces[0];
+  const defaultProjectId = activeWorkspace?.projectId ?? 'default';
+  const defaultWorkspaceName = activeWorkspace?.name ?? 'Default Workspace';
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
@@ -151,11 +189,13 @@ export function App() {
   }, [preferences.language]);
 
   useEffect(() => {
-    replaceRoute(primaryModule, taskPage);
+    replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
     const onPopState = () => {
       const nextRoute = routeFromPath(window.location.pathname);
+      if (savedUiMode) setUiMode(savedUiMode);
       setPrimaryModule(nextRoute.module);
       setTaskPage(nextRoute.taskPage);
+      setConversationPage(nextRoute.conversationPage);
       setRoundSelection({ kind: 'round' });
       setWorkspacePickerOpen(false);
     };
@@ -173,6 +213,23 @@ export function App() {
       })
       .catch((err) => setError(displayAppError(t, err)));
   }, [t]);
+
+  // Load conversation sidebar data when in conversation mode
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    getConversationSidebar()
+      .then(setConversationSidebar)
+      .catch(() => {}); // Silently fail - sidebar will show empty state
+  }, [bootstrap, uiMode]);
+
+  // Load conversation run when navigating to a run page
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
+    const { projectId, taskId, runId } = conversationPage;
+    getConversationRun(projectId, taskId, runId)
+      .then(setConversationRun)
+      .catch(() => setConversationRun(null));
+  }, [bootstrap, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -500,7 +557,9 @@ export function App() {
     }
   };
 
-  const content = workspacePickerOpen
+  const content = uiMode === 'conversation'
+    ? renderConversationContent()
+    : workspacePickerOpen
     ? (
       <WorkspaceSelectPage
         bootstrap={bootstrap}
@@ -537,9 +596,40 @@ export function App() {
           ? <ContextManagementPage />
           : renderTaskContent();
 
+  const onToggleUiMode = () => {
+    const nextMode: DesktopUiMode = uiMode === 'conversation' ? 'workbench' : 'conversation';
+    setUiMode(nextMode);
+    if (typeof localStorage !== 'undefined') localStorage.setItem('gold-band-ui-mode', nextMode);
+    saveDesktopUiMode(nextMode).catch(() => {});
+    if (nextMode === 'conversation' && bootstrap?.repoRoot) {
+      syncConversationWorkspace(bootstrap.repoRoot).then(setConversationSidebar).catch(() => {});
+    }
+    if (nextMode === 'conversation') {
+      pushRoute(primaryModule, taskPage, conversationPage);
+    } else {
+      pushRoute(primaryModule, taskPage);
+    }
+  };
+
+  const onSelectConversation = (page: ConversationPage) => {
+    setWorkspacePickerOpen(false);
+    setConversationPage(page);
+    if (page.kind === 'agents') {
+      setPrimaryModule('agent-management');
+    } else if (page.kind === 'contexts') {
+      setPrimaryModule('knowledge-base');
+    } else {
+      setPrimaryModule('task-orchestration');
+    }
+    pushRoute(primaryModule, taskPage, page);
+  };
+
   return (
     <Shell
+      uiMode={uiMode}
       active={primaryModule}
+      conversationPage={conversationPage}
+      conversationSidebar={conversationSidebar}
       appName={appInfo.appName}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
@@ -551,7 +641,55 @@ export function App() {
         setTaskPage(nextTaskPage);
         pushRoute(module, nextTaskPage);
       }}
+      onSelectConversation={onSelectConversation}
+      onToggleUiMode={onToggleUiMode}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
+      onConversationNew={() => {
+        setActiveWorkspaceId(null);
+        setConversationPage({ kind: 'conversation-home' });
+      }}
+      onConversationSearch={() => setConversationSearchOpen(true)}
+      onConversationSelectTask={(projectId, taskId) => {
+        const tasks = conversationSidebar.tasksByWorkspace[projectId] ?? [];
+        const task = tasks.find((t) => t.taskId === taskId);
+        const runId = task?.latestRun?.runId;
+        if (runId) {
+          setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+        }
+      }}
+      onConversationSelectRun={(projectId, taskId, runId) => {
+        setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+      }}
+      onConversationRenameTask={(projectId, taskId, title) => {
+        updateTaskMetadata(projectId, taskId, title)
+          .then(() => getConversationSidebar())
+          .then(setConversationSidebar)
+          .catch(() => {});
+        if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
+          setConversationRun((prev) => prev ? { ...prev, title } : prev);
+        }
+      }}
+      onConversationPinTask={(projectId, taskId) => {
+        pinConversation(projectId, taskId).then(setConversationSidebar).catch(() => {});
+      }}
+      onConversationUnpinTask={(projectId, taskId) => {
+        unpinConversation(projectId, taskId).then(setConversationSidebar).catch(() => {});
+      }}
+      onConversationNewInWorkspace={(projectId) => {
+        setActiveWorkspaceId(projectId);
+        setConversationPage({ kind: 'conversation-home' });
+      }}
+      onConversationAddWorkspace={() => {
+        addConversationWorkspace().then(setConversationSidebar).catch(() => {});
+      }}
+      onConversationRemoveWorkspace={(projectId) => {
+        removeConversationWorkspace(projectId).then((sidebar) => {
+          setConversationSidebar(sidebar);
+          if (activeWorkspaceId === projectId) {
+            setActiveWorkspaceId(null);
+          }
+        }).catch(() => {});
+      }}
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {shouldShowUpdateAnnouncement ? (
@@ -589,8 +727,131 @@ export function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <ConversationSearchDialog
+        open={conversationSearchOpen}
+        onOpenChange={setConversationSearchOpen}
+        onSelectResult={(result) => {
+          if (result.latestRun) {
+            setConversationPage({ kind: 'conversation-run', projectId: result.projectId, taskId: result.taskId, runId: result.latestRun.runId });
+          }
+        }}
+      />
     </Shell>
   );
+
+  function renderConversationContent() {
+    if (workspacePickerOpen) {
+      return (
+        <WorkspaceSelectPage
+          bootstrap={bootstrap}
+          appInfo={appInfo}
+          busy={busy}
+          onChooseWorkspace={onChooseWorkspace}
+          onSelectRecentWorkspace={onSelectRecentWorkspace}
+        />
+      );
+    }
+    if (conversationPage.kind === 'agents') {
+      return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
+    }
+    if (conversationPage.kind === 'contexts') {
+      return <ContextManagementPage />;
+    }
+    if (conversationPage.kind === 'settings') {
+      return (
+        <TooltipProvider>
+          <SettingsPage
+            preferences={preferences}
+            appInfo={appInfo}
+            updaterSettings={updaterSettings}
+            updateStatus={updateStatus}
+            availableUpdate={effectiveAvailableUpdate}
+            showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
+            showUpdatesSectionDot={showUpdatesSectionDot}
+            downloadProgress={downloadProgress}
+            clientVersion={bootstrap?.clientVersion ?? ''}
+            busy={busy}
+            onSave={onSavePreferences}
+            onSaveUpdaterSettings={onSaveUpdaterSettings}
+            onCheckUpdate={onCheckUpdate}
+            onInstallUpdate={onInstallUpdate}
+            onViewSettings={onMarkSettingsUpdateSeen}
+            onViewAdvanced={onMarkSettingsAdvancedUpdateSeen}
+          />
+        </TooltipProvider>
+      );
+    }
+    if (conversationPage.kind === 'conversation-home') {
+      return (
+        <ConversationHomePage
+          projectId={defaultProjectId}
+          workspaceName={defaultWorkspaceName}
+          runMode={conversationRunMode}
+          agentRegistry={agentRegistry}
+          busy={busy}
+          onRunModeChange={setConversationRunMode}
+          onSubmit={(_input) => {}}
+          onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+        />
+      );
+    }
+    if (conversationPage.kind === 'run-mode-management') {
+      return (
+        <RunModeManagementPage
+          runMode={conversationRunMode}
+          agentRegistry={agentRegistry}
+          workflowTemplates={null}
+          onSave={(mode) => setConversationRunMode(mode)}
+          onBack={() => setConversationPage({ kind: 'conversation-home' })}
+        />
+      );
+    }
+    if (conversationPage.kind === 'conversation-run') {
+      if (!conversationRun || conversationRun.runId !== conversationPage.runId) {
+        return (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            {t('common.loading')}
+          </div>
+        );
+      }
+      return (
+        <ConversationRunPage
+          run={conversationRun}
+          appConfig={appConfig}
+          onRerun={() => {}}
+          onEditWorkflow={() => {}}
+          onSelectSession={(leaf) => {
+            const key = leaf.outerNodeId
+              ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
+              : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
+            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, key)
+              .then(setConversationRun)
+              .catch(() => {});
+          }}
+          onSessionStopped={() => {}}
+          onContinueRun={() => {}}
+          onRepairWorkflow={() => {}}
+          onTitleChange={(title) => {
+            setConversationRun((prev) => prev ? { ...prev, title } : prev);
+            updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
+              .then(() => getConversationSidebar())
+              .then(setConversationSidebar)
+              .catch(() => {});
+          }}
+        />
+      );
+    }
+    return <ConversationHomePage
+      projectId={defaultProjectId}
+      workspaceName={defaultWorkspaceName}
+      runMode={conversationRunMode}
+      agentRegistry={agentRegistry}
+      busy={busy}
+      onRunModeChange={setConversationRunMode}
+      onSubmit={(_input) => {}}
+      onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+    />;
+  }
 
   function renderTaskContent() {
     const pageBreadcrumbs = <Breadcrumbs page={taskPage} onNavigate={navigate} />;

@@ -746,3 +746,182 @@ export type RoundSelection = RoundSelectionContext & (
   | { kind: 'event'; id: string; nodeId?: string; attemptId?: string }
   | { kind: 'log'; id: string; nodeId?: string; attemptId?: string }
 );
+
+// ── Conversation UI types ──
+
+export type DesktopUiMode = 'conversation' | 'workbench';
+
+export type ConversationPage =
+  | { kind: 'conversation-home' }
+  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string }
+  | { kind: 'run-mode-management' }
+  | { kind: 'agents' }
+  | { kind: 'contexts' }
+  | { kind: 'settings' };
+
+export interface ConversationWorkspaceVm {
+  projectId: string;
+  workspacePath: string;
+  name: string;
+}
+
+export interface ConversationTaskRowVm {
+  projectId: string;
+  taskId: string;
+  title: string;
+  autoTitle: boolean;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  latestRun?: ConversationRunSummaryVm | null;
+  runs: ConversationRunSummaryVm[];
+  pinned: boolean;
+  pinnedOrder?: number | null;
+}
+
+export interface ConversationRunSummaryVm {
+  runId: string;
+  status: string;
+  outcome?: string | null;
+  startedAt: string;
+  updatedAt: string;
+  currentRound?: string | null;
+  currentNode?: string | null;
+  resumable: boolean;
+}
+
+export interface ConversationSidebarVm {
+  workspaces: ConversationWorkspaceVm[];
+  pinnedTasks: ConversationTaskRowVm[];
+  tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
+  lastActiveWorkspaceId?: string | null;
+  preferences?: Record<string, unknown> | null;
+}
+
+export interface PinRef {
+  projectId: string;
+  taskId: string;
+}
+
+export interface ConversationSessionLeafVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
+  status: string;
+  outcome?: string | null;
+  current: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  sessionId?: string | null;
+  artifactCount: number;
+  attachmentCount: number;
+}
+
+export interface ConversationSessionTreeVm {
+  rounds: ConversationRoundNodeVm[];
+  selectedSessionKey?: string | null;
+}
+
+export interface ConversationRoundNodeVm {
+  roundId: string;
+  index: number;
+  label: string;
+  status: string;
+  nodes: ConversationTreeNodeVm[];
+}
+
+export interface ConversationTreeNodeVm {
+  nodeId: string;
+  label: string;
+  nodeType: string;
+  status: string;
+  attempts: ConversationSessionLeafVm[];
+  outerNodes?: ConversationTreeNodeVm[];
+}
+
+export interface ConversationRunVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  title: string;
+  autoTitle: boolean;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  runStatus: string;
+  runOutcome?: string | null;
+  sessionTree: ConversationSessionTreeVm;
+  selectedSession?: AcpSessionVm | null;
+  activeSessions: ConversationActiveSessionVm[];
+  artifacts: AssetItemVm[];
+  attachments: AssetItemVm[];
+  workflowStatus: string;
+  workflowValid: boolean;
+  workflowError?: WorkflowErrorVm | null;
+  workflowJson?: string | null;
+  resumable: boolean;
+  pauseReason?: string | null;
+}
+
+export interface ConversationActiveSessionVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
+  status: string;
+  sessionId?: string | null;
+  startedAt?: string | null;
+}
+
+export interface ConversationRunModeVm {
+  mode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+}
+
+export interface ConversationAutoConfigVm {
+  agentType: string;
+  modelId?: string | null;
+  permissionMode?: string | null;
+  allowedProfiles?: string[];
+  globalGoal?: string | null;
+}
+
+export interface ConversationCreateInput {
+  projectId: string;
+  content: string;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  attachmentPaths?: string[];
+}
+
+export interface ConversationValidationResultVm {
+  valid: boolean;
+  missingItems: ConversationMissingItemVm[];
+}
+
+export interface ConversationMissingItemVm {
+  code: string;
+  label: string;
+  recoveryPath: string;
+}
+
+export interface ConversationSearchResultVm {
+  projectId: string;
+  workspacePath: string;
+  workspaceName: string;
+  taskId: string;
+  title: string;
+  description?: string | null;
+  requirementPreview: string;
+  latestRun?: ConversationRunSummaryVm | null;
+}
+
+export interface AcpModelVm {
+  id: string;
+  name: string;
+}

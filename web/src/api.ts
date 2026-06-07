@@ -193,3 +193,76 @@ export function checkUpdateManual() {
 export function downloadAndInstallUpdate() {
   return getRuntimeApi().downloadAndInstallUpdate();
 }
+
+// ── Conversation UI ──
+export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
+  return getRuntimeApi().saveDesktopUiMode(mode);
+}
+
+export function getConversationSidebar() {
+  return getRuntimeApi().getConversationSidebar();
+}
+
+export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
+  return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
+}
+
+export function validateConversationCreate(input: Parameters<ReturnType<typeof getRuntimeApi>['validateConversationCreate']>[0]) {
+  return getRuntimeApi().validateConversationCreate(input);
+}
+
+export function createConversationRun(input: Parameters<ReturnType<typeof getRuntimeApi>['createConversationRun']>[0]) {
+  return getRuntimeApi().createConversationRun(input);
+}
+
+export function rerunConversationTask(projectId: string, taskId: string) {
+  return getRuntimeApi().rerunConversationTask(projectId, taskId);
+}
+
+export function updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null) {
+  return getRuntimeApi().updateTaskMetadata(projectId, taskId, title, description);
+}
+
+export function pinConversation(projectId: string, taskId: string) {
+  return getRuntimeApi().pinConversation(projectId, taskId);
+}
+
+export function unpinConversation(projectId: string, taskId: string) {
+  return getRuntimeApi().unpinConversation(projectId, taskId);
+}
+
+export function reorderPinnedConversations(pins: { projectId: string; taskId: string }[]) {
+  return getRuntimeApi().reorderPinnedConversations(pins);
+}
+
+export function searchConversationTasks(query: string, limit?: number) {
+  return getRuntimeApi().searchConversationTasks(query, limit);
+}
+
+export function getConversationRunMode(projectId: string) {
+  return getRuntimeApi().getConversationRunMode(projectId);
+}
+
+export function saveConversationRunMode(projectId: string, settings: Parameters<ReturnType<typeof getRuntimeApi>['saveConversationRunMode']>[1]) {
+  return getRuntimeApi().saveConversationRunMode(projectId, settings);
+}
+
+export function chooseConversationWorkspace() {
+  return getRuntimeApi().chooseConversationWorkspace();
+}
+
+export function addConversationWorkspace() {
+  return getRuntimeApi().addConversationWorkspace();
+}
+
+export function removeConversationWorkspace(projectId: string) {
+  return getRuntimeApi().removeConversationWorkspace(projectId);
+}
+
+export function syncConversationWorkspace(workspacePath: string) {
+  return getRuntimeApi().syncConversationWorkspace(workspacePath);
+}
+
+export function saveConversationPreference(key: string, value: unknown) {
+  return getRuntimeApi().saveConversationPreference(key, value);
+}

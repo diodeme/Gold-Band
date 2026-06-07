@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
@@ -237,6 +237,101 @@ export const browserApi: RuntimeApi = {
     }));
   },
   downloadAndInstallUpdate() {
+    return Promise.resolve();
+  },
+  // ── Conversation UI mocks ──
+  saveDesktopUiMode(_mode) {
+    return Promise.resolve();
+  },
+  getConversationSidebar() {
+    const sidebar: ConversationSidebarVm = {
+      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
+      pinnedTasks: [],
+      tasksByWorkspace: { default: [] },
+    };
+    return Promise.resolve(sidebar);
+  },
+  getConversationRun(_projectId, _taskId, runId) {
+    const run: ConversationRunVm = {
+      projectId: 'default',
+      taskId: 'mock-task',
+      runId,
+      title: 'Mock Task',
+      autoTitle: true,
+      runMode: 'auto',
+      runStatus: 'completed',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      artifacts: [],
+      attachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      resumable: false,
+    };
+    return Promise.resolve(run);
+  },
+  validateConversationCreate(_input) {
+    return Promise.resolve({ valid: true, missingItems: [] });
+  },
+  createConversationRun(input) {
+    const run: ConversationRunVm = {
+      projectId: input.projectId,
+      taskId: `task-${Date.now()}`,
+      runId: `run-${Date.now()}`,
+      title: input.content.slice(0, 12) || 'New Task',
+      autoTitle: true,
+      runMode: input.runMode,
+      runStatus: 'running',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      artifacts: [],
+      attachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      resumable: false,
+    };
+    return Promise.resolve(run);
+  },
+  rerunConversationTask(_projectId, _taskId) {
+    return this.createConversationRun({ projectId: _projectId, content: 'Rerun', runMode: 'auto' });
+  },
+  updateTaskMetadata() {
+    return Promise.resolve();
+  },
+  pinConversation(_projectId, _taskId) {
+    return this.getConversationSidebar();
+  },
+  unpinConversation(_projectId, _taskId) {
+    return this.getConversationSidebar();
+  },
+  reorderPinnedConversations(_pins) {
+    return this.getConversationSidebar();
+  },
+  searchConversationTasks(_query, _limit) {
+    return Promise.resolve([]);
+  },
+  getConversationRunMode(_projectId) {
+    return Promise.resolve({ mode: 'auto' });
+  },
+  saveConversationRunMode() {
+    return Promise.resolve();
+  },
+  chooseConversationWorkspace() {
+    const ws: ConversationWorkspaceVm = { projectId: 'default', workspacePath: '/default', name: 'Default Workspace' };
+    return Promise.resolve(ws);
+  },
+  addConversationWorkspace() {
+    return this.getConversationSidebar();
+  },
+  removeConversationWorkspace(_projectId) {
+    return this.getConversationSidebar();
+  },
+  syncConversationWorkspace(_workspacePath) {
+    return this.getConversationSidebar();
+  },
+  saveConversationPreference(_key, _value) {
     return Promise.resolve();
   },
 };

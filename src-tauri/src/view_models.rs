@@ -3312,8 +3312,6 @@ fn scan_acp_timeline(
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
     let mut usage = None;
-    let mut last_used: Option<u64> = None;
-    let mut accumulated_used: u64 = 0;
     let mut session_elapsed = AcpSessionElapsedState::default();
     let mut event_count = 0usize;
     let mut final_items = Vec::<AcpUiEventVm>::new();
@@ -3347,18 +3345,10 @@ fn scan_acp_timeline(
                     } else if is_session_update(&final_item.item, "usage_update") {
                         let (used, size, cost_amount) =
                             gold_band::acp::events::extract_usage_fields(raw);
-                        if let Some(u) = used {
-                            let prev = last_used.unwrap_or(0);
-                            if u > prev {
-                                accumulated_used += u - prev;
-                            }
-                            last_used = Some(u);
-                        }
                         usage = Some(AcpUsageVm {
                             used,
                             size,
                             cost_amount_usd: cost_amount,
-                            accumulated_used: Some(accumulated_used),
                             ..Default::default()
                         });
                     }
@@ -3392,18 +3382,10 @@ fn scan_acp_timeline(
                         .cloned();
                 } else if is_session_update(&patch.item, "usage_update") {
                     let (used, size, cost_amount) = gold_band::acp::events::extract_usage_fields(raw);
-                    if let Some(u) = used {
-                        let prev = last_used.unwrap_or(0);
-                        if u > prev {
-                            accumulated_used += u - prev;
-                        }
-                        last_used = Some(u);
-                    }
                     usage = Some(AcpUsageVm {
                         used,
                         size,
                         cost_amount_usd: cost_amount,
-                        accumulated_used: Some(accumulated_used),
                         ..Default::default()
                     });
                 }
@@ -3731,12 +3713,19 @@ fn apply_stale_session_completion_fuse(
     } else {
         None
     };
-    apply_stale_session_completion_fuse_common(
+    let fused = apply_stale_session_completion_fuse_common(
         &pid_path,
         attempt_dir,
         session,
         node_status.map(|status| status == RunStatus::Completed).unwrap_or(false),
-    )
+    )?;
+    if fused {
+        let snapshot_path = app
+            .paths
+            .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
+        let _ = write_json(&snapshot_path, &*session);
+    }
+    Ok(())
 }
 
 fn apply_stale_session_completion_fuse_dynamic(
@@ -3762,7 +3751,12 @@ fn apply_stale_session_completion_fuse_dynamic(
         false
     };
     let _ = (app, task_id, run_id, round_id, outer_node_id, outer_attempt_id, node_id, attempt_id);
-    apply_stale_session_completion_fuse_common(&pid_path, attempt_dir, session, node_completed)
+    let fused = apply_stale_session_completion_fuse_common(&pid_path, attempt_dir, session, node_completed)?;
+    if fused {
+        let snapshot_path = attempt_dir.join("acp.snapshot.json");
+        let _ = write_json(&snapshot_path, &*session);
+    }
+    Ok(())
 }
 
 fn apply_stale_session_completion_fuse_common(
@@ -3770,23 +3764,28 @@ fn apply_stale_session_completion_fuse_common(
     attempt_dir: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let metadata_status = session
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    if !node_completed || !is_acp_session_active_status(metadata_status) {
-        return Ok(());
+    if !is_acp_session_active_status(metadata_status) {
+        return Ok(false);
     }
-    if is_cancel_requested(attempt_dir) || pid_path.exists() {
-        return Ok(());
+    // Provider process is still alive — don't fuse.
+    if pid_path.exists() {
+        return Ok(false);
+    }
+    // Process is dead. Fuse when the node itself is done OR the user requested cancel.
+    if !node_completed && !is_cancel_requested(attempt_dir) {
+        return Ok(false);
     }
     session["status"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
         session["stopReason"] = serde_json::json!("end_turn");
     }
     session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-    Ok(())
+    Ok(true)
 }
 
 fn pause_current_attempt_after_cancel(

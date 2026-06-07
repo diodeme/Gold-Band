@@ -1860,6 +1860,12 @@ fn execute_dynamic_worker(
             .run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))
             .map_err(|error| anyhow!("provider `{}` failed to run `{}`: {error}", provider_id, node.id))?;
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
+        if node.status == DynamicNodeStatus::Paused {
+            return Ok(DynamicExecutionResult {
+                node,
+                proposals: Vec::new(),
+            });
+        }
         if node.outcome != Some(NodeOutcome::Success) {
             bail!("dynamic worker `{}` failed", node.id);
         }

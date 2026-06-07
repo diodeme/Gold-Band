@@ -238,7 +238,7 @@ mod tests {
     fn stderr_progress_enabled(cli: &Cli) -> bool {
         !matches!(cli.command, Commands::Console { .. })
     }
-    use crate::config::{ConsoleThemeName, RuntimeLogLevel, SettingsConfig, StateConfig};
+    use crate::config::{ConsoleThemeName, ProjectAppConfig, RuntimeLogLevel, SettingsConfig, StateConfig};
     use clap::Parser;
 
     #[test]
@@ -263,6 +263,7 @@ mod tests {
                 ..SettingsConfig::default()
             },
             &StateConfig::default(),
+            &ProjectAppConfig::default(),
         );
 
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
@@ -279,6 +280,7 @@ mod tests {
                 ..SettingsConfig::default()
             },
             &StateConfig::default(),
+            &ProjectAppConfig::default(),
         );
 
         assert_eq!(config.console_theme, ConsoleThemeName::Cyber);

@@ -37,7 +37,6 @@ use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
-const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -769,7 +768,6 @@ impl<'a> AcpRuntime<'a> {
         });
         self.send_frame(&frame)?;
         let started_at = Instant::now();
-        let mut cancel_started_at = None;
         let mut last_title_refresh_at = Instant::now();
         loop {
             let wait_for = match timeout {
@@ -794,7 +792,7 @@ impl<'a> AcpRuntime<'a> {
 
                     if response_matches_request(&value, id) {
                         if let Some(error) = value.get("error") {
-                            if cancel_started_at.is_some() {
+                            if is_cancel_requested(&self.paths.attempt_dir) {
                                 return Err(anyhow!(AcpCancelled));
                             }
                             bail!("ACP `{method}` failed: {error}");
@@ -820,7 +818,7 @@ impl<'a> AcpRuntime<'a> {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    if cancel_started_at.is_some() || is_cancel_requested(&self.paths.attempt_dir) {
+                    if is_cancel_requested(&self.paths.attempt_dir) {
                         return Err(anyhow!(AcpCancelled));
                     }
                     bail!("ACP adapter closed before `{method}` response");
@@ -828,26 +826,18 @@ impl<'a> AcpRuntime<'a> {
             }
 
             if is_cancel_requested(&self.paths.attempt_dir) {
-                if cancel_started_at.is_none() {
-                    cancel_started_at = Some(Instant::now());
-                    self.send_cancel_notification()?;
-                    append_diagnostic(
-                        &self.paths.diagnostics,
-                        "info",
-                        "ACP cancellation requested".to_string(),
-                        Some(json!({ "method": method })),
-                    )?;
-                }
-                if cancel_started_at
-                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
-                {
-                    self.kill_adapter_process();
-                    return Err(anyhow!(AcpCancelled));
-                }
+                append_diagnostic(
+                    &self.paths.diagnostics,
+                    "info",
+                    "ACP cancellation requested".to_string(),
+                    Some(json!({ "method": method })),
+                )?;
+                self.kill_adapter_process();
+                return Err(anyhow!(AcpCancelled));
             }
 
             if let Some(status) = self.child.try_wait()? {
-                if cancel_started_at.is_some() || is_cancel_requested(&self.paths.attempt_dir) {
+                if is_cancel_requested(&self.paths.attempt_dir) {
                     return Err(anyhow!(AcpCancelled));
                 }
                 bail!("ACP adapter exited before `{method}` response with status {status}");
@@ -951,13 +941,6 @@ impl<'a> AcpRuntime<'a> {
             "id": rpc_id,
             "result": result,
         }))
-    }
-
-    fn send_cancel_notification(&mut self) -> Result<()> {
-        let Some(session_id) = self.session_id.clone() else {
-            return Ok(());
-        };
-        self.send_frame(&cancel_notification_frame(&session_id))
     }
 
     fn kill_adapter_process(&mut self) {
@@ -1342,16 +1325,6 @@ fn has_mode_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_mode_config_option).is_some()
 }
 
-fn cancel_notification_frame(session_id: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "session/cancel",
-        "params": {
-            "sessionId": session_id,
-        }
-    })
-}
-
 fn response_matches_request(value: &Value, request_id: u64) -> bool {
     value.get("method").is_none()
         && value.get("id").and_then(Value::as_u64) == Some(request_id)
@@ -1363,7 +1336,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        PromptBundle, PromptVisibility, cancel_notification_frame, contributes_to_final_text,
+        PromptBundle, PromptVisibility, contributes_to_final_text,
         resolve_permission_mode, response_matches_request, session_load_params, session_new_params,
         session_prompt_params, session_prompt_text,
     };
@@ -1373,22 +1346,6 @@ mod tests {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
-    }
-
-    #[test]
-    fn cancel_frame_is_notification_without_id() {
-        let frame = cancel_notification_frame("session-123");
-        assert_eq!(frame.get("id"), None);
-        assert_eq!(
-            frame,
-            json!({
-                "jsonrpc": "2.0",
-                "method": "session/cancel",
-                "params": {
-                    "sessionId": "session-123",
-                }
-            })
-        );
     }
 
     #[test]

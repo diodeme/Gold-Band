@@ -252,8 +252,8 @@ function isRoundContinuable(vm: RoundDetailVm) {
   const activeNodeId = vm.round.currentNode ?? vm.run.currentNode;
   const activeAttemptId = vm.run.currentAttempt;
   const currentPausedNode = vm.graph.nodes.some((node) => {
-    const sameNode = node.nodeId === activeNodeId || node.id === activeNodeId;
-    const sameAttempt = !activeAttemptId || node.attemptId === activeAttemptId;
+    const sameNode = node.nodeId === activeNodeId || node.id === activeNodeId || node.outerNodeId === activeNodeId;
+    const sameAttempt = !activeAttemptId || node.attemptId === activeAttemptId || node.outerAttemptId === activeAttemptId;
     return node.current && sameNode && sameAttempt && node.status === 'paused' && !node.outcome;
   });
 

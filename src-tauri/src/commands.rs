@@ -11,6 +11,7 @@ use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
 use gold_band::storage::read_json;
+use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader},
@@ -407,6 +408,11 @@ pub fn create_task(
             workflow_template_id: input.workflow_template_id,
         })
         .map_err(command_error)?;
+    let task_id = summary.task.id.clone();
+    let task_dir = app.paths.task_dir(&task_id);
+    tauri::async_runtime::spawn_blocking(move || {
+        sqlite::index_task_with_retry(&task_dir, &task_id);
+    });
     workflow_vm(&app, &summary.task.id).map_err(command_error)
 }
 
@@ -954,10 +960,23 @@ pub async fn send_acp_prompt(
         &round_id_for_emit,
         &node_id_for_emit,
         &attempt_id_for_emit,
-        outer_node_id_for_emit,
-        outer_attempt_id_for_emit,
+        outer_node_id_for_emit.clone(),
+        outer_attempt_id_for_emit.clone(),
         session.clone(),
     );
+
+    // Fire-and-forget: index this attempt for cross-session search
+    spawn_index_attempt(
+        state.inner(),
+        &task_id_for_emit,
+        &run_id_for_emit,
+        &round_id_for_emit,
+        &node_id_for_emit,
+        &attempt_id_for_emit,
+        outer_node_id_for_emit.as_deref(),
+        outer_attempt_id_for_emit.as_deref(),
+    );
+
     Ok(session)
 }
 
@@ -1044,11 +1063,49 @@ pub fn respond_acp_permission(
         &round_id,
         &node_id,
         &attempt_id,
-        outer_node_id,
-        outer_attempt_id,
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
         session.clone(),
     );
+    spawn_index_attempt(
+        state.inner(),
+        &task_id, &run_id, &round_id, &node_id, &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
     Ok(session)
+}
+
+fn spawn_index_attempt(
+    state: &DesktopState,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) {
+    let Ok(app) = state.app() else { return };
+    let attempt_dir = if let (Some(on), Some(oa)) = (outer_node_id, outer_attempt_id) {
+        app.paths.dynamic_node_attempt_dir(
+            task_id, run_id, round_id, on, oa, node_id, attempt_id,
+        )
+    } else {
+        app.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+    };
+    let ctx = AttemptIndexContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: outer_node_id.map(String::from),
+        outer_attempt_id: outer_attempt_id.map(String::from),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        sqlite::index_attempt_with_retry(&attempt_dir, &ctx);
+    });
 }
 
 fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
@@ -1173,9 +1230,15 @@ pub fn cancel_acp_session(
         &round_id,
         &node_id,
         &attempt_id,
-        outer_node_id,
-        outer_attempt_id,
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
         session.clone(),
+    );
+    spawn_index_attempt(
+        state.inner(),
+        &task_id, &run_id, &round_id, &node_id, &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
     );
     Ok(session)
 }
@@ -1551,4 +1614,100 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
             }),
         ),
     }
+}
+
+// ── SQLite search commands ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SearchAcpPromptsInput {
+    pub query: String,
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SearchAcpSessionsInput {
+    pub query: String,
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    20
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SearchTasksInput {
+    pub query: String,
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+#[tauri::command]
+pub async fn search_tasks(
+    state: State<'_, DesktopState>,
+    input: SearchTasksInput,
+) -> CommandResult<Vec<gold_band::storage::sqlite::TaskSearchResult>> {
+    let _ = state.app().map_err(command_error)?;
+    let limit = input.limit.min(200);
+    let query = input.query;
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = gold_band::storage::sqlite::search_index()
+            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        index.search_tasks(&query, limit).map_err(|e| {
+            CommandErrorVm::new(
+                "search.query-failed",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
+#[tauri::command]
+pub async fn search_acp_prompts(
+    state: State<'_, DesktopState>,
+    input: SearchAcpPromptsInput,
+) -> CommandResult<Vec<gold_band::storage::sqlite::PromptSearchResult>> {
+    let _ = state.app().map_err(command_error)?;
+    let limit = input.limit.min(200);
+    let query = input.query;
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = gold_band::storage::sqlite::search_index()
+            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        index.search_prompts(&query, limit).map_err(|e| {
+            CommandErrorVm::new(
+                "search.query-failed",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
+#[tauri::command]
+pub async fn search_acp_sessions(
+    state: State<'_, DesktopState>,
+    input: SearchAcpSessionsInput,
+) -> CommandResult<Vec<gold_band::storage::sqlite::SessionSearchResult>> {
+    let _ = state.app().map_err(command_error)?;
+    let limit = input.limit.min(200);
+    let query = input.query;
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = gold_band::storage::sqlite::search_index()
+            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        index.search_sessions(&query, limit).map_err(|e| {
+            CommandErrorVm::new(
+                "search.query-failed",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }

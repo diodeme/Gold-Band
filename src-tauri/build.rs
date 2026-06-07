@@ -6,6 +6,8 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 struct ChannelConfig {
     channel: String,
+    #[serde(default)]
+    silent_update_enabled: bool,
     app_name: String,
     app_key: String,
     config_dir_name: String,
@@ -49,6 +51,7 @@ fn main() {
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_ENDPOINT={}", config.updater_endpoint);
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_PUBLIC_KEY={}", config.updater_public_key);
     println!("cargo:rustc-env=GOLD_BAND_ALLOW_HTTP_UPDATER={}", config.allow_http_updater);
+    println!("cargo:rustc-env=GOLD_BAND_SILENT_UPDATE_ENABLED={}", config.silent_update_enabled);
 
     tauri_build::build()
 }

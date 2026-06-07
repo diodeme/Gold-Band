@@ -9,6 +9,7 @@ const outputPath = outputArg ?? 'latest.json';
 // ── local mode (--base-url + --version) ──
 const baseUrlFlagIdx = rest.indexOf('--base-url');
 const versionFlagIdx = rest.indexOf('--version');
+const criticalFlag = rest.includes('--critical');
 const baseUrl = baseUrlFlagIdx >= 0 ? rest[baseUrlFlagIdx + 1] : process.env.RELEASE_BASE_URL;
 const version = versionFlagIdx >= 0 ? rest[versionFlagIdx + 1] : process.env.RELEASE_VERSION;
 
@@ -65,6 +66,9 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
     pub_date: new Date().toISOString(),
     platforms,
   };
+  if (criticalFlag) {
+    latest.critical = true;
+  }
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
   console.log(`Wrote ${outputPath} (base: ${normalizedBase}) platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
@@ -128,6 +132,9 @@ async function generateGitHub(assetDir, outputPath) {
     pub_date: new Date().toISOString(),
     platforms,
   };
+  if (criticalFlag) {
+    latest.critical = true;
+  }
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
   console.log(`Wrote ${outputPath} with platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);

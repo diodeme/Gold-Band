@@ -43,6 +43,7 @@ import { applyFont, applyTheme } from './theme';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
+  AppConfigVm,
   AppInfoVm,
   CreateTaskInput,
   DesktopFontPreference,
@@ -86,6 +87,10 @@ const defaultAppInfo: AppInfoVm = {
   appKey: 'gold-band',
   configDirName: '.gold-band',
 };
+const defaultAppConfig: AppConfigVm = {
+  acpSessionTitleRefreshEnabled: false,
+  acpChatEventPageSize: 360,
+};
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
@@ -118,6 +123,7 @@ export function App() {
   const showSettingsAdvancedUpdateDot = availableUpdateVersion !== null && updateBadges.settingsAdvancedSeenVersion !== availableUpdateVersion;
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
+  const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
   const shouldShowUpdateAnnouncement = useMemo(
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
@@ -271,8 +277,20 @@ export function App() {
 
   useEffect(() => {
     if (!bootstrap || !hasPageData) return undefined;
-    const interval = window.setInterval(() => void refresh('background'), 10000);
-    return () => window.clearInterval(interval);
+    let intervalId: number;
+    const startInterval = (ms: number) => {
+      window.clearInterval(intervalId);
+      intervalId = window.setInterval(() => void refresh('background'), ms) as unknown as number;
+    };
+    startInterval(10000);
+    const onVisibilityChange = () => {
+      startInterval(document.hidden ? 30000 : 10000);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [bootstrap, hasPageData, refresh]);
 
   const openProfileManagement = () => {
@@ -382,6 +400,7 @@ export function App() {
         updateBadges: defaultUpdateBadges,
         clientVersion: '',
         appInfo: defaultAppInfo,
+        appConfig: defaultAppConfig,
         needsWorkspace: false,
       });
       setTaskList(null);
@@ -595,6 +614,6 @@ export function App() {
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(taskId, runId, promptId))} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(taskId, runId, promptId))} />;
   }
 }

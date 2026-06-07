@@ -16,6 +16,7 @@ use crate::runtime::{
     validate_worker_ref_state,
 };
 use crate::storage::{read_json, write_json};
+use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 
 use super::{AcpLiveEventContext, App};
 use super::ids::now_rfc3339_like;
@@ -407,8 +408,24 @@ pub(crate) fn execute_ai_node(
         outer_node_id: None,
         outer_attempt_id: None,
     };
+    let attempt_dir_for_index = invocation.attempt_dir.clone();
     let live_update = app.acp_live_update_for(live_update_context);
     let result = app.provider_for_id(provider_id)?.run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
+
+    // Fire-and-forget: index this attempt for cross-session search
+    let ctx = AttemptIndexContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    };
+    std::thread::spawn(move || {
+        index_attempt_with_retry(&attempt_dir_for_index, &ctx);
+    });
+
     progress(&format!(
         "normalizing artifact for {}/{}/{}",
         round_id, node_id, attempt_id

@@ -52,7 +52,21 @@
 验收：
 - 展开 run / 会话 / 工具输出后，工作台不出现由 ACP 内容导致的横向溢出。
 
-## 5. 初始状态、流式反馈与计时
+## 5. 停止会话体感
+
+问题：
+- 工作流列表里的停止 run 几乎立即生效，但 ACP 会话窗口内停止会话会长时间停留在“停止中”，体感明显更慢。
+
+处理结果：
+- 点击 ACP 停止后，先立即把当前 attempt / run / round 收敛为 `paused + process_interrupted`，让会话抽屉和 round 详情同步退出 active 态。
+- ACP runtime 观察到取消标记后发送不带 `id` 的 `session/cancel` notification，请求 provider 优雅退出；若短暂宽限后 provider 仍未退出，再强制 kill `provider.pid` 对应进程树。
+- stale cancel fuse 仍保留 15 秒兜底，确保异常情况下 session 最终会写成 `cancelled`，不会永久卡在 stopping。
+
+验收：
+- 在 ACP 会话窗口点击停止后，composer 很快退出 stopping，round 详情很快变为 paused / 可继续。
+- provider 能优先优雅退出；只有超时未退出时才触发 kill fallback。
+
+## 6. 初始状态、流式反馈与计时
 
 问题：
 - 刚开始显示“暂无 ACP 事件”，实际应该是 Claude 调起中。

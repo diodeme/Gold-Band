@@ -3678,8 +3678,19 @@ fn apply_stale_cancel_fuse(
             .acp_session_file(task_id, run_id, round_id, node_id, attempt_id),
         session,
     )?;
+    let snapshot_path = app
+        .paths
+        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
+    let _ = write_json(&snapshot_path, &*session);
 
-    pause_current_attempt_after_cancel(app, task_id, run_id, round_id, node_id, attempt_id)?;
+    app.pause_attempt_runtime_state(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        PauseReason::ProcessInterrupted,
+    )?;
     Ok(())
 }
 
@@ -3750,7 +3761,31 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    let _ = (app, task_id, run_id, round_id, outer_node_id, outer_attempt_id, node_id, attempt_id);
+    if is_cancel_requested(attempt_dir) && cancel_request_is_stale(attempt_dir) {
+        if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
+            if let Ok(pid) = pid_text.trim().parse::<u32>() {
+                let _ = kill_process_tree(pid);
+            }
+            let _ = fs::remove_file(pid_path.as_std_path());
+        }
+        let _ = clear_cancel_request(attempt_dir);
+        session["status"] = serde_json::json!("cancelled");
+        session["stopReason"] = serde_json::json!("cancelled");
+        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
+        let snapshot_path = attempt_dir.join("acp.snapshot.json");
+        let _ = write_json(&snapshot_path, &*session);
+        app.pause_dynamic_attempt_runtime_state(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            PauseReason::ProcessInterrupted,
+        )?;
+        return Ok(());
+    }
+    let _ = attempt_id;
     let fused = apply_stale_session_completion_fuse_common(&pid_path, attempt_dir, session, node_completed)?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
@@ -3786,54 +3821,6 @@ fn apply_stale_session_completion_fuse_common(
     }
     session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
     Ok(true)
-}
-
-fn pause_current_attempt_after_cancel(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-) -> Result<()> {
-    let now = current_epoch_timestamp();
-    let run_path = app.paths.run_file(task_id, run_id);
-    if run_path.exists() {
-        let mut run: RunState = read_json(&run_path)?;
-        if run.status == RunStatus::Running
-            && run.current_round.as_deref() == Some(round_id)
-            && run.current_node.as_deref() == Some(node_id)
-            && run.current_attempt.as_deref() == Some(attempt_id)
-        {
-            run.status = RunStatus::Paused;
-            run.pause_reason = Some(PauseReason::ProcessInterrupted);
-            run.updated_at = now.clone();
-            write_json(&run_path, &run)?;
-        }
-    }
-
-    let round_path = app.paths.round_file(task_id, run_id, round_id);
-    if round_path.exists() {
-        let mut round: RoundState = read_json(&round_path)?;
-        if round.status == RunStatus::Running {
-            round.status = RunStatus::Paused;
-            write_json(&round_path, &round)?;
-        }
-    }
-
-    let node_path = app
-        .paths
-        .node_file(task_id, run_id, round_id, node_id, attempt_id);
-    if node_path.exists() {
-        let mut node: NodeState = read_json(&node_path)?;
-        if node.status == RunStatus::Running {
-            node.status = RunStatus::Paused;
-            node.outcome = None;
-            node.finished_at = Some(now);
-            write_json(&node_path, &node)?;
-        }
-    }
-    Ok(())
 }
 
 fn parse_epoch_timestamp(value: &str) -> Option<u64> {

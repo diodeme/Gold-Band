@@ -549,6 +549,7 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
           onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
           onManualCheckSubmitted={onRefresh}
+          onSessionStopped={onRefresh}
           />
         </SessionErrorBoundary>
       </div>

@@ -1,3 +1,5 @@
+pub mod sqlite;
+
 use crate::domain::VERSION;
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -189,6 +191,14 @@ impl GoldBandPaths {
 
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
         self.runtime_root.join("desktop/agent-diagnostics.json")
+    }
+
+    pub fn sqlite_db_path(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("gold-band.db")
+    }
+
+    pub fn projects_dir(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("projects")
     }
 
     pub fn tasks_dir(&self) -> Utf8PathBuf {

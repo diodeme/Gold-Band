@@ -40,6 +40,7 @@ interface ACPChatDialogProps {
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
+  onSessionStopped?: () => void;
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
@@ -165,7 +166,7 @@ function loadedEventBufferLimit(eventPageSize: number) {
   return Math.max(MIN_LOADED_EVENT_BUFFER_LIMIT, Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3));
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(effectiveEventPageSize);
@@ -582,6 +583,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     try {
       const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
+      onSessionStopped?.();
     } catch (error) {
       setCancelError(displayAppError(t, error));
       setCancelling(false);

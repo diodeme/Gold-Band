@@ -1691,6 +1691,158 @@ impl App {
         Ok(run)
     }
 
+    pub fn pause_attempt_runtime_state(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<()> {
+        let now = now_rfc3339_like();
+        let run_path = self.paths.run_file(task_id, run_id);
+        if run_path.exists() {
+            let mut run: RunState = read_json(&run_path)?;
+            if run.status == RunStatus::Running
+                && run.current_round.as_deref() == Some(round_id)
+                && run.current_node.as_deref() == Some(node_id)
+                && run.current_attempt.as_deref() == Some(attempt_id)
+            {
+                run.status = RunStatus::Paused;
+                run.outcome = None;
+                run.pause_reason = Some(reason);
+                run.updated_at = now.clone();
+                validate_run_state(&run)?;
+                write_json(&run_path, &run)?;
+            }
+        }
+
+        let round_path = self.paths.round_file(task_id, run_id, round_id);
+        if round_path.exists() {
+            let mut round: RoundState = read_json(&round_path)?;
+            if round.status == RunStatus::Running {
+                round.status = RunStatus::Paused;
+                validate_round_state(&round)?;
+                write_json(&round_path, &round)?;
+            }
+        }
+
+        let node_path = self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id);
+        if node_path.exists() {
+            let mut node: NodeState = read_json(&node_path)?;
+            if node.status != RunStatus::Completed {
+                node.status = RunStatus::Paused;
+                node.outcome = None;
+                node.finished_at = Some(now);
+                validate_node_state(&node)?;
+                write_json(&node_path, &node)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn pause_dynamic_attempt_runtime_state(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        reason: PauseReason,
+    ) -> Result<()> {
+        let now = now_rfc3339_like();
+        let run_path = self.paths.run_file(task_id, run_id);
+        if run_path.exists() {
+            let mut run: RunState = read_json(&run_path)?;
+            if run.status == RunStatus::Running
+                && run.current_round.as_deref() == Some(round_id)
+                && run.current_node.as_deref() == Some(outer_node_id)
+                && run.current_attempt.as_deref() == Some(outer_attempt_id)
+            {
+                run.status = RunStatus::Paused;
+                run.outcome = None;
+                run.pause_reason = Some(reason);
+                run.updated_at = now.clone();
+                validate_run_state(&run)?;
+                write_json(&run_path, &run)?;
+            }
+        }
+
+        let round_path = self.paths.round_file(task_id, run_id, round_id);
+        if round_path.exists() {
+            let mut round: RoundState = read_json(&round_path)?;
+            if round.status == RunStatus::Running {
+                round.status = RunStatus::Paused;
+                validate_round_state(&round)?;
+                write_json(&round_path, &round)?;
+            }
+        }
+
+        let outer_node_path = self
+            .paths
+            .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+        if outer_node_path.exists() {
+            let mut outer_node: NodeState = read_json(&outer_node_path)?;
+            if outer_node.status != RunStatus::Completed {
+                outer_node.status = RunStatus::Paused;
+                outer_node.outcome = None;
+                outer_node.finished_at = Some(now.clone());
+                validate_node_state(&outer_node)?;
+                write_json(&outer_node_path, &outer_node)?;
+            }
+        }
+
+        let graph_path = self
+            .paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+        if graph_path.exists() {
+            let mut graph: DynamicGraphState = read_json(&graph_path)?;
+            if graph.run.status == DynamicRunStatus::Running {
+                graph.run.status = DynamicRunStatus::Paused;
+                graph.run.outcome = None;
+                graph.run.pause_reason = Some(reason);
+                graph.run.updated_at = now.clone();
+            }
+            if let Some(dynamic_node) = graph.nodes.iter_mut().find(|candidate| candidate.id == node_id) {
+                if dynamic_node.status != DynamicNodeStatus::Completed {
+                    dynamic_node.status = DynamicNodeStatus::Paused;
+                    dynamic_node.outcome = None;
+                    dynamic_node.finished_at = Some(now.clone());
+                }
+            }
+            write_json(&graph_path, &graph)?;
+            write_json(
+                &self
+                    .paths
+                    .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+                &graph.run,
+            )?;
+        }
+
+        let dynamic_node_path = self.paths.dynamic_node_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+        );
+        if dynamic_node_path.exists() {
+            let mut dynamic_node: crate::dynamic::DynamicNodeState = read_json(&dynamic_node_path)?;
+            if dynamic_node.status != DynamicNodeStatus::Completed {
+                dynamic_node.status = DynamicNodeStatus::Paused;
+                dynamic_node.outcome = None;
+                dynamic_node.finished_at = Some(now);
+                write_json(&dynamic_node_path, &dynamic_node)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
         let _ = request_cancel(attempt_dir, now_rfc3339_like());
         let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());

@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ratatui = "0.29"
 crossterm = "0.28"
 figlet-rs = "1.0.0"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

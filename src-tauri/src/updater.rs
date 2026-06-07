@@ -246,7 +246,7 @@ fn current_timestamp() -> String {
 
 // ── Silent / startup critical update ──
 
-/// latest.json 顶层结构（仅取 critical 标记和 version）
+/// latest.json 顶层结构（仅取需要的字段）
 #[derive(Debug, Deserialize)]
 struct LatestManifest {
     version: String,
@@ -262,11 +262,11 @@ pub struct StartupCheckResult {
     pub error: Option<String>,
 }
 
-/// 向 latest.json endpoint 发起 HTTP GET，仅解析 critical 字段
-async fn fetch_critical_flag(endpoint: &Url) -> Result<bool> {
+/// HTTP GET latest.json，返回解析后的 manifest
+async fn fetch_manifest(endpoint: &Url) -> Result<LatestManifest> {
     let response = reqwest::get(endpoint.as_str().to_owned()).await?;
     let manifest: LatestManifest = response.json().await?;
-    Ok(manifest.critical)
+    Ok(manifest)
 }
 
 /// 获取当前 RuntimeConfig（从 DesktopState 中读取）
@@ -280,8 +280,8 @@ fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
 ///
 /// - 渠道未开启静默更新：立即通知前端放行
 /// - 网络超时/错误：降级放行，不阻塞启动
-/// - critical = false：放行，后续由 start_update_polling 处理普通更新
-/// - critical = true：保持 splash，自动下载安装并重启
+/// - critical = false 或已是最新版本：放行，后续由 start_update_polling 处理普通更新
+/// - critical = true 且有新版本：保持 splash，自动下载安装并重启
 pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let channel = current_channel_config();
     if !channel.silent_update_enabled {
@@ -317,16 +317,15 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
         }
     };
 
-    // 检查 critical 标记（10s 超时，超时即降级）
-    let is_critical = match tokio::time::timeout(
+    // 获取 latest.json manifest（10s 超时，超时即降级）
+    let manifest = match tokio::time::timeout(
         Duration::from_secs(10),
-        fetch_critical_flag(&endpoint),
+        fetch_manifest(&endpoint),
     )
     .await
     {
-        Ok(Ok(critical)) => critical,
+        Ok(Ok(manifest)) => manifest,
         _ => {
-            // 网络故障/超时/JSON parse 失败 → 降级
             let _ = app.emit(
                 "gold-band://startup-update-check",
                 StartupCheckResult { critical: false, error: None },
@@ -335,7 +334,17 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
         }
     };
 
-    if !is_critical {
+    // 已是最新版本 → 放行（防止 latest.json 版本号不匹配导致的死循环）
+    let current_version = app.package_info().version.to_string();
+    if !version_is_newer(&manifest.version, &current_version) {
+        let _ = app.emit(
+            "gold-band://startup-update-check",
+            StartupCheckResult { critical: false, error: None },
+        );
+        return Ok(());
+    }
+
+    if !manifest.critical {
         let _ = app.emit(
             "gold-band://startup-update-check",
             StartupCheckResult { critical: false, error: None },
@@ -362,6 +371,23 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
     }
 
     Ok(())
+}
+
+/// 简单语义版本比较：b 是否比 a 更新
+/// 仅比较 major.minor.patch，忽略 pre-release 和 build metadata
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let parse_trio = |v: &str| -> Option<(u32, u32, u32)> {
+        let digits = v.split(&['-', '+']).next()?;
+        let mut parts = digits.split('.');
+        Some((
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        ))
+    };
+    let Some((a_maj, a_min, a_pat)) = parse_trio(latest) else { return false };
+    let Some((b_maj, b_min, b_pat)) = parse_trio(current) else { return false };
+    (a_maj, a_min, a_pat) > (b_maj, b_min, b_pat)
 }
 
 #[cfg(test)]

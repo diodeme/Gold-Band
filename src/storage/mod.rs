@@ -137,6 +137,10 @@ impl GoldBandPaths {
             .join("state.json")
     }
 
+    pub fn conversation_state_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_dir().join("conversation-state.json")
+    }
+
     pub fn repo_configs_dir(&self) -> Utf8PathBuf {
         self.repo_root.join("configs")
     }

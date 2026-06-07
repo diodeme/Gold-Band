@@ -7,6 +7,14 @@ import type {
   AgentRegistryVm,
   AppBootstrapVm,
   ContentVm,
+  ConversationCreateInput,
+  ConversationRunModeVm,
+  ConversationRunVm,
+  ConversationSearchResultVm,
+  ConversationSidebarVm,
+  ConversationValidationResultVm,
+  ConversationWorkspaceVm,
+  PinRef,
   CreateTaskInput,
   DesktopFontPreference,
   DesktopLanguage,
@@ -98,6 +106,25 @@ export interface RuntimeApi {
   dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
   downloadAndInstallUpdate(): Promise<void>;
+  // ── Conversation UI ──
+  saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
+  getConversationSidebar(): Promise<ConversationSidebarVm>;
+  getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
+  validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
+  createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
+  rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
+  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<void>;
+  pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
+  unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
+  reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarVm>;
+  searchConversationTasks(query: string, limit?: number): Promise<ConversationSearchResultVm[]>;
+  getConversationRunMode(projectId: string): Promise<ConversationRunModeVm | null>;
+  saveConversationRunMode(projectId: string, settings: ConversationRunModeVm): Promise<void>;
+  chooseConversationWorkspace(): Promise<ConversationWorkspaceVm>;
+  addConversationWorkspace(): Promise<ConversationSidebarVm>;
+  removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
+  syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
+  saveConversationPreference(key: string, value: unknown): Promise<void>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

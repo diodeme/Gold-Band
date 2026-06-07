@@ -303,6 +303,8 @@ pub struct StateConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     #[serde(default)]
     pub recent_desktop_workspaces: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub preferences: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -712,4 +714,63 @@ pub struct ResolvedProfileRef {
     pub name: String,
     pub source: ProfileSource,
     pub path: String,
+}
+
+// ── Conversation UI state ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DesktopUiMode {
+    Conversation,
+    Workbench,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_ui_mode: Option<DesktopUiMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_workspaces: Vec<ConversationWorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_conversation_workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_pins: Vec<ConversationPin>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationWorkspaceEntry {
+    pub project_id: String,
+    pub workspace_path: String,
+    pub name: String,
+    pub added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPin {
+    pub project_id: String,
+    pub task_id: String,
+    pub order: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRunModeEntry {
+    pub mode: String,
+    pub workflow_template_id: Option<String>,
+    pub auto_config: Option<ConversationAutoConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAutoConfig {
+    pub agent_type: String,
+    pub model_id: Option<String>,
+    pub permission_mode: Option<String>,
+    pub allowed_profiles: Option<Vec<String>>,
+    pub global_goal: Option<String>,
 }

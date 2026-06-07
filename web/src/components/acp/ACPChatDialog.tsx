@@ -23,6 +23,11 @@ import { isTauriRuntime } from '@/api/shared';
 import { displayAppError, displayStatus } from '@/i18n';
 import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm } from '@/types';
 
+export type AcpExternalComposerState =
+  | { kind: 'normal' }
+  | { kind: 'invalid-workflow'; workflowError: string }
+  | { kind: 'runtime-error'; errorMessage: string; onRepair?: () => void };
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   taskId: string;
@@ -41,6 +46,8 @@ interface ACPChatDialogProps {
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
+  onAtBottomChange?: (atBottom: boolean) => void;
+  externalComposerState?: AcpExternalComposerState;
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
@@ -166,7 +173,7 @@ function loadedEventBufferLimit(eventPageSize: number) {
   return Math.max(MIN_LOADED_EVENT_BUFFER_LIMIT, Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3));
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped }: ACPChatDialogProps) {
+export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped, onAtBottomChange, externalComposerState }: ACPChatDialogProps) {
   const { t } = useTranslation();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(effectiveEventPageSize);
@@ -295,6 +302,10 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     loadedEventsRef.current = loadedEvents;
     storeAcpLoadedEvents(eventWindowKey, loadedEvents, effectiveLoadedEventBufferLimit);
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEvents]);
+
+  useEffect(() => {
+    onAtBottomChange?.(isAtBottom);
+  }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
   const runtimeActive = isRuntimeActiveStatus(runtimeStatus);
@@ -747,6 +758,12 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
           <AcpUsagePanel usage={effective?.usage} isRunning={isSessionActive(effective.status)} />
+          {externalComposerState?.kind === 'invalid-workflow' ? (
+            <AcpExternalComposerState kind="invalid-workflow" message={externalComposerState.workflowError} />
+          ) : externalComposerState?.kind === 'runtime-error' ? (
+            <AcpExternalComposerState kind="runtime-error" message={externalComposerState.errorMessage} onAction={externalComposerState.onRepair} />
+          ) : (
+            <>
           {showManualCheckActions ? (
             <AcpManualCheckPanel
               submitting={manualCheckSubmitting}
@@ -799,6 +816,8 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
               <AcpSessionConfigBar session={effective} />
             </PromptInput>
           )}
+            </>
+          )}
         </div>
       ) : null}
     </div>
@@ -842,6 +861,30 @@ function AcpPermissionComposerLock() {
         <ShieldQuestion className="size-4" />
       </span>
       <span className="min-w-0 truncate font-medium">{t('acp.permissionPending')}</span>
+    </div>
+  );
+}
+
+function AcpExternalComposerState({ kind, message, onAction }: { kind: 'invalid-workflow' | 'runtime-error'; message: string; onAction?: () => void }) {
+  const { t } = useTranslation();
+  const isError = kind === 'runtime-error';
+  return (
+    <div className={cn(
+      'flex min-w-0 items-center gap-3 rounded-2xl border px-4 py-3 shadow-sm shadow-background/20',
+      isError ? 'border-destructive/20 bg-destructive/5' : 'border-amber-500/20 bg-amber-500/5',
+    )}>
+      <span className={cn(
+        'flex size-8 shrink-0 items-center justify-center rounded-lg',
+        isError ? 'bg-destructive/10 text-destructive' : 'bg-amber-500/10 text-amber-500',
+      )}>
+        <ShieldQuestion className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{message}</span>
+      {onAction ? (
+        <Button size="sm" className="h-7 shrink-0 rounded-full px-3 text-xs" onClick={onAction}>
+          {isError ? t('conversation.runtime.repairAction') : t('conversation.runtime.repairWorkflow')}
+        </Button>
+      ) : null}
     </div>
   );
 }

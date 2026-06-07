@@ -2,10 +2,12 @@
 
 mod channel;
 mod commands;
+mod commands_conversation;
 mod i18n;
 mod state;
 mod updater;
 mod view_models;
+mod view_models_conversation;
 
 use anyhow::Context;
 use commands::{
@@ -21,6 +23,14 @@ use commands::{
     select_recent_workspace, send_acp_prompt, show_artifact,
     show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
     update_profile, update_workflow_template,
+};
+use commands_conversation::{
+    add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
+    get_conversation_run, get_conversation_run_mode, get_conversation_sidebar,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, save_conversation_preference, save_conversation_run_mode,
+    save_desktop_ui_mode, search_conversation_tasks, sync_conversation_workspace,
+    unpin_conversation, update_task_metadata, validate_conversation_create,
 };
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
@@ -123,6 +133,25 @@ fn run() -> anyhow::Result<()> {
             search_acp_prompts,
             search_acp_sessions,
             search_tasks,
+            // Conversation UI
+            save_desktop_ui_mode,
+            get_conversation_sidebar,
+            get_conversation_run,
+            validate_conversation_create,
+            create_conversation_run,
+            rerun_conversation_task,
+            update_task_metadata,
+            pin_conversation,
+            unpin_conversation,
+            reorder_pinned_conversations,
+            search_conversation_tasks,
+            get_conversation_run_mode,
+            save_conversation_run_mode,
+            choose_conversation_workspace,
+            add_conversation_workspace,
+            remove_conversation_workspace,
+            sync_conversation_workspace,
+            save_conversation_preference,
         ])
         .run(tauri::generate_context!())
         .context("tauri runtime failed")?;

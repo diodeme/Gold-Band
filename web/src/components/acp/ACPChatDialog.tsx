@@ -246,12 +246,6 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     }
     setLoadedEvents((events) => {
       const currentEvents = events.length === 0 ? restoreAcpLoadedEvents(eventWindowKey, session.events, effectiveLoadedEventBufferLimit) : events;
-      const newestLoadedSeq = currentEvents[currentEvents.length - 1] ? originalSeqFromAcpEvent(currentEvents[currentEvents.length - 1]) : null;
-      const newestIncomingSeq = session.eventPage.newestSeq ?? session.events[session.events.length - 1]?.seq ?? null;
-      if (!pinToBottomRef.current && newestLoadedSeq != null && newestIncomingSeq != null && newestIncomingSeq > newestLoadedSeq) {
-        setHasNewerEvents(true);
-        return currentEvents;
-      }
       const merged = mergeAcpEvents(currentEvents, session.events);
       const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
       loadedEventsRef.current = limited;
@@ -368,12 +362,6 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCurrentSession(normalized);
     if (!normalized) return;
     setLoadedEvents((events) => {
-      const newestLoadedSeq = events[events.length - 1] ? originalSeqFromAcpEvent(events[events.length - 1]) : null;
-      const newestIncomingSeq = normalized.eventPage.newestSeq ?? normalized.events[normalized.events.length - 1]?.seq ?? null;
-      if (!pinToBottomRef.current && newestLoadedSeq != null && newestIncomingSeq != null && newestIncomingSeq > newestLoadedSeq) {
-        setHasNewerEvents(true);
-        return events;
-      }
       setHasNewerEvents(normalized.eventPage.hasNewer);
       const merged = mergeAcpEvents(events, normalized.events);
       const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
@@ -387,12 +375,6 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const normalized = normalizeEventUpdate(event);
     if (!normalized || (!isRenderableEvent(normalized) && normalized.kind !== 'permissionRequest')) return;
     setLoadedEvents((events) => {
-      const newestLoadedSeq = events[events.length - 1] ? originalSeqFromAcpEvent(events[events.length - 1]) : null;
-      const newestIncomingSeq = originalSeqFromAcpEvent(normalized);
-      if (!pinToBottomRef.current && newestLoadedSeq != null && newestIncomingSeq > newestLoadedSeq) {
-        setHasNewerEvents(true);
-        return events;
-      }
       setHasNewerEvents(false);
       const merged = mergeAcpEvents(events, [normalized]);
       const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
@@ -682,11 +664,17 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     if (!scroller) return;
     if (scroller.scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_STICK_THRESHOLD_PX;
-    pinToBottomRef.current = atBottom && !hasNewerEvents;
     setIsAtBottom((current) => current === atBottom ? current : atBottom);
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
   const handleScroll = useCallback(() => {
+    // Sync: immediately release pin when user scrolls away from bottom,
+    // so streaming events arriving this frame won't force-scroll back.
+    const scroller = scrollerElementRef.current;
+    if (scroller && !preservingScrollRef.current) {
+      const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_STICK_THRESHOLD_PX;
+      pinToBottomRef.current = atBottom;
+    }
     if (scrollFrameRef.current != null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;

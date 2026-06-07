@@ -9,7 +9,7 @@ use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
 };
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -63,7 +63,15 @@ pub struct AppBootstrapVm {
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub app_info: AppInfoVm,
+    pub app_config: AppConfigVm,
     pub needs_workspace: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigVm {
+    pub acp_session_title_refresh_enabled: bool,
+    pub acp_chat_event_page_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -755,6 +763,13 @@ fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>) -> Opt
     })
 }
 
+fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
+    AppConfigVm {
+        acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
+        acp_chat_event_page_size: config.acp_chat_event_page_size,
+    }
+}
+
 pub fn bootstrap_vm(
     app: &App,
     recent_workspaces: Vec<String>,
@@ -785,6 +800,7 @@ pub fn bootstrap_vm(
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
         },
+        app_config: app_config_vm(&app.config),
         needs_workspace,
     }
 }
@@ -2515,7 +2531,7 @@ fn selected_dynamic_node_detail_vm(
             entries
                 .filter_map(|entry| entry.ok())
                 .filter_map(|entry| entry.file_name().into_string().ok())
-                .map(|name| asset_item_vm("artifact", node_id, &dynamic_attempt_id, name))
+                .map(|name| asset_item_vm("artifact", node_id, &dynamic_attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -2763,7 +2779,7 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let session = if snapshot_path.exists() {
+    let mut session = if snapshot_path.exists() {
         read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
     } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
@@ -2779,6 +2795,14 @@ pub fn dynamic_acp_session_vm(
         node_id,
         attempt_id,
     );
+    let node_path = app.paths.dynamic_node_file(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        node_id,
+    );
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -2791,6 +2815,19 @@ pub fn dynamic_acp_session_vm(
     let system_prompt_append = extract_system_prompt_append(&raw_path)?;
     let mut diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
     merge_raw_frame_error(&mut diagnostics, scan_acp_raw_error(&raw_path)?);
+    apply_stale_session_completion_fuse_dynamic(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        node_id,
+        attempt_id,
+        &attempt_dir,
+        &node_path,
+        &mut session,
+    )?;
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -2804,10 +2841,21 @@ pub fn dynamic_acp_session_vm(
         metadata_status
     }
     .to_string();
+    let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
-        scan_acp_timeline(&timeline_path, query.clone(), is_acp_session_active_status(&status))?
+        scan_acp_timeline(
+            &timeline_path,
+            query.clone(),
+            is_acp_session_active_status(&status),
+            default_event_limit,
+        )?
     } else {
-        scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?
+        scan_acp_events(
+            &events_path,
+            query,
+            is_acp_session_active_status(&status),
+            default_event_limit,
+        )?
     };
     let pending_permissions = if cancelling {
         Vec::new()
@@ -3021,6 +3069,20 @@ pub fn acp_session_vm(
         &attempt_dir,
         &mut session,
     )?;
+    let node_path = app
+        .paths
+        .node_file(task_id, run_id, round_id, node_id, attempt_id);
+    apply_stale_session_completion_fuse(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        &attempt_dir,
+        &node_path,
+        &mut session,
+    )?;
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -3034,10 +3096,21 @@ pub fn acp_session_vm(
         metadata_status
     }
     .to_string();
+    let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
-        scan_acp_timeline(&timeline_path, query.clone(), is_acp_session_active_status(&status))?
+        scan_acp_timeline(
+            &timeline_path,
+            query.clone(),
+            is_acp_session_active_status(&status),
+            default_event_limit,
+        )?
     } else {
-        scan_acp_events(&events_path, query, is_acp_session_active_status(&status))?
+        scan_acp_events(
+            &events_path,
+            query,
+            is_acp_session_active_status(&status),
+            default_event_limit,
+        )?
     };
     let pending_permissions = if cancelling {
         Vec::new()
@@ -3210,10 +3283,10 @@ fn scan_acp_timeline(
     path: &camino::Utf8Path,
     query: Option<AcpSessionQueryInput>,
     session_active: bool,
+    default_event_limit: usize,
 ) -> Result<AcpEventScan> {
-    const DEFAULT_EVENT_LIMIT: usize = 30;
-    const MIN_EVENT_LIMIT: usize = 10;
-    const MAX_EVENT_LIMIT: usize = 100;
+    const MIN_EVENT_LIMIT: usize = 1;
+    const MAX_EVENT_LIMIT: usize = 1000;
 
     let query = query.unwrap_or(AcpSessionQueryInput {
         before_seq: None,
@@ -3226,7 +3299,7 @@ fn scan_acp_timeline(
     let limit = query
         .page_size
         .or(query.event_limit)
-        .unwrap_or(DEFAULT_EVENT_LIMIT)
+        .unwrap_or(default_event_limit)
         .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
     let before_seq = query
         .before_cursor
@@ -3422,10 +3495,10 @@ fn scan_acp_events(
     path: &camino::Utf8Path,
     query: Option<AcpSessionQueryInput>,
     session_active: bool,
+    default_event_limit: usize,
 ) -> Result<AcpEventScan> {
-    const DEFAULT_EVENT_LIMIT: usize = 30;
-    const MIN_EVENT_LIMIT: usize = 10;
-    const MAX_EVENT_LIMIT: usize = 100;
+    const MIN_EVENT_LIMIT: usize = 1;
+    const MAX_EVENT_LIMIT: usize = 1000;
 
     let query = query.unwrap_or(AcpSessionQueryInput {
         before_seq: None,
@@ -3438,7 +3511,7 @@ fn scan_acp_events(
     let limit = query
         .page_size
         .or(query.event_limit)
-        .unwrap_or(DEFAULT_EVENT_LIMIT)
+        .unwrap_or(default_event_limit)
         .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
     let before_seq = query
         .before_cursor
@@ -3654,6 +3727,83 @@ fn cancel_request_is_stale(attempt_dir: &camino::Utf8Path) -> bool {
         return false;
     };
     current_epoch_seconds().saturating_sub(requested_at) >= ACP_CANCEL_FUSE_SECONDS
+}
+
+fn apply_stale_session_completion_fuse(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    attempt_dir: &camino::Utf8Path,
+    node_path: &camino::Utf8Path,
+    session: &mut serde_json::Value,
+) -> Result<()> {
+    let pid_path = app
+        .paths
+        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
+    let node_status = if node_path.exists() {
+        read_json::<NodeState>(node_path).ok().map(|node| node.status)
+    } else {
+        None
+    };
+    apply_stale_session_completion_fuse_common(
+        &pid_path,
+        attempt_dir,
+        session,
+        node_status.map(|status| status == RunStatus::Completed).unwrap_or(false),
+    )
+}
+
+fn apply_stale_session_completion_fuse_dynamic(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    attempt_dir: &camino::Utf8Path,
+    node_path: &camino::Utf8Path,
+    session: &mut serde_json::Value,
+) -> Result<()> {
+    let pid_path = attempt_dir.join("provider.pid");
+    let node_completed = if node_path.exists() {
+        read_json::<gold_band::dynamic::DynamicNodeState>(node_path)
+            .ok()
+            .map(|node| node.status == gold_band::dynamic::DynamicNodeStatus::Completed)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let _ = (app, task_id, run_id, round_id, outer_node_id, outer_attempt_id, node_id, attempt_id);
+    apply_stale_session_completion_fuse_common(&pid_path, attempt_dir, session, node_completed)
+}
+
+fn apply_stale_session_completion_fuse_common(
+    pid_path: &camino::Utf8Path,
+    attempt_dir: &camino::Utf8Path,
+    session: &mut serde_json::Value,
+    node_completed: bool,
+) -> Result<()> {
+    let metadata_status = session
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    if !node_completed || !is_acp_session_active_status(metadata_status) {
+        return Ok(());
+    }
+    if is_cancel_requested(attempt_dir) || pid_path.exists() {
+        return Ok(());
+    }
+    session["status"] = serde_json::json!("completed");
+    if session.get("stopReason").is_none() || session["stopReason"].is_null() {
+        session["stopReason"] = serde_json::json!("end_turn");
+    }
+    session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
+    Ok(())
 }
 
 fn pause_current_attempt_after_cancel(

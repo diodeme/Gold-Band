@@ -21,7 +21,7 @@ use std::{
 use camino::Utf8PathBuf;
 use gold_band::config::{
     AcpAdapterConfig, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
+    ManagedAgentConfig, ManagedAgentType,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -194,8 +194,7 @@ pub fn create_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_settings(&settings);
-    state.update_config(config).map_err(command_error)?;
+    state.update_settings_config(&settings).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -226,8 +225,7 @@ pub fn update_agent(
             }),
         )
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_settings(&settings);
-    state.update_config(config).map_err(command_error)?;
+    state.update_settings_config(&settings).map_err(command_error)?;
     state
         .clear_agent_diagnostic(agent_type)
         .map_err(command_error)?;
@@ -246,8 +244,7 @@ pub fn delete_agent(
     let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_settings(&settings);
-    state.update_config(config).map_err(command_error)?;
+    state.update_settings_config(&settings).map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -588,6 +585,7 @@ pub fn show_artifact(
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
     let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+        let artifact_name = name.strip_suffix(".json").unwrap_or(&name);
         let path = app.paths.dynamic_node_artifact_file(
             &task_id,
             &run_id,
@@ -596,7 +594,7 @@ pub fn show_artifact(
             outer_attempt_id,
             &node_id,
             &attempt_id,
-            &name,
+            artifact_name,
         );
         app.artifact_show_path(&path)
     } else {
@@ -811,6 +809,7 @@ pub async fn send_acp_prompt(
                     &node_id,
                     &attempt_id,
                     prompt,
+                    prompt_id.clone(),
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
@@ -1135,6 +1134,7 @@ pub fn cancel_acp_session(
         let requested_at = current_timestamp();
         request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
         cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+        app.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -1154,6 +1154,7 @@ pub fn cancel_acp_session(
         let requested_at = current_timestamp();
         request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
         cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+        app.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
         acp_session_vm(
             &app,
             &task_id,
@@ -1332,8 +1333,7 @@ pub fn save_desktop_preferences(
     let settings = app
         .set_user_use_local_claude(use_local_claude)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_settings(&settings);
-    state.update_config(config).map_err(command_error)?;
+    state.update_settings_config(&settings).map_err(command_error)?;
     Ok(preferences_vm(theme, language, font, use_local_claude))
 }
 
@@ -1348,9 +1348,9 @@ pub fn save_updater_settings(
     let settings = app
         .set_user_desktop_updater_url_override(override_url)
         .map_err(command_error)?;
-    let config = RuntimeConfig::default().apply_settings(&settings);
+    state.update_settings_config(&settings).map_err(command_error)?;
+    let config = state.context().map_err(command_error)?.config;
     let settings = updater_settings(&config);
-    state.update_config(config).map_err(command_error)?;
     Ok(settings)
 }
 

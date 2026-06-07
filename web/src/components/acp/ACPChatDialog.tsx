@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
+import { ChevronDown, CircleStop, Clock, Eye, FileText, Loader2, Package, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -17,16 +17,20 @@ import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
 import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
 import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpEventForAttempt, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
 import { formatLocalDateTime } from '@/lib/datetime';
-import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
+import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, showArtifact, showAttachment, submitManualCheck } from '@/api';
 import { getRuntimeApi } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
 import { displayAppError, displayStatus } from '@/i18n';
-import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm } from '@/types';
+import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm, AssetItemVm, ContentVm } from '@/types';
 
 export type AcpExternalComposerState =
   | { kind: 'normal' }
   | { kind: 'invalid-workflow'; workflowError: string }
   | { kind: 'runtime-error'; errorMessage: string; onRepair?: () => void };
+
+export interface ACPChatDialogHandle {
+  openArtifactsDialog: (asset?: AssetItemVm) => void;
+}
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
@@ -48,6 +52,9 @@ interface ACPChatDialogProps {
   onSessionStopped?: () => void;
   onAtBottomChange?: (atBottom: boolean) => void;
   externalComposerState?: AcpExternalComposerState;
+  artifacts?: AssetItemVm[];
+  attachments?: AssetItemVm[];
+  usageCompact?: boolean;
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
@@ -173,7 +180,7 @@ function loadedEventBufferLimit(eventPageSize: number) {
   return Math.max(MIN_LOADED_EVENT_BUFFER_LIMIT, Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3));
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped, onAtBottomChange, externalComposerState }: ACPChatDialogProps) {
+export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>(function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped, onAtBottomChange, externalComposerState, artifacts = [], attachments = [], usageCompact }, ref) {
   const { t } = useTranslation();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(effectiveEventPageSize);
@@ -214,6 +221,10 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const [dismissedPermissionIds, setDismissedPermissionIds] = useState<Set<string>>(() => new Set());
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<string | null>(null);
+  const [artifactsDialogOpen, setArtifactsDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<AssetItemVm | null>(null);
+  const [artifactContent, setArtifactContent] = useState<ContentVm | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const preservingScrollRef = useRef(false);
@@ -328,6 +339,33 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     onOpenChange: handleTimelineItemOpenChange,
   }), [expandedItems, handleTimelineItemOpenChange]);
 
+  const handleOpenArtifactDetail = useCallback(async (asset: AssetItemVm) => {
+    setSelectedArtifact(asset);
+    setArtifactContent(null);
+    setArtifactLoading(true);
+    try {
+      const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
+      const assetOuterNodeId = outerNodeId && outerAttemptId ? outerNodeId : undefined;
+      const assetOuterAttemptId = outerNodeId && outerAttemptId ? outerAttemptId : undefined;
+      const content = await loader(taskId, runId, asset.roundId || roundId, asset.nodeId, asset.attemptId, asset.name, assetOuterNodeId, assetOuterAttemptId);
+      setArtifactContent(content);
+    } catch {
+      setArtifactContent(null);
+    } finally {
+      setArtifactLoading(false);
+    }
+  }, [taskId, runId, roundId]);
+
+  useImperativeHandle(ref, () => ({
+    openArtifactsDialog: (asset?: AssetItemVm) => {
+      if (asset) {
+        handleOpenArtifactDetail(asset);
+      } else {
+        setArtifactsDialogOpen(true);
+      }
+    },
+  }), [handleOpenArtifactDetail]);
+
   useEffect(() => {
     const keys = new Set(timeline.map(timelineEventKey));
     setExpandedItems((current) => {
@@ -356,6 +394,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const composerProcessingKind: AcpProcessingKind = cancelling ? 'stopping' : submittingPrompt ? 'sending' : awaitingFirstResponse ? 'processing' : timeline.length === 0 ? 'launching' : processingKindFromTimeline(composerLatestEvent, false);
   const showComposerStatus = !waitingForPermission && (composerStatusActive || composerSessionSeconds != null);
   const composerStatusStartAt = submittingPrompt || awaitingFirstResponse || cancelling ? activeTurnStartedAt : composerLatestEvent?.startedAt ?? composerLatestEvent?.timestamp ?? activeTurnStartedAt;
+  const usageStepSeconds = useElapsedSeconds(composerStatusActive && composerProcessingKind !== 'sending', composerStatusStartAt);
   const composerInputHint = waitingForPermission ? t('acp.permissionPending') : cancelling ? t('acp.stopping') : submittingPrompt ? t('acp.sending') : composerStatusActive ? t('acp.processing') : t('acp.promptInputHint');
   const composerPlaceholder = planInterventionOption ? t('acp.planInterventionHint') : t('acp.composerPlaceholder');
   const canSubmitPrompt = Boolean(prompt.trim()) && !cancelling && (planInterventionOption ? !sending : !activePromptLocked);
@@ -713,10 +752,23 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         rawActive={canvasMode === 'raw'}
         rawLoading={rawLoading}
         systemPromptAvailable={Boolean(effective.systemPromptAppend?.trim()) || Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))}
+        artifactCount={artifacts.length + attachments.length}
         onToggleRaw={toggleRawFrames}
         onOpenSystemPrompt={() => setSystemPromptOpen(true)}
+        onOpenArtifacts={() => setArtifactsDialogOpen(true)}
       />
       <SystemPromptDialog open={systemPromptOpen} prompt={effective.systemPromptAppend} options={systemPromptOptions} onOpenChange={setSystemPromptOpen} />
+      <ACPArtifactsDialog
+        open={artifactsDialogOpen}
+        artifacts={artifacts}
+        attachments={attachments}
+        selectedArtifact={selectedArtifact}
+        artifactContent={artifactContent}
+        artifactLoading={artifactLoading}
+        onOpenChange={setArtifactsDialogOpen}
+        onOpenDetail={handleOpenArtifactDetail}
+        onBack={() => { setSelectedArtifact(null); setArtifactContent(null); }}
+      />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === 'raw' ? (
@@ -757,7 +809,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       </div>
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
-          <AcpUsagePanel usage={effective?.usage} isRunning={isSessionActive(effective.status)} />
+          <AcpUsagePanel usage={effective?.usage} isRunning={isSessionActive(effective.status)} compact={usageCompact} stepSeconds={usageCompact ? (composerStatusActive ? usageStepSeconds : null) : null} sessionSeconds={usageCompact ? composerSessionSeconds : null} />
           {externalComposerState?.kind === 'invalid-workflow' ? (
             <AcpExternalComposerState kind="invalid-workflow" message={externalComposerState.workflowError} />
           ) : externalComposerState?.kind === 'runtime-error' ? (
@@ -781,7 +833,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
               isLoading={sending}
               className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
             >
-              {showComposerStatus ? (
+              {showComposerStatus && !usageCompact ? (
                 <AcpComposerStatus
                   kind={composerProcessingKind}
                   active={composerStatusActive}
@@ -822,7 +874,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
       ) : null}
     </div>
   );
-}
+});
 
 function AcpErrorState({ reason }: { reason: string }) {
   return (
@@ -962,33 +1014,37 @@ function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
   );
 }
 
-export function ACPSessionHeader({ session, rawActive, rawLoading, systemPromptAvailable, onToggleRaw, onOpenSystemPrompt }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; systemPromptAvailable?: boolean; onToggleRaw: () => void; onOpenSystemPrompt: () => void }) {
+export function ACPSessionHeader({ session, rawActive, rawLoading, systemPromptAvailable, artifactCount = 0, onToggleRaw, onOpenSystemPrompt, onOpenArtifacts }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; systemPromptAvailable?: boolean; artifactCount?: number; onToggleRaw: () => void; onOpenSystemPrompt: () => void; onOpenArtifacts?: () => void }) {
   const { t } = useTranslation();
   const mode = session.config?.currentModeName ?? session.config?.currentModeId;
   const hasSystemPrompt = systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
   return (
-    <div className="shrink-0 border-b bg-muted/10 px-5 py-3">
-      <div className="min-w-0 space-y-1.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-base font-semibold">{session.adapterDisplayName ?? session.provider}</span>
-          {mode ? (
-            <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
-              <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-              <span className="min-w-0 truncate text-foreground">{mode}</span>
-            </Badge>
+    <div className="shrink-0 border-b bg-muted/10 px-5 py-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 truncate text-base font-semibold">{session.adapterDisplayName ?? session.provider}</span>
+        {mode ? (
+          <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+            <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
+            <span className="min-w-0 truncate text-foreground">{mode}</span>
+          </Badge>
+        ) : null}
+        <span className="truncate text-xs text-muted-foreground">{session.sessionId ?? t('acp.noSessionId')}</span>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {artifactCount > 0 && onOpenArtifacts ? (
+            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenArtifacts}>
+              <Package className="size-3" />
+              {t('acp.viewArtifacts')}
+            </Button>
           ) : null}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenSystemPrompt} disabled={!hasSystemPrompt}>
-              <FileText className="size-3" />
-              {t('acp.systemPrompt')}
-            </Button>
-            <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
-              {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
-              {t('acp.rawFrames')}
-            </Button>
-          </div>
+          <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenSystemPrompt} disabled={!hasSystemPrompt}>
+            <FileText className="size-3" />
+            {t('acp.systemPrompt')}
+          </Button>
+          <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
+            {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
+            {t('acp.rawFrames')}
+          </Button>
         </div>
-        <div className="truncate text-xs text-muted-foreground">{session.sessionId ?? t('acp.noSessionId')}</div>
       </div>
     </div>
   );
@@ -1007,7 +1063,7 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
   const content = (selectedPrompt ?? prompt)?.trim() || '';
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden p-0">
+      <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle className="text-base">{t('acp.systemPromptTitle')}</DialogTitle>
         </DialogHeader>
@@ -1025,6 +1081,91 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
           ) : (
             <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t('acp.systemPromptEmpty')}</div>
           )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ACPArtifactsDialog({ open, artifacts, attachments, selectedArtifact, artifactContent, artifactLoading, onOpenChange, onOpenDetail, onBack }: { open: boolean; artifacts: AssetItemVm[]; attachments: AssetItemVm[]; selectedArtifact: AssetItemVm | null; artifactContent: ContentVm | null; artifactLoading: boolean; onOpenChange: (open: boolean) => void; onOpenDetail: (asset: AssetItemVm) => void; onBack: () => void }) {
+  const { t } = useTranslation();
+  const allAssets = [...artifacts.map((a) => ({ ...a, kind: 'artifact' as const })), ...attachments.map((a) => ({ ...a, kind: 'attachment' as const }))];
+
+  if (selectedArtifact) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
+          <DialogHeader className="border-b border-border/40 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={onBack}>
+                <ChevronDown className="size-3 rotate-90" />
+                {t('common.back')}
+              </Button>
+              <DialogTitle className="truncate text-base">{selectedArtifact.title}</DialogTitle>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto p-5">
+            {artifactLoading ? (
+              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground"><Loader2 className="mr-2 size-4 animate-spin" />{t('common.loading')}</div>
+            ) : artifactContent ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{selectedArtifact.kind}</Badge>
+                  <span>{artifactContent.kind}</span>
+                </div>
+                <pre className="max-h-[60vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">{artifactContent.content}</pre>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">{t('common.empty')}</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle className="text-base">{t('acp.artifactsTitle')}</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 space-y-3 overflow-auto px-5 pb-5">
+          {attachments.length > 0 ? (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t('acp.attachments')}</h3>
+                <Badge variant="secondary" className="rounded-full px-2.5">{attachments.length}</Badge>
+              </div>
+              <div className="space-y-1.5">
+                {attachments.map((item) => (
+                  <Button key={`attachment-${item.name}`} variant="outline" className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42" onClick={() => onOpenDetail(item)}>
+                    <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
+                  </Button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {artifacts.length > 0 ? (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t('acp.artifacts')}</h3>
+                <Badge variant="secondary" className="rounded-full px-2.5">{artifacts.length}</Badge>
+              </div>
+              <div className="space-y-1.5">
+                {artifacts.map((item) => (
+                  <Button key={`artifact-${item.name}`} variant="outline" className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42" onClick={() => onOpenDetail(item)}>
+                    <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
+                  </Button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {allAssets.length === 0 ? (
+            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">{t('common.empty')}</div>
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>
@@ -1181,10 +1322,10 @@ const AcpComposerStatus = memo(function AcpComposerStatus({ kind, active, startA
         <>
           <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" style={{ willChange: 'transform' }} />
           <span className="font-medium text-foreground">{label}</span>
-          {kind === 'sending' ? <AnimatedEllipsis /> : <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.stepElapsed', { duration: formatElapsedDuration(stepSeconds) })}</span>}
+          {kind === 'sending' ? <AnimatedEllipsis /> : <span className="flex items-center gap-1.5"><span className="text-muted-foreground/80">{t('acp.timingStep')}</span><span className="tabular-nums text-foreground/80">{formatElapsedDuration(stepSeconds)}</span></span>}
         </>
       ) : null}
-      {sessionSeconds != null ? <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.sessionElapsed', { duration: formatElapsedDuration(sessionSeconds) })}</span> : null}
+      {sessionSeconds != null ? <span className="flex items-center gap-1.5"><span className="text-muted-foreground/80">{t('acp.timingSession')}</span><span className="tabular-nums text-foreground/80">{formatElapsedDuration(sessionSeconds)}</span></span> : null}
     </div>
   );
 });

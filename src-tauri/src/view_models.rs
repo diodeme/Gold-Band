@@ -591,6 +591,7 @@ pub struct AssetItemVm {
     pub title: String,
     pub tone: String,
     pub preview: String,
+    pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
 }
@@ -1402,7 +1403,7 @@ fn round_attempt_nodes(
     Ok(nodes)
 }
 
-fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
+pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
     GraphVm {
         nodes: workflow
             .nodes
@@ -2337,12 +2338,12 @@ fn selected_node_detail_vm(
     let artifacts = app
         .artifact_list(task_id, run_id, round_id, node_id, &node.attempt_id)?
         .into_iter()
-        .map(|name| asset_item_vm("artifact", node_id, &node.attempt_id, name))
+        .map(|name| asset_item_vm("artifact", round_id, node_id, &node.attempt_id, name))
         .collect::<Vec<_>>();
     let attachments = app
         .attachment_list(task_id, run_id, round_id, node_id, &node.attempt_id)?
         .into_iter()
-        .map(|name| asset_item_vm("attachment", node_id, &node.attempt_id, name))
+        .map(|name| asset_item_vm("attachment", round_id, node_id, &node.attempt_id, name))
         .collect::<Vec<_>>();
     let worker_ref_exists = app
         .paths
@@ -2528,7 +2529,7 @@ fn selected_dynamic_node_detail_vm(
             entries
                 .filter_map(|entry| entry.ok())
                 .filter_map(|entry| entry.file_name().into_string().ok())
-                .map(|name| asset_item_vm("artifact", node_id, &dynamic_attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
+                .map(|name| asset_item_vm("artifact", round_id, node_id, &dynamic_attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -2537,7 +2538,7 @@ fn selected_dynamic_node_detail_vm(
             entries
                 .filter_map(|entry| entry.ok())
                 .filter_map(|entry| entry.file_name().into_string().ok())
-                .map(|name| asset_item_vm("attachment", node_id, &dynamic_attempt_id, name))
+                .map(|name| asset_item_vm("attachment", round_id, node_id, &dynamic_attempt_id, name))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -4428,7 +4429,7 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Result<Option<String
     Ok(None)
 }
 
-fn asset_item_vm(kind: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
+fn asset_item_vm(kind: &str, round_id: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
     AssetItemVm {
         kind: kind.to_string(),
         title: name.clone(),
@@ -4439,6 +4440,7 @@ fn asset_item_vm(kind: &str, node_id: &str, attempt_id: &str, name: String) -> A
             "neutral"
         }
         .to_string(),
+        round_id: round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
         name,

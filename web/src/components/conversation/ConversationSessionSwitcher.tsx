@@ -83,14 +83,19 @@ function TreeNode({
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="ml-3 border-l border-border/60 pl-3">
-            {node.attempts.map((attempt) => (
-              <SessionLeaf
-                key={`${attempt.roundId}/${attempt.nodeId}/${attempt.attemptId}`}
-                leaf={attempt}
-                selected={selectedKey === `${attempt.roundId}/${attempt.nodeId}/${attempt.attemptId}`}
-                onSelect={() => onSelectSession(attempt)}
-              />
-            ))}
+            {node.attempts.map((attempt) => {
+                const key = attempt.outerNodeId && attempt.outerAttemptId
+                  ? `${attempt.roundId}/${attempt.outerNodeId}/${attempt.outerAttemptId}/${attempt.nodeId}/${attempt.attemptId}`
+                  : `${attempt.roundId}/${attempt.nodeId}/${attempt.attemptId}`;
+                return (
+                  <SessionLeaf
+                    key={key}
+                    leaf={attempt}
+                    selected={selectedKey === key}
+                    onSelect={() => onSelectSession(attempt)}
+                  />
+                );
+              })}
             {node.outerNodes?.map((outerNode) => (
               <TreeNode key={outerNode.nodeId} node={outerNode} selectedKey={selectedKey} onSelectSession={onSelectSession} depth={depth + 1} />
             ))}

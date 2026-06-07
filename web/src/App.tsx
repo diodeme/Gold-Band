@@ -818,8 +818,13 @@ export function App() {
         <ConversationRunPage
           run={conversationRun}
           appConfig={appConfig}
+          agentRegistry={agentRegistry}
           onRerun={() => {}}
           onEditWorkflow={() => {}}
+          onSaveWorkflow={async (json) => {
+            const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
+            await saveTaskWorkflow(conversationPage.taskId, dsl);
+          }}
           onSelectSession={(leaf) => {
             const key = leaf.outerNodeId
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`

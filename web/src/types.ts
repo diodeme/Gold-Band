@@ -664,6 +664,7 @@ export interface AssetItemVm {
   title: string;
   tone: string;
   preview: string;
+  roundId: string;
   nodeId: string;
   attemptId: string;
 }
@@ -860,6 +861,7 @@ export interface ConversationRunVm {
   workflowValid: boolean;
   workflowError?: WorkflowErrorVm | null;
   workflowJson?: string | null;
+  workflowGraph: GraphVm;
   resumable: boolean;
   pauseReason?: string | null;
 }

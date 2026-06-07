@@ -8,7 +8,9 @@ use gold_band::app::is_run_continuable;
 use gold_band::domain::RunStatus;
 use gold_band::domain::NodeType;
 use gold_band::dynamic::DynamicGraphState;
+use gold_band::dsl::WorkflowDsl;
 use gold_band::storage::read_json;
+use crate::view_models::{round_detail_vm, workflow_graph_vm, AssetItemVm, GraphVm};
 
 // ── Conversation View Models ──
 
@@ -79,6 +81,7 @@ pub struct ConversationRunVm {
     pub workflow_valid: bool,
     pub workflow_error: Option<crate::view_models::WorkflowErrorVm>,
     pub workflow_json: Option<String>,
+    pub workflow_graph: GraphVm,
     pub resumable: bool,
     pub pause_reason: Option<String>,
 }
@@ -362,6 +365,19 @@ fn enum_label<T: std::fmt::Debug>(value: &T) -> String {
     format!("{:?}", value).to_lowercase()
 }
 
+fn asset_item_vm(kind: &str, round_id: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
+    AssetItemVm {
+        kind: kind.to_string(),
+        title: name.clone(),
+        preview: name.clone(),
+        tone: if kind == "artifact" { "accent" } else { "neutral" }.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        name,
+    }
+}
+
 fn find_leaf_by_key(
     rounds: &[ConversationRoundNodeVm],
     key: &str,
@@ -454,6 +470,22 @@ pub fn conversation_run_vm(
     eprintln!("[conv_run] run_mode={run_mode} auto_title={auto_title}");
 
     // Build the session tree from rounds/nodes/attempts
+    // Read workflow snapshot once for node order + validity + raw JSON
+    let workflow_snapshot: Option<WorkflowDsl> =
+        gold_band::storage::read_json::<WorkflowDsl>(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+        ).ok();
+    let workflow_node_order: HashMap<String, usize> = workflow_snapshot
+        .as_ref()
+        .map(|dsl| {
+            dsl.nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.id().to_string(), i))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let rounds = app.round_list(task_id, run_id)?;
     eprintln!("[conv_run] found {} rounds", rounds.len());
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
@@ -461,7 +493,14 @@ pub fn conversation_run_vm(
 
     for round in &rounds {
         // List all nodes for this round (latest attempt per node)
-        let nodes = app.node_list(task_id, run_id, &round.id)?;
+        let mut nodes = app.node_list(task_id, run_id, &round.id)?;
+        // Sort by workflow DSL order so the session tree matches the intended workflow sequence
+        nodes.sort_by_key(|n| {
+            workflow_node_order
+                .get(&n.node_id)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
         eprintln!("[conv_run]   round {} ({}) → {} nodes", round.index, round.id, nodes.len());
         let mut tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
 
@@ -711,21 +750,95 @@ pub fn conversation_run_vm(
     };
     eprintln!("[conv_run] selected_session={}", if selected_session.is_some() { "Some" } else { "None" });
 
+    let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            leaf.outer_node_id.as_deref(),
+            leaf.outer_attempt_id.as_deref(),
+        ) {
+            let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
+                task_id,
+                run_id,
+                &leaf.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &leaf.node_id,
+                &leaf.attempt_id,
+            );
+            let attachments_dir = app.paths.dynamic_node_attachments_dir(
+                task_id,
+                run_id,
+                &leaf.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &leaf.node_id,
+                &leaf.attempt_id,
+            );
+            let artifacts = std::fs::read_dir(artifacts_dir.as_std_path())
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .filter_map(|entry| entry.file_name().into_string().ok())
+                        .map(|name| asset_item_vm("artifact", &leaf.round_id, &leaf.node_id, &leaf.attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let attachments = std::fs::read_dir(attachments_dir.as_std_path())
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .filter_map(|entry| entry.file_name().into_string().ok())
+                        .map(|name| asset_item_vm("attachment", &leaf.round_id, &leaf.node_id, &leaf.attempt_id, name))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (artifacts, attachments)
+        } else {
+            let artifacts = app
+                .artifact_list(task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| asset_item_vm("artifact", &leaf.round_id, &leaf.node_id, &leaf.attempt_id, name))
+                .collect::<Vec<_>>();
+            let attachments = app
+                .attachment_list(task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| asset_item_vm("attachment", &leaf.round_id, &leaf.node_id, &leaf.attempt_id, name))
+                .collect::<Vec<_>>();
+            (artifacts, attachments)
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
     let run_outcome = run.outcome.map(|o| enum_label(&o));
 
-    // Read workflow snapshot for validity check
-    let (workflow_valid, workflow_json) =
-        if let Ok(snapshot) = gold_band::storage::read_json::<serde_json::Value>(
-            &app.paths.workflow_snapshot_file(task_id, run_id),
-        ) {
-            (true, Some(snapshot.to_string()))
-        } else {
-            (true, None)
-        };
+    let (workflow_valid, workflow_json) = if let Some(ref dsl) = workflow_snapshot {
+        (true, Some(serde_json::to_string(dsl).unwrap_or_default()))
+    } else {
+        (true, None)
+    };
+
+    // Build workflow graph from the selected session's round so the conversation view
+    // matches the old runtime graph, including status/icons/counts.
+    let workflow_graph = selected_leaf
+        .as_ref()
+        .and_then(|leaf| round_detail_vm(app, task_id, run_id, &leaf.round_id, None).ok())
+        .map(|detail| detail.graph)
+        .or_else(|| {
+            workflow_snapshot
+                .as_ref()
+                .map(|dsl| workflow_graph_vm(dsl))
+        })
+        .unwrap_or_else(|| GraphVm {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        });
 
     Ok(ConversationRunVm {
+        workflow_graph,
         project_id: project_id.to_string(),
         task_id: task_id.to_string(),
         run_id: run_id.to_string(),
@@ -741,8 +854,8 @@ pub fn conversation_run_vm(
         },
         selected_session,
         active_sessions,
-        artifacts: Vec::new(),
-        attachments: Vec::new(),
+        artifacts,
+        attachments,
         workflow_status: "valid".to_string(),
         workflow_valid,
         workflow_error: None,
@@ -800,6 +913,7 @@ pub fn create_conversation_run_vm(
         workflow_valid: true,
         workflow_error: None,
         workflow_json: None,
+        workflow_graph: GraphVm { nodes: Vec::new(), edges: Vec::new() },
         resumable: false,
         pause_reason: None,
     })

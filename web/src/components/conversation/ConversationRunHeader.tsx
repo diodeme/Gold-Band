@@ -1,4 +1,4 @@
-import { RotateCcw, Workflow, ChevronDown, Pencil } from 'lucide-react';
+import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown, Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useCallback, useRef, useState } from 'react';
 import type { ConversationRunVm } from '../../types';
@@ -10,6 +10,8 @@ interface ConversationRunHeaderProps {
   run: ConversationRunVm;
   onRerun: () => void;
   onEditWorkflow: () => void;
+  onViewWorkflow: () => void;
+  onOpenInFileManager?: () => void;
   onToggleSessionSwitcher: () => void;
   sessionSwitcherOpen: boolean;
   onTitleChange?: (title: string) => void;
@@ -19,6 +21,8 @@ export function ConversationRunHeader({
   run,
   onRerun,
   onEditWorkflow,
+  onViewWorkflow,
+  onOpenInFileManager,
   onToggleSessionSwitcher,
   sessionSwitcherOpen,
   onTitleChange,
@@ -69,6 +73,7 @@ export function ConversationRunHeader({
             title={t('conversation.runtime.titleEdit')}
           >
             <h1 className="min-w-0 truncate text-base font-semibold text-foreground">{run.title}</h1>
+            <span className="shrink-0 text-[11px] text-muted-foreground/60">{run.runId}</span>
             <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           </button>
         )}
@@ -89,14 +94,24 @@ export function ConversationRunHeader({
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">
           {run.runMode === 'workflow' ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-7" onClick={onEditWorkflow}>
-                  <Workflow className="size-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('conversation.runtime.editWorkflow')}</TooltipContent>
-            </Tooltip>
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="size-7" onClick={onViewWorkflow}>
+                    <Eye className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t('conversation.runtime.viewWorkflow')}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="size-7" onClick={onEditWorkflow}>
+                    <Workflow className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t('conversation.runtime.editWorkflow')}</TooltipContent>
+              </Tooltip>
+            </>
           ) : null}
 
           <Tooltip>
@@ -109,6 +124,17 @@ export function ConversationRunHeader({
               {isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')}
             </TooltipContent>
           </Tooltip>
+
+          {onOpenInFileManager ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-7" onClick={onOpenInFileManager}>
+                  <FolderOpen className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('conversation.runtime.openInFileManager')}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
       </div>
     </div>

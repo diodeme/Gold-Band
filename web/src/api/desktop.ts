@@ -213,4 +213,7 @@ export const desktopApi: RuntimeApi = {
   saveConversationPreference(key, value) {
     return invokeCommand('save_conversation_preference', { key, value });
   },
+  openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('open_in_file_manager', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
 };

@@ -70,6 +70,8 @@ export function ConversationSidebar({
     });
   };
 
+  const activeRunId = active.kind === 'conversation-run' ? active.runId : null;
+
   const toggleWorkspace = (projectId: string) => {
     setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
@@ -168,6 +170,7 @@ export function ConversationSidebar({
                           task={task}
                           pinned
                           isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                          activeRunId={activeRunId}
                           onSelect={() => onSelectTask(task.projectId, task.taskId)}
                           onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
                           onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
@@ -219,6 +222,7 @@ export function ConversationSidebar({
                         task={task}
                         pinned={vm.pinnedTasks.some((p) => p.projectId === task.projectId && p.taskId === task.taskId)}
                         isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                        activeRunId={activeRunId}
                         onSelect={() => onSelectTask(task.projectId, task.taskId)}
                         onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
@@ -277,6 +281,7 @@ function TaskRow({
   task,
   pinned,
   isActive,
+  activeRunId,
   onSelect,
   onSelectRun,
   onPin,
@@ -287,6 +292,7 @@ function TaskRow({
   task: ConversationTaskRowVm;
   pinned: boolean;
   isActive: boolean;
+  activeRunId?: string | null;
   onSelect: () => void;
   onSelectRun?: (runId: string) => void;
   onPin?: () => void;
@@ -340,7 +346,10 @@ function TaskRow({
   return (
     <div>
       <div
-        className="group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-sidebar-accent cursor-pointer"
+        className={cn(
+          'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
+          isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
+        )}
         onClick={handleRowClick}
       >
         <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
@@ -389,7 +398,10 @@ function TaskRow({
             return (
               <div
                 key={run.runId}
-                className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-sidebar-accent cursor-pointer text-xs"
+                className={cn(
+                  'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
+                  activeRunId === run.runId ? 'bg-sidebar-accent text-sidebar-primary' : 'hover:bg-sidebar-accent',
+                )}
                 onClick={() => onSelectRun?.(run.runId)}
               >
                 <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />

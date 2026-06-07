@@ -125,6 +125,7 @@ export interface RuntimeApi {
   removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
+  openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

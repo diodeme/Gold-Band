@@ -267,6 +267,7 @@ export const browserApi: RuntimeApi = {
       attachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
       resumable: false,
     };
     return Promise.resolve(run);
@@ -290,6 +291,7 @@ export const browserApi: RuntimeApi = {
       attachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
       resumable: false,
     };
     return Promise.resolve(run);
@@ -332,6 +334,9 @@ export const browserApi: RuntimeApi = {
     return this.getConversationSidebar();
   },
   saveConversationPreference(_key, _value) {
+    return Promise.resolve();
+  },
+  openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();
   },
 };

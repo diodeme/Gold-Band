@@ -18,8 +18,10 @@
 - run 历史始终保留
 
 ### 编辑工作流
-- WORKFLOW 模式下显示工作流 icon
-- 点击打开 workflow drawer
+- WORKFLOW 模式下显示查看按钮（Eye 图标）和编辑按钮（Workflow 图标）
+- 查看工作流：打开 Sheet，复用旧 UI 的运行态工作图组件与数据链路，展示当前选中 session 所在 round 的实际路径图
+- 查看工作流中的节点状态、暂停/成功图标、产物数、附件数、agent 标识等信息应与旧 UI 保持一致
+- 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器
 - 修改只影响未来 run，不影响当前 run snapshot
 
 ## Session Switcher
@@ -56,6 +58,15 @@
 ### 停止
 - 停止并重跑在顶部操作区
 - composer 内也有 stop 按钮（ACP 会话停止）
+
+## 会话信息栏（ACPSessionHeader）
+
+- 单行布局：模型名 + 权限模式 Badge + sessionId + 操作按钮
+- 有产物/附件时：系统提示和原始帧按钮左侧显示"查看产物"按钮（Package 图标）
+- 产物来源固定为当前选中 session（含 AI-DYNAMIC 内部节点）的 artifacts / attachments，不使用 run 级聚合占位数据
+- 点击查看产物：弹窗列表展示当前选中 session 的所有 artifacts 和 attachments，点击具体项加载并显示内容
+- 产物弹窗遮罩使用轻量弱化遮罩（低透明深色 + blur），主体面板保持半透明而不过度强调，不做厚重黑色卡片
+- sessionId 与模型名、权限模式同行，不再单独占行
 
 ## 产物/附件信息区
 

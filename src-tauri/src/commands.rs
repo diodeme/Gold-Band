@@ -1889,3 +1889,77 @@ pub async fn search_acp_sessions(
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
+
+#[tauri::command]
+pub fn open_in_file_manager(
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<()> {
+    let app = state.app().map_err(command_error)?;
+    // outer_node_id is the container node (e.g. "ai-dynamic"),
+    // node_id is the actual dynamic internal node (e.g. "create-hello-world-python-class").
+    let path = match (&outer_node_id, &outer_attempt_id, &node_id, &attempt_id) {
+        (Some(onid), Some(oaid), nid, aid) => {
+            let p = app.paths.dynamic_node_attempt_dir(
+                &task_id, &run_id, &round_id,
+                onid, oaid,
+                nid,
+                aid.as_deref().unwrap_or(""),
+            );
+            eprintln!("[open_in_file_manager] dynamic path: {}", p);
+            p
+        }
+        _ => {
+            let p = if let Some(aid) = &attempt_id {
+                app.paths.attempt_dir(&task_id, &run_id, &round_id, &node_id, aid)
+            } else {
+                app.paths.node_dir(&task_id, &run_id, &round_id, &node_id)
+            };
+            eprintln!("[open_in_file_manager] path: {}", p);
+            p
+        }
+    };
+    open_path(path.as_std_path()).map_err(|e| {
+        CommandErrorVm::new(
+            "file-manager.open-failed",
+            serde_json::json!({ "message": e }),
+        )
+    })
+}
+
+fn open_path(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open finder: {}", e))?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Err("Unsupported OS".to_string())
+    }
+}

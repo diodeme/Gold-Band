@@ -266,3 +266,7 @@ export function syncConversationWorkspace(workspacePath: string) {
 export function saveConversationPreference(key: string, value: unknown) {
   return getRuntimeApi().saveConversationPreference(key, value);
 }
+
+export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+}

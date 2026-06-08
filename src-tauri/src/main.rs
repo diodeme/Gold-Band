@@ -14,7 +14,7 @@ use commands::{
     cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_profile, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
-    check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
+    check_update_manual, download_and_install_update, get_run_detail, get_startup_check_result, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
     dismiss_update_announcement, kill_run, mark_settings_advanced_update_seen, open_in_file_manager,
     mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
@@ -36,7 +36,7 @@ use commands_conversation::{
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
-use updater::start_update_polling;
+use updater::{start_update_polling, startup_critical_check};
 use tauri::{Manager, WindowEvent};
 
 fn main() {
@@ -69,6 +69,10 @@ fn run() -> anyhow::Result<()> {
                     let _ = state.refresh_all_agent_diagnostics();
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
+            });
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = startup_critical_check(&handle).await;
             });
             start_update_polling(app.handle().clone());
             Ok(())
@@ -131,6 +135,7 @@ fn run() -> anyhow::Result<()> {
             dismiss_update_announcement,
             check_update_manual,
             download_and_install_update,
+            get_startup_check_result,
             search_acp_prompts,
             search_acp_sessions,
             search_tasks,

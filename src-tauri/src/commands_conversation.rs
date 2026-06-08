@@ -51,7 +51,6 @@ pub fn get_conversation_run(
     run_id: String,
     selected_session_key: Option<String>,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    eprintln!("[cmd] get_conversation_run project={project_id} task={task_id} run={run_id} session_key={selected_session_key:?}");
     let app = state.app().map_err(command_error)?;
     let result = crate::view_models_conversation::conversation_run_vm(
         &app,
@@ -61,10 +60,6 @@ pub fn get_conversation_run(
         selected_session_key.as_deref(),
     )
     .map_err(command_error);
-    match &result {
-        Ok(vm) => eprintln!("[cmd] get_conversation_run OK: title={} rounds={} has_session={}", vm.title, vm.session_tree.rounds.len(), vm.selected_session.is_some()),
-        Err(e) => eprintln!("[cmd] get_conversation_run ERROR: {e:?}"),
-    }
     result
 }
 

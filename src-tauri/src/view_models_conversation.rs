@@ -436,23 +436,19 @@ pub fn conversation_run_vm(
     run_id: &str,
     selected_session_key: Option<&str>,
 ) -> anyhow::Result<ConversationRunVm> {
-    eprintln!("[conv_run] loading task={task_id} run={run_id} project={project_id}");
 
     // Read the run state from disk
     let run = match app.run_status(task_id, run_id) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[conv_run] run_status FAILED: {e:#}");
             return Err(anyhow::anyhow!("run not found: {task_id}/{run_id}: {e}"));
         }
     };
-    eprintln!("[conv_run] run loaded: status={:?} outcome={:?}", run.status, run.outcome);
 
     // Read the task state for title
     let task_state = app.task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
     let title = task_state.title.unwrap_or_else(|| task_id.to_string());
-    eprintln!("[conv_run] task title={title}");
 
     // Read conversation metadata if exists
     let conversation_json_path = app.paths.task_dir(task_id)
@@ -467,7 +463,6 @@ pub fn conversation_run_vm(
     } else {
         ("workflow".to_string(), false)
     };
-    eprintln!("[conv_run] run_mode={run_mode} auto_title={auto_title}");
 
     // Build the session tree from rounds/nodes/attempts
     // Read workflow snapshot once for node order + validity + raw JSON
@@ -487,7 +482,6 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
-    eprintln!("[conv_run] found {} rounds", rounds.len());
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
 
@@ -501,7 +495,6 @@ pub fn conversation_run_vm(
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        eprintln!("[conv_run]   round {} ({}) → {} nodes", round.index, round.id, nodes.len());
         let mut tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
 
         for node in &nodes {
@@ -509,7 +502,6 @@ pub fn conversation_run_vm(
             let all_attempts = app.attempt_list(
                 task_id, run_id, &round.id, &node.node_id,
             )?;
-            eprintln!("[conv_run]     node {} (type={:?}) → {} attempts ai_dynamic={is_ai_dynamic}", node.node_id, node.node_type, all_attempts.len());
 
             // Build child nodes for AI-DYNAMIC
             let mut outer_nodes: Option<Vec<ConversationTreeNodeVm>> = None;
@@ -536,7 +528,6 @@ pub fn conversation_run_vm(
                                 })
                                 .unwrap_or_default();
                             dyn_attempt_ids.sort();
-                            eprintln!("[conv_run]       dynamic child {} → {} attempts", dyn_node.id, dyn_attempt_ids.len());
 
                             let mut dyn_leafs: Vec<ConversationSessionLeafVm> = Vec::new();
                             for dyn_attempt_id in &dyn_attempt_ids {
@@ -609,7 +600,6 @@ pub fn conversation_run_vm(
                                 outer_nodes: None,
                             });
                         }
-                        eprintln!("[conv_run]       built {} dynamic child tree nodes", dynamic_tree_nodes.len());
                         outer_nodes = Some(dynamic_tree_nodes);
                     }
                 }
@@ -707,21 +697,10 @@ pub fn conversation_run_vm(
             format!("{}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id)
         }
     });
-    eprintln!("[conv_run] effective_key={effective_key:?}");
 
     // Load the selected ACP session
     let selected_session = if let Some(ref leaf) = selected_leaf {
         if let (Some(outer_id), Some(outer_attempt)) = (leaf.outer_node_id.as_deref(), leaf.outer_attempt_id.as_deref()) {
-            eprintln!("[conv_run] loading dynamic_acp_session outer={outer_id}/{outer_attempt} node={}/{}", leaf.node_id, leaf.attempt_id);
-            match crate::view_models::dynamic_acp_session_vm(
-                app, task_id, run_id, &leaf.round_id,
-                outer_id, outer_attempt,
-                &leaf.node_id, &leaf.attempt_id, None,
-            ) {
-                Ok(Some(ref session)) => eprintln!("[conv_run] dynamic acp_session loaded: {} events", session.events.len()),
-                Ok(None) => eprintln!("[conv_run] dynamic acp_session returned None (no data on disk)"),
-                Err(ref e) => eprintln!("[conv_run] dynamic acp_session error: {e:#}"),
-            }
             crate::view_models::dynamic_acp_session_vm(
                 app, task_id, run_id, &leaf.round_id,
                 outer_id, outer_attempt,
@@ -730,14 +709,6 @@ pub fn conversation_run_vm(
             .ok()
             .flatten()
         } else {
-            eprintln!("[conv_run] loading acp_session for {}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id);
-            match crate::view_models::acp_session_vm(
-                app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None,
-            ) {
-                Ok(Some(ref session)) => eprintln!("[conv_run] acp_session loaded: {} events", session.events.len()),
-                Ok(None) => eprintln!("[conv_run] acp_session returned None (no data on disk)"),
-                Err(ref e) => eprintln!("[conv_run] acp_session error: {e:#}"),
-            }
             crate::view_models::acp_session_vm(
                 app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None,
             )
@@ -745,10 +716,8 @@ pub fn conversation_run_vm(
             .flatten()
         }
     } else {
-        eprintln!("[conv_run] no selected_leaf, skipping acp_session load");
         None
     };
-    eprintln!("[conv_run] selected_session={}", if selected_session.is_some() { "Some" } else { "None" });
 
     let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
         if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -941,6 +910,5 @@ pub fn update_task_metadata_vm(
         task.description = Some(desc.to_string());
     }
     gold_band::storage::write_json(&app.paths.task_file(task_id), &task)?;
-    eprintln!("[conv_run] updated task metadata: title={title}");
     Ok(())
 }

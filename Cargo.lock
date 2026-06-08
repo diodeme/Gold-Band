@@ -718,7 +718,7 @@ dependencies = [
  "bitflags 2.12.1",
  "core-foundation",
  "core-graphics-types",
- "foreign-types",
+ "foreign-types 0.5.0",
  "libc",
 ]
 
@@ -1743,11 +1743,8 @@ dependencies = [
  "chrono",
  "fontdb",
  "gold-band",
-<<<<<<< HEAD
  "open",
-=======
  "reqwest 0.12.28",
->>>>>>> 650341a0ca989926aa91044698e7427978d129d4
  "serde",
  "serde_json",
  "tauri",

@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    sync::{LazyLock, Mutex},
 };
 
 use anyhow::Result;
@@ -2881,7 +2882,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    Ok(Some(AcpSessionVm {
+    let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -2973,7 +2974,8 @@ pub fn dynamic_acp_session_vm(
             last_error: diagnostics.last_error,
             last_error_timestamp: diagnostics.last_error_timestamp,
         },
-    }))
+    };
+    Ok(Some(result))
 }
 
 pub fn acp_session_vm(
@@ -3137,7 +3139,7 @@ pub fn acp_session_vm(
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
 
-    Ok(Some(AcpSessionVm {
+    let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -3233,7 +3235,8 @@ pub fn acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         pending_permissions,
-    }))
+    };
+    Ok(Some(result))
 }
 
 struct AcpEventScan {
@@ -3253,7 +3256,7 @@ struct AcpDiagnosticsScan {
 }
 
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpTimelineItemVm {
     item: AcpUiEventVm,
@@ -3268,6 +3271,52 @@ struct AcpTimelinePatchVm {
     op: String,
     item: AcpUiEventVm,
 }
+
+// --- timeline scan cache ---
+
+const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
+
+struct CachedTimeline {
+    all_events: Vec<AcpUiEventVm>,
+    event_count: usize,
+    session_elapsed_seconds: Option<u64>,
+    latest_permission_events: HashMap<String, AcpUiEventVm>,
+    available_commands: Option<Vec<serde_json::Value>>,
+    usage: Option<AcpUsageVm>,
+}
+
+struct TimelineCache {
+    entries: HashMap<String, CachedTimeline>,
+    order: VecDeque<String>,
+}
+
+static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
+    Mutex::new(TimelineCache {
+        entries: HashMap::new(),
+        order: VecDeque::new(),
+    })
+});
+
+fn timeline_cache_key(path: &camino::Utf8Path) -> String {
+    path.as_str().to_string()
+}
+
+fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
+    if let Some(pos) = cache.order.iter().position(|k| k == key) {
+        cache.order.remove(pos);
+    }
+    cache.order.push_back(key.to_string());
+}
+
+fn evict_timeline_cache(cache: &mut TimelineCache) {
+    while cache.order.len() > TIMELINE_CACHE_MAX_ENTRIES {
+        if let Some(oldest) = cache.order.pop_front() {
+            cache.entries.remove(&oldest);
+        }
+    }
+}
+
+// --- end timeline scan cache ---
 
 fn scan_acp_timeline(
     path: &camino::Utf8Path,
@@ -3301,6 +3350,74 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+
+    // Check cache for completed sessions (timeline file is immutable once complete)
+    let cache_key = timeline_cache_key(path);
+    let (all_events, event_count, session_elapsed_seconds, latest_permission_events, available_commands, usage) =
+        if !session_active {
+            let mut cache = TIMELINE_CACHE.lock().unwrap();
+            if let Some(cached) = cache.entries.get(&cache_key) {
+                            let all_events = cached.all_events.clone();
+                let event_count = cached.event_count;
+                let session_elapsed_seconds = cached.session_elapsed_seconds;
+                let latest_permission_events = cached.latest_permission_events.clone();
+                let available_commands = cached.available_commands.clone();
+                let usage = cached.usage.clone();
+                touch_timeline_cache(&mut cache, &cache_key);
+                return paginate_timeline(
+                    &all_events,
+                    event_count,
+                    session_elapsed_seconds,
+                    &latest_permission_events,
+                    available_commands.as_ref(),
+                    usage.as_ref(),
+                    after_seq,
+                    before_seq,
+                    limit,
+                );
+            }
+            drop(cache);
+            let result = parse_timeline_file(path, session_active)?;
+            let mut cache = TIMELINE_CACHE.lock().unwrap();
+            cache.entries.insert(cache_key.clone(), CachedTimeline {
+                all_events: result.0.clone(),
+                event_count: result.1,
+                session_elapsed_seconds: result.2,
+                latest_permission_events: result.3.clone(),
+                available_commands: result.4.clone(),
+                usage: result.5.clone(),
+            });
+            touch_timeline_cache(&mut cache, &cache_key);
+            evict_timeline_cache(&mut cache);
+            result
+        } else {
+            parse_timeline_file(path, session_active)?
+        };
+
+    paginate_timeline(
+        &all_events,
+        event_count,
+        session_elapsed_seconds,
+        &latest_permission_events,
+        available_commands.as_ref(),
+        usage.as_ref(),
+        after_seq,
+        before_seq,
+        limit,
+    )
+}
+
+fn parse_timeline_file(
+    path: &camino::Utf8Path,
+    session_active: bool,
+) -> Result<(
+    Vec<AcpUiEventVm>,
+    usize,
+    Option<u64>,
+    HashMap<String, AcpUiEventVm>,
+    Option<Vec<serde_json::Value>>,
+    Option<AcpUsageVm>,
+)> {
     let mut latest_by_item = HashMap::<String, (u64, AcpUiEventVm)>::new();
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
@@ -3405,6 +3522,28 @@ fn scan_acp_timeline(
         final_items
     };
     all_events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+
+    Ok((
+        all_events,
+        event_count,
+        session_elapsed.finish(session_active),
+        latest_permission_events,
+        available_commands,
+        usage,
+    ))
+}
+
+fn paginate_timeline(
+    all_events: &[AcpUiEventVm],
+    event_count: usize,
+    session_elapsed_seconds: Option<u64>,
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+    available_commands: Option<&Vec<serde_json::Value>>,
+    usage: Option<&AcpUsageVm>,
+    after_seq: Option<u64>,
+    before_seq: Option<u64>,
+    limit: usize,
+) -> Result<AcpEventScan> {
     let total = all_events.len();
     let filtered = if let Some(cursor) = after_seq {
         all_events
@@ -3426,7 +3565,7 @@ fn scan_acp_timeline(
     } else if total > limit {
         all_events[total - limit..].to_vec()
     } else {
-        all_events.clone()
+        all_events.to_vec()
     };
     // Compact only the events in the final window (not all events)
     let filtered: Vec<_> = filtered
@@ -3466,10 +3605,10 @@ fn scan_acp_timeline(
         events: filtered,
         event_page,
         event_count,
-        session_elapsed_seconds: session_elapsed.finish(session_active),
-        latest_permission_events,
-        available_commands,
-        usage,
+        session_elapsed_seconds,
+        latest_permission_events: latest_permission_events.clone(),
+        available_commands: available_commands.cloned(),
+        usage: usage.cloned(),
     })
 }
 
@@ -3505,17 +3644,81 @@ fn scan_acp_events(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let mut window = VecDeque::<AcpUiEventVm>::with_capacity(limit + 1);
-    let mut after_window = Vec::<AcpUiEventVm>::with_capacity(limit);
+
+    // Cache via the same pool as scan_acp_timeline
+    let cache_key = timeline_cache_key(path);
+    let (all_events, raw_event_count, session_elapsed_seconds, latest_permission_events, available_commands, usage) =
+        if !session_active {
+            let mut cache = TIMELINE_CACHE.lock().unwrap();
+            if let Some(cached) = cache.entries.get(&cache_key) {
+                let all_events = cached.all_events.clone();
+                let raw_event_count = cached.event_count;
+                let session_elapsed_seconds = cached.session_elapsed_seconds;
+                let latest_permission_events = cached.latest_permission_events.clone();
+                let available_commands = cached.available_commands.clone();
+                let usage = cached.usage.clone();
+                touch_timeline_cache(&mut cache, &cache_key);
+                return paginate_timeline(
+                    &all_events,
+                    raw_event_count,
+                    session_elapsed_seconds,
+                    &latest_permission_events,
+                    available_commands.as_ref(),
+                    usage.as_ref(),
+                    after_seq,
+                    before_seq,
+                    limit,
+                );
+            }
+            drop(cache);
+            let result = parse_events_file(path, session_active)?;
+            let mut cache = TIMELINE_CACHE.lock().unwrap();
+            cache.entries.insert(cache_key.clone(), CachedTimeline {
+                all_events: result.0.clone(),
+                event_count: result.1,
+                session_elapsed_seconds: result.2,
+                latest_permission_events: result.3.clone(),
+                available_commands: result.4.clone(),
+                usage: result.5.clone(),
+            });
+            touch_timeline_cache(&mut cache, &cache_key);
+            evict_timeline_cache(&mut cache);
+            result
+        } else {
+            parse_events_file(path, session_active)?
+        };
+
+    paginate_timeline(
+        &all_events,
+        raw_event_count,
+        session_elapsed_seconds,
+        &latest_permission_events,
+        available_commands.as_ref(),
+        usage.as_ref(),
+        after_seq,
+        before_seq,
+        limit,
+    )
+}
+
+fn parse_events_file(
+    path: &camino::Utf8Path,
+    session_active: bool,
+) -> Result<(
+    Vec<AcpUiEventVm>,
+    usize,
+    Option<u64>,
+    HashMap<String, AcpUiEventVm>,
+    Option<Vec<serde_json::Value>>,
+    Option<AcpUsageVm>,
+)> {
     let mut raw_event_count = 0usize;
-    let mut normalized_event_count = 0usize;
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
     let mut usage = None;
-    let mut first_seq = None;
-    let mut last_seq = None;
-    let mut pending_delta: Option<AcpUiEventVm> = None;
     let mut session_elapsed = AcpSessionElapsedState::default();
+    let mut all_events = Vec::<AcpUiEventVm>::new();
+    let mut pending_delta: Option<AcpUiEventVm> = None;
 
     if path.exists() {
         let file = fs::File::open(path.as_std_path())?;
@@ -3551,17 +3754,7 @@ fn scan_acp_events(
                 }
             }
             if is_hidden_from_chat(&event) {
-                flush_normalized_event(
-                    pending_delta.take(),
-                    before_seq,
-                    after_seq,
-                    limit,
-                    &mut window,
-                    &mut after_window,
-                    &mut normalized_event_count,
-                    &mut first_seq,
-                    &mut last_seq,
-                );
+                flush_pending_delta(&mut pending_delta, &mut all_events);
                 continue;
             }
             if !is_session_timeline_event(&event) {
@@ -3570,92 +3763,31 @@ fn scan_acp_events(
             if merge_pending_delta(&mut pending_delta, &event) {
                 continue;
             }
-            flush_normalized_event(
-                pending_delta.take(),
-                before_seq,
-                after_seq,
-                limit,
-                &mut window,
-                &mut after_window,
-                &mut normalized_event_count,
-                &mut first_seq,
-                &mut last_seq,
-            );
+            flush_pending_delta(&mut pending_delta, &mut all_events);
             if is_delta_event(&event) {
                 pending_delta = Some(event);
             } else {
-                flush_normalized_event(
-                    Some(event),
-                    before_seq,
-                    after_seq,
-                    limit,
-                    &mut window,
-                    &mut after_window,
-                    &mut normalized_event_count,
-                    &mut first_seq,
-                    &mut last_seq,
-                );
+                all_events.push(event);
             }
         }
     }
 
-    flush_normalized_event(
-        pending_delta.take(),
-        before_seq,
-        after_seq,
-        limit,
-        &mut window,
-        &mut after_window,
-        &mut normalized_event_count,
-        &mut first_seq,
-        &mut last_seq,
-    );
+    flush_pending_delta(&mut pending_delta, &mut all_events);
 
-    let session_elapsed_seconds = session_elapsed.finish(session_active);
-    let mut events = if after_seq.is_some() {
-        after_window
-    } else {
-        window.into_iter().collect::<Vec<_>>()
-    };
-    // Compact only the events in the final window (not all events)
-    events = events
-        .into_iter()
-        .map(|event| {
-            if matches!(event.kind.as_str(), "permissionRequest") {
-                event
-            } else {
-                compact_event_for_session(event)
-            }
-        })
-        .collect();
-    let oldest_seq = events.first().map(|event| event.seq);
-    let newest_seq = events.last().map(|event| event.seq);
-    let has_older = oldest_seq
-        .zip(first_seq)
-        .is_some_and(|(oldest, first)| oldest > first);
-    let has_newer = newest_seq
-        .zip(last_seq)
-        .is_some_and(|(newest, last)| newest < last);
-    let event_page = AcpEventPageVm {
-        loaded_count: events.len(),
-        total: normalized_event_count,
-        oldest_seq,
-        newest_seq,
-        has_older,
-        has_newer,
-        oldest_cursor: oldest_seq.map(format_timeline_cursor),
-        newest_cursor: newest_seq.map(format_timeline_cursor),
-    };
-
-    Ok(AcpEventScan {
-        events,
-        event_page,
-        event_count: raw_event_count,
-        session_elapsed_seconds,
+    Ok((
+        all_events,
+        raw_event_count,
+        session_elapsed.finish(session_active),
         latest_permission_events,
         available_commands,
         usage,
-    })
+    ))
+}
+
+fn flush_pending_delta(pending: &mut Option<AcpUiEventVm>, events: &mut Vec<AcpUiEventVm>) {
+    if let Some(event) = pending.take() {
+        events.push(event);
+    }
 }
 
 fn apply_stale_cancel_fuse(
@@ -3965,38 +4097,6 @@ fn current_epoch_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-
-fn flush_normalized_event(
-    event: Option<AcpUiEventVm>,
-    before_seq: Option<u64>,
-    after_seq: Option<u64>,
-    limit: usize,
-    window: &mut VecDeque<AcpUiEventVm>,
-    after_window: &mut Vec<AcpUiEventVm>,
-    normalized_event_count: &mut usize,
-    first_seq: &mut Option<u64>,
-    last_seq: &mut Option<u64>,
-) {
-    let Some(event) = event else {
-        return;
-    };
-    *normalized_event_count += 1;
-    first_seq.get_or_insert(event.seq);
-    *last_seq = Some(event.seq);
-    if let Some(cursor) = after_seq {
-        if event.seq > cursor && after_window.len() < limit {
-            after_window.push(event);
-        }
-        return;
-    }
-    if before_seq.is_some_and(|cursor| event.seq >= cursor) {
-        return;
-    }
-    window.push_back(event);
-    if window.len() > limit {
-        window.pop_front();
-    }
-}
 
 fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm) -> bool {
     let Some(previous) = pending.as_mut() else {
@@ -4903,6 +5003,10 @@ mod tests {
             title: None,
             tool_call_id: None,
             status: Some("completed".to_string()),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
     }
@@ -4924,6 +5028,10 @@ mod tests {
             title: None,
             tool_call_id: None,
             status: status.map(str::to_string),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
             raw,
         }
     }
@@ -5156,5 +5264,212 @@ mod tests {
         );
 
         assert_eq!(elapsed, Some(30));
+    }
+
+    // --- timeline / events parse & cache tests ---
+
+    fn write_timeline_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for event in events {
+            let item = AcpTimelineItemVm {
+                item: event.clone(),
+            };
+            content.push_str(&serde_json::to_string(&item).unwrap());
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
+    fn write_events_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for event in events {
+            content.push_str(&serde_json::to_string(event).unwrap());
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
+    fn event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
+        (0..count)
+            .map(|i| AcpUiEventVm {
+                id: format!("evt-{i}"),
+                seq: i as u64 + 1,
+                timestamp: format!("{}Z", base_ts + i as u64),
+                kind: "textDelta".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("message {i}")),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: Some(i as u64 + 1),
+                ended_seq: Some(i as u64 + 1),
+                started_at: Some(format!("{}Z", base_ts + i as u64)),
+                ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                raw: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_timeline_file_all_events() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-parse-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let events = event_sequence(50, 1000);
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &events);
+
+        let (all_events, count, _, _, _, _) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(all_events.len(), 50);
+        assert_eq!(count, 50);
+        assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
+        assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_events_file_delta_merging() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-merge-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        let raw = vec![
+            AcpUiEventVm {
+                id: "d1".into(), seq: 0, timestamp: "100Z".into(), kind: "textDelta".into(),
+                session_id: Some("s1".into()), content: Some("Hello ".into()),
+                title: None, tool_call_id: None, status: Some("completed".into()),
+                started_seq: None, ended_seq: None, started_at: None, ended_at: None, raw: None,
+            },
+            AcpUiEventVm {
+                id: "d2".into(), seq: 0, timestamp: "101Z".into(), kind: "textDelta".into(),
+                session_id: Some("s1".into()), content: Some("World".into()),
+                title: None, tool_call_id: None, status: Some("completed".into()),
+                started_seq: None, ended_seq: None, started_at: None, ended_at: None, raw: None,
+            },
+        ];
+        let path = write_events_file(&db, "acp.events.jsonl", &raw);
+
+        let (all_events, raw_count, _, _, _, _) = parse_events_file(&path, false).unwrap();
+
+        assert_eq!(raw_count, 2);
+        assert_eq!(all_events.len(), 1);
+        assert_eq!(all_events[0].content.as_deref(), Some("Hello World"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_timeline_cache_hit_on_repeat() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-hit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(20, 2000));
+
+        let r1 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+
+        assert_eq!(r1.events.len(), 20);
+        assert_eq!(r2.events.len(), 20);
+        assert_eq!(r2.event_count, r1.event_count);
+        assert_eq!(r2.event_page.total, r1.event_page.total);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_events_cache_hit_on_repeat() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-hit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        // Use unique kinds so events don't get merged by delta logic
+        let events: Vec<_> = (0..15)
+            .map(|i| AcpUiEventVm {
+                id: format!("evt-{i}"),
+                seq: 0,
+                timestamp: format!("{}Z", 3000 + i),
+                kind: "toolCall".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("tool {i}")),
+                title: Some(format!("Tool {i}")),
+                tool_call_id: Some(format!("call-{i}")),
+                status: Some("completed".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                raw: None,
+            })
+            .collect();
+        let path = write_events_file(&db, "acp.events.jsonl", &events);
+
+        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
+        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
+
+        assert_eq!(r1.events.len(), 15);
+        assert_eq!(r2.events.len(), 15);
+        assert_eq!(r2.event_count, r1.event_count);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_timeline_active_session_bypasses_cache() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-active-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(10, 4000));
+
+        // Active: should parse fresh, not write cache
+        let r = scan_acp_timeline(&path, None, true, 360).unwrap();
+        assert_eq!(r.events.len(), 10);
+
+        // Completed: first call should be a MISS, then a HIT
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        assert_eq!(r2.events.len(), 10);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_respects_limit() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-page-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(100, 5000));
+
+        let r = scan_acp_timeline(&path, None, false, 30).unwrap();
+
+        assert_eq!(r.events.len(), 30);
+        assert_eq!(r.event_page.total, 100);
+        assert!(r.event_page.has_older);
+        assert!(!r.event_page.has_newer);
+        assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cache_key_isolated_by_path() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-keys-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pa = write_timeline_file(&db, "a.jsonl", &event_sequence(5, 6000));
+        let pb = write_timeline_file(&db, "b.jsonl", &event_sequence(8, 7000));
+
+        let ra = scan_acp_timeline(&pa, None, false, 360).unwrap();
+        let rb = scan_acp_timeline(&pb, None, false, 360).unwrap();
+        assert_eq!(ra.events.len(), 5);
+        assert_eq!(rb.events.len(), 8);
+
+        // Second call to A still returns 5, not 8
+        let ra2 = scan_acp_timeline(&pa, None, false, 360).unwrap();
+        assert_eq!(ra2.events.len(), 5);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

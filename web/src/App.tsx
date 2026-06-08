@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   checkUpdateManual,
   chooseWorkspace,
@@ -134,6 +134,7 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [, startTransition] = useTransition();
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   // Derive active workspace: persisted lastActiveWorkspaceId > explicit state > first workspace
@@ -962,13 +963,15 @@ export function App() {
               leaf.outerNodeId,
               leaf.outerAttemptId,
             ).then((switched) => {
-              setConversationRun((prev) => prev ? {
-                ...prev,
-                selectedSession: switched.selectedSession,
-                artifacts: switched.artifacts,
-                attachments: switched.attachments,
-                sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-              } : prev);
+              startTransition(() => {
+                setConversationRun((prev) => prev ? {
+                  ...prev,
+                  selectedSession: switched.selectedSession,
+                  artifacts: switched.artifacts,
+                  attachments: switched.attachments,
+                  sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
+                } : prev);
+              });
             }).catch(() => {});
           }}
           onSessionStopped={() => {}}

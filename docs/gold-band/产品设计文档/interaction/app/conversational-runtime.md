@@ -90,3 +90,18 @@
 - 重跑复用 task-level 附件（同一 task 的 authoring/attachments/ 在多次 run 间共享）
 - 继续对话新附件进入当前 ACP session，发送后以文本形式告知 agent 文件名
 - 输入附件展示为独立层级，不与 agent 运行产物和输出附件混合
+
+## Todo/Plan 任务面板
+
+- 位于 composer 上方、AcpUsagePanel 下方
+- 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
+- 展开后展示完整条目列表，每项包含状态 Badge 和内容
+- 仅显示主会话顶层 todo；子 Agent 内部 plan 保留在各自分组中
+- 每次 plan 更新时面板实时刷新，不再在消息流中追加重复 plan 卡片
+
+## 工具调用参数展示
+
+- 工具调用卡片展开后以有序列表展示工具输入参数
+- 参数按来源优先级提取：rawInput > 结构化 fields > title/locations 解析
+- 同标签参数保留多个不同值（如多个路径、多个查询条件）
+- 语义化参数缺失时回退展示原始输入 JSON

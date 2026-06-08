@@ -1238,11 +1238,12 @@ pub fn switch_conversation_session_vm(
         (artifacts, attachments)
     };
 
-    Ok(ConversationSessionSwitchVm {
+    let result = ConversationSessionSwitchVm {
         selected_session,
         artifacts,
         attachments,
-    })
+    };
+    Ok(result)
 }
 
 pub fn update_task_metadata_vm(

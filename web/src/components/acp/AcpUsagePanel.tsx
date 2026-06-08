@@ -12,9 +12,10 @@ export interface AcpUsagePanelProps {
   compact?: boolean;
   stepSeconds?: number | null;
   sessionSeconds?: number | null;
+  className?: string;
 }
 
-export function AcpUsagePanel({ usage, compact, stepSeconds, sessionSeconds }: AcpUsagePanelProps) {
+export function AcpUsagePanel({ usage, compact, stepSeconds, sessionSeconds, className }: AcpUsagePanelProps) {
   const { t } = useTranslation();
 
   const hasData = useMemo(() => {
@@ -30,7 +31,7 @@ export function AcpUsagePanel({ usage, compact, stepSeconds, sessionSeconds }: A
   const showTiming = compact && (stepSeconds != null || sessionSeconds != null);
 
   return (
-    <div className={cn('px-1 text-xs text-muted-foreground', compact ? 'flex flex-wrap items-center gap-x-4 gap-y-0.5' : 'space-y-1')}>
+    <div className={cn('px-1 text-xs text-muted-foreground', compact ? 'flex flex-wrap items-center gap-x-4 gap-y-0.5' : 'space-y-1', className)}>
       {/* Timing (compact mode, at the front) */}
       {showTiming ? (
         <>

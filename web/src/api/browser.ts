@@ -244,6 +244,7 @@ export const browserApi: RuntimeApi = {
   },
   getStartupCheckResult() {
     return Promise.resolve(null);
+  },
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {
     return Promise.resolve();

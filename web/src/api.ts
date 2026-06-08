@@ -200,6 +200,7 @@ export function downloadAndInstallUpdate() {
 
 export function getStartupCheckResult() {
   return getRuntimeApi().getStartupCheckResult();
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);

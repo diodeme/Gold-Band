@@ -163,6 +163,7 @@ export const desktopApi: RuntimeApi = {
   },
   getStartupCheckResult() {
     return invokeCommand<import('../types').StartupCheckResult | null>('get_startup_check_result');
+  },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {
     return invokeCommand('save_desktop_ui_mode', { mode });

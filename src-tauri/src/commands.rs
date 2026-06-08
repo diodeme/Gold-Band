@@ -1658,6 +1658,7 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
 #[tauri::command]
 pub fn get_startup_check_result(state: tauri::State<'_, DesktopState>) -> Option<StartupCheckResult> {
     state.get_startup_check()
+}
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),

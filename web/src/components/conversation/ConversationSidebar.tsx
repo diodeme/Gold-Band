@@ -102,7 +102,7 @@ export function ConversationSidebar({
         <Separator className="my-0.5" />
 
         {/* Navigation */}
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-0.5">
           <SidebarButton
             compact
             active={active.kind === 'agents'}
@@ -435,7 +435,7 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-lg px-2.5 text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+        compact ? 'h-6 gap-2 justify-start rounded-md px-2 text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
           : 'h-8 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-primary',
       )}

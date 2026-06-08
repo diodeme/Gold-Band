@@ -1,5 +1,6 @@
 {
   "channel": "wb",
+  "silentUpdateEnabled": true,
   "appName": "MALING",
   "appKey": "maling",
   "configDirName": ".maling",

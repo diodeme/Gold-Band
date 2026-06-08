@@ -10,7 +10,7 @@ use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
 
-use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
+use crate::updater::{StartupCheckResult, UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -87,6 +87,7 @@ pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
+    startup_check: Mutex<Option<StartupCheckResult>>,
 }
 
 impl DesktopState {
@@ -97,6 +98,7 @@ impl DesktopState {
             context: Mutex::new(context),
             agent_diagnostics: Mutex::new(persisted_diagnostics),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
+            startup_check: Mutex::new(None),
         }
     }
 
@@ -152,6 +154,21 @@ impl DesktopState {
             .update_status
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = status;
+        Ok(())
+    }
+
+    pub fn get_startup_check(&self) -> Option<StartupCheckResult> {
+        self.startup_check
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    pub fn set_startup_check(&self, result: StartupCheckResult) -> Result<()> {
+        self.startup_check
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .replace(result);
         Ok(())
     }
 

@@ -3,9 +3,18 @@ import type {
   AcpRawFrameQueryInput,
   AcpSessionQueryInput,
   AcpSessionVm,
+  AcpUiEventVm,
   AgentRegistryVm,
   AppBootstrapVm,
   ContentVm,
+  ConversationCreateInput,
+  ConversationRunModeVm,
+  ConversationRunVm,
+  ConversationSearchResultVm,
+  ConversationSidebarVm,
+  ConversationValidationResultVm,
+  ConversationWorkspaceVm,
+  PinRef,
   CreateTaskInput,
   DesktopFontPreference,
   DesktopLanguage,
@@ -34,6 +43,18 @@ import type {
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
+
+export interface AcpSessionUpdatedEventVm {
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  session?: AcpSessionVm | null;
+  event?: AcpUiEventVm | null;
+}
 
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
@@ -68,14 +89,15 @@ export interface RuntimeApi {
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   killRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
-  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
-  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
-  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
-  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null): Promise<AcpSessionVm | null>;
-  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput): Promise<AcpRawFramePageVm>;
-  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string): Promise<ContentVm>;
-  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string): Promise<ContentVm>;
-  showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string): Promise<ContentVm>;
+  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
+  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
+  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
+  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
+  showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
@@ -85,6 +107,26 @@ export interface RuntimeApi {
   checkUpdateManual(): Promise<UpdateStatusVm>;
   downloadAndInstallUpdate(): Promise<void>;
   getStartupCheckResult(): Promise<import('../types').StartupCheckResult | null>;
+  // ── Conversation UI ──
+  saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
+  getConversationSidebar(): Promise<ConversationSidebarVm>;
+  getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
+  validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
+  createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
+  rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
+  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<void>;
+  pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
+  unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
+  reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarVm>;
+  searchConversationTasks(query: string, limit?: number): Promise<ConversationSearchResultVm[]>;
+  getConversationRunMode(projectId: string): Promise<ConversationRunModeVm | null>;
+  saveConversationRunMode(projectId: string, settings: ConversationRunModeVm): Promise<void>;
+  chooseConversationWorkspace(): Promise<ConversationWorkspaceVm>;
+  addConversationWorkspace(): Promise<ConversationSidebarVm>;
+  removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
+  syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
+  saveConversationPreference(key: string, value: unknown): Promise<void>;
+  openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

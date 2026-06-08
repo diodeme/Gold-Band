@@ -18,14 +18,17 @@ clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+minijinja = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util"] }
+uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ratatui = "0.29"
 crossterm = "0.28"
 figlet-rs = "1.0.0"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

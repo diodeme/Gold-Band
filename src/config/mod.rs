@@ -303,6 +303,15 @@ pub struct StateConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     #[serde(default)]
     pub recent_desktop_workspaces: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub preferences: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAppConfig {
+    pub acp_session_title_refresh_enabled: Option<bool>,
+    pub acp_chat_event_page_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +330,8 @@ pub struct RuntimeConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
+    pub acp_session_title_refresh_enabled: bool,
+    pub acp_chat_event_page_size: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -345,6 +356,8 @@ impl Default for RuntimeConfig {
             desktop_available_update: None,
             agents,
             use_local_claude: false,
+            acp_session_title_refresh_enabled: false,
+            acp_chat_event_page_size: 360,
         }
     }
 }
@@ -385,6 +398,16 @@ impl RuntimeConfig {
         self
     }
 
+    pub fn apply_app_config(mut self, app_config: &ProjectAppConfig) -> Self {
+        if let Some(acp_session_title_refresh_enabled) = app_config.acp_session_title_refresh_enabled {
+            self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
+        }
+        if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
+            self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        self
+    }
+
     pub fn apply_state(mut self, state: &StateConfig) -> Self {
         self.desktop_updater_last_checked_at = state.desktop_updater_last_checked_at.clone();
         self.desktop_update_badges = state.desktop_update_badges.clone();
@@ -397,7 +420,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        DesktopUpdateBadgeState, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::str::FromStr;
 
@@ -553,6 +576,18 @@ mod tests {
     }
 
     #[test]
+    fn project_app_config_roundtrip_json() {
+        let app_config = ProjectAppConfig {
+            acp_session_title_refresh_enabled: Some(true),
+            acp_chat_event_page_size: Some(240),
+        };
+        let json = serde_json::to_string_pretty(&app_config).unwrap();
+        let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
+        assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
+    }
+
+    #[test]
     fn apply_state_overrides_defaults() {
         let config = RuntimeConfig::default().apply_state(&StateConfig {
             desktop_updater_last_checked_at: Some("2026-05-27 10:00:00".to_string()),
@@ -591,6 +626,16 @@ mod tests {
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
         assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+    }
+
+    #[test]
+    fn apply_app_config_overrides_defaults() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            acp_session_title_refresh_enabled: Some(true),
+            acp_chat_event_page_size: Some(240),
+        });
+        assert!(config.acp_session_title_refresh_enabled);
+        assert_eq!(config.acp_chat_event_page_size, 240);
     }
 
     #[test]
@@ -669,4 +714,63 @@ pub struct ResolvedProfileRef {
     pub name: String,
     pub source: ProfileSource,
     pub path: String,
+}
+
+// ── Conversation UI state ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DesktopUiMode {
+    Conversation,
+    Workbench,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_ui_mode: Option<DesktopUiMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_workspaces: Vec<ConversationWorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_conversation_workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_pins: Vec<ConversationPin>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationWorkspaceEntry {
+    pub project_id: String,
+    pub workspace_path: String,
+    pub name: String,
+    pub added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPin {
+    pub project_id: String,
+    pub task_id: String,
+    pub order: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRunModeEntry {
+    pub mode: String,
+    pub workflow_template_id: Option<String>,
+    pub auto_config: Option<ConversationAutoConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAutoConfig {
+    pub agent_type: String,
+    pub model_id: Option<String>,
+    pub permission_mode: Option<String>,
+    pub allowed_profiles: Option<Vec<String>>,
+    pub global_goal: Option<String>,
 }

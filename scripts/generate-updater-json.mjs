@@ -28,17 +28,21 @@ if (baseUrl) {
 async function generateLocal(baseUrl, version, assetDir, outputPath) {
   const normalizedBase = baseUrl.replace(/\/+$/, '');
   const files = await readdir(assetDir);
+  const exactVersionFiles = files.filter((file) => file.includes(version));
+  const candidateFiles = exactVersionFiles.some((file) => file.endsWith('.sig'))
+    ? exactVersionFiles
+    : files;
   const signatures = new Map(
-    files.filter((f) => f.endsWith('.sig')).map((f) => [f.slice(0, -4), f]),
+    candidateFiles.filter((f) => f.endsWith('.sig')).map((f) => [f.slice(0, -4), f]),
   );
 
   const platforms = {};
-  for (const file of files) {
+  for (const file of candidateFiles) {
     if (!signatures.has(file)) continue;
     const plat = platformKey(file);
     if (!plat) continue;
     if (platforms[plat]) {
-      const existingFile = findExisting(platforms, plat, files);
+      const existingFile = findExisting(platforms, plat, candidateFiles);
       const existingScore = score(existingFile);
       const newScore = score(file);
       if (newScore < existingScore) continue;
@@ -71,7 +75,8 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
   }
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
-  console.log(`Wrote ${outputPath} (base: ${normalizedBase}) platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
+  const selectionScope = candidateFiles === exactVersionFiles ? `version=${version}` : 'all-files';
+  console.log(`Wrote ${outputPath} (base: ${normalizedBase}, scope: ${selectionScope}) platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
 }
 
 async function generateGitHub(assetDir, outputPath) {

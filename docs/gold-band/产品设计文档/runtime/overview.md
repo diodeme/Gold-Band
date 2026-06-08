@@ -9,6 +9,7 @@ Runtime 当前围绕以下对象组织：
 - node
 - artifact
 - worker reference
+- dynamic run / dynamic node / dynamic group / dynamic proposal
 
 ## 2. 目录层级模型
 当前推荐 4 层：
@@ -24,6 +25,9 @@ preset -> task -> run -> round/attempt
 - 节点之间通过 runtime registry 传递产物，而不是直接猜路径
 - `status` 与 `outcome` 必须分离：`status` 表示生命周期，`outcome` 表示终局结果
 - `paused` 只属于 `status`，不属于 `outcome`
+- `ai-dynamic` 内部状态归属外层节点 attempt，外层 round graph 只保留一个复合节点
+- AI-DYNAMIC prompt 分层遵循：runtime 决定的身份、历史、路径、限制、可用资源和输出协议进入 system prompt，并通过 minijinja 模板渲染；requirement 与当前 goal 进入 user prompt
+- runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
 - [控制层](control.md)
@@ -77,6 +81,28 @@ MVP 中建议统一遵循：
 - `paused` 只表示 runtime 观测到的系统挂起态，不表示终局结果
 - `failure` 表示目标未达成或执行失败
 - `invalid` 表示结果不满足最小 contract
+
+### AI-DYNAMIC 内部状态
+`ai-dynamic` 节点进入执行后，会在当前外层 attempt 下创建 `dynamic/` 子目录：
+
+```text
+nodes/<outer-node>/attempt-001/dynamic/
+  dynamic-run.json
+  allowed-workflow-snapshots.json
+  graph.json
+  events.jsonl
+  nodes/<internal-node>/attempt-001/
+  groups/<group-id>.json
+  proposals/<proposal-id>.json
+```
+
+内部状态由 runtime 派生：
+- `DynamicRunState` 记录父 run / round / node / attempt、控制限制、allowed workflow snapshots 和当前 ready/running internal nodes。
+- `DynamicNodeState` 记录 worker、workflow invocation、merge、acceptance 四类内部节点。
+- `DynamicGroupState` 记录 fanout group 的父 group、root、terminal、merge、acceptance 节点；多层 fanout 使用 `parentGroupId` 串联父子关系，子 group closed 后以 acceptance 节点作为父 group 的 terminal boundary。
+- `DynamicProposalState` 记录每个 `dynamic-node-completion` 的原文路径、解析结果、校验状态和 materialize 事件。
+
+外层 `node.json` 只记录 `ai-dynamic` 节点的最终生命周期；内部 graph 不污染外层 round trace。
 
 ## 7. runtime 配置
 当前 runtime 相关配置统一由 `RuntimeConfig` 管理，至少包括：

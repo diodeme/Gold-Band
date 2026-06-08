@@ -1,7 +1,9 @@
 use camino::Utf8PathBuf;
-use gold_band::app::{App, CreateTaskInput, ProfileCommandError, ProfileInput, ProfileScope, is_run_continuable};
+use gold_band::app::{
+    App, CreateTaskInput, ProfileCommandError, ProfileInput, ProfileScope, is_run_continuable,
+};
 use gold_band::domain::{RunStatus, SessionMode};
-use gold_band::dsl::WorkflowDsl;
+use gold_band::dsl::{WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderRunResult,
     ProviderRunStatus, SessionRef, WorkerInvocation,
@@ -95,7 +97,10 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
     }
 
     fn run_worker(&self, _req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
-        let status = if self.interrupted.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let status = if self
+            .interrupted
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             ProviderRunStatus::Success
         } else {
             ProviderRunStatus::Interrupted
@@ -173,6 +178,8 @@ fn default_workflow_template_includes_simplified_output_schema() {
         .iter()
         .find(|template| template.id == "default")
         .unwrap();
+    assert!(default.workflow.control.max_attempts.is_none());
+    assert!(default.workflow.control.max_rounds.is_none());
     let review = default
         .workflow
         .nodes
@@ -350,7 +357,12 @@ fn deleting_unreferenced_profile_succeeds_without_force() {
         .unwrap();
 
     let profiles = app.delete_profile(&created.id, false).unwrap();
-    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+    assert!(
+        profiles
+            .profiles
+            .iter()
+            .all(|profile| profile.id != created.id)
+    );
 }
 
 #[test]
@@ -377,8 +389,11 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
         panic!("plan should be a worker node");
     };
     plan.profile = Some(created.id.clone());
-    app.save_workflow_template("Delete referenced profile".to_string(), template_workflow.clone())
-        .unwrap();
+    app.save_workflow_template(
+        "Delete referenced profile".to_string(),
+        template_workflow.clone(),
+    )
+    .unwrap();
 
     app.create_task_from_requirement(CreateTaskInput {
         title: Some("Referenced task".to_string()),
@@ -481,12 +496,20 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
         gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
 
     let profiles = app.delete_profile(&created.id, true).unwrap();
-    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+    assert!(
+        profiles
+            .profiles
+            .iter()
+            .all(|profile| profile.id != created.id)
+    );
 
-    let err = app.save_task_workflow("task-001", persisted_workflow).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("associated role visibility changed; reset it"));
+    let err = app
+        .save_task_workflow("task-001", persisted_workflow)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("associated role visibility changed; reset it")
+    );
 }
 
 #[test]
@@ -529,12 +552,187 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
     assert!(is_run_continuable(&paused));
 
     let profiles = app.delete_profile(&created.id, true).unwrap();
-    assert!(profiles.profiles.iter().all(|profile| profile.id != created.id));
+    assert!(
+        profiles
+            .profiles
+            .iter()
+            .all(|profile| profile.id != created.id)
+    );
 
     let err = app.run_continue("task-001", "run-001", None).unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("associated role visibility changed; reset it"));
+    assert!(
+        err.to_string()
+            .contains("associated role visibility changed; reset it")
+    );
+}
+
+#[test]
+fn save_as_template_generates_new_workflow_id() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let original = workflow(&app, "plan");
+    let original_id = original.id.clone();
+    let store = app
+        .save_workflow_template("Copied workflow".to_string(), original)
+        .unwrap();
+    let saved = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Copied workflow")
+        .unwrap();
+
+    assert_ne!(saved.workflow.id, original_id);
+    assert!(!saved.workflow.id.trim().is_empty());
+}
+
+#[test]
+fn updating_template_with_duplicate_workflow_id_fails() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let first = app
+        .save_workflow_template("First workflow".to_string(), workflow(&app, "plan"))
+        .unwrap();
+    let first_template = first
+        .templates
+        .iter()
+        .find(|template| template.name == "First workflow")
+        .unwrap()
+        .clone();
+
+    let second = app
+        .save_workflow_template("Second workflow".to_string(), workflow(&app, "dev"))
+        .unwrap();
+    let second_template = second
+        .templates
+        .iter()
+        .find(|template| template.name == "Second workflow")
+        .unwrap()
+        .clone();
+
+    let mut duplicated = second_template.workflow.clone();
+    duplicated.id = first_template.workflow.id.clone();
+    let err = app
+        .update_workflow_template(&second_template.id, duplicated)
+        .unwrap_err();
+    let typed = err.downcast_ref::<WorkflowValidationError>().unwrap();
+
+    match typed {
+        WorkflowValidationError::DuplicateWorkflowId {
+            workflow_id,
+            conflicts,
+            ..
+        } => {
+            assert_eq!(workflow_id, &first_template.workflow.id);
+            assert!(conflicts.contains(&first_template.name));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn creating_task_with_template_duplicate_workflow_id_fails() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    std::fs::create_dir_all(app.paths.authoring_dir().as_std_path()).unwrap();
+    std::fs::write(
+        app.paths.workflow_templates_file().as_std_path(),
+        r#"{
+            "version": "0.1",
+            "lastUsedTemplateId": "222",
+            "lastCreatedWorkflow": null,
+            "templates": [
+                {
+                    "id": "default",
+                    "name": "默认工作流",
+                    "workflow": {
+                        "version": "0.1",
+                        "id": "task-workflow",
+                        "entry": "plan",
+                        "control": {},
+                        "nodes": [
+                            { "id": "plan", "type": "worker", "provider": "claude-acp", "profile": "pf-builtin-plan", "goal": "Plan" }
+                        ],
+                        "edges": [{ "from": "plan", "to": "$end", "on": "success" }]
+                    },
+                    "createdAt": "2026-06-01T00:00:00Z",
+                    "updatedAt": "2026-06-01T00:00:00Z"
+                },
+                {
+                    "id": "attempt",
+                    "name": "测试attempt",
+                    "workflow": {
+                        "version": "0.1",
+                        "id": "workflow-dup",
+                        "entry": "dev",
+                        "control": {},
+                        "nodes": [
+                            { "id": "dev", "type": "worker", "provider": "claude-acp", "profile": "pf-builtin-dev", "goal": "Dev" }
+                        ],
+                        "edges": [{ "from": "dev", "to": "$end", "on": "success" }]
+                    },
+                    "createdAt": "2026-06-01T00:00:00Z",
+                    "updatedAt": "2026-06-01T00:00:00Z"
+                },
+                {
+                    "id": "222",
+                    "name": "222",
+                    "workflow": {
+                        "version": "0.1",
+                        "id": "workflow-dup",
+                        "entry": "dev",
+                        "control": {},
+                        "nodes": [
+                            { "id": "dev", "type": "worker", "provider": "claude-acp", "profile": "pf-builtin-dev", "goal": "Dev" }
+                        ],
+                        "edges": [{ "from": "dev", "to": "$end", "on": "success" }]
+                    },
+                    "createdAt": "2026-06-01T00:00:00Z",
+                    "updatedAt": "2026-06-01T00:00:00Z"
+                }
+            ]
+        }"#,
+    ).unwrap();
+
+    let task_workflow = serde_json::from_str(r#"{
+        "version": "0.1",
+        "id": "workflow-dup",
+        "entry": "dev",
+        "control": {},
+        "nodes": [
+            { "id": "dev", "type": "worker", "provider": "claude-acp", "profile": "pf-builtin-dev", "goal": "Dev" }
+        ],
+        "edges": [{ "from": "dev", "to": "$end", "on": "success" }]
+    }"#).unwrap();
+
+    let err = app
+        .create_task_from_requirement(CreateTaskInput {
+            title: Some("测试需求".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "duplicate template workflow id".to_string(),
+            workflow: task_workflow,
+            workflow_template_id: Some("222".to_string()),
+        })
+        .unwrap_err();
+    let typed = err.downcast_ref::<WorkflowValidationError>().unwrap();
+    match typed {
+        WorkflowValidationError::DuplicateWorkflowId {
+            workflow_name,
+            workflow_id,
+            conflicts,
+        } => {
+            assert_eq!(workflow_name, "222");
+            assert_eq!(workflow_id, "workflow-dup");
+            assert_eq!(conflicts, "测试attempt");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[test]

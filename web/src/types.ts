@@ -61,7 +61,13 @@ export interface AppBootstrapVm {
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   appInfo: AppInfoVm;
+  appConfig: AppConfigVm;
   needsWorkspace: boolean;
+}
+
+export interface AppConfigVm {
+  acpSessionTitleRefreshEnabled: boolean;
+  acpChatEventPageSize: number;
 }
 
 export interface AppInfoVm {
@@ -91,6 +97,17 @@ export interface ManagedAgentVm {
 export interface AcpModeVm {
   id: string;
   name: string;
+}
+
+export interface AcpUsageVm {
+  used?: number | null;
+  size?: number | null;
+  costAmountUsd?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cachedReadTokens?: number | null;
+  cachedWriteTokens?: number | null;
+  totalTokens?: number | null;
 }
 
 export interface AgentEnvEntryVm {
@@ -187,7 +204,7 @@ export interface WorkflowControlDsl {
   max_rounds?: number | null;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -199,6 +216,44 @@ export interface WorkflowWorkerNodeDsl {
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
   manual_check?: boolean | null;
+}
+
+export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrategyDsl | WorkflowAiDynamicDynamicAgentStrategyDsl;
+
+export interface WorkflowAiDynamicFixedAgentStrategyDsl {
+  mode: 'fixed';
+  provider: string;
+}
+
+export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
+  mode: 'dynamic';
+  bootstrapProvider: string;
+  routingPrompt: string;
+}
+
+export interface WorkflowAiDynamicNodeDsl {
+  type: 'ai-dynamic';
+  id: string;
+  agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
+  permission_mode?: string | null;
+  allowedProfiles?: string[];
+  globalGoal?: string | null;
+  control: DynamicControlDsl;
+  allowedWorkflows: AllowedWorkflowRefDsl[];
+}
+
+export interface DynamicControlDsl {
+  maxDynamicNodes: number;
+  maxFanout: number;
+  maxDepth: number;
+  maxParallel: number;
+  maxGroupDepth: number;
+  maxWorkflowInvocations: number;
+  allowNestedDynamic: boolean;
+}
+
+export interface AllowedWorkflowRefDsl {
+  workflowId: string;
 }
 
 export interface WorkflowOutputContractDsl {
@@ -355,12 +410,18 @@ export interface GraphNodeVm {
   status?: string | null;
   outcome?: string | null;
   attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   attemptCount?: number;
   attempts?: GraphAttemptVm[];
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
   iconKey?: string | null;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
+  dynamicSummary?: DynamicSummaryVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface GraphAttemptVm {
@@ -382,6 +443,48 @@ export interface GraphEdgeVm {
   blockedReason?: ControlFailureVm | null;
 }
 
+export interface DynamicSummaryVm {
+  status: string;
+  outcome?: string | null;
+  internalNodeCount: number;
+  groupCount: number;
+  proposalCount: number;
+  currentNodeIds: string[];
+}
+
+export interface DynamicGroupVm {
+  id: string;
+  status: string;
+  depth: number;
+  parentGroupId?: string | null;
+  rootNodeIds: string[];
+  terminalNodeIds: string[];
+  mergeNodeId?: string | null;
+  acceptanceNodeId?: string | null;
+}
+
+export interface DynamicProposalValidationErrorVm {
+  code: string;
+  message: string;
+  params: Record<string, unknown>;
+}
+
+export interface DynamicProposalVm {
+  id: string;
+  sourceNodeId: string;
+  validationStatus: string;
+  validationErrors: DynamicProposalValidationErrorVm[];
+  artifactPath: string;
+  createdAt: string;
+}
+
+export interface DynamicDetailVm {
+  summary: DynamicSummaryVm;
+  graph: GraphVm;
+  groups: DynamicGroupVm[];
+  proposals: DynamicProposalVm[];
+}
+
 export interface NodeDetailVm {
   id: string;
   nodeId: string;
@@ -393,6 +496,8 @@ export interface NodeDetailVm {
   status: string;
   outcome?: string | null;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   current: boolean;
   startedAt: string;
   finishedAt?: string | null;
@@ -405,9 +510,13 @@ export interface NodeDetailVm {
   hasWorkerRef: boolean;
   manualCheckEnabled: boolean;
   manualCheckPending: boolean;
+  sessionMode?: string | null;
+  continueFromNodeId?: string | null;
   acpSession?: AcpSessionVm | null;
   acpConversations?: AcpConversationVm[];
   selectedConversationKey?: string | null;
+  dynamic?: DynamicDetailVm | null;
+  dynamicGroupId?: string | null;
 }
 
 export interface AcpConversationVm {
@@ -433,6 +542,7 @@ export interface AcpAttemptSessionVm {
 
 export interface AcpSessionVm {
   sessionId?: string | null;
+  title?: string | null;
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;
@@ -449,14 +559,17 @@ export interface AcpSessionVm {
   eventPage: AcpEventPageVm;
   pendingPermissions: AcpPermissionRequestVm[];
   availableCommands?: unknown[] | null;
-  usage?: unknown | null;
+  usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
 }
 
 export interface AcpSessionQueryInput {
   beforeSeq?: number;
   afterSeq?: number;
+  beforeCursor?: string;
+  afterCursor?: string;
   eventLimit?: number;
+  pageSize?: number;
 }
 
 export interface AcpEventPageVm {
@@ -466,6 +579,8 @@ export interface AcpEventPageVm {
   newestSeq?: number | null;
   hasOlder: boolean;
   hasNewer: boolean;
+  oldestCursor?: string | null;
+  newestCursor?: string | null;
 }
 
 export interface AcpSessionConfigVm {
@@ -488,6 +603,10 @@ export interface AcpUiEventVm {
   title?: string | null;
   toolCallId?: string | null;
   status?: string | null;
+  startedSeq?: number | null;
+  endedSeq?: number | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
   raw?: unknown;
 }
 
@@ -550,6 +669,7 @@ export interface AssetItemVm {
   title: string;
   tone: string;
   preview: string;
+  roundId: string;
   nodeId: string;
   attemptId: string;
 }
@@ -625,10 +745,190 @@ type RoundSelectionContext = { contextNodeId?: string };
 export type RoundSelection = RoundSelectionContext & (
   | { kind: 'round' }
   | { kind: 'requirement' }
-  | { kind: 'node'; nodeId: string; attemptId?: string }
+  | { kind: 'node'; nodeId: string; attemptId?: string; outerNodeId?: string; outerAttemptId?: string }
   | { kind: 'artifact'; nodeId: string; attemptId: string; name: string }
   | { kind: 'attachment'; nodeId: string; attemptId: string; name: string }
   | { kind: 'worker-ref'; nodeId: string; attemptId: string }
   | { kind: 'event'; id: string; nodeId?: string; attemptId?: string }
   | { kind: 'log'; id: string; nodeId?: string; attemptId?: string }
 );
+
+// ── Conversation UI types ──
+
+export type DesktopUiMode = 'conversation' | 'workbench';
+
+export type ConversationPage =
+  | { kind: 'conversation-home' }
+  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string }
+  | { kind: 'run-mode-management' }
+  | { kind: 'agents' }
+  | { kind: 'contexts' }
+  | { kind: 'settings' };
+
+export interface ConversationWorkspaceVm {
+  projectId: string;
+  workspacePath: string;
+  name: string;
+}
+
+export interface ConversationTaskRowVm {
+  projectId: string;
+  taskId: string;
+  title: string;
+  autoTitle: boolean;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  latestRun?: ConversationRunSummaryVm | null;
+  runs: ConversationRunSummaryVm[];
+  pinned: boolean;
+  pinnedOrder?: number | null;
+}
+
+export interface ConversationRunSummaryVm {
+  runId: string;
+  status: string;
+  outcome?: string | null;
+  startedAt: string;
+  updatedAt: string;
+  currentRound?: string | null;
+  currentNode?: string | null;
+  resumable: boolean;
+}
+
+export interface ConversationSidebarVm {
+  workspaces: ConversationWorkspaceVm[];
+  pinnedTasks: ConversationTaskRowVm[];
+  tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
+  lastActiveWorkspaceId?: string | null;
+  preferences?: Record<string, unknown> | null;
+}
+
+export interface PinRef {
+  projectId: string;
+  taskId: string;
+}
+
+export interface ConversationSessionLeafVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
+  status: string;
+  outcome?: string | null;
+  current: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  sessionId?: string | null;
+  artifactCount: number;
+  attachmentCount: number;
+}
+
+export interface ConversationSessionTreeVm {
+  rounds: ConversationRoundNodeVm[];
+  selectedSessionKey?: string | null;
+}
+
+export interface ConversationRoundNodeVm {
+  roundId: string;
+  index: number;
+  label: string;
+  status: string;
+  nodes: ConversationTreeNodeVm[];
+}
+
+export interface ConversationTreeNodeVm {
+  nodeId: string;
+  label: string;
+  nodeType: string;
+  status: string;
+  attempts: ConversationSessionLeafVm[];
+  outerNodes?: ConversationTreeNodeVm[];
+}
+
+export interface ConversationRunVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  title: string;
+  autoTitle: boolean;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  runStatus: string;
+  runOutcome?: string | null;
+  sessionTree: ConversationSessionTreeVm;
+  selectedSession?: AcpSessionVm | null;
+  activeSessions: ConversationActiveSessionVm[];
+  artifacts: AssetItemVm[];
+  attachments: AssetItemVm[];
+  workflowStatus: string;
+  workflowValid: boolean;
+  workflowError?: WorkflowErrorVm | null;
+  workflowJson?: string | null;
+  workflowGraph: GraphVm;
+  resumable: boolean;
+  pauseReason?: string | null;
+}
+
+export interface ConversationActiveSessionVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
+  status: string;
+  sessionId?: string | null;
+  startedAt?: string | null;
+}
+
+export interface ConversationRunModeVm {
+  mode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+}
+
+export interface ConversationAutoConfigVm {
+  agentType: string;
+  modelId?: string | null;
+  permissionMode?: string | null;
+  allowedProfiles?: string[];
+  globalGoal?: string | null;
+}
+
+export interface ConversationCreateInput {
+  projectId: string;
+  content: string;
+  runMode: 'auto' | 'workflow';
+  workflowTemplateId?: string | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  attachmentPaths?: string[];
+}
+
+export interface ConversationValidationResultVm {
+  valid: boolean;
+  missingItems: ConversationMissingItemVm[];
+}
+
+export interface ConversationMissingItemVm {
+  code: string;
+  label: string;
+  recoveryPath: string;
+}
+
+export interface ConversationSearchResultVm {
+  projectId: string;
+  workspacePath: string;
+  workspaceName: string;
+  taskId: string;
+  title: string;
+  description?: string | null;
+  requirementPreview: string;
+  latestRun?: ConversationRunSummaryVm | null;
+}
+
+export interface AcpModelVm {
+  id: string;
+  name: string;
+}

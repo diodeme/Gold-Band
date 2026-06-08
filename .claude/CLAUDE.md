@@ -17,6 +17,19 @@ docs\gold-band\开发计划
 
 当前项目前端使用tailwindcss+shadcn-ui, chat ui界面使用prompt-kit。必须优先根据页面需要使用组件库生成copy-in代码，不能自己手写代码，可以在生成的copy-in代码中，根据需要进行修改
 
+当前项目所有内置提示词（无论是 profile prompt、runtime system prompt、runtime repair prompt，还是 AI-DYNAMIC 相关 prompt）都必须统一放在 `src/prompts/` 下管理，不允许把长 prompt 文本散落硬编码在 Rust/TS 代码里。
+提示词目录必须按语言组织为 `src/prompts/zh-CN/...` 和 `src/prompts/en/...`，并保持语言目录下的子目录结构一致；新增或修改提示词时，必须同步维护中英文两个版本。
+
+system prompt / user prompt 的区分标准固定如下：
+1. 由 runtime 决定、用户无需关心且希望行为更稳定的内容，一律进入 system prompt，例如角色、历史、路径、规则、限制、可用资源、输出协议、剩余预算、修复指令。
+2. 每次执行时会变化、表达本轮需求或当前目标的内容，进入 user prompt，例如 requirement、goal、当前子任务。
+3. 当某段提示词需要模板变量、条件分支或修复重试时，也必须继续放在 `src/prompts/` 下，通过统一模板渲染机制管理，不能回退到代码内字符串拼接。
+
+# 新旧UI灰度规则
+当前项目目前前端有两套UI设计模式，一个是工作台模式，一个是会话模式，需求中也常称呼工作台模式为旧UI，会话模式为新UI。新旧UI不要求完全一样，当你要新增、修改前端页面、组件时，应该好好考虑下是只修改指定UI还是两套UI都要修改。
+当你不确定时，请一定向用户寻求澄清。
+
+
 # 团队共享协作规则
 
 ## 桌面端产品心智
@@ -52,6 +65,6 @@ docs\gold-band\开发计划
 
 - Chat / ACP / agent message 中 Markdown 标题不要使用文档页大标题样式。
 - 标题字号接近正文，通过字重、轻量间距、细分隔表达层级。
-- ACP 工具/思考结构化行不显示头像，但保留横向位置。
+- ACP 工具/思考结构化行显示头像，头像下方展示当前消息时间（HH:mm）。
 - ACP 工具卡片高度压缩，标题左对齐，展示操作名和关键参数。
 - ACP 的“发送中 / 处理中 / 计时”状态放 composer 内，不作为消息流卡片。

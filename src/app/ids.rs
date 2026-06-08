@@ -2,6 +2,7 @@ use anyhow::Result;
 use camino::Utf8Path;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 pub(crate) fn next_task_id(tasks_dir: &Utf8Path) -> Result<String> {
     let mut max_id = 0_u32;
@@ -66,6 +67,10 @@ pub(crate) fn latest_attempt_id(node_dir: &Utf8Path) -> Result<Option<String>> {
     } else {
         Ok(Some(format!("attempt-{max_id:03}")))
     }
+}
+
+pub(crate) fn next_workflow_id() -> String {
+    format!("workflow-{}", Uuid::new_v4().simple())
 }
 
 pub(crate) fn now_rfc3339_like() -> String {

@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 
-use crate::config::{ProfileSource, ResolvedProfileRef};
+use crate::config::{DesktopLanguage, ProfileSource, ResolvedProfileRef};
 use crate::dsl::{NodeDsl, WorkflowDsl};
 use crate::storage::GoldBandPaths;
 
@@ -16,35 +16,50 @@ pub struct ResolvedWorkflowMetadata {
 pub(crate) fn resolve_workflow_profiles(
     paths: &GoldBandPaths,
     workflow: &WorkflowDsl,
+    language: DesktopLanguage,
 ) -> Result<ResolvedWorkflowMetadata> {
     let mut profiles = Vec::new();
     for node in &workflow.nodes {
-        let profile = match node {
-            NodeDsl::Worker(worker) => worker.profile.as_deref(),
-        };
-        let Some(profile) = profile else {
-            bail!("node `{}` is not associated with role", node.id());
-        };
-        let trimmed = profile.trim();
-        if trimmed.is_empty() {
-            bail!("node `{}` is not associated with role", node.id());
-        }
-        let resolved = resolve_profile(paths, node.id(), trimmed)?;
-        if profiles.iter().all(|existing: &ResolvedProfileRef| {
-            existing.name != resolved.name || existing.path != resolved.path
-        }) {
-            profiles.push(resolved);
+        match node {
+            NodeDsl::Worker(worker) => {
+                push_profile(paths, &mut profiles, node.id(), worker.profile.as_deref(), language)?
+            }
+            NodeDsl::AiDynamic(_) => {}
         }
     }
     Ok(ResolvedWorkflowMetadata { profiles })
+}
+
+fn push_profile(
+    paths: &GoldBandPaths,
+    profiles: &mut Vec<ResolvedProfileRef>,
+    node_id: &str,
+    profile: Option<&str>,
+    language: DesktopLanguage,
+) -> Result<()> {
+    let Some(profile) = profile else {
+        bail!("node `{node_id}` is not associated with role");
+    };
+    let trimmed = profile.trim();
+    if trimmed.is_empty() {
+        bail!("node `{node_id}` is not associated with role");
+    }
+    let resolved = resolve_profile(paths, node_id, trimmed, language)?;
+    if profiles.iter().all(|existing: &ResolvedProfileRef| {
+        existing.name != resolved.name || existing.path != resolved.path
+    }) {
+        profiles.push(resolved);
+    }
+    Ok(())
 }
 
 pub(crate) fn resolve_profile(
     paths: &GoldBandPaths,
     node_id: &str,
     profile_id: &str,
+    language: DesktopLanguage,
 ) -> Result<ResolvedProfileRef> {
-    let Some(profile) = find_profile_by_id(paths, profile_id)? else {
+    let Some(profile) = find_profile_by_id(paths, profile_id, language)? else {
         return Err(anyhow!(
             "node `{node_id}` associated role visibility changed; reset it"
         ));

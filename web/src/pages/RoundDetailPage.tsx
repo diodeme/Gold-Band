@@ -1,15 +1,16 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AcpSessionVm, AcpUiEventVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
+import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AppConfigVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
 import { getLogPage, showArtifact, showAttachment } from '../api';
+import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
 import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
 import { StatusBadge } from '../components/StatusBadge';
 import { AppCard } from '@/components/AppCard';
-import { EmptyState, Metric, MetricsBar, Page, PageHeader } from '@/components/PageScaffold';
+import { EmptyState, Metric, MetricsBar, OverflowTooltip, Page, PageHeader } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,6 +24,7 @@ import { cn } from '@/lib/utils';
 import { normalizeAcpEventForAttempt } from '@/lib/acp-event-normalization';
 import { formatCurrentNode } from '@/lib/nodes';
 import { normalizeTone } from '@/lib/status';
+import { formatLocalDateTime } from '@/lib/datetime';
 
 interface RoundDetailPageProps {
   vm: RoundDetailVm | null;
@@ -30,6 +32,7 @@ interface RoundDetailPageProps {
   selection: RoundSelection;
   refreshing: boolean;
   busy: boolean;
+  appConfig: AppConfigVm;
   onRefresh: () => void;
   onSelect: (selection: RoundSelection) => void;
   onContinueRun: (taskId: string, runId: string, promptId: string) => Promise<unknown>;
@@ -40,7 +43,7 @@ type NodeDrawerTab = 'detail' | 'session';
 const defaultLogPageSize = 50;
 const defaultHotLimit = 1000;
 
-export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
+export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, appConfig, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
@@ -57,7 +60,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
     let cancelled = false;
     setAssetLoading(true);
     const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
-    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name)
+    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
       .then((content) => { if (!cancelled) setAssetContent(content); })
       .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: displayAppError(t, error), metadata: {} }); })
       .finally(() => { if (!cancelled) setAssetLoading(false); });
@@ -77,7 +80,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
 
   const openNodeDrawer = (node: GraphNodeVm, tab: NodeDrawerTab = 'detail') => {
     const nodeId = canonicalNodeId(node);
-    onSelect({ kind: 'node', nodeId, attemptId: node.attemptId ?? undefined });
+    onSelect({ kind: 'node', nodeId, attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined });
     setNodeDrawerTab(tab);
     setNodeDrawerOpen(true);
     setAsset(null);
@@ -85,7 +88,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   };
 
   const openGraphNodeLog = (node: GraphNodeVm) => {
-    onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined });
+    onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined });
     setLogDrawerOpen(true);
   };
 
@@ -192,7 +195,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
               selectedNodeId={selectedNodeId}
               activeNodeId={vm.round.currentNode ?? vm.run.currentNode}
               activeStatus={roundDisplayStatus}
-              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined })}
+              onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined })}
               onNodeOpenDetail={(node) => openNodeDrawer(node, 'detail')}
               onNodeOpenSession={(node) => openNodeDrawer(node, 'session')}
               onNodeOpenLog={openGraphNodeLog}
@@ -216,6 +219,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
         onOpenChange={setNodeDrawerOpen}
         onTabChange={setNodeDrawerTab}
         onRefresh={onRefresh}
+        appConfig={appConfig}
         optimisticAcpEventsByKey={optimisticAcpEventsByKey}
         onOptimisticAcpEventsChange={(key, events) => setOptimisticAcpEventsByKey((current) => {
           const next = { ...current };
@@ -248,8 +252,8 @@ function isRoundContinuable(vm: RoundDetailVm) {
   const activeNodeId = vm.round.currentNode ?? vm.run.currentNode;
   const activeAttemptId = vm.run.currentAttempt;
   const currentPausedNode = vm.graph.nodes.some((node) => {
-    const sameNode = node.nodeId === activeNodeId || node.id === activeNodeId;
-    const sameAttempt = !activeAttemptId || node.attemptId === activeAttemptId;
+    const sameNode = node.nodeId === activeNodeId || node.id === activeNodeId || node.outerNodeId === activeNodeId;
+    const sameAttempt = !activeAttemptId || node.attemptId === activeAttemptId || node.outerAttemptId === activeAttemptId;
     return node.current && sameNode && sameAttempt && node.status === 'paused' && !node.outcome;
   });
 
@@ -266,13 +270,16 @@ function isRoundContinuable(vm: RoundDetailVm) {
   );
 }
 
-function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
+function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; appConfig: AppConfigVm; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(760px, calc(100vw - 32px))', maxWidth: 'min(760px, calc(100vw - 32px))' }}
+        resizeStorageKey={`round-detail/node-detail/${activeTab}`}
+        defaultSize={760}
+        minSize={560}
+        maxSize={1120}
         closeLabel={t('common.close')}
         showOverlay={false}
       >
@@ -297,7 +304,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
             </ScrollArea>
           </TabsContent>
           <TabsContent value="session" className="min-h-0 flex-1 overflow-hidden">
-            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
+            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} appConfig={appConfig} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
           </TabsContent>
         </Tabs>
       </SheetContent>
@@ -308,6 +315,31 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, optimisticAcpEventsB
 function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset }: { detail: NodeDetailVm; controlFailure?: RoundDetailVm['controlFailure']; runPauseReason?: string | null; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   const detailDisplayStatus = displayPausedRuntimeStatus(detail.outcome ?? detail.status, detail.current ? runPauseReason : null);
+  const acpUsage = resolveNodeTokenUsage(detail);
+  const baseItems: Array<[ReactNode, ReactNode]> = [
+    [t('roundDetail.nodeId'), detail.nodeId],
+    [t('roundDetail.sequence'), detail.sequence ?? '-'],
+    [t('agentManagement.agentType'), detail.provider ?? '-'],
+    [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
+    [t('workflowEditor.sessionMode'), detail.sessionMode ?? '-'],
+    ['Continue From', detail.continueFromNodeId ?? '-'],
+    [t('roundDetail.attemptId'), detail.attemptId],
+    [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
+    [t('roundDetail.startedAt'), formatLocalDateTime(detail.startedAt)],
+    [t('roundDetail.finishedAt'), formatLocalDateTime(detail.finishedAt)],
+    [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
+    [t('common.artifacts'), detail.artifactCount],
+    [t('common.attachments'), detail.attachmentCount],
+  ];
+  if (acpUsage) {
+    if (acpUsage.used != null && acpUsage.size != null) {
+      baseItems.push([t('acp.usagePanel.contextWindow'), `${formatDisplayToken(acpUsage.used)} / ${formatDisplayToken(acpUsage.size)}`]);
+    }
+    baseItems.push([t('acp.usagePanel.input'), formatDisplayToken(acpUsage.inputTokens)]);
+    baseItems.push([t('acp.usagePanel.output'), formatDisplayToken(acpUsage.outputTokens)]);
+    baseItems.push([t('acp.usagePanel.cacheRead'), formatDisplayToken(acpUsage.cachedReadTokens)]);
+    baseItems.push([t('acp.usagePanel.total'), formatDisplayToken(acpUsage.totalTokens)]);
+  }
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
@@ -315,23 +347,69 @@ function NodeDetailContent({ detail, controlFailure, runPauseReason, onOpenAsset
         <Badge variant="secondary" className="rounded-full px-3">{displayStatus(t, detail.nodeType)}</Badge>
         {detail.current ? <Badge className="rounded-full px-3">{t('graph.current')}</Badge> : null}
       </div>
-      <InfoGrid items={[
-        [t('roundDetail.nodeId'), detail.nodeId],
-        [t('roundDetail.sequence'), detail.sequence ?? '-'],
-        [t('agentManagement.agentType'), detail.provider ?? '-'],
-        [t('agentManagement.displayName'), detail.providerDisplayName ?? '-'],
-        [t('roundDetail.attemptId'), detail.attemptId],
-        [t('roundDetail.attemptCount'), detail.acpConversations?.reduce((count, conversation) => count + conversation.attempts.length, 0) ?? 1],
-        [t('roundDetail.startedAt'), detail.startedAt || '-'],
-        [t('roundDetail.finishedAt'), detail.finishedAt || '-'],
-        [t('workflowEditor.manualCheck'), detail.manualCheckEnabled ? (detail.manualCheckPending ? t('acp.manualCheckPending') : t('workflowEditor.enabled')) : t('workflowEditor.disabled')],
-        [t('common.artifacts'), detail.artifactCount],
-        [t('common.attachments'), detail.attachmentCount],
-      ]} />
+      <InfoGrid items={baseItems} />
+      {detail.dynamic ? <DynamicDetailSection detail={detail} /> : null}
       {controlFailure ? <ControlFailureDetail failure={controlFailure} /> : null}
       <AssetList title={t('common.artifacts')} items={detail.artifacts} emptyLabel={t('roundDetail.noArtifacts')} onOpenAsset={onOpenAsset} />
       <AssetList title={t('common.attachments')} items={detail.attachments} emptyLabel={t('roundDetail.noAttachments')} onOpenAsset={onOpenAsset} />
     </div>
+  );
+}
+
+function DynamicDetailSection({ detail }: { detail: NodeDetailVm }) {
+  const { t } = useTranslation();
+  const dynamic = detail.dynamic;
+  if (!dynamic) return null;
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Dynamic Graph</h3>
+        <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.summary.internalNodeCount}</Badge>
+      </div>
+      <div className="rounded-xl border border-border/70 bg-muted/10 p-3">
+        <div className="mb-3 grid gap-2 sm:grid-cols-3">
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Status</div><div className="mt-1 text-sm font-medium">{displayStatus(t, dynamic.summary.status)}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Groups</div><div className="mt-1 text-sm font-medium">{dynamic.summary.groupCount}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Proposals</div><div className="mt-1 text-sm font-medium">{dynamic.summary.proposalCount}</div></div>
+        </div>
+        <div className="h-[320px] overflow-hidden rounded-xl border border-border/70 bg-background/80 p-2">
+          <GraphView graph={dynamic.graph} variant="actual" />
+        </div>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-semibold">Groups</h4>
+            <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.groups.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {dynamic.groups.map((group) => (
+              <div key={group.id} className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3"><span className="font-medium">{group.id}</span><Badge variant="secondary" className="rounded-full px-2.5">{displayStatus(t, group.status)}</Badge></div>
+                <div className="mt-2 text-xs text-muted-foreground">roots: {group.rootNodeIds.join(', ') || '-'} · terminals: {group.terminalNodeIds.join(', ') || '-'}</div>
+              </div>
+            ))}
+            {dynamic.groups.length === 0 ? <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 py-6 text-center text-sm text-muted-foreground">No groups</div> : null}
+          </div>
+        </section>
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-semibold">Proposals</h4>
+            <Badge variant="secondary" className="rounded-full px-2.5">{dynamic.proposals.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {dynamic.proposals.map((proposal) => (
+              <div key={proposal.id} className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3"><span className="font-medium">{proposal.id}</span><Badge variant="secondary" className="rounded-full px-2.5">{displayStatus(t, proposal.validationStatus)}</Badge></div>
+                <div className="mt-2 text-xs text-muted-foreground">source: {proposal.sourceNodeId}</div>
+                {proposal.validationErrors.length > 0 ? <div className="mt-2 space-y-1">{proposal.validationErrors.map((error) => <div key={`${proposal.id}:${error.code}:${error.message}`} className="rounded-lg border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-xs text-destructive">[{error.code}] {error.message}</div>)}</div> : null}
+              </div>
+            ))}
+            {dynamic.proposals.length === 0 ? <div className="rounded-xl border border-dashed border-border/70 bg-muted/10 py-6 text-center text-sm text-muted-foreground">No proposals</div> : null}
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }
 
@@ -356,7 +434,9 @@ function InfoGrid({ items }: { items: Array<[ReactNode, ReactNode]> }) {
       {items.map(([label, value], index) => (
         <div className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3" key={index}>
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
-          <div className="mt-1.5 min-w-0 truncate text-sm font-medium text-foreground" title={String(value)}>{value}</div>
+          <OverflowTooltip className="mt-1.5 min-w-0" content={String(value)}>
+            <div className="min-w-0 truncate text-sm font-medium text-foreground">{value}</div>
+          </OverflowTooltip>
         </div>
       ))}
     </div>
@@ -389,7 +469,10 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
     <Sheet modal={false} open={Boolean(asset)} onOpenChange={(open) => { if (!open) onBack(); }}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(680px, calc(100vw - 128px))', maxWidth: 'min(680px, calc(100vw - 128px))' }}
+        resizeStorageKey={`round-detail/asset-detail/${asset?.kind ?? 'unknown'}`}
+        defaultSize={680}
+        minSize={480}
+        maxSize={1040}
         closeLabel={t('common.close')}
         showOverlay={false}
       >
@@ -416,7 +499,7 @@ function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId
   return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
 }
 
-function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
+function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
   const { t } = useTranslation();
   const conversations = detail.acpConversations?.length ? detail.acpConversations : [];
   const initialKey = detail.selectedConversationKey ?? conversations[0]?.key ?? 'current';
@@ -449,20 +532,24 @@ function SessionContent({ vm, detail, onRefresh, optimisticAcpEventsByKey, onOpt
       <div className="min-h-0 flex-1">
         <SessionErrorBoundary>
           <ACPChatDialog
-          key={`${selectedConversation?.key ?? 'current'}:${attemptId}:${session?.sessionId ?? ''}`}
+          key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}`}
           session={session}
           systemPromptOptions={selectedConversation?.attempts.map((attempt) => ({ attemptId: attempt.attemptId, prompt: attempt.acpSession?.systemPromptAppend }))}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
+          eventPageSize={appConfig.acpChatEventPageSize}
           taskId={vm.run.taskId}
           runId={vm.run.id}
           roundId={vm.round.id}
           nodeId={detail.nodeId}
           attemptId={attemptId}
+          outerNodeId={detail.outerNodeId}
+          outerAttemptId={detail.outerAttemptId}
           runtimeStatus={runtimeStatus}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
           onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
           onManualCheckSubmitted={onRefresh}
+          onSessionStopped={onRefresh}
           />
         </SessionErrorBoundary>
       </div>
@@ -518,12 +605,9 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
     restored: conversation.attempts.some((attempt) => attempt.acpSession?.restored),
     events,
     eventPage: {
+      ...base.eventPage,
       loadedCount: events.length,
-      total: events.length,
-      oldestSeq: events[0]?.seq ?? null,
-      newestSeq: events.at(-1)?.seq ?? null,
-      hasOlder: false,
-      hasNewer: false,
+      total: Math.max(base.eventPage.total, events.length),
     },
   };
 }
@@ -541,7 +625,10 @@ function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolea
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
         className="gap-0 overflow-hidden border-border bg-card p-0 shadow-2xl shadow-background/30"
-        style={{ width: 'min(860px, calc(100vw - 96px))', maxWidth: 'min(860px, calc(100vw - 96px))' }}
+        resizeStorageKey="round-detail/log-drawer"
+        defaultSize={860}
+        minSize={620}
+        maxSize={1280}
         closeLabel={t('common.close')}
         showOverlay={false}
       >
@@ -624,11 +711,11 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
 function LogRow({ item, compact }: { item: LogEntryVm; compact?: boolean }) {
   return (
     <div className={cn('grid gap-3 px-2 py-2.5 text-sm', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
-      <span className="truncate text-muted-foreground" title={item.timestamp}>{item.timestamp || '-'}</span>
+      <OverflowTooltip className="min-w-0" content={formatLocalDateTime(item.timestamp)}><span className="block truncate text-muted-foreground">{formatLocalDateTime(item.timestamp)}</span></OverflowTooltip>
       <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{item.entryType}</Badge></span>
-      {!compact ? <span className="truncate text-muted-foreground" title={item.nodeId ?? undefined}>{item.nodeId ?? '-'}</span> : null}
-      {!compact ? <span className="truncate text-muted-foreground" title={item.stage ?? undefined}>{item.stage ?? '-'}</span> : null}
-      <span className="min-w-0 truncate" title={item.summary}>{item.summary}</span>
+      {!compact ? <OverflowTooltip className="min-w-0" content={item.nodeId ?? '-'}><span className="block truncate text-muted-foreground">{item.nodeId ?? '-'}</span></OverflowTooltip> : null}
+      {!compact ? <OverflowTooltip className="min-w-0" content={item.stage ?? '-'}><span className="block truncate text-muted-foreground">{item.stage ?? '-'}</span></OverflowTooltip> : null}
+      <OverflowTooltip className="min-w-0" content={item.summary}><span className="block min-w-0 truncate">{item.summary}</span></OverflowTooltip>
     </div>
   );
 }
@@ -645,6 +732,16 @@ function exportLogItems(items: LogEntryVm[]) {
 
 function canonicalNodeId(node: GraphNodeVm) {
   return node.nodeId ?? node.id;
+}
+
+function nodeDetailOuterNodeId(asset: AssetItemVm, detail?: NodeDetailVm | null) {
+  if (!detail || detail.nodeId !== asset.nodeId || detail.attemptId !== asset.attemptId) return undefined;
+  return detail.outerNodeId ?? undefined;
+}
+
+function nodeDetailOuterAttemptId(asset: AssetItemVm, detail?: NodeDetailVm | null) {
+  if (!detail || detail.nodeId !== asset.nodeId || detail.attemptId !== asset.attemptId) return undefined;
+  return detail.outerAttemptId ?? undefined;
 }
 
 function formatLimit(value: number | null | undefined, t: (key: string) => string) {

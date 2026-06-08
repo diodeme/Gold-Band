@@ -75,7 +75,7 @@ const defaultWorkflow: WorkflowDsl = {
   version: '0.1',
   id: 'task-workflow',
   entry: 'plan',
-  control: { max_attempts: 1, max_rounds: 1 },
+  control: {},
   nodes: [
     { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', permission_mode: 'bypassPermissions', manual_check: true },
     { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.', permission_mode: 'bypassPermissions' },
@@ -222,11 +222,11 @@ const mockNodeDetail: NodeDetailVm = {
     ],
   },
   artifacts: [
-    { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', nodeId: 'test', attemptId: 'att-test-001' },
-    { kind: 'artifact', name: 'layout_patch.json', title: 'layout_patch.json', tone: 'accent', preview: 'layout patch', nodeId: 'test', attemptId: 'att-test-001' },
+    { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },
+    { kind: 'artifact', name: 'layout_patch.json', title: 'layout_patch.json', tone: 'accent', preview: 'layout patch', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },
   ],
   attachments: [
-    { kind: 'attachment', name: 'dpi_scaling_logs_win11.txt', title: 'dpi_scaling_logs_win11.txt', tone: 'neutral', preview: 'provider attachment', nodeId: 'test', attemptId: 'att-test-001' },
+    { kind: 'attachment', name: 'dpi_scaling_logs_win11.txt', title: 'dpi_scaling_logs_win11.txt', tone: 'neutral', preview: 'provider attachment', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },
   ],
 };
 
@@ -297,6 +297,10 @@ export const mockBootstrap: AppBootstrapVm = {
   persistedAvailableUpdate: null,
   clientVersion: '',
   appInfo: mockAppInfo,
+  appConfig: {
+    acpSessionTitleRefreshEnabled: false,
+    acpChatEventPageSize: 360,
+  },
   needsWorkspace: false,
 };
 

@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
@@ -161,19 +161,22 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null) {
+  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null) {
+  subscribeAcpSessionUpdates() {
+    return Promise.resolve(() => {});
+  },
+  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null) {
+  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null) {
+  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },
-  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput) {
+  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     const empty: AcpRawFramePageVm = {
       items: [],
       page: query?.page ?? 0,
@@ -188,13 +191,13 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(empty);
   },
-  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: name });
   },
-  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string) {
+  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
   },
-  showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string) {
+  showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, _useLocalClaude: boolean) {
@@ -238,6 +241,105 @@ export const browserApi: RuntimeApi = {
   },
   getStartupCheckResult() {
     return Promise.resolve(null);
+  // ── Conversation UI mocks ──
+  saveDesktopUiMode(_mode) {
+    return Promise.resolve();
+  },
+  getConversationSidebar() {
+    const sidebar: ConversationSidebarVm = {
+      workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
+      pinnedTasks: [],
+      tasksByWorkspace: { default: [] },
+    };
+    return Promise.resolve(sidebar);
+  },
+  getConversationRun(_projectId, _taskId, runId) {
+    const run: ConversationRunVm = {
+      projectId: 'default',
+      taskId: 'mock-task',
+      runId,
+      title: 'Mock Task',
+      autoTitle: true,
+      runMode: 'auto',
+      runStatus: 'completed',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      artifacts: [],
+      attachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: false,
+    };
+    return Promise.resolve(run);
+  },
+  validateConversationCreate(_input) {
+    return Promise.resolve({ valid: true, missingItems: [] });
+  },
+  createConversationRun(input) {
+    const run: ConversationRunVm = {
+      projectId: input.projectId,
+      taskId: `task-${Date.now()}`,
+      runId: `run-${Date.now()}`,
+      title: input.content.slice(0, 12) || 'New Task',
+      autoTitle: true,
+      runMode: input.runMode,
+      runStatus: 'running',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      artifacts: [],
+      attachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: false,
+    };
+    return Promise.resolve(run);
+  },
+  rerunConversationTask(_projectId, _taskId) {
+    return this.createConversationRun({ projectId: _projectId, content: 'Rerun', runMode: 'auto' });
+  },
+  updateTaskMetadata() {
+    return Promise.resolve();
+  },
+  pinConversation(_projectId, _taskId) {
+    return this.getConversationSidebar();
+  },
+  unpinConversation(_projectId, _taskId) {
+    return this.getConversationSidebar();
+  },
+  reorderPinnedConversations(_pins) {
+    return this.getConversationSidebar();
+  },
+  searchConversationTasks(_query, _limit) {
+    return Promise.resolve([]);
+  },
+  getConversationRunMode(_projectId) {
+    return Promise.resolve({ mode: 'auto' });
+  },
+  saveConversationRunMode() {
+    return Promise.resolve();
+  },
+  chooseConversationWorkspace() {
+    const ws: ConversationWorkspaceVm = { projectId: 'default', workspacePath: '/default', name: 'Default Workspace' };
+    return Promise.resolve(ws);
+  },
+  addConversationWorkspace() {
+    return this.getConversationSidebar();
+  },
+  removeConversationWorkspace(_projectId) {
+    return this.getConversationSidebar();
+  },
+  syncConversationWorkspace(_workspacePath) {
+    return this.getConversationSidebar();
+  },
+  saveConversationPreference(_key, _value) {
+    return Promise.resolve();
+  },
+  openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve();
   },
 };
 

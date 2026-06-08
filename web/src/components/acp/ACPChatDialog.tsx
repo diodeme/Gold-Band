@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, CircleStop, Clock, FileText, Loader2, Search, Send, ShieldQuestion, Terminal, User, UsersRound } from 'lucide-react';
+import { ChevronDown, CircleStop, Clock, Eye, FileText, Loader2, Package, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,10 +13,24 @@ import { Message, MessageContent } from '@/components/prompt-kit/message';
 import { PromptInput, PromptInputActions, PromptInputAction, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { Tool, type ToolLabels, type ToolPart } from '@/components/prompt-kit/tool';
 import { cn } from '@/lib/utils';
-import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
-import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, submitManualCheck } from '@/api';
+import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
+import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
+import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpEventForAttempt, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
+import { formatLocalDateTime } from '@/lib/datetime';
+import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, showArtifact, showAttachment, submitManualCheck } from '@/api';
+import { getRuntimeApi } from '@/api/client';
+import { isTauriRuntime } from '@/api/shared';
 import { displayAppError, displayStatus } from '@/i18n';
-import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm } from '@/types';
+import type { AcpPermissionRequestVm, AcpRawFramePageVm, AcpRawFrameQueryInput, AcpRawFrameVm, AcpSessionVm, AcpUiEventVm, AcpUsageVm, AssetItemVm, ContentVm } from '@/types';
+
+export type AcpExternalComposerState =
+  | { kind: 'normal' }
+  | { kind: 'invalid-workflow'; workflowError: string }
+  | { kind: 'runtime-error'; errorMessage: string; onRepair?: () => void };
+
+export interface ACPChatDialogHandle {
+  openArtifactsDialog: (asset?: AssetItemVm) => void;
+}
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
@@ -25,13 +39,22 @@ interface ACPChatDialogProps {
   roundId: string;
   nodeId: string;
   attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   runtimeStatus?: string | null;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   eventIdPrefix?: string;
+  eventPageSize?: number;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
+  onSessionStopped?: () => void;
+  onAtBottomChange?: (atBottom: boolean) => void;
+  externalComposerState?: AcpExternalComposerState;
+  artifacts?: AssetItemVm[];
+  attachments?: AssetItemVm[];
+  usageCompact?: boolean;
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
@@ -63,37 +86,22 @@ type AcpChildAgentGroup = {
 };
 
 type AcpTimelineItem = AcpTimelineEvent | AcpChildAgentGroup;
+type AcpExpandedItems = Record<string, boolean>;
+type AcpExpansionControls = {
+  expandedItems: AcpExpandedItems;
+  onOpenChange: (key: string, open: boolean) => void;
+};
 
-const EVENT_WINDOW_LIMIT = 360;
-const EVENT_PAGE_SIZE = 60;
+const DEFAULT_EVENT_PAGE_SIZE = 360;
+const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
+const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
-
-function initialFirstItemIndex(session?: AcpSessionVm | null) {
-  if (!session) return 1_000_000;
-  return Math.max(1, 1_000_000 - session.eventPage.total + session.events.length);
-}
-
-function timelineItemCount(events: AcpUiEventVm[]) {
-  return buildAcpTimeline(events).length;
-}
-
-function prependedTimelineItemCount(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
-  const previousFirst = buildAcpTimeline(previous)[0];
-  if (!previousFirst) return timelineItemCount(next);
-  const previousFirstKey = timelineEventKey(previousFirst);
-  const nextIndex = buildAcpTimeline(next).findIndex((event) => timelineEventKey(event) === previousFirstKey);
-  return nextIndex < 0 ? 0 : nextIndex;
-}
-
-function removedTimelineItemCount(before: AcpUiEventVm[], after: AcpUiEventVm[]) {
-  return Math.max(0, timelineItemCount(before) - timelineItemCount(after));
-}
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
   if ((event.kind === 'toolCall' || event.kind === 'toolCallUpdate') && event.toolCallId) return `tool-${event.toolCallId}`;
-  return `${event.kind}-${event.id}-${event.seq}`;
+  return `${event.kind}-${event.id}`;
 }
 
 const hiddenSessionUpdates = new Set([
@@ -152,17 +160,41 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted }: ACPChatDialogProps) {
+const acpLoadedEventStore = new Map<string, AcpUiEventVm[]>();
+
+function restoreAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[], eventPageSize: number) {
+  const stored = acpLoadedEventStore.get(sessionKey) ?? [];
+  return limitAcpEvents(stored.length > 0 ? mergeAcpEvents(stored, events) : events, 'start', eventPageSize);
+}
+
+function storeAcpLoadedEvents(sessionKey: string, events: AcpUiEventVm[], eventPageSize: number) {
+  if (events.length === 0) acpLoadedEventStore.delete(sessionKey);
+  else acpLoadedEventStore.set(sessionKey, limitAcpEvents(events, 'start', eventPageSize));
+}
+
+function normalizeEventPageSize(value?: number) {
+  return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : DEFAULT_EVENT_PAGE_SIZE;
+}
+
+function loadedEventBufferLimit(eventPageSize: number) {
+  return Math.max(MIN_LOADED_EVENT_BUFFER_LIMIT, Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3));
+}
+
+export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>(function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, runtimeStatus, manualCheckPending = false, systemPromptOptions, eventIdPrefix, eventPageSize, optimisticEvents: controlledOptimisticEvents, onOptimisticEventsChange, onManualCheckSubmitted, onSessionStopped, onAtBottomChange, externalComposerState, artifacts = [], attachments = [], usageCompact }, ref) {
   const { t } = useTranslation();
+  const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
+  const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(effectiveEventPageSize);
   const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
-  const sessionIdentity = `${sessionKey}:${eventIdPrefix ?? ''}:${session?.sessionId ?? ''}`;
+  const eventWindowKey = `${sessionKey}:${outerNodeId ?? ''}:${outerAttemptId ?? ''}:${eventIdPrefix ?? ''}`;
+  const sessionIdentity = eventWindowKey;
   const restoredOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
+  const restoredLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? [], effectiveLoadedEventBufferLimit);
   const restoredPromptEvent = latestSendingOptimisticEvent(restoredOptimisticEvents);
   const restoredPrompt = restoredPromptEvent?.content?.trim() || null;
   const restoredPromptId = promptIdFromEvent(restoredPromptEvent);
   const [currentSession, setCurrentSession] = useState<AcpSessionVm | null>(session ?? null);
-  const [loadedEvents, setLoadedEvents] = useState<AcpUiEventVm[]>(() => session?.events ?? []);
-  const [firstItemIndex, setFirstItemIndex] = useState(() => initialFirstItemIndex(session));
+  const [loadedEvents, setLoadedEvents] = useState<AcpUiEventVm[]>(() => restoredLoadedEvents);
+  const loadedEventsRef = useRef<AcpUiEventVm[]>(restoredLoadedEvents);
   const [optimisticEvents, setOptimisticEvents] = useState<AcpUiEventVm[]>(() => restoredOptimisticEvents);
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
@@ -177,6 +209,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const [manualCheckSubmitting, setManualCheckSubmitting] = useState(false);
   const [manualCheckResolved, setManualCheckResolved] = useState(false);
   const [canvasMode, setCanvasMode] = useState<AcpCanvasMode>('chat');
+  const [expandedItems, setExpandedItems] = useState<AcpExpandedItems>({});
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [rawPage, setRawPage] = useState<AcpRawFramePageVm | null>(null);
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({ page: 0, pageSize: 100 });
@@ -184,22 +217,23 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(() => session?.eventPage.hasOlder ?? false);
   const [hasNewerEvents, setHasNewerEvents] = useState(() => session?.eventPage.hasNewer ?? false);
-  const [chatPrimed, setChatPrimed] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [dismissedPermissionIds, setDismissedPermissionIds] = useState<Set<string>>(() => new Set());
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<string | null>(null);
-  const scrollerElementRef = useRef<HTMLDivElement | null>(null);
-  const contentElementRef = useRef<HTMLDivElement | null>(null);
-  const historyScrollAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  const [artifactsDialogOpen, setArtifactsDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<AssetItemVm | null>(null);
+  const [artifactContent, setArtifactContent] = useState<ContentVm | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
+  const preservingScrollRef = useRef(false);
   const pinToBottomRef = useRef(true);
-  const ignoreHistoryAtBottomRef = useRef(false);
-  const suppressNextAutoScrollRef = useRef(false);
-  const historyBrowsingRef = useRef(false);
   const cancelRequestedRef = useRef(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
+  const sessionRefreshSeqRef = useRef(0);
+  const scrollerElementRef = useRef<HTMLDivElement | null>(null);
+  const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
 
   const updateOptimisticEvents = (updater: (current: AcpUiEventVm[]) => AcpUiEventVm[]) => {
     const next = updateStoredOptimisticEvents(sessionKey, updater);
@@ -222,32 +256,31 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   useEffect(() => {
     setCurrentSession(session ?? null);
     if (!session) {
-      setLoadedEvents([]);
-      setFirstItemIndex(0);
+      const restored = restoreAcpLoadedEvents(eventWindowKey, [], effectiveLoadedEventBufferLimit);
+      loadedEventsRef.current = restored;
+      setLoadedEvents(restored);
       setHasOlderEvents(false);
       setHasNewerEvents(false);
       return;
     }
     setLoadedEvents((events) => {
-      if (events.length === 0) {
-        setFirstItemIndex(initialFirstItemIndex(session));
-        return session.events;
-      }
-      if (!pinToBottomRef.current) return events;
-      const merged = mergeAcpEvents(events, session.events);
-      const limited = limitAcpEvents(merged, 'start');
-      setFirstItemIndex((current) => current + removedTimelineItemCount(merged, limited));
+      const currentEvents = events.length === 0 ? restoreAcpLoadedEvents(eventWindowKey, session.events, effectiveLoadedEventBufferLimit) : events;
+      const merged = mergeAcpEvents(currentEvents, session.events);
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
+      loadedEventsRef.current = limited;
       return limited;
     });
     setHasOlderEvents((current) => current || session.eventPage.hasOlder);
     setHasNewerEvents((current) => current || session.eventPage.hasNewer);
-  }, [session]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
 
   useEffect(() => {
     const storedOptimisticEvents = controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
+    const storedLoadedEvents = restoreAcpLoadedEvents(eventWindowKey, session?.events ?? [], effectiveLoadedEventBufferLimit);
     const storedPromptEvent = latestSendingOptimisticEvent(storedOptimisticEvents);
     setCurrentSession(session ?? null);
-    setLoadedEvents(session?.events ?? []);
+    loadedEventsRef.current = storedLoadedEvents;
+    setLoadedEvents(storedLoadedEvents);
     setOptimisticEvents(storedOptimisticEvents);
     setDismissedPermissionIds(new Set());
     setPermissionError(null);
@@ -261,34 +294,94 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100 });
     setLoadingOlder(false);
-    setChatPrimed(false);
-    setFirstItemIndex(initialFirstItemIndex(session));
+    setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
     setHasNewerEvents(session?.eventPage.hasNewer ?? false);
     setIsAtBottom(true);
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
+    preservingScrollRef.current = false;
+    prependAnchorRef.current = null;
     pinToBottomRef.current = true;
-    ignoreHistoryAtBottomRef.current = false;
-    suppressNextAutoScrollRef.current = false;
-    historyBrowsingRef.current = false;
     cancelRequestedRef.current = false;
     latestSessionRef.current = session ?? null;
-    historyScrollAnchorRef.current = null;
+    sessionRefreshSeqRef.current += 1;
     setCanvasMode('chat');
-  }, [sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, sessionIdentity]);
+
+  useEffect(() => {
+    loadedEventsRef.current = loadedEvents;
+    storeAcpLoadedEvents(eventWindowKey, loadedEvents, effectiveLoadedEventBufferLimit);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEvents]);
+
+  useEffect(() => {
+    onAtBottomChange?.(isAtBottom);
+  }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
-  const visibleSession = useMemo(() => baseSession ? { ...baseSession, events: loadedEvents } : null, [baseSession, loadedEvents]);
+  const runtimeActive = isRuntimeActiveStatus(runtimeStatus);
+  const liveSessionShell = useMemo(() => loadedEvents.length > 0 || runtimeActive ? createLiveAcpSessionShell(loadedEvents) : null, [loadedEvents, runtimeActive]);
+  const visibleSession = useMemo(() => baseSession ? { ...baseSession, events: loadedEvents } : liveSessionShell, [baseSession, liveSessionShell, loadedEvents]);
   const pendingOptimisticPrompt = latestSendingOptimisticEvent(optimisticEvents.filter((event) => !hasMatchingUserPrompt(loadedEvents, event)));
-  const waitingForOptimisticPrompt = Boolean(pendingOptimisticPrompt);
   const effective = useMemo(() => mergeOptimisticSession(visibleSession, optimisticEvents), [visibleSession, optimisticEvents]);
   const effectiveEvents = effective?.events ?? [];
-  const pendingPermission = effective?.pendingPermissions?.find((request) => !dismissedPermissionIds.has(request.requestId)) ?? null;
+  const waitingForOptimisticPrompt = Boolean(pendingOptimisticPrompt) && !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+  const pendingPermission = effective?.pendingPermissions?.find((request) => !dismissedPermissionIds.has(request.requestId)) ?? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds);
   const waitingForPermission = Boolean(pendingPermission);
   const planInterventionOption = pendingPermission ? findPlanInterventionOption(pendingPermission) : null;
   const timeline = useMemo(() => buildAcpTimeline(effectiveEvents), [effectiveEvents]);
-  const sessionActive = isSessionActive(effective?.status) || isRuntimeActiveStatus(runtimeStatus);
+  const sessionActive = isSessionActive(effective?.status) || runtimeActive;
+  const handleTimelineItemOpenChange = useCallback((key: string, open: boolean) => {
+    setExpandedItems((current) => current[key] === open ? current : { ...current, [key]: open });
+  }, []);
+  const expansionControls = useMemo<AcpExpansionControls>(() => ({
+    expandedItems,
+    onOpenChange: handleTimelineItemOpenChange,
+  }), [expandedItems, handleTimelineItemOpenChange]);
+
+  const handleOpenArtifactDetail = useCallback(async (asset: AssetItemVm) => {
+    setSelectedArtifact(asset);
+    setArtifactContent(null);
+    setArtifactLoading(true);
+    try {
+      const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
+      const assetOuterNodeId = outerNodeId && outerAttemptId ? outerNodeId : undefined;
+      const assetOuterAttemptId = outerNodeId && outerAttemptId ? outerAttemptId : undefined;
+      const content = await loader(taskId, runId, asset.roundId || roundId, asset.nodeId, asset.attemptId, asset.name, assetOuterNodeId, assetOuterAttemptId);
+      setArtifactContent(content);
+    } catch {
+      setArtifactContent(null);
+    } finally {
+      setArtifactLoading(false);
+    }
+  }, [taskId, runId, roundId]);
+
+  useImperativeHandle(ref, () => ({
+    openArtifactsDialog: (asset?: AssetItemVm) => {
+      if (asset) {
+        handleOpenArtifactDetail(asset);
+      } else {
+        setArtifactsDialogOpen(true);
+      }
+    },
+  }), [handleOpenArtifactDetail]);
+
+  useEffect(() => {
+    const keys = new Set(timeline.map(timelineEventKey));
+    setExpandedItems((current) => {
+      let changed = false;
+      const next: AcpExpandedItems = {};
+      for (const [key, open] of Object.entries(current)) {
+        if (!keys.has(key)) {
+          changed = true;
+          continue;
+        }
+        next[key] = open;
+      }
+      return changed ? next : current;
+    });
+  }, [timeline]);
+
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
   const composerLocked = waitingForPermission && !planInterventionOption;
   const turnAccepted = Boolean(activeTurnStartedAt);
@@ -301,32 +394,43 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const composerProcessingKind: AcpProcessingKind = cancelling ? 'stopping' : submittingPrompt ? 'sending' : awaitingFirstResponse ? 'processing' : timeline.length === 0 ? 'launching' : processingKindFromTimeline(composerLatestEvent, false);
   const showComposerStatus = !waitingForPermission && (composerStatusActive || composerSessionSeconds != null);
   const composerStatusStartAt = submittingPrompt || awaitingFirstResponse || cancelling ? activeTurnStartedAt : composerLatestEvent?.startedAt ?? composerLatestEvent?.timestamp ?? activeTurnStartedAt;
+  const usageStepSeconds = useElapsedSeconds(composerStatusActive && composerProcessingKind !== 'sending', composerStatusStartAt);
   const composerInputHint = waitingForPermission ? t('acp.permissionPending') : cancelling ? t('acp.stopping') : submittingPrompt ? t('acp.sending') : composerStatusActive ? t('acp.processing') : t('acp.promptInputHint');
   const composerPlaceholder = planInterventionOption ? t('acp.planInterventionHint') : t('acp.composerPlaceholder');
   const canSubmitPrompt = Boolean(prompt.trim()) && !cancelling && (planInterventionOption ? !sending : !activePromptLocked);
   const canStopSession = sessionActive || awaitingResponse || sending || waitingForOptimisticPrompt || cancelling;
   const sendButtonBusy = (sending || waitingForOptimisticPrompt) && !planInterventionOption;
   const lastEvent = effectiveEvents.at(-1);
-  const eventScrollSignature = `${effectiveEvents.length}:${lastEvent?.seq ?? ''}:${lastEvent?.kind ?? ''}:${sending}:${cancelling}:${effective?.status ?? ''}`;
-
-  const scrollChatToBottom = () => {
-    const scroller = scrollerElementRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  };
 
   const normalizeSessionUpdate = (updated: AcpSessionVm | null) => eventIdPrefix ? normalizeAcpSessionForAttempt(updated, eventIdPrefix) : updated;
+  const normalizeEventUpdate = (event: AcpUiEventVm | null | undefined) => event && eventIdPrefix ? normalizeAcpEventForAttempt(event, eventIdPrefix) : event ?? null;
 
   const applySessionUpdate = (updated: AcpSessionVm | null) => {
     const normalized = normalizeSessionUpdate(updated);
+    const previous = latestSessionRef.current;
+    if (sessionsEquivalent(previous, normalized)) return;
     latestSessionRef.current = normalized;
     setCurrentSession(normalized);
     if (!normalized) return;
-    setHasNewerEvents(false);
-    setHasOlderEvents((current) => current || normalized.eventPage.hasOlder);
     setLoadedEvents((events) => {
+      setHasNewerEvents(normalized.eventPage.hasNewer);
       const merged = mergeAcpEvents(events, normalized.events);
-      const limited = limitAcpEvents(merged, 'start');
-      setFirstItemIndex((current) => current + removedTimelineItemCount(merged, limited));
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
+      setHasOlderEvents(normalized.eventPage.hasOlder || limited.length < merged.length);
+      loadedEventsRef.current = limited;
+      return limited;
+    });
+  };
+
+  const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
+    const normalized = normalizeEventUpdate(event);
+    if (!normalized || (!isRenderableEvent(normalized) && normalized.kind !== 'permissionRequest')) return;
+    setLoadedEvents((events) => {
+      setHasNewerEvents(false);
+      const merged = mergeAcpEvents(events, [normalized]);
+      const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
+      setHasOlderEvents((current) => current || limited.length < merged.length);
+      loadedEventsRef.current = limited;
       return limited;
     });
   };
@@ -336,23 +440,66 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   }, [currentSession, effective, session]);
 
   useEffect(() => {
-    if (!activePromptLocked) return;
-    let active = true;
-    const refreshSession = async () => {
-      try {
-        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, undefined, latestSessionRef.current);
-        if (active) applySessionUpdate(updated);
-      } catch {
-        // The send or stop request owns user-visible error handling.
+    const scroller = scrollerElementRef.current;
+    if (!scroller) return;
+    const anchor = prependAnchorRef.current;
+    if (anchor) {
+      prependAnchorRef.current = null;
+      const element = findAcpItemElement(scroller, anchor.key);
+      if (element) {
+        preservingScrollRef.current = true;
+        const delta = element.getBoundingClientRect().top - anchor.top;
+        requestAnimationFrame(() => {
+          const el = scrollerElementRef.current;
+          if (el) el.scrollTop += delta;
+          preservingScrollRef.current = false;
+        });
       }
-    };
-    void refreshSession();
-    const timer = window.setInterval(refreshSession, 1500);
+      return;
+    }
+    if (pinToBottomRef.current) {
+      requestAnimationFrame(() => {
+        const el = scrollerElementRef.current;
+        if (el && pinToBottomRef.current) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [timeline]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const runtimeApi = getRuntimeApi();
+    if (!runtimeApi.subscribeAcpSessionUpdates) return;
+    let active = true;
+    let stopListening: (() => void) | null = null;
+    const subscribe = runtimeApi.subscribeAcpSessionUpdates;
+    if (!subscribe) return;
+    const refreshSeq = sessionRefreshSeqRef.current + 1;
+    sessionRefreshSeqRef.current = refreshSeq;
+    const matchesSessionEvent = (event: { taskId: string; runId: string; roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null }) => event.taskId === taskId
+      && event.runId === runId
+      && event.roundId === roundId
+      && event.nodeId === nodeId
+      && event.attemptId === attemptId
+      && (event.outerNodeId ?? null) === (outerNodeId ?? null)
+      && (event.outerAttemptId ?? null) === (outerAttemptId ?? null);
+    void (async () => {
+      stopListening = await subscribe((event) => {
+        if (!active || !matchesSessionEvent(event)) return;
+        if (event.event) applyEventUpdate(event.event);
+        else applySessionUpdate(event.session ?? null);
+      });
+      try {
+        const updated = await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, latestSessionRef.current, outerNodeId, outerAttemptId);
+        if (active && sessionRefreshSeqRef.current === refreshSeq) applySessionUpdate(updated);
+      } catch {
+        if (active) applySessionUpdate(latestSessionRef.current);
+      }
+    })();
     return () => {
       active = false;
-      window.clearInterval(timer);
+      stopListening?.();
     };
-  }, [activePromptLocked, attemptId, nodeId, roundId, runId, taskId]);
+  }, [attemptId, eventWindowKey, nodeId, outerAttemptId, outerNodeId, roundId, runId, taskId]);
 
   useEffect(() => {
     if ((!awaitingResponse && !cancelling) || sessionActive || sending || waitingForOptimisticPrompt) return;
@@ -370,150 +517,54 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     });
   }, [activeTurnPrompt, activeTurnPromptId, activeTurnStartedAt, loadedEvents]);
 
-  useEffect(() => {
-    if (canvasMode !== 'chat' || chatPrimed) return;
-    if (timeline.length === 0) {
-      setChatPrimed(true);
-      return;
-    }
-    const firstFrame = window.requestAnimationFrame(() => {
-      scrollChatToBottom();
-      window.requestAnimationFrame(() => setChatPrimed(true));
-    });
-    return () => window.cancelAnimationFrame(firstFrame);
-  }, [canvasMode, chatPrimed, timeline.length]);
-
-  useEffect(() => {
-    if (canvasMode !== 'chat' || !chatPrimed || loadingOlder || historyBrowsingRef.current) return;
-    if (suppressNextAutoScrollRef.current) {
-      suppressNextAutoScrollRef.current = false;
-      return;
-    }
-    if (hasNewerEvents || !pinToBottomRef.current) return;
-    scrollChatToBottom();
-  }, [canvasMode, chatPrimed, eventScrollSignature, hasNewerEvents, loadingOlder, timeline.length]);
-
-  useEffect(() => {
-    if (canvasMode !== 'chat' || !chatPrimed) return;
-    const content = contentElementRef.current;
-    if (!content) return;
-    let frame: number | null = null;
-    const stickToBottom = () => {
-      if (frame != null) window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = null;
-        if (historyScrollAnchorRef.current || loadingOlderRef.current || historyBrowsingRef.current) return;
-        if (hasNewerEvents || !pinToBottomRef.current) return;
-        scrollChatToBottom();
-      });
-    };
-    const observer = new ResizeObserver(stickToBottom);
-    observer.observe(content);
-    return () => {
-      if (frame != null) window.cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [canvasMode, chatPrimed, hasNewerEvents]);
-
-  useLayoutEffect(() => {
-    const anchor = historyScrollAnchorRef.current;
-    const scroller = scrollerElementRef.current;
-    if (!anchor || !scroller) return;
-    historyScrollAnchorRef.current = null;
-    const restore = () => {
-      const delta = scroller.scrollHeight - anchor.scrollHeight;
-      scroller.scrollTop = anchor.scrollTop + delta;
-    };
-    restore();
-    const frame = window.requestAnimationFrame(restore);
-    return () => window.cancelAnimationFrame(frame);
-  }, [firstItemIndex, timeline.length]);
-
-  const releaseHistoryAtBottomGuard = () => {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        ignoreHistoryAtBottomRef.current = false;
-      });
-    });
-  };
-
-  const captureHistoryScrollAnchor = () => {
-    const scroller = scrollerElementRef.current;
-    if (!scroller) return;
-    historyScrollAnchorRef.current = {
-      scrollTop: scroller.scrollTop,
-      scrollHeight: scroller.scrollHeight,
-    };
-  };
-
-  const preserveScrollPosition = () => {
-    const scroller = scrollerElementRef.current;
-    if (!scroller) return;
-    if (pinToBottomRef.current && !historyBrowsingRef.current && !hasNewerEvents) {
-      window.requestAnimationFrame(scrollChatToBottom);
-      return;
-    }
-    historyScrollAnchorRef.current = {
-      scrollTop: scroller.scrollTop,
-      scrollHeight: scroller.scrollHeight,
-    };
-  };
-
-  const handleChatScroll = () => {
-    const scroller = scrollerElementRef.current;
-    if (!scroller) return;
-    const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    const atBottom = distanceFromBottom <= BOTTOM_STICK_THRESHOLD_PX;
-    if (atBottom) historyBrowsingRef.current = false;
-    pinToBottomRef.current = atBottom && !hasNewerEvents;
-    setIsAtBottom(atBottom);
-    if (!atBottom && !ignoreHistoryAtBottomRef.current && scroller.scrollTop <= HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
-  };
+  const preserveScrollPosition = useCallback(() => {}, []);
 
   const loadOlderEvents = async () => {
-    if (loadingOlderRef.current || !hasOlderEvents || loadedEvents.length === 0) return;
-    const oldestSeq = loadedEvents[0].seq;
+    const previousEvents = loadedEventsRef.current;
+    if (loadingOlderRef.current || !hasOlderEvents || previousEvents.length === 0) return;
+    const oldestSeq = originalSeqFromAcpEvent(previousEvents[0]);
+    const beforeCursor = formatTimelineCursor(oldestSeq);
+    const scroller = scrollerElementRef.current;
+    prependAnchorRef.current = scroller ? captureVisibleAcpAnchor(scroller) : null;
     loadingOlderRef.current = true;
     pinToBottomRef.current = false;
-    historyBrowsingRef.current = true;
-    ignoreHistoryAtBottomRef.current = true;
-    suppressNextAutoScrollRef.current = true;
     setIsAtBottom(false);
     setLoadingOlder(true);
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeSeq: oldestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
-      if (!updated) return;
-      captureHistoryScrollAnchor();
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { beforeCursor, beforeSeq: oldestSeq, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, baseSession, outerNodeId, outerAttemptId));
+      if (!updated) {
+        prependAnchorRef.current = null;
+        return;
+      }
+      const merged = mergeAcpEvents(updated.events, previousEvents);
+      const limited = limitAcpEvents(merged, 'end', effectiveLoadedEventBufferLimit);
       setCurrentSession(updated);
       setHasOlderEvents(updated.eventPage.hasOlder);
-      setLoadedEvents((events) => {
-        const merged = mergeAcpEvents(updated.events, events);
-        const limited = limitAcpEvents(merged, 'end');
-        setFirstItemIndex((current) => Math.max(1, current - prependedTimelineItemCount(events, limited)));
-        setHasNewerEvents(updated.eventPage.hasNewer || limited.length < merged.length);
-        return limited;
-      });
+      setHasNewerEvents(updated.eventPage.hasNewer || limited.length < merged.length);
+      loadedEventsRef.current = limited;
+      setLoadedEvents(limited);
     } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
-      releaseHistoryAtBottomGuard();
     }
   };
 
   const loadNewerEvents = async () => {
-    if (loadingNewerRef.current || !hasNewerEvents || loadedEvents.length === 0) return;
-    const newestSeq = loadedEvents[loadedEvents.length - 1].seq;
+    const previousEvents = loadedEventsRef.current;
+    if (loadingNewerRef.current || !hasNewerEvents || previousEvents.length === 0) return;
+    const newestSeq = originalSeqFromAcpEvent(previousEvents[previousEvents.length - 1]);
+    const afterCursor = formatTimelineCursor(newestSeq);
     loadingNewerRef.current = true;
     try {
-      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterSeq: newestSeq, eventLimit: EVENT_PAGE_SIZE }, baseSession));
+      const updated = normalizeSessionUpdate(await getAcpSession(taskId, runId, roundId, nodeId, attemptId, { afterCursor, afterSeq: newestSeq, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize }, baseSession, outerNodeId, outerAttemptId));
       if (!updated) return;
       setCurrentSession(updated);
       setHasNewerEvents(updated.eventPage.hasNewer);
       setLoadedEvents((events) => {
         const merged = mergeAcpEvents(events, updated.events);
-        const limited = limitAcpEvents(merged, 'start');
-        setFirstItemIndex((current) => current + removedTimelineItemCount(merged, limited));
+        const limited = limitAcpEvents(merged, 'start', effectiveLoadedEventBufferLimit);
         setHasOlderEvents(updated.eventPage.hasOlder || limited.length < merged.length);
+        loadedEventsRef.current = limited;
         return limited;
       });
     } finally {
@@ -527,7 +578,6 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     const promptId = promptIdFromEvent(optimisticEvent);
     setPrompt('');
     setSendError(null);
-    historyBrowsingRef.current = false;
     pinToBottomRef.current = true;
     setActiveTurnPrompt(trimmed);
     setActiveTurnPromptId(promptId);
@@ -536,7 +586,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     setSending(true);
     try {
-      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null);
+      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
       if (updated) {
         updateOptimisticEvents((current) => current.filter((event) => !hasMatchingUserPrompt(updated.events, event)));
@@ -581,8 +631,9 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCancelError(null);
     setAwaitingResponse(true);
     try {
-      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null);
+      const updated = await cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
+      onSessionStopped?.();
     } catch (error) {
       setCancelError(displayAppError(t, error));
       setCancelling(false);
@@ -609,7 +660,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setPermissionError(null);
     setDismissedPermissionIds((current) => new Set(current).add(request.requestId));
     try {
-      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective);
+      const updated = await respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, request.requestId, optionId, effective, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
     } catch (error) {
       setDismissedPermissionIds((current) => {
@@ -632,7 +683,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
   const loadRawFrames = async (query: AcpRawFrameQueryInput) => {
     setRawLoading(true);
     try {
-      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query);
+      const next = await getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
       setRawPage(next);
       setRawQuery({
         page: next.page,
@@ -656,6 +707,38 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
     setCanvasMode('raw');
   };
 
+  const scrollFrameRef = useRef<number | null>(null);
+
+  const handleScrollRef = useRef<(() => void) | null>(null);
+  handleScrollRef.current = () => {
+    if (preservingScrollRef.current) return;
+    const scroller = scrollerElementRef.current;
+    if (!scroller) return;
+    if (scroller.scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < BOTTOM_STICK_THRESHOLD_PX;
+    setIsAtBottom((current) => current === atBottom ? current : atBottom);
+    if (atBottom && hasNewerEvents) void loadNewerEvents();
+  };
+  const handleScroll = useCallback(() => {
+    const scroller = scrollerElementRef.current;
+    if (scroller && !preservingScrollRef.current) {
+      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      // Release pin generously — any scroll away from bottom should stop auto-follow
+      if (distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
+        pinToBottomRef.current = false;
+      }
+      // Re-engage pin only at exact bottom, so mid-scroll users don't get snapped
+      if (distanceFromBottom <= 1) {
+        pinToBottomRef.current = true;
+      }
+    }
+    if (scrollFrameRef.current != null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      handleScrollRef.current?.();
+    });
+  }, []);
+
   if (!effective) {
     return <AcpErrorState reason={t('acp.missingSessionReason')} />;
   }
@@ -669,10 +752,23 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
         rawActive={canvasMode === 'raw'}
         rawLoading={rawLoading}
         systemPromptAvailable={Boolean(effective.systemPromptAppend?.trim()) || Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))}
+        artifactCount={artifacts.length + attachments.length}
         onToggleRaw={toggleRawFrames}
         onOpenSystemPrompt={() => setSystemPromptOpen(true)}
+        onOpenArtifacts={() => setArtifactsDialogOpen(true)}
       />
       <SystemPromptDialog open={systemPromptOpen} prompt={effective.systemPromptAppend} options={systemPromptOptions} onOpenChange={setSystemPromptOpen} />
+      <ACPArtifactsDialog
+        open={artifactsDialogOpen}
+        artifacts={artifacts}
+        attachments={attachments}
+        selectedArtifact={selectedArtifact}
+        artifactContent={artifactContent}
+        artifactLoading={artifactLoading}
+        onOpenChange={setArtifactsDialogOpen}
+        onOpenDetail={handleOpenArtifactDetail}
+        onBack={() => { setSelectedArtifact(null); setArtifactContent(null); }}
+      />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === 'raw' ? (
@@ -687,30 +783,39 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
           </div>
         ) : (
           <div className="relative h-full min-w-0 overflow-hidden">
-            <div
-              ref={scrollerElementRef}
-              className={cn('h-full min-w-0 overflow-y-auto overflow-x-hidden transition-opacity duration-200 [overflow-anchor:none]', !chatPrimed && 'opacity-0')}
-              onScroll={handleChatScroll}
-            >
-              <div ref={contentElementRef} className="min-w-0 [overflow-anchor:none]">
-                {loadingOlder ? <AcpListLoading label={t('acp.loadingOlderEvents')} /> : hasOlderEvents ? <AcpHistoryHint label={t('acp.scrollForHistory')} /> : <div className="h-3" />}
-                {timeline.length === 0 && !isSessionActive(effective.status) && !sending ? <div className="p-5"><EmptyAcpState /></div> : null}
-                {timeline.map((event) => <div className="px-5 py-2" key={timelineEventKey(event)}><ACPEventRenderer event={event} onLayoutChange={preserveScrollPosition} /></div>)}
-                <div className="space-y-4 pb-5">
-                  {sendError ? <AcpErrorBanner reason={`${t('acp.sendFailed')}：${sendError}`} /> : null}
-                  {cancelError ? <AcpErrorBanner reason={`${t('acp.stopFailed')}：${cancelError}`} /> : null}
-                  {manualCheckError ? <AcpErrorBanner reason={`${t('acp.manualCheckSubmitFailed')}：${manualCheckError}`} /> : null}
-                  {permissionError ? <AcpErrorBanner reason={permissionError} /> : null}
-                  {pendingPermission ? <PermissionRequestCard request={pendingPermission} onSelect={(optionId) => answerPermission(pendingPermission, optionId)} /> : null}
+            <div ref={scrollerElementRef} className="h-full min-w-0 overflow-y-auto" onScroll={handleScroll}>
+              {loadingOlder ? <AcpListLoading label={t('acp.loadingOlderEvents')} /> : hasOlderEvents ? <AcpHistoryHint label={t('acp.scrollForHistory')} /> : <div className="h-3" />}
+              {timeline.length === 0 && !isSessionActive(effective.status) && !sending ? (
+                <div className="p-5"><EmptyAcpState /></div>
+              ) : (
+                <div className="space-y-3 px-5 py-3">
+                  {timeline.map((item) => (
+                    <div key={timelineEventKey(item)} data-acp-item-key={timelineEventKey(item)}>
+                      <ACPTimelineItemRenderer event={item} expansionControls={expansionControls} />
+                    </div>
+                  ))}
                 </div>
+              )}
+              <div className="space-y-4 px-5 pb-5">
+                {sendError ? <AcpErrorBanner reason={`${t('acp.sendFailed')}：${sendError}`} /> : null}
+                {cancelError ? <AcpErrorBanner reason={`${t('acp.stopFailed')}：${cancelError}`} /> : null}
+                {manualCheckError ? <AcpErrorBanner reason={`${t('acp.manualCheckSubmitFailed')}：${manualCheckError}`} /> : null}
+                {permissionError ? <AcpErrorBanner reason={permissionError} /> : null}
+                {pendingPermission ? <PermissionRequestCard request={pendingPermission} onSelect={(optionId) => answerPermission(pendingPermission, optionId)} /> : null}
               </div>
             </div>
-            {!chatPrimed ? <AcpChatSkeleton /> : null}
           </div>
         )}
       </div>
       {canvasMode === 'chat' ? (
         <div className="shrink-0 border-t bg-background/95 p-4 backdrop-blur">
+          <AcpUsagePanel usage={effective?.usage} isRunning={isSessionActive(effective.status)} compact={usageCompact} stepSeconds={usageCompact ? (composerStatusActive ? usageStepSeconds : null) : null} sessionSeconds={usageCompact ? composerSessionSeconds : null} />
+          {externalComposerState?.kind === 'invalid-workflow' ? (
+            <AcpExternalComposerState kind="invalid-workflow" message={externalComposerState.workflowError} />
+          ) : externalComposerState?.kind === 'runtime-error' ? (
+            <AcpExternalComposerState kind="runtime-error" message={externalComposerState.errorMessage} onAction={externalComposerState.onRepair} />
+          ) : (
+            <>
           {showManualCheckActions ? (
             <AcpManualCheckPanel
               submitting={manualCheckSubmitting}
@@ -728,7 +833,7 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
               isLoading={sending}
               className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
             >
-              {showComposerStatus ? (
+              {showComposerStatus && !usageCompact ? (
                 <AcpComposerStatus
                   kind={composerProcessingKind}
                   active={composerStatusActive}
@@ -747,14 +852,14 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
                   {canStopSession ? (
                     <PromptInputAction tooltip={t('acp.stopHint')}>
                       <Button className="h-8 gap-1.5 rounded-full px-3" size="sm" variant="secondary" disabled={cancelling} onClick={stopSession}>
-                        {cancelling ? <Loader2 className="size-3.5 animate-spin" /> : <CircleStop className="size-3.5" />}
+                        {cancelling ? <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} /> : <CircleStop className="size-3.5" />}
                         {cancelling ? t('acp.stopping') : t('acp.stop')}
                       </Button>
                     </PromptInputAction>
                   ) : null}
                   <PromptInputAction tooltip={t('acp.send')}>
                     <Button className="h-8 gap-1.5 rounded-full px-3" size="sm" disabled={!canSubmitPrompt} onClick={send}>
-                      {sendButtonBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                      {sendButtonBusy ? <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} /> : <Send className="size-3.5" />}
                       {t('acp.send')}
                     </Button>
                   </PromptInputAction>
@@ -763,11 +868,13 @@ export function ACPChatDialog({ session, taskId, runId, roundId, nodeId, attempt
               <AcpSessionConfigBar session={effective} />
             </PromptInput>
           )}
+            </>
+          )}
         </div>
       ) : null}
     </div>
   );
-}
+});
 
 function AcpErrorState({ reason }: { reason: string }) {
   return (
@@ -786,6 +893,18 @@ function AcpHistoryHint({ label }: { label: string }) {
   return <div className="mx-auto my-3 w-fit select-none rounded-full border border-dashed bg-muted/20 px-3 py-1 text-xs text-muted-foreground">{label}</div>;
 }
 
+function captureVisibleAcpAnchor(scroller: HTMLElement) {
+  const scrollerTop = scroller.getBoundingClientRect().top;
+  const items = Array.from(scroller.querySelectorAll<HTMLElement>('[data-acp-item-key]'));
+  const item = items.find((element) => element.getBoundingClientRect().bottom > scrollerTop) ?? items[0];
+  const key = item?.dataset.acpItemKey;
+  return item && key ? { key, top: item.getBoundingClientRect().top } : null;
+}
+
+function findAcpItemElement(scroller: HTMLElement, key: string) {
+  return Array.from(scroller.querySelectorAll<HTMLElement>('[data-acp-item-key]')).find((element) => element.dataset.acpItemKey === key) ?? null;
+}
+
 function AcpPermissionComposerLock() {
   const { t } = useTranslation();
   return (
@@ -794,6 +913,30 @@ function AcpPermissionComposerLock() {
         <ShieldQuestion className="size-4" />
       </span>
       <span className="min-w-0 truncate font-medium">{t('acp.permissionPending')}</span>
+    </div>
+  );
+}
+
+function AcpExternalComposerState({ kind, message, onAction }: { kind: 'invalid-workflow' | 'runtime-error'; message: string; onAction?: () => void }) {
+  const { t } = useTranslation();
+  const isError = kind === 'runtime-error';
+  return (
+    <div className={cn(
+      'flex min-w-0 items-center gap-3 rounded-2xl border px-4 py-3 shadow-sm shadow-background/20',
+      isError ? 'border-destructive/20 bg-destructive/5' : 'border-amber-500/20 bg-amber-500/5',
+    )}>
+      <span className={cn(
+        'flex size-8 shrink-0 items-center justify-center rounded-lg',
+        isError ? 'bg-destructive/10 text-destructive' : 'bg-amber-500/10 text-amber-500',
+      )}>
+        <ShieldQuestion className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{message}</span>
+      {onAction ? (
+        <Button size="sm" className="h-7 shrink-0 rounded-full px-3 text-xs" onClick={onAction}>
+          {isError ? t('conversation.runtime.repairAction') : t('conversation.runtime.repairWorkflow')}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -871,33 +1014,37 @@ function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
   );
 }
 
-export function ACPSessionHeader({ session, rawActive, rawLoading, systemPromptAvailable, onToggleRaw, onOpenSystemPrompt }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; systemPromptAvailable?: boolean; onToggleRaw: () => void; onOpenSystemPrompt: () => void }) {
+export function ACPSessionHeader({ session, rawActive, rawLoading, systemPromptAvailable, artifactCount = 0, onToggleRaw, onOpenSystemPrompt, onOpenArtifacts }: { session: AcpSessionVm; rawActive: boolean; rawLoading: boolean; systemPromptAvailable?: boolean; artifactCount?: number; onToggleRaw: () => void; onOpenSystemPrompt: () => void; onOpenArtifacts?: () => void }) {
   const { t } = useTranslation();
   const mode = session.config?.currentModeName ?? session.config?.currentModeId;
   const hasSystemPrompt = systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
   return (
-    <div className="shrink-0 border-b bg-muted/10 px-5 py-3">
-      <div className="min-w-0 space-y-1.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-base font-semibold">{session.adapterDisplayName ?? session.provider}</span>
-          {mode ? (
-            <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
-              <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-              <span className="min-w-0 truncate text-foreground">{mode}</span>
-            </Badge>
+    <div className="shrink-0 border-b bg-muted/10 px-5 py-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 truncate text-base font-semibold">{session.adapterDisplayName ?? session.provider}</span>
+        {mode ? (
+          <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+            <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
+            <span className="min-w-0 truncate text-foreground">{mode}</span>
+          </Badge>
+        ) : null}
+        <span className="truncate text-xs text-muted-foreground">{session.sessionId ?? t('acp.noSessionId')}</span>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {artifactCount > 0 && onOpenArtifacts ? (
+            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenArtifacts}>
+              <Package className="size-3" />
+              {t('acp.viewArtifacts')}
+            </Button>
           ) : null}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenSystemPrompt} disabled={!hasSystemPrompt}>
-              <FileText className="size-3" />
-              {t('acp.systemPrompt')}
-            </Button>
-            <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
-              {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
-              {t('acp.rawFrames')}
-            </Button>
-          </div>
+          <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2.5 text-xs" onClick={onOpenSystemPrompt} disabled={!hasSystemPrompt}>
+            <FileText className="size-3" />
+            {t('acp.systemPrompt')}
+          </Button>
+          <Button size="sm" variant={rawActive ? 'default' : 'outline'} className="h-7 gap-1.5 px-2.5 text-xs" onClick={onToggleRaw} disabled={rawLoading}>
+            {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
+            {t('acp.rawFrames')}
+          </Button>
         </div>
-        <div className="truncate text-xs text-muted-foreground">{session.sessionId ?? t('acp.noSessionId')}</div>
       </div>
     </div>
   );
@@ -916,7 +1063,7 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
   const content = (selectedPrompt ?? prompt)?.trim() || '';
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden p-0">
+      <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle className="text-base">{t('acp.systemPromptTitle')}</DialogTitle>
         </DialogHeader>
@@ -930,7 +1077,7 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
             </Select>
           ) : null}
           {content ? (
-            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-mono text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
+            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">{content}</pre>
           ) : (
             <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t('acp.systemPromptEmpty')}</div>
           )}
@@ -940,14 +1087,103 @@ function SystemPromptDialog({ open, prompt, options, onOpenChange }: { open: boo
   );
 }
 
-export function ACPMessageList({ timeline, sessionStatus, sending, onLayoutChange }: { timeline: AcpTimelineItem[]; sessionStatus: string; sending: boolean; onLayoutChange?: () => void }) {
+function ACPArtifactsDialog({ open, artifacts, attachments, selectedArtifact, artifactContent, artifactLoading, onOpenChange, onOpenDetail, onBack }: { open: boolean; artifacts: AssetItemVm[]; attachments: AssetItemVm[]; selectedArtifact: AssetItemVm | null; artifactContent: ContentVm | null; artifactLoading: boolean; onOpenChange: (open: boolean) => void; onOpenDetail: (asset: AssetItemVm) => void; onBack: () => void }) {
+  const { t } = useTranslation();
+  const allAssets = [...artifacts.map((a) => ({ ...a, kind: 'artifact' as const })), ...attachments.map((a) => ({ ...a, kind: 'attachment' as const }))];
+
+  if (selectedArtifact) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
+          <DialogHeader className="border-b border-border/40 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={onBack}>
+                <ChevronDown className="size-3 rotate-90" />
+                {t('common.back')}
+              </Button>
+              <DialogTitle className="truncate text-base">{selectedArtifact.title}</DialogTitle>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto p-5">
+            {artifactLoading ? (
+              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground"><Loader2 className="mr-2 size-4 animate-spin" />{t('common.loading')}</div>
+            ) : artifactContent ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{selectedArtifact.kind}</Badge>
+                  <span>{artifactContent.kind}</span>
+                </div>
+                <pre className="max-h-[60vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">{artifactContent.content}</pre>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">{t('common.empty')}</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent overlayClassName="bg-black/16 backdrop-blur-md" className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle className="text-base">{t('acp.artifactsTitle')}</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 space-y-3 overflow-auto px-5 pb-5">
+          {attachments.length > 0 ? (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t('acp.attachments')}</h3>
+                <Badge variant="secondary" className="rounded-full px-2.5">{attachments.length}</Badge>
+              </div>
+              <div className="space-y-1.5">
+                {attachments.map((item) => (
+                  <Button key={`attachment-${item.name}`} variant="outline" className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42" onClick={() => onOpenDetail(item)}>
+                    <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
+                  </Button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {artifacts.length > 0 ? (
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{t('acp.artifacts')}</h3>
+                <Badge variant="secondary" className="rounded-full px-2.5">{artifacts.length}</Badge>
+              </div>
+              <div className="space-y-1.5">
+                {artifacts.map((item) => (
+                  <Button key={`artifact-${item.name}`} variant="outline" className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42" onClick={() => onOpenDetail(item)}>
+                    <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
+                  </Button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {allAssets.length === 0 ? (
+            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">{t('common.empty')}</div>
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function ACPMessageList({ timeline, sessionStatus, sending }: { timeline: AcpTimelineItem[]; sessionStatus: string; sending: boolean; onLayoutChange?: () => void }) {
   const active = isSessionActive(sessionStatus) || sending;
+  const expansionControls = useMemo<AcpExpansionControls>(() => ({
+    expandedItems: {},
+    onOpenChange: () => {},
+  }), []);
 
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   return (
     <div className="min-w-0 space-y-4">
-      {timeline.map((event) => <ACPEventRenderer key={timelineEventKey(event)} event={event} onLayoutChange={onLayoutChange} />)}
+      {timeline.map((item) => <ACPTimelineItemRenderer key={timelineEventKey(item)} event={item} expansionControls={expansionControls} />)}
     </div>
   );
 }
@@ -969,19 +1205,20 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
   );
 }
 
-export function ACPEventRenderer({ event, onLayoutChange }: { event: AcpTimelineItem; onLayoutChange?: () => void }) {
-  if (isChildAgentGroup(event)) return <AssistantTimelineRow><ChildAgentGroupCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
+const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({ event, expansionControls }: { event: AcpTimelineItem; expansionControls: AcpExpansionControls }) {
+  if (isChildAgentGroup(event)) return <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}><ChildAgentGroupCard event={event} expansionControls={expansionControls} /></AssistantTimelineRow>;
   if (event.kind === 'attemptSeparator') return <AttemptSeparator event={event} />;
   if (event.kind === 'textDelta' || event.kind === 'userTextDelta') return <MessageBubble event={event} />;
-  if (event.kind === 'thoughtDelta') return <AssistantTimelineRow><ThoughtBlock event={event} /></AssistantTimelineRow>;
-  if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <AssistantTimelineRow><ToolCallCard event={event} onLayoutChange={onLayoutChange} /></AssistantTimelineRow>;
-  if (event.kind === 'plan') return <AssistantTimelineRow><PlanBlock event={event} /></AssistantTimelineRow>;
+  if (event.kind === 'thoughtDelta') return <ThoughtBlock event={event} expansionControls={expansionControls} />;
+  if (event.kind === 'toolCall' || event.kind === 'toolCallUpdate') return <ToolBlock event={event} expansionControls={expansionControls} />;
+  if (event.kind === 'plan') return <AssistantTimelineRow timestamp={event.timestamp}><PlanBlock event={event} /></AssistantTimelineRow>;
   return null;
-}
+});
 
-function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGroup; onLayoutChange?: () => void }) {
+const ChildAgentGroupCard = memo(function ChildAgentGroupCard({ event, expansionControls, onLayoutChange }: { event: AcpChildAgentGroup; expansionControls: AcpExpansionControls; onLayoutChange?: () => void }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(!isTerminalToolStatus(event.status));
+  const itemKey = timelineEventKey(event);
+  const open = isTimelineItemOpen(itemKey, expansionControls);
   const input = agentToolInput(event.toolEvent);
   const details = toolDetails(event.toolEvent);
   const description = input.description ?? details.queryBlocks[0]?.value;
@@ -997,17 +1234,16 @@ function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGr
       : statusTone === 'running'
         ? 'bg-primary/10 text-primary'
         : 'bg-muted text-muted-foreground';
-
   return (
     <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-primary/20 bg-card/75 shadow-sm shadow-background/30">
-      <Collapsible open={open} onOpenChange={(next) => { setOpen(next); onLayoutChange?.(); }}>
+      <Collapsible open={open} onOpenChange={(next) => { expansionControls.onOpenChange(itemKey, next); onLayoutChange?.(); }}>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-none px-3 py-2 font-normal hover:bg-muted/20">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><UsersRound className="size-4" /></span>
               <span className="min-w-0 flex-1 truncate text-left text-sm">
                 <span className="font-semibold text-foreground">{t('acp.subAgent')}</span>
-                {input.subagentType ? <span className="ml-2 font-mono text-xs text-muted-foreground">{input.subagentType}</span> : null}
+                {input.subagentType ? <span className="ml-2 text-xs text-muted-foreground">{input.subagentType}</span> : null}
                 {description ? <span className="ml-2 text-xs text-muted-foreground">{description}</span> : null}
               </span>
             </div>
@@ -1018,8 +1254,8 @@ function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGr
             </span>
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="min-w-0 max-w-full overflow-hidden border-t border-border data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
-          {open ? (
+        {open ? (
+          <CollapsibleContent className="min-w-0 max-w-full overflow-hidden border-t border-border">
             <div className="min-w-0 max-w-full space-y-3 overflow-hidden bg-background/50 p-3">
               {input.subagentType || description || promptPreview ? (
                 <div className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
@@ -1030,22 +1266,22 @@ function ChildAgentGroupCard({ event, onLayoutChange }: { event: AcpChildAgentGr
               ) : null}
               {event.events.length > 0 ? (
                 <div className="min-w-0 max-w-full space-y-3 overflow-hidden rounded-lg border border-border/60 bg-muted/10 p-3">
-                  {event.events.map((child) => <ACPEventRenderer key={timelineEventKey(child)} event={child} onLayoutChange={onLayoutChange} />)}
+                  {event.events.map((child) => <ACPTimelineItemRenderer key={timelineEventKey(child)} event={child} expansionControls={expansionControls} />)}
                 </div>
               ) : null}
               {output ? (
                 <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 p-2.5 text-xs">
                   <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{t('acp.subAgentResult')}</div>
-                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground [overflow-wrap:anywhere]">{formatToolValue(output)}</pre>
+                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-foreground [overflow-wrap:anywhere]">{formatToolValue(output)}</pre>
                 </div>
               ) : null}
             </div>
-          ) : null}
-        </CollapsibleContent>
+          </CollapsibleContent>
+        ) : null}
       </Collapsible>
     </div>
   );
-}
+});
 
 function ChildAgentMeta({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
@@ -1056,16 +1292,16 @@ function ChildAgentMeta({ label, value, className }: { label: string; value: str
   );
 }
 
-function AssistantTimelineRow({ children }: { children: React.ReactNode }) {
+const AssistantTimelineRow = memo(function AssistantTimelineRow({ children, timestamp, density = 'single' }: { children: React.ReactNode; timestamp?: string | null; density?: 'single' | 'start' | 'middle' | 'end' }) {
   return (
-    <Message className="min-w-0 items-start justify-start gap-2">
-      <div className="size-7 shrink-0" aria-hidden="true" />
+    <Message className={cn('min-w-0 items-start justify-start gap-2', density !== 'single' && 'mb-0')}>
+      <AcpAvatarWithTime tone="assistant" timestamp={timestamp} />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
   );
-}
+});
 
-function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: AcpProcessingKind; active: boolean; startAt?: string | null; sessionSeconds?: number | null }) {
+const AcpComposerStatus = memo(function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: AcpProcessingKind; active: boolean; startAt?: string | null; sessionSeconds?: number | null }) {
   const { t } = useTranslation();
   const [stepStartAt, setStepStartAt] = useState<string | null>(startAt ?? null);
   const previousKind = useRef(kind);
@@ -1084,23 +1320,23 @@ function AcpComposerStatus({ kind, active, startAt, sessionSeconds }: { kind: Ac
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
       {active ? (
         <>
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" style={{ willChange: 'transform' }} />
           <span className="font-medium text-foreground">{label}</span>
-          {kind === 'sending' ? <AnimatedEllipsis /> : <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.stepElapsed', { duration: formatElapsedDuration(stepSeconds) })}</span>}
+          {kind === 'sending' ? <AnimatedEllipsis /> : <span className="flex items-center gap-1.5"><span className="text-muted-foreground/80">{t('acp.timingStep')}</span><span className="tabular-nums text-foreground/80">{formatElapsedDuration(stepSeconds)}</span></span>}
         </>
       ) : null}
-      {sessionSeconds != null ? <span className="rounded-full bg-muted/60 px-2 py-0.5 tabular-nums">{t('acp.sessionElapsed', { duration: formatElapsedDuration(sessionSeconds) })}</span> : null}
+      {sessionSeconds != null ? <span className="flex items-center gap-1.5"><span className="text-muted-foreground/80">{t('acp.timingSession')}</span><span className="tabular-nums text-foreground/80">{formatElapsedDuration(sessionSeconds)}</span></span> : null}
     </div>
   );
-}
+});
 
-function MessageBubble({ event }: { event: AcpTimelineEvent }) {
+const MessageBubble = memo(function MessageBubble({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();
   const isUser = event.kind === 'userTextDelta';
   const failed = event.status === 'failed';
   return (
     <Message className={cn('min-w-0 items-start gap-2', isUser ? 'justify-end' : 'justify-start')}>
-      {!isUser ? <MessageAvatar tone="assistant" /> : null}
+      {!isUser ? <AcpAvatarWithTime tone="assistant" timestamp={event.timestamp} /> : null}
       <div className={cn('min-w-0 max-w-[82%] space-y-1', isUser && 'items-end')}>
         <MessageContent className={cn(
           'rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]',
@@ -1115,12 +1351,12 @@ function MessageBubble({ event }: { event: AcpTimelineEvent }) {
           </div>
         ) : null}
       </div>
-      {isUser ? <MessageAvatar tone="user" /> : null}
+      {isUser ? <AcpAvatarWithTime tone="user" timestamp={event.timestamp} /> : null}
     </Message>
   );
-}
+});
 
-function AnimatedEllipsis() {
+const AnimatedEllipsis = memo(function AnimatedEllipsis() {
   return (
     <span className="inline-flex w-4 items-center justify-start" aria-hidden="true">
       <span className="animate-pulse">.</span>
@@ -1128,42 +1364,35 @@ function AnimatedEllipsis() {
       <span className="animate-pulse [animation-delay:300ms]">.</span>
     </span>
   );
-}
+});
 
-function MessageAvatar({ tone }: { tone: 'assistant' | 'user' }) {
-  const Icon = tone === 'assistant' ? Bot : User;
-  return (
-    <div className={cn(
-      'mt-1 flex size-7 shrink-0 items-center justify-center rounded-full border',
-      tone === 'assistant' ? 'bg-card text-muted-foreground' : 'bg-primary/10 text-primary',
-    )}>
-      <Icon className="size-3.5" />
-    </div>
-  );
-}
 
-export function ThoughtBlock({ event }: { event: AcpTimelineEvent }) {
+const ThoughtBlock = memo(function ThoughtBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
   const { t } = useTranslation();
   if (!event.content?.trim()) return null;
+  const itemKey = timelineEventKey(event);
+  const open = isTimelineItemOpen(itemKey, expansionControls);
   const duration = formatThinkingDuration(t, event.durationMs);
   return (
-    <ChainOfThought className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20">
-      <ChainOfThoughtStep>
-        <ChainOfThoughtTrigger leftIcon={<Clock className="size-4" />} className="w-full min-w-0 justify-between">
-          <span className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="font-medium">{t('acp.thought')}</span>
-            {duration ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">{duration}</span> : null}
-          </span>
-        </ChainOfThoughtTrigger>
-        <ChainOfThoughtContent>
-          <ChainOfThoughtItem className="break-words whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{event.content}</ChainOfThoughtItem>
-        </ChainOfThoughtContent>
-      </ChainOfThoughtStep>
-    </ChainOfThought>
+    <AssistantTimelineRow timestamp={event.timestamp}>
+      <ChainOfThought className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20">
+        <ChainOfThoughtStep open={open} onOpenChange={(next) => expansionControls.onOpenChange(itemKey, next)}>
+          <ChainOfThoughtTrigger leftIcon={<Clock className="size-4" />} className="w-full min-w-0 justify-between">
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="font-medium">{t('acp.thought')}</span>
+              {duration ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">{duration}</span> : null}
+            </span>
+          </ChainOfThoughtTrigger>
+          <ChainOfThoughtContent animated={false}>
+            <ChainOfThoughtItem className="break-words whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{event.content}</ChainOfThoughtItem>
+          </ChainOfThoughtContent>
+        </ChainOfThoughtStep>
+      </ChainOfThought>
+    </AssistantTimelineRow>
   );
-}
+});
 
-export function ToolCallCard({ event, onLayoutChange }: { event: AcpTimelineEvent; onLayoutChange?: () => void }) {
+const ToolBlock = memo(function ToolBlock({ event, expansionControls }: { event: AcpTimelineEvent; expansionControls: AcpExpansionControls }) {
   const { t } = useTranslation();
   const details = toolDetails(event);
   const ToolIcon = toolIcon(details.name);
@@ -1177,7 +1406,24 @@ export function ToolCallCard({ event, onLayoutChange }: { event: AcpTimelineEven
     toolCallId: event.toolCallId ?? undefined,
     errorText: event.status && toolStatusTone(event.status) === 'danger' ? event.content ?? undefined : undefined,
   };
-  const labels: ToolLabels = {
+  const itemKey = timelineEventKey(event);
+  const open = isTimelineItemOpen(itemKey, expansionControls);
+  return (
+    <AssistantTimelineRow timestamp={event.timestamp}>
+      <Tool
+        toolPart={toolPart}
+        labels={toolLabels(t)}
+        icon={<ToolIcon className="size-4" />}
+        open={open}
+        onOpenChange={(next) => expansionControls.onOpenChange(itemKey, next)}
+        animated={false}
+      />
+    </AssistantTimelineRow>
+  );
+});
+
+function toolLabels(t: ReturnType<typeof useTranslation>['t']): ToolLabels {
+  return {
     input: t('acp.toolParameters'),
     output: t('acp.toolOutput'),
     error: t('status.error'),
@@ -1186,9 +1432,7 @@ export function ToolCallCard({ event, onLayoutChange }: { event: AcpTimelineEven
     ready: t('acp.toolReady'),
     completed: displayStatus(t, 'completed'),
   };
-  return <Tool toolPart={toolPart} labels={labels} icon={<ToolIcon className="size-4" />} onOpenChange={onLayoutChange} />;
 }
-
 
 export function PlanBlock({ event }: { event: AcpTimelineEvent }) {
   const { t } = useTranslation();
@@ -1323,24 +1567,45 @@ export function RawFrameViewer({ page, query, loading, onQueryChange, onLayoutCh
   );
 }
 
-function RawFrameRow({ frame, onLayoutChange }: { frame: AcpRawFrameVm; onLayoutChange?: () => void }) {
+const RawFrameRow = memo(function RawFrameRow({ frame, onLayoutChange }: { frame: AcpRawFrameVm; onLayoutChange?: () => void }) {
   const { t } = useTranslation();
-  const display = rawFrameDisplay(frame.content);
-  const scrollable = isLongRawFrame(display.expanded);
+  const [expandedContent, setExpandedContent] = useState<string | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+
+  const handleToggle = useCallback((e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const open = e.currentTarget.open;
+    setIsOpen(open);
+    onLayoutChange?.();
+    if (open && expandedContent === null) {
+      try {
+        const value = JSON.parse(frame.content);
+        setExpandedContent(wrapLongSegments(JSON.stringify(value, null, 2)));
+      } catch {
+        setExpandedContent(wrapLongSegments(frame.content));
+      }
+    }
+  }, [expandedContent, frame.content, onLayoutChange]);
+
+  const compact = truncateFrameLine(frame.content.trimStart());
+  const displayExpanded = expandedContent ?? frame.content;
+  const scrollable = expandedContent !== null && isLongRawFrame(expandedContent);
+
   return (
-    <details onToggle={onLayoutChange} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 font-mono text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
+    <details onToggle={handleToggle} className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10">
       <summary className="flex w-full min-w-0 cursor-pointer list-none items-center gap-2 overflow-hidden px-3 py-2 text-muted-foreground outline-none transition-colors marker:hidden hover:bg-muted/20 focus-visible:bg-muted/20">
         <span className="shrink-0 select-none tabular-nums text-muted-foreground/80">#{frame.lineNumber}</span>
-        {frame.timestamp ? <span className="hidden shrink-0 tabular-nums text-muted-foreground/70 sm:inline">{frame.timestamp}</span> : null}
+        {frame.timestamp ? <span className="hidden shrink-0 tabular-nums text-muted-foreground/70 sm:inline">{formatLocalDateTime(frame.timestamp)}</span> : null}
         {frame.direction ? <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{displayRawDirection(t, frame.direction)}</span> : null}
         <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">{displayRawKind(t, frame.kind)}</span>
-        <code className="block min-w-0 flex-1 truncate text-foreground/75">{truncateFrameLine(display.compact)}</code>
+        <span className="block min-w-0 flex-1 truncate text-foreground/75">{compact}</span>
         {frame.contentTruncated ? <span className="shrink-0 text-[10px] text-amber-600 dark:text-amber-300">truncated</span> : null}
       </summary>
-      <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{display.expanded}</pre>
+      {isOpen ? (
+        <pre className={cn('block w-full min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all border-t border-border/50 bg-background/40 px-4 py-3 font-sans text-foreground/75 outline-none [overflow-wrap:anywhere]', scrollable ? 'max-h-[38rem] overflow-y-auto [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-thumb]:hover:bg-muted-foreground/45 [&::-webkit-scrollbar-track]:bg-transparent' : 'overflow-y-visible')}>{displayExpanded}</pre>
+      ) : null}
     </details>
   );
-}
+});
 
 function useElapsedSeconds(active: boolean, startAt?: string | null, endAt?: string | null) {
   const fallbackStart = useRef(Date.now());
@@ -1390,6 +1655,10 @@ function shouldMergeUserPromptEvents(previous: AcpUiEventVm | undefined, event: 
 
 function isChildAgentGroup(event: AcpTimelineItem): event is AcpChildAgentGroup {
   return event.kind === 'childAgentGroup';
+}
+
+function isTimelineItemOpen(key: string, controls: AcpExpansionControls) {
+  return controls.expandedItems[key] ?? false;
 }
 
 function isAgentToolCall(event: AcpTimelineEvent) {
@@ -1467,6 +1736,29 @@ function findPlanInterventionOption(request: AcpPermissionRequestVm) {
   }) ?? null;
 }
 
+function pendingPermissionFromEvents(events: AcpUiEventVm[], dismissedIds: Set<string>) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.kind !== 'permissionRequest' || event.status !== 'pending' || dismissedIds.has(event.id)) continue;
+    const raw = rawObject(event.raw) ?? {};
+    return {
+      requestId: event.id,
+      title: event.title ?? 'Permission required',
+      toolCallId: event.toolCallId,
+      options: arrayValue(raw.options)?.map((option) => {
+        const value = rawObject(option);
+        return {
+          optionId: stringValue(value?.optionId) ?? '',
+          name: stringValue(value?.name) ?? '',
+          kind: stringValue(value?.kind) ?? '',
+        };
+      }) ?? [],
+      raw,
+    } satisfies AcpPermissionRequestVm;
+  }
+  return null;
+}
+
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {
   const message = session.diagnostics.lastError;
   if (!message) return null;
@@ -1500,8 +1792,8 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
     const previous = timeline[timeline.length - 1];
     if (shouldMergeUserPromptEvents(previous, event)) {
       previous.seq = event.seq;
-      previous.endedSeq = event.seq;
-      previous.endedAt = event.timestamp;
+      previous.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
+      previous.endedAt = event.endedAt ?? event.timestamp;
       previous.status = event.status ?? previous.status;
       previous.raw = mergeRaw(previous.raw, event.raw);
       previous.optimistic = previous.optimistic || isOptimisticEvent(event);
@@ -1510,8 +1802,8 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
     if (previous && previous.kind === event.kind && isMergeableDelta(event.kind) && isSameDeltaStream(previous, event)) {
       previous.content = event.content ?? previous.content;
       previous.seq = event.seq;
-      previous.endedSeq = event.seq;
-      previous.endedAt = event.timestamp;
+      previous.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
+      previous.endedAt = event.endedAt ?? event.timestamp;
       previous.status = event.status ?? previous.status;
       previous.raw = mergeRaw(previous.raw, event.raw);
       previous.optimistic = previous.optimistic || isOptimisticEvent(event);
@@ -1522,21 +1814,35 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       if (existing) {
         existing.kind = 'toolCall';
         existing.seq = event.seq;
-        existing.endedSeq = event.seq;
-        existing.endedAt = event.timestamp;
+        existing.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
+        existing.endedAt = event.endedAt ?? event.timestamp;
         existing.title = event.title ?? existing.title;
         existing.status = event.status ?? existing.status;
         existing.content = event.content ?? existing.content;
         existing.raw = mergeRaw(existing.raw, event.raw);
         continue;
       }
-      const copy: AcpTimelineEvent = { ...event, kind: 'toolCall', startedAt: event.timestamp, endedAt: event.timestamp, startedSeq: event.seq, endedSeq: event.seq };
+      const copy: AcpTimelineEvent = {
+        ...event,
+        kind: 'toolCall',
+        startedAt: event.startedAt ?? event.timestamp,
+        endedAt: event.endedAt ?? event.timestamp,
+        startedSeq: event.startedSeq ?? originalSeqFromAcpEvent(event),
+        endedSeq: event.endedSeq ?? originalSeqFromAcpEvent(event),
+      };
       toolIndex.set(event.toolCallId, copy);
       timeline.push(copy);
       continue;
     }
     if (event.kind === 'thoughtDelta' && !event.content?.trim()) continue;
-    timeline.push({ ...event, startedAt: event.timestamp, endedAt: event.timestamp, startedSeq: event.seq, endedSeq: event.seq, optimistic: isOptimisticEvent(event) });
+    timeline.push({
+      ...event,
+      startedAt: event.startedAt ?? event.timestamp,
+      endedAt: event.endedAt ?? event.timestamp,
+      startedSeq: event.startedSeq ?? originalSeqFromAcpEvent(event),
+      endedSeq: event.endedSeq ?? originalSeqFromAcpEvent(event),
+      optimistic: isOptimisticEvent(event),
+    });
   }
   let nextTimestamp: number | null = null;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
@@ -1709,14 +2015,44 @@ function alignAcpDisplaySeq(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
   return originalSeq + (offset ?? separatorSeq ?? 0);
 }
 
-function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end') {
-  if (events.length <= EVENT_WINDOW_LIMIT) return events;
-  return trim === 'start' ? events.slice(events.length - EVENT_WINDOW_LIMIT) : events.slice(0, EVENT_WINDOW_LIMIT);
+function limitAcpEvents(events: AcpUiEventVm[], trim: 'start' | 'end', eventPageSize: number) {
+  if (events.length <= eventPageSize) return events;
+  return trim === 'start' ? events.slice(events.length - eventPageSize) : events.slice(0, eventPageSize);
 }
 
 function acpEventKey(event: AcpUiEventVm) {
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? '';
   return `${attemptId}:${event.kind}:${event.id}`;
+}
+
+function createLiveAcpSessionShell(events: AcpUiEventVm[]): AcpSessionVm {
+  const first = events[0] ?? null;
+  const last = events.at(-1) ?? first;
+  return {
+    sessionId: last?.sessionId ?? first?.sessionId ?? null,
+    provider: 'acp',
+    status: 'running',
+    sessionStartedAt: first?.startedAt ?? first?.timestamp ?? null,
+    sessionUpdatedAt: last?.endedAt ?? last?.timestamp ?? null,
+    restored: false,
+    events,
+    eventPage: {
+      loadedCount: events.length,
+      total: events.length,
+      oldestSeq: first ? originalSeqFromAcpEvent(first) : null,
+      newestSeq: last ? originalSeqFromAcpEvent(last) : null,
+      hasOlder: false,
+      hasNewer: false,
+      oldestCursor: first ? formatTimelineCursor(originalSeqFromAcpEvent(first)) : null,
+      newestCursor: last ? formatTimelineCursor(originalSeqFromAcpEvent(last)) : null,
+    },
+    pendingPermissions: [],
+    diagnostics: {
+      rawFrameCount: 0,
+      eventCount: events.length,
+      errorCount: 0,
+    },
+  };
 }
 
 function mergeOptimisticSession(session: AcpSessionVm | null | undefined, optimisticEvents: AcpUiEventVm[]): AcpSessionVm | null {
@@ -1725,6 +2061,24 @@ function mergeOptimisticSession(session: AcpSessionVm | null | undefined, optimi
   if (pending.length === 0) return session;
   return { ...session, events: [...session.events, ...pending] };
 }
+
+function sessionsEquivalent(previous: AcpSessionVm | null | undefined, next: AcpSessionVm | null | undefined) {
+  if (!previous || !next) return previous === next;
+  if (previous.status !== next.status) return false;
+  if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
+  if (previous.events.length !== next.events.length) return false;
+  const previousLast = previous.events.at(-1);
+  const nextLast = next.events.at(-1);
+  if (!previousLast || !nextLast) return previousLast === nextLast;
+  return previousLast.id === nextLast.id
+    && previousLast.seq === nextLast.seq
+    && previousLast.status === nextLast.status
+    && previousLast.content === nextLast.content
+    && previous.eventPage.hasOlder === next.eventPage.hasOlder
+    && previous.eventPage.hasNewer === next.eventPage.hasNewer;
+}
+
+export { timelineEventKey, buildAcpTimeline };
 
 export function createAcpPromptId() {
   return `acp-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1909,21 +2263,6 @@ function displayRawKind(t: ReturnType<typeof useTranslation>['t'], kind: string)
   return labels[kind] ?? kind;
 }
 
-function rawFrameDisplay(content: string) {
-  try {
-    const value = JSON.parse(content);
-    return {
-      compact: JSON.stringify(value),
-      expanded: wrapLongSegments(JSON.stringify(value, null, 2)),
-    };
-  } catch {
-    return {
-      compact: content,
-      expanded: wrapLongSegments(content),
-    };
-  }
-}
-
 function rawFramePageSummary(t: ReturnType<typeof useTranslation>['t'], page: AcpRawFramePageVm | null) {
   if (!page || page.total === 0) return t('acp.rawMatchCount', { total: 0 });
   const firstLine = page.items[0]?.lineNumber ?? 0;
@@ -1964,6 +2303,10 @@ function toolStatusTone(status?: string | null): ToolTone {
   return 'muted';
 }
 
+function formatTimelineCursor(seq: number) {
+  return `rev:${seq}`;
+}
+
 function parseAcpTimestamp(value?: string | null) {
   if (!value) return null;
   const numeric = value.match(/^(\d+(?:\.\d+)?)Z?$/);
@@ -1972,22 +2315,22 @@ function parseAcpTimestamp(value?: string | null) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function formatThinkingDuration(t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
+function formatThinkingDuration(_t: ReturnType<typeof useTranslation>['t'], durationMs?: number) {
   if (durationMs == null) return null;
   const seconds = Math.max(1, Math.round(durationMs / 1000));
-  return t('acp.thinkingDuration', { seconds });
+  return formatElapsedDuration(seconds);
 }
 
 function formatElapsedDuration(totalSeconds: number) {
   const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
-  if (minutes < 60) return restSeconds ? `${minutes} 分 ${restSeconds} 秒` : `${minutes} 分`;
+  if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
-  if (hours < 24) return restMinutes ? `${hours} 时 ${restMinutes} 分` : `${hours} 时`;
+  if (hours < 24) return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
-  return restHours ? `${days} 天 ${restHours} 时` : `${days} 天`;
+  return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }

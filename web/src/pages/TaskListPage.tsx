@@ -307,7 +307,10 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         setSaveTemplateName('');
         if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
       })
-      .catch((err) => setFormError(displayAppError(t, err)));
+      .catch((err) => {
+        setFormError(displayAppError(t, err));
+        setWorkflowError(displayAppError(t, err));
+      });
   }, [open]);
 
   const applyImportedRequirement = async (file: File) => {
@@ -393,7 +396,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -486,6 +489,8 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     }
     setSaving(true);
     try {
+      setFormError(null);
+      setWorkflowError(null);
       const created = await onCreateTask({
         title: title.trim(),
         description: description.trim() || null,
@@ -494,13 +499,15 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         workflow: workflowDraft,
         workflowTemplateId: selectedTemplateId,
       });
-      if (created) {
-        setTitle('');
-        setDescription('');
-        setRequirementContent('');
-        clearRequirementFile();
-        setWorkflow(null);
-      }
+      if (!created) return;
+      setTitle('');
+      setDescription('');
+      setRequirementContent('');
+      clearRequirementFile();
+      setWorkflow(null);
+    } catch (err) {
+      setWorkflowNotice(null);
+      setWorkflowError(displayAppError(t, err));
     } finally {
       setSaving(false);
     }
@@ -515,7 +522,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-[min(1120px,calc(100vw-2rem))] max-w-[min(1120px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1120px,calc(100vw-2rem))]" closeLabel={t('common.close')}>
+      <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="task-list/create-task" defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-9">
             <div className="min-w-0 space-y-1">
@@ -627,7 +634,6 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                                   size="icon"
                                   className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
                                   disabled={isDefaultTemplate || saving}
-                                  title={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
                                   aria-label={isDefaultTemplate ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: template.name })}
                                   onClick={() => {
                                     if (isDefaultTemplate) return;
@@ -681,6 +687,10 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   profiles={profileList?.profiles ?? []}
                   onOpenProfileManagement={onOpenProfileManagement}
                   defaultWorkflow={defaultWorkflow}
+                  workflowTemplates={templateStore}
+                  currentTemplateId={selectedTemplateId}
+                  currentTemplateName={selectedTemplate?.name ?? null}
+                  allowAiDynamic
                   saving={saving}
                   onChange={(next) => {
                     setWorkflow(next);
@@ -874,7 +884,11 @@ function TaskPreviewSheet({ task, open, onOpenChange, onNavigate }: { task: Task
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        className="w-[440px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0 sm:max-w-[440px]"
+        className="gap-0 overflow-hidden p-0"
+        resizeStorageKey="task-list/task-preview"
+        defaultSize={440}
+        minSize={360}
+        maxSize={720}
         closeLabel={t('common.close')}
         onInteractOutside={(event) => {
           const target = event.target as HTMLElement | null;

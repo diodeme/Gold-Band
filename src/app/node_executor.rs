@@ -16,8 +16,9 @@ use crate::runtime::{
     validate_worker_ref_state,
 };
 use crate::storage::{read_json, write_json};
+use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 
-use super::App;
+use super::{AcpLiveEventContext, App};
 use super::ids::now_rfc3339_like;
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
@@ -43,6 +44,7 @@ fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
         artifact: output.artifact.clone(),
         kind: format!("{:?}", output.kind).to_ascii_lowercase(),
         schema: output.schema.clone(),
+        schema_text: None,
         success_condition: worker
             .success_condition
             .as_ref()
@@ -65,6 +67,7 @@ fn runtime_prompt_context(
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        language: app.config.desktop_language,
         run_dir: app.paths.run_dir(task_id, run_id),
         round_dir: app.paths.round_dir(task_id, run_id, round_id),
         node_dir: app.paths.node_dir(task_id, run_id, round_id, node_id),
@@ -176,6 +179,7 @@ fn output_artifact_for_predecessor(
             .output
             .as_ref()
             .map(|output| output.artifact.as_str()),
+        NodeDsl::AiDynamic(_) => None,
     }?;
     let path = app.paths.artifact_file(
         task_id,
@@ -243,6 +247,7 @@ fn build_predecessor_contexts(
                 });
             let branch_reason = match node_dsl {
                 NodeDsl::Worker(worker) => output_contract_reason(worker),
+                NodeDsl::AiDynamic(_) => None,
             };
             Some(PromptPredecessorContext {
                 round_id: trace_ref.round_id.clone(),
@@ -302,6 +307,9 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             Vec::new(),
         ),
+        NodeDsl::AiDynamic(_) => {
+            bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
+        }
     };
 
     let profile_content = profile
@@ -325,6 +333,7 @@ pub(crate) fn build_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
+        extra_system_sections: Vec::new(),
         task_instruction,
         session_mode,
         permission_mode,
@@ -390,7 +399,33 @@ pub(crate) fn execute_ai_node(
         .and_then(|value| value.as_str())
         .ok_or_else(|| anyhow!("node `{node_id}` is missing resolved provider"))?;
     tracing::debug!(task_id, run_id, round_id, node_id, attempt_id, provider_id, stage = ?ProgressStage::CallingProvider, "calling provider");
-    let result = app.provider_for_id(provider_id)?.run_worker(invocation)?;
+    let live_update_context = AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    };
+    let attempt_dir_for_index = invocation.attempt_dir.clone();
+    let live_update = app.acp_live_update_for(live_update_context);
+    let result = app.provider_for_id(provider_id)?.run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
+
+    // Fire-and-forget: index this attempt for cross-session search
+    let ctx = AttemptIndexContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    };
+    std::thread::spawn(move || {
+        index_attempt_with_retry(&attempt_dir_for_index, &ctx);
+    });
+
     progress(&format!(
         "normalizing artifact for {}/{}/{}",
         round_id, node_id, attempt_id
@@ -607,6 +642,24 @@ pub(crate) fn finalize_ai_attempt(
     result: ProviderRunResult,
 ) -> Result<NodeState> {
     node.finished_at = Some(now_rfc3339_like());
+    if let Some(seed) = result.worker_ref_seed.clone() {
+        let worker_ref = WorkerRefState {
+            version: VERSION.to_string(),
+            provider: seed.provider,
+            mode: seed.mode,
+            supports_open_session: seed.supports_open_session,
+            supports_continue_session: seed.supports_continue_session,
+            continue_ref: seed.continue_ref,
+            open_command: seed.open_command,
+        };
+        validate_worker_ref_state(&worker_ref)?;
+        write_json(
+            &app.paths
+                .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
+            &worker_ref,
+        )?;
+    }
+
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
@@ -626,24 +679,6 @@ pub(crate) fn finalize_ai_attempt(
                     )?;
                     std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
                 }
-            }
-
-            if let Some(seed) = result.worker_ref_seed {
-                let worker_ref = WorkerRefState {
-                    version: VERSION.to_string(),
-                    provider: seed.provider,
-                    mode: seed.mode,
-                    supports_open_session: seed.supports_open_session,
-                    supports_continue_session: seed.supports_continue_session,
-                    continue_ref: seed.continue_ref,
-                    open_command: seed.open_command,
-                };
-                validate_worker_ref_state(&worker_ref)?;
-                write_json(
-                    &app.paths
-                        .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id),
-                    &worker_ref,
-                )?;
             }
 
             let needs_output_artifact = node.resolved_config.contains_key("outputArtifact");

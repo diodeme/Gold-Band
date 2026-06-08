@@ -20,7 +20,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 在 A() 内部把调用请求整理成 prompt bundle
 - 把 prompt bundle 映射为 ACP 调用：新建 session 时通过 `_meta.systemPrompt.append` 注入 system prompt，继续会话的 `session/prompt` 只发送用户 prompt 内容
 - 接收 ACP `session/update`、permission request 与 prompt response
-- 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）与 raw frame
+- 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、通过项目级 feature flag 控制的可选 `session/list` 轮询 best-effort 拉取的 session title 缓存与 raw frame
 - 提供 worker reference 与外部 CLI handoff
 - 暴露能力信息
 
@@ -74,7 +74,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `exitCode`
 - `resultPayload`
 - `workerRefSeed`
-- `sessionEvents`（ACP normalized UI events，落盘到 `acp.events.jsonl`）
+- `sessionEvents`（ACP normalized UI projection，聚合 patch 落盘到 `acp.timeline.jsonl`）
 - `rawSession`（ACP raw frame，落盘到 `acp.raw.jsonl`）
 
 说明：

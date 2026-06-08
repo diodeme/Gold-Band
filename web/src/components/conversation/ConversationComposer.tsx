@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, Paperclip, Workflow, Bot, X, FileText, Image as ImageIcon, Loader2 } from 'lucide-react';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm } from '../../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -73,23 +73,27 @@ function isAttachmentDropTarget(target: EventTarget | null): boolean {
 interface ConversationComposerProps {
   projectId: string;
   workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onSubmit: (input: ConversationCreateInput) => void;
   onOpenRunModeSettings: () => void;
+  onWorkspaceChange: (projectId: string) => void;
 }
 
 export function ConversationComposer({
   projectId,
   workspaceName,
+  workspaces,
   runMode,
   agentRegistry,
   busy,
   onRunModeChange,
   onSubmit,
   onOpenRunModeSettings,
+  onWorkspaceChange,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const [content, setContent] = useState('');
@@ -285,7 +289,7 @@ export function ConversationComposer({
         {/* Main text input */}
         <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
           <textarea
-            className="w-full min-h-20 resize-none bg-transparent text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
+            className="w-full min-h-24 resize-none bg-transparent text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
             placeholder={t('conversation.home.inputPlaceholder')}
             value={content}
             onChange={(e) => setContent(e.target.value)}
@@ -296,6 +300,7 @@ export function ConversationComposer({
             onDrop={handleDrop}
             disabled={busy}
           />
+          <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3">
             <div className="flex items-center gap-3">
               <input
@@ -316,6 +321,17 @@ export function ConversationComposer({
               </Button>
               {attachments.length > 0 ? (
                 <span className="text-xs text-muted-foreground">{attachments.length} file(s)</span>
+              ) : workspaces.length > 1 ? (
+                <Select value={projectId} onValueChange={onWorkspaceChange}>
+                  <SelectTrigger className="h-7 w-auto min-w-[140px] gap-1 border-0 bg-transparent px-1 text-xs text-muted-foreground hover:text-foreground focus:ring-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workspaces.map((w) => (
+                      <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               ) : (
                 <span className="text-xs text-muted-foreground">{workspaceName}</span>
               )}

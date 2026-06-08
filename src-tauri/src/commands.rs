@@ -1934,32 +1934,5 @@ pub fn open_in_file_manager(
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("Failed to open explorer: {}", e))?;
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("Failed to open finder: {}", e))?;
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("Failed to open file manager: {}", e))?;
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        Err("Unsupported OS".to_string())
-    }
+    open::that(path).map_err(|e| format!("Failed to open path: {e}"))
 }

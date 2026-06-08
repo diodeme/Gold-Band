@@ -305,6 +305,16 @@ pub struct StateConfig {
     pub recent_desktop_workspaces: Vec<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub preferences: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_ui_mode: Option<DesktopUiMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_workspaces: Vec<ConversationWorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_conversation_workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation_pins: Vec<ConversationPin>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -723,21 +733,6 @@ pub struct ResolvedProfileRef {
 pub enum DesktopUiMode {
     Conversation,
     Workbench,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationState {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desktop_ui_mode: Option<DesktopUiMode>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conversation_workspaces: Vec<ConversationWorkspaceEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_conversation_workspace: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conversation_pins: Vec<ConversationPin>,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use gold_band::config::ConversationState;
+use gold_band::config::StateConfig;
 use gold_band::app::App;
 use gold_band::app::is_run_continuable;
 use gold_band::app::CreateTaskInput;
@@ -223,7 +223,7 @@ pub struct ConversationSearchResultVm {
 
 pub fn conversation_sidebar_vm(
     app: &App,
-    conv_state: &ConversationState,
+    state: &StateConfig,
 ) -> ConversationSidebarVm {
     // Build workspaces: always include the default (current repo) workspace,
     // then merge stored workspaces, deduplicating by project_id.
@@ -242,7 +242,7 @@ pub fn conversation_sidebar_vm(
         name: default_name,
     }];
 
-    for w in &conv_state.conversation_workspaces {
+    for w in &state.conversation_workspaces {
         if w.project_id != default_project_id {
             workspaces.push(ConversationWorkspaceVm {
                 project_id: w.project_id.clone(),
@@ -257,7 +257,7 @@ pub fn conversation_sidebar_vm(
     // Read real tasks from the app
     let mut pinned_tasks: Vec<ConversationTaskRowVm> = Vec::new();
     let mut tasks_by_workspace: HashMap<String, Vec<ConversationTaskRowVm>> = HashMap::new();
-    let pinned_set: std::collections::HashSet<(String, String)> = conv_state
+    let pinned_set: std::collections::HashSet<(String, String)> = state
         .conversation_pins
         .iter()
         .map(|p| (p.project_id.clone(), p.task_id.clone()))
@@ -274,7 +274,7 @@ pub fn conversation_sidebar_vm(
             let task_id = &summary.task.id;
             let project_id = &default_project_id; // Single workspace for now
             let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
-            let pin_order = conv_state.conversation_pins.iter()
+            let pin_order = state.conversation_pins.iter()
                 .find(|p| p.project_id == *project_id && p.task_id == *task_id)
                 .map(|p| p.order);
 
@@ -364,7 +364,7 @@ pub fn conversation_sidebar_vm(
         });
     }
 
-    let last_active_workspace_id = conv_state.last_conversation_workspace.clone()
+    let last_active_workspace_id = state.last_conversation_workspace.clone()
         .or_else(|| workspaces.first().map(|w| w.project_id.clone()));
 
     ConversationSidebarVm {

@@ -2,13 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm } from '../../types';
 import { ConversationSidebar } from './ConversationSidebar';
 import { saveConversationPreference } from '../../api';
+import { AppTitleBar } from '../AppTitleBar';
 import { cn } from '@/lib/utils';
 
 interface ConversationShellProps {
+  appName: string;
   vm: ConversationSidebarVm;
   active: ConversationPage;
+  sidebarCollapsed: boolean;
   onSelect: (page: ConversationPage) => void;
   onToggleUiMode: () => void;
+  onToggleSidebar: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string) => void;
@@ -45,10 +49,13 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 }
 
 export function ConversationShell({
+  appName,
   vm,
   active,
+  sidebarCollapsed,
   onSelect,
   onToggleUiMode,
+  onToggleSidebar,
   onNewConversation,
   onSearch,
   onSelectTask,
@@ -110,32 +117,58 @@ export function ConversationShell({
 
   return (
     <div
-      className={cn('flex h-screen bg-gold-workspace text-foreground', resizing && 'select-none cursor-col-resize')}
+      className={cn('flex h-screen flex-col bg-gold-workspace text-foreground', resizing && 'select-none cursor-col-resize')}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <div className="relative shrink-0 h-full" style={{ width: sidebarWidth }}>
-        <ConversationSidebar
-          vm={vm}
-          active={active}
-          onSelect={onSelect}
-          onToggleUiMode={onToggleUiMode}
-          onNewConversation={onNewConversation}
-          onSearch={onSearch}
-          onSelectTask={onSelectTask}
-          onSelectRun={onSelectRun}
-          onPinTask={onPinTask}
-          onUnpinTask={onUnpinTask}
-          onRenameTask={onRenameTask}
-          onNewConversationInWorkspace={onNewConversationInWorkspace}
-          onAddWorkspace={onAddWorkspace}
-          onRemoveWorkspace={onRemoveWorkspace}
-        />
+      <AppTitleBar
+        appName={appName}
+        uiMode="conversation"
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={onToggleSidebar}
+        onToggleUiMode={onToggleUiMode}
+      />
+      <div className="flex min-h-0 flex-1">
         <div
-          className="absolute right-0 top-0 bottom-0 z-20 w-1 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 transition-colors"
-          onMouseDown={handleMouseDown}
-        />
+          className={cn(
+            'relative h-full shrink-0 overflow-hidden transition-[width] duration-250 ease-out',
+            sidebarCollapsed && 'pointer-events-none',
+          )}
+          style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
+        >
+          <div
+            className={cn(
+              'h-full transition-opacity duration-200 ease-out',
+              sidebarCollapsed ? 'opacity-0' : 'opacity-100',
+            )}
+            style={{ width: sidebarWidth }}
+          >
+            <ConversationSidebar
+              vm={vm}
+              active={active}
+              onSelect={onSelect}
+              onToggleUiMode={onToggleUiMode}
+              onNewConversation={onNewConversation}
+              onSearch={onSearch}
+              onSelectTask={onSelectTask}
+              onSelectRun={onSelectRun}
+              onPinTask={onPinTask}
+              onUnpinTask={onUnpinTask}
+              onRenameTask={onRenameTask}
+              onNewConversationInWorkspace={onNewConversationInWorkspace}
+              onAddWorkspace={onAddWorkspace}
+              onRemoveWorkspace={onRemoveWorkspace}
+            />
+          </div>
+          <div
+            className={cn(
+              'absolute right-0 top-0 bottom-0 z-20 w-1 cursor-col-resize transition-colors hover:bg-primary/40 active:bg-primary/60',
+              sidebarCollapsed && 'pointer-events-none opacity-0',
+            )}
+            onMouseDown={handleMouseDown}
+          />
+        </div>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-gold-workspace">{children}</main>
       </div>
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-gold-workspace">{children}</main>
     </div>
   );
 }

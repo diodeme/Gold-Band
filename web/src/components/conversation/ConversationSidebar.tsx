@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, PanelLeft, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
@@ -30,7 +30,7 @@ export function ConversationSidebar({
   vm,
   active,
   onSelect,
-  onToggleUiMode,
+  onToggleUiMode: _onToggleUiMode,
   onNewConversation,
   onSearch,
   onSelectTask,
@@ -79,22 +79,6 @@ export function ConversationSidebar({
   return (
     <TooltipProvider>
       <aside className="flex min-h-0 h-full flex-col gap-2 border-r bg-sidebar px-3 py-3 text-sidebar-foreground">
-        {/* Brand + toggle */}
-        <div className="flex items-center gap-2 px-1 pb-0.5">
-          <span className="grid h-6 w-9 shrink-0 place-items-center rounded-lg border border-sidebar-border bg-sidebar-accent/60 p-0.5">
-            <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
-          </span>
-          <span className="min-w-0 flex-1 text-sm font-semibold text-primary">Gold Band</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={onToggleUiMode}>
-                <PanelLeft className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent sideOffset={6}>{t('conversation.toggleToWorkbench')}</TooltipContent>
-          </Tooltip>
-        </div>
-
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -137,14 +121,12 @@ export function ConversationSidebar({
           />
         </div>
 
-        <Separator className="my-0.5" />
-
         {/* Pinned section — fixed, collapsible, outside scroll */}
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0">
+          <div className="shrink-0 border-y border-border py-0.5">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-xs font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[13px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -161,8 +143,11 @@ export function ConversationSidebar({
                   const ws = vm.workspaces.find((w) => w.projectId === projectId);
                   return (
                     <div key={`pinned-ws-${projectId}`}>
-                      <div className="px-2 py-0.5 text-[10px] font-medium text-muted-foreground/60">
-                        {ws?.name ?? projectId}
+                      <div className="flex items-center gap-1.5 px-2 pt-0.5 pb-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        <span className="size-3 shrink-0 flex items-center justify-center">
+                          <span className="block h-px w-2 bg-muted-foreground/40" />
+                        </span>
+                        <span className="truncate">{ws?.name ?? projectId}</span>
                       </div>
                       <div className="space-y-1">
                         {tasks.map((task) => (
@@ -185,9 +170,10 @@ export function ConversationSidebar({
                 })}
               </div>
             ) : null}
-            <Separator className="my-1" />
           </div>
-        ) : null}
+        ) : (
+          <Separator className="my-0.5" />
+        )}
 
         {/* Workspace sections — scrollable with sticky headers */}
         <ScrollArea className="min-h-0 flex-1">
@@ -359,7 +345,7 @@ function TaskRow({
           {editing ? (
             <input
               ref={editInputRef}
-              className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-sm outline-none"
+              className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={commitRename}
@@ -367,7 +353,7 @@ function TaskRow({
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
           )}
           {relativeTime ? (
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>

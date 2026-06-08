@@ -27,12 +27,12 @@ pub fn save_desktop_ui_mode(
     mode: String,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
-    conv_state.desktop_ui_mode = Some(match mode.as_str() {
+    let mut state =app.load_state().map_err(command_error)?;
+    state.desktop_ui_mode = Some(match mode.as_str() {
         "workbench" => DesktopUiMode::Workbench,
         _ => DesktopUiMode::Conversation,
     });
-    app.save_conversation_state(&conv_state)
+    app.save_state(&state)
         .map_err(command_error)?;
     Ok(())
 }
@@ -42,8 +42,8 @@ pub fn get_conversation_sidebar(
     state: State<'_, DesktopState>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let conv_state = app.load_conversation_state().map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    let state =app.load_state().map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[tauri::command]
@@ -144,21 +144,21 @@ pub fn pin_conversation(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
-    let max_order = conv_state
+    let mut state =app.load_state().map_err(command_error)?;
+    let max_order = state
         .conversation_pins
         .iter()
         .map(|p| p.order)
         .max()
         .unwrap_or(0);
-    conv_state.conversation_pins.push(ConversationPin {
+    state.conversation_pins.push(ConversationPin {
         project_id,
         task_id,
         order: max_order + 1,
     });
-    app.save_conversation_state(&conv_state)
+    app.save_state(&state)
         .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[tauri::command]
@@ -168,13 +168,13 @@ pub fn unpin_conversation(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
-    conv_state
+    let mut state =app.load_state().map_err(command_error)?;
+    state
         .conversation_pins
         .retain(|p| p.project_id != project_id || p.task_id != task_id);
-    app.save_conversation_state(&conv_state)
+    app.save_state(&state)
         .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[tauri::command]
@@ -183,8 +183,8 @@ pub fn reorder_pinned_conversations(
     ordered: Vec<gold_band::config::ConversationPin>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
-    conv_state.conversation_pins = ordered
+    let mut state =app.load_state().map_err(command_error)?;
+    state.conversation_pins = ordered
         .into_iter()
         .enumerate()
         .map(|(i, mut pin)| {
@@ -192,9 +192,9 @@ pub fn reorder_pinned_conversations(
             pin
         })
         .collect();
-    app.save_conversation_state(&conv_state)
+    app.save_state(&state)
         .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[tauri::command]
@@ -205,7 +205,7 @@ pub fn search_conversation_tasks(
 ) -> CommandResult<Vec<crate::view_models_conversation::ConversationSearchResultVm>> {
     let limit = limit.unwrap_or(50).min(200);
     let app = state.app().map_err(command_error)?;
-    let conv_state = app.load_conversation_state().unwrap_or_default();
+    let state =app.load_state().unwrap_or_default();
     if let Some(index) = gold_band::storage::sqlite::search_index() {
         index
             .search_tasks(&query, limit)
@@ -214,7 +214,7 @@ pub fn search_conversation_tasks(
                     .into_iter()
                     .map(|r| {
                         let (project_id, workspace_name) =
-                            extract_project_from_task_path(&r.task_path, &conv_state);
+                            extract_project_from_task_path(&r.task_path, &state);
                         crate::view_models_conversation::ConversationSearchResultVm {
                             project_id,
                             workspace_path: String::new(),
@@ -241,7 +241,7 @@ pub fn search_conversation_tasks(
 
 fn extract_project_from_task_path(
     task_path: &str,
-    conv_state: &gold_band::config::ConversationState,
+    state: &gold_band::config::StateConfig,
 ) -> (String, String) {
     // Path structure: .../projects/{project_id}/tasks/{task_id}
     let path = task_path.replace('\\', "/");
@@ -253,7 +253,7 @@ fn extract_project_from_task_path(
             break;
         }
     }
-    let workspace_name = conv_state
+    let workspace_name = state
         .conversation_workspaces
         .iter()
         .find(|w| w.project_id == project_id)
@@ -268,8 +268,8 @@ pub fn get_conversation_run_mode(
     project_id: String,
 ) -> CommandResult<Option<crate::view_models_conversation::ConversationRunModeVm>> {
     let app = state.app().map_err(command_error)?;
-    let conv_state = app.load_conversation_state().map_err(command_error)?;
-    Ok(conv_state
+    let state =app.load_state().map_err(command_error)?;
+    Ok(state
         .conversation_run_modes
         .get(&project_id)
         .map(|entry| crate::view_models_conversation::ConversationRunModeVm {
@@ -294,8 +294,8 @@ pub fn save_conversation_run_mode(
     settings: ConversationRunModeSettingsVm,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
-    conv_state.conversation_run_modes.insert(
+    let mut state =app.load_state().map_err(command_error)?;
+    state.conversation_run_modes.insert(
         project_id,
         ConversationRunModeEntry {
             mode: settings.mode,
@@ -309,7 +309,7 @@ pub fn save_conversation_run_mode(
             }),
         },
     );
-    app.save_conversation_state(&conv_state)
+    app.save_state(&state)
         .map_err(command_error)?;
     Ok(())
 }
@@ -365,19 +365,19 @@ pub fn add_conversation_workspace(
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
 
-    let mut conv_state = gold_band_app.load_conversation_state().map_err(command_error)?;
+    let mut state =gold_band_app.load_state().map_err(command_error)?;
 
     // Ensure default workspace is persisted in stored state
     let default_repo = gold_band_app.paths.repo_root.to_string();
     let default_id = default_repo
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
-    if default_id != project_id && !conv_state.conversation_workspaces.iter().any(|w| w.project_id == default_id) {
+    if default_id != project_id && !state.conversation_workspaces.iter().any(|w| w.project_id == default_id) {
         let default_name = std::path::Path::new(&default_repo)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| default_repo.clone());
-        conv_state.conversation_workspaces.push(ConversationWorkspaceEntry {
+        state.conversation_workspaces.push(ConversationWorkspaceEntry {
             project_id: default_id.clone(),
             workspace_path: default_repo,
             name: default_name,
@@ -386,23 +386,23 @@ pub fn add_conversation_workspace(
     }
 
     // Check not already added
-    if conv_state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
+    if state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
         return Err(CommandErrorVm::new(
             "workspace.already-exists",
             serde_json::json!({ "name": name }),
         ));
     }
 
-    conv_state.conversation_workspaces.push(ConversationWorkspaceEntry {
+    state.conversation_workspaces.push(ConversationWorkspaceEntry {
         project_id: project_id.clone(),
         workspace_path: workspace_path_str,
         name: name.clone(),
         added_at: chrono::Utc::now().to_rfc3339(),
     });
-    conv_state.last_conversation_workspace = Some(project_id.clone());
-    gold_band_app.save_conversation_state(&conv_state).map_err(command_error)?;
+    state.last_conversation_workspace = Some(project_id.clone());
+    gold_band_app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&gold_band_app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&gold_band_app, &state))
 }
 
 #[tauri::command]
@@ -432,20 +432,20 @@ pub fn sync_conversation_workspace(
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
 
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
+    let mut state =app.load_state().map_err(command_error)?;
 
-    if !conv_state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
-        conv_state.conversation_workspaces.push(ConversationWorkspaceEntry {
+    if !state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
+        state.conversation_workspaces.push(ConversationWorkspaceEntry {
             project_id: project_id.clone(),
             workspace_path: workspace_path.clone(),
             name: name.clone(),
             added_at: chrono::Utc::now().to_rfc3339(),
         });
     }
-    conv_state.last_conversation_workspace = Some(project_id);
-    app.save_conversation_state(&conv_state).map_err(command_error)?;
+    state.last_conversation_workspace = Some(project_id);
+    app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[tauri::command]
@@ -454,21 +454,21 @@ pub fn remove_conversation_workspace(
     project_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut conv_state = app.load_conversation_state().map_err(command_error)?;
+    let mut state =app.load_state().map_err(command_error)?;
 
-    conv_state.conversation_workspaces.retain(|w| w.project_id != project_id);
+    state.conversation_workspaces.retain(|w| w.project_id != project_id);
     // Also clean up pins and run modes for this workspace
-    conv_state.conversation_pins.retain(|p| p.project_id != project_id);
-    conv_state.conversation_run_modes.remove(&project_id);
-    if conv_state.last_conversation_workspace.as_deref() == Some(&project_id) {
-        conv_state.last_conversation_workspace = conv_state
+    state.conversation_pins.retain(|p| p.project_id != project_id);
+    state.conversation_run_modes.remove(&project_id);
+    if state.last_conversation_workspace.as_deref() == Some(&project_id) {
+        state.last_conversation_workspace = state
             .conversation_workspaces
             .first()
             .map(|w| w.project_id.clone());
     }
-    app.save_conversation_state(&conv_state).map_err(command_error)?;
+    app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
 }
 
 #[derive(Debug, Clone, Serialize)]

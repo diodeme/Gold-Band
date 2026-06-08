@@ -1728,6 +1728,7 @@ dependencies = [
  "chrono",
  "fontdb",
  "gold-band",
+ "open",
  "serde",
  "serde_json",
  "tauri",

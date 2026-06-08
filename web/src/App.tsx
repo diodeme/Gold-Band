@@ -1,4 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   checkUpdateManual,
@@ -10,6 +11,7 @@ import {
   downloadAndInstallUpdate,
   getAgentRegistry,
   getConversationRun,
+  getConversationRunMode,
   getConversationSidebar,
   switchConversationSession,
   markSettingsAdvancedUpdateSeen,
@@ -121,6 +123,7 @@ export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
   const savedUiMode = (typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-ui-mode')) as DesktopUiMode | null;
   const [uiMode, setUiMode] = useState<DesktopUiMode>(savedUiMode ?? initialRoute.uiMode);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
@@ -187,6 +190,16 @@ export function App() {
   useEffect(() => {
     applyFont(preferences.font);
   }, [preferences.font]);
+
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('gold-band-sidebar-collapsed', sidebarCollapsed ? 'true' : 'false');
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    getCurrentWindow().setDecorations(false).catch(() => {});
+  }, []);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
@@ -638,6 +651,7 @@ export function App() {
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
+      sidebarCollapsed={sidebarCollapsed}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);
@@ -647,6 +661,7 @@ export function App() {
       }}
       onSelectConversation={onSelectConversation}
       onToggleUiMode={onToggleUiMode}
+      onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
         setActiveWorkspaceId(null);
@@ -697,7 +712,7 @@ export function App() {
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {shouldShowUpdateAnnouncement ? (
-        <div className="pointer-events-none fixed left-1/2 top-1 z-50 -translate-x-1/2">
+        <div className="pointer-events-none fixed left-1/2 top-13 z-50 -translate-x-1/2">
           <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
             <AlertDescription className="flex items-center justify-between gap-4 text-sm">
               <button type="button" className="inline-flex min-w-0 items-center gap-2 font-medium text-foreground hover:text-primary" onClick={onOpenUpdateAnnouncement}>
@@ -790,6 +805,7 @@ export function App() {
         <ConversationHomePage
           projectId={defaultProjectId}
           workspaceName={defaultWorkspaceName}
+          workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           busy={busy}
@@ -814,6 +830,10 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onWorkspaceChange={(projectId) => {
+            setActiveWorkspaceId(projectId);
+            getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+          }}
         />
       );
     }
@@ -898,12 +918,17 @@ export function App() {
     return <ConversationHomePage
       projectId={defaultProjectId}
       workspaceName={defaultWorkspaceName}
+      workspaces={conversationSidebar.workspaces}
       runMode={conversationRunMode}
       agentRegistry={agentRegistry}
       busy={busy}
       onRunModeChange={setConversationRunMode}
       onSubmit={(_input) => {}}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+      onWorkspaceChange={(projectId) => {
+        setActiveWorkspaceId(projectId);
+        getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+      }}
     />;
   }
 

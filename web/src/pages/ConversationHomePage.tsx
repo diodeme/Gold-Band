@@ -1,27 +1,31 @@
 import { useTranslation } from 'react-i18next';
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
   workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onSubmit: (input: ConversationCreateInput) => void;
   onOpenRunModeSettings: () => void;
+  onWorkspaceChange: (projectId: string) => void;
 }
 
 export function ConversationHomePage({
   projectId,
   workspaceName,
+  workspaces,
   runMode,
   agentRegistry,
   busy,
   onRunModeChange,
   onSubmit,
   onOpenRunModeSettings,
+  onWorkspaceChange,
 }: ConversationHomePageProps) {
   const { t } = useTranslation();
 
@@ -36,12 +40,14 @@ export function ConversationHomePage({
         <ConversationComposer
           projectId={projectId}
           workspaceName={workspaceName}
+          workspaces={workspaces}
           runMode={runMode}
           agentRegistry={agentRegistry}
           busy={busy}
           onRunModeChange={onRunModeChange}
           onSubmit={onSubmit}
           onOpenRunModeSettings={onOpenRunModeSettings}
+          onWorkspaceChange={onWorkspaceChange}
         />
       </div>
     </div>

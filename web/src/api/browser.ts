@@ -239,6 +239,8 @@ export const browserApi: RuntimeApi = {
   downloadAndInstallUpdate() {
     return Promise.resolve();
   },
+  getStartupCheckResult() {
+    return Promise.resolve(null);
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {
     return Promise.resolve();

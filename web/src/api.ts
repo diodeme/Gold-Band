@@ -158,6 +158,10 @@ export function showAttachment(taskId: string, runId: string, roundId: string, n
   return getRuntimeApi().showAttachment(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
+export function showConversationAttachment(taskId: string, name: string) {
+  return getRuntimeApi().showConversationAttachment(taskId, name);
+}
+
 export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
@@ -205,6 +209,10 @@ export function getConversationSidebar() {
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
   return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
+}
+
+export function switchConversationSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().switchConversationSession(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function validateConversationCreate(input: Parameters<ReturnType<typeof getRuntimeApi>['validateConversationCreate']>[0]) {
@@ -265,6 +273,10 @@ export function syncConversationWorkspace(workspacePath: string) {
 
 export function saveConversationPreference(key: string, value: unknown) {
   return getRuntimeApi().saveConversationPreference(key, value);
+}
+// pickAttachmentFiles for file picker in desktop envs
+export function pickAttachmentFiles() {
+  return getRuntimeApi().pickAttachmentFiles();
 }
 
 export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {

@@ -3,12 +3,15 @@ use gold_band::config::{
     ConversationAutoConfig, ConversationPin, ConversationRunModeEntry, ConversationWorkspaceEntry,
     DesktopUiMode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::{CommandErrorVm, CommandResult, command_error};
 use crate::state::DesktopState;
+use crate::view_models::ContentVm;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +95,31 @@ pub fn rerun_conversation_task(
     let app = state.app().map_err(command_error)?;
     crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
         .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn switch_conversation_session(
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ConversationSessionSwitchVm> {
+    let app = state.app().map_err(command_error)?;
+    crate::view_models_conversation::switch_conversation_session_vm(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    )
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -441,4 +469,109 @@ pub fn remove_conversation_workspace(
     app.save_conversation_state(&conv_state).map_err(command_error)?;
 
     Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &conv_state))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentFileVm {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+pub fn pick_attachment_files(
+    app_handle: AppHandle,
+    _state: State<'_, DesktopState>,
+) -> CommandResult<Vec<AttachmentFileVm>> {
+    let Some(paths) = app_handle
+        .dialog()
+        .file()
+        .blocking_pick_files()
+    else {
+        return Ok(Vec::new());
+    };
+    let files: Vec<AttachmentFileVm> = paths
+        .into_iter()
+        .filter_map(|p| {
+            let path = p.into_path().ok()?;
+            let name = path.file_name()?.to_str()?.to_string();
+            let size = path.metadata().ok()?.len();
+            Some(AttachmentFileVm { path: path.to_string_lossy().to_string(), name, size })
+        })
+        .collect();
+    Ok(files)
+}
+
+#[tauri::command]
+pub fn show_conversation_attachment(
+    state: State<'_, DesktopState>,
+    task_id: String,
+    name: String,
+) -> CommandResult<ContentVm> {
+    let app = state.app().map_err(command_error)?;
+    let path = app.paths.task_dir(&task_id)
+        .join("authoring")
+        .join("attachments")
+        .join(&name);
+    if !path.exists() {
+        return Err(CommandErrorVm::new(
+            "attachment.not-found",
+            serde_json::json!({ "name": name }),
+        ));
+    }
+    let ext = Path::new(&name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp");
+    let content = if is_image {
+        let bytes = fs::read(path.as_std_path()).map_err(|e| {
+            CommandErrorVm::new(
+                "attachment.unreadable",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })?;
+        let mime = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            _ => "application/octet-stream",
+        };
+        format!(
+            "data:{};base64,{}",
+            mime,
+            base64_encode(&bytes)
+        )
+    } else {
+        fs::read_to_string(path.as_std_path()).map_err(|e| {
+            CommandErrorVm::new(
+                "attachment.unreadable",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })?
+    };
+    Ok(ContentVm {
+        title: name.clone(),
+        kind: "input-attachment".to_string(),
+        content,
+        metadata: serde_json::json!({}),
+    })
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 0x3F) as usize] as char } else { b'=' as char });
+        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { b'=' as char });
+    }
+    out
 }

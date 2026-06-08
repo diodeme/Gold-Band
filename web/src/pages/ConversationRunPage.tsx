@@ -253,6 +253,7 @@ export function ConversationRunPage({
       <ConversationAssetsBar
         artifacts={run.artifacts}
         attachments={run.attachments}
+        inputAttachments={run.inputAttachments}
         onOpenArtifact={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
         onOpenAttachment={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
       />

@@ -164,20 +164,22 @@ export function ConversationSidebar({
                       <div className="px-2 py-0.5 text-[10px] font-medium text-muted-foreground/60">
                         {ws?.name ?? projectId}
                       </div>
-                      {tasks.map((task) => (
-                        <TaskRow
-                          key={`pinned-${task.projectId}-${task.taskId}`}
-                          task={task}
-                          pinned
-                          isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                          activeRunId={activeRunId}
-                          onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                          onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
-                          onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                          onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                          t={t}
-                        />
-                      ))}
+                      <div className="space-y-1">
+                        {tasks.map((task) => (
+                          <TaskRow
+                            key={`pinned-${task.projectId}-${task.taskId}`}
+                            task={task}
+                            pinned
+                            isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                            activeRunId={activeRunId}
+                            onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                            onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
+                            onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                            onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                            t={t}
+                          />
+                        ))}
+                      </div>
                     </div>
                   );
                 })}
@@ -215,7 +217,7 @@ export function ConversationSidebar({
                   </span>
                 </div>
                 {expandedWorkspaces[ws.projectId] ? (
-                  <div>
+                  <div className="space-y-1">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
@@ -344,7 +346,7 @@ function TaskRow({
   };
 
   return (
-    <div>
+    <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
       <div
         className={cn(
           'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
@@ -389,7 +391,7 @@ function TaskRow({
         </span>
       </div>
       {expanded && hasMultipleRuns ? (
-        <div className="ml-4 border-l border-border/60 pl-3">
+        <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
             const color = runStatusColor(run);
             const runTime = run.status !== 'running'

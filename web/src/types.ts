@@ -857,6 +857,7 @@ export interface ConversationRunVm {
   activeSessions: ConversationActiveSessionVm[];
   artifacts: AssetItemVm[];
   attachments: AssetItemVm[];
+  inputAttachments: AssetItemVm[];
   workflowStatus: string;
   workflowValid: boolean;
   workflowError?: WorkflowErrorVm | null;
@@ -864,6 +865,12 @@ export interface ConversationRunVm {
   workflowGraph: GraphVm;
   resumable: boolean;
   pauseReason?: string | null;
+}
+
+export interface ConversationSessionSwitchVm {
+  selectedSession?: AcpSessionVm | null;
+  artifacts: AssetItemVm[];
+  attachments: AssetItemVm[];
 }
 
 export interface ConversationActiveSessionVm {

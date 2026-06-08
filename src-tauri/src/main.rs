@@ -27,9 +27,10 @@ use commands::{
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     get_conversation_run, get_conversation_run_mode, get_conversation_sidebar,
-    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
-    rerun_conversation_task, save_conversation_preference, save_conversation_run_mode,
-    save_desktop_ui_mode, search_conversation_tasks, sync_conversation_workspace,
+    pick_attachment_files, pin_conversation, remove_conversation_workspace,
+    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, search_conversation_tasks,
+    show_conversation_attachment, switch_conversation_session, sync_conversation_workspace,
     unpin_conversation, update_task_metadata, validate_conversation_create,
 };
 use gold_band::storage::configure_storage_paths;
@@ -140,6 +141,9 @@ fn run() -> anyhow::Result<()> {
             validate_conversation_create,
             create_conversation_run,
             rerun_conversation_task,
+            switch_conversation_session,
+            pick_attachment_files,
+            show_conversation_attachment,
             update_task_metadata,
             pin_conversation,
             unpin_conversation,

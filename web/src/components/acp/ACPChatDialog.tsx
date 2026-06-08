@@ -1,6 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, CircleStop, Clock, Eye, FileText, Loader2, Package, Search, Send, ShieldQuestion, Terminal, UsersRound } from 'lucide-react';
+import { ChevronDown, CircleStop, Clock, Eye, FileText, Image as ImageIcon, Loader2, Package, Paperclip, Search, Send, ShieldQuestion, Terminal, UsersRound, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -17,7 +17,7 @@ import { AcpAvatarWithTime } from '@/components/acp/AcpAvatarWithTime';
 import { AcpUsagePanel } from '@/components/acp/AcpUsagePanel';
 import { attemptIdFromAcpEvent, isAcpAttemptSeparator, normalizeAcpEventForAttempt, normalizeAcpSessionForAttempt, originalSeqFromAcpEvent } from '@/lib/acp-event-normalization';
 import { formatLocalDateTime } from '@/lib/datetime';
-import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, showArtifact, showAttachment, submitManualCheck } from '@/api';
+import { cancelAcpSession, getAcpRawFrames, getAcpSession, respondAcpPermission, sendAcpPrompt, showArtifact, showAttachment, showConversationAttachment, submitManualCheck } from '@/api';
 import { getRuntimeApi } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
 import { displayAppError, displayStatus } from '@/i18n';
@@ -58,6 +58,45 @@ interface ACPChatDialogProps {
 }
 
 type AcpCanvasMode = 'chat' | 'raw';
+
+function hasFileTransfer(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false;
+  return Array.from(dataTransfer.types ?? []).includes('Files')
+    || Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file')
+    || dataTransfer.files.length > 0;
+}
+
+function extractTransferFiles(dataTransfer: DataTransfer | null): File[] {
+  if (!dataTransfer) return [];
+  const itemFiles = Array.from(dataTransfer.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file);
+  if (itemFiles.length > 0) return itemFiles;
+  return Array.from(dataTransfer.files ?? []);
+}
+
+function isAttachmentDropTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest('[data-attachment-dropzone="true"]');
+}
+
+const ALLOWED_ATTACHMENT_EXTS = new Set([
+  'txt', 'md', 'json', 'jsonl', 'csv',
+  'png', 'jpg', 'jpeg', 'webp',
+  'rs', 'ts', 'tsx', 'js', 'jsx', 'py',
+  'go', 'java', 'c', 'cpp', 'h', 'hpp',
+  'html', 'css', 'xml', 'yaml', 'yml', 'toml',
+]);
+
+function attachmentExt(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
+}
+
+function isAllowedAttachment(name: string): boolean {
+  const ext = attachmentExt(name);
+  return ext !== '' && ALLOWED_ATTACHMENT_EXTS.has(ext);
+}
 type ToolTone = 'muted' | 'pending' | 'running' | 'success' | 'danger';
 type AcpProcessingKind = 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping';
 type AcpTimelineEvent = AcpUiEventVm & {
@@ -225,6 +264,79 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
   const [selectedArtifact, setSelectedArtifact] = useState<AssetItemVm | null>(null);
   const [artifactContent, setArtifactContent] = useState<ContentVm | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  // ── Attachment state ──
+  interface PendingAttachment { id: string; name: string; path?: string; size: number; type: string; previewUrl?: string; file?: File; }
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [previewImage, setPreviewImage] = useState<PendingAttachment | null>(null);
+  const [textPreview, setTextPreview] = useState<{ name: string; content: string } | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const isImage = (mime: string) => mime.startsWith('image/') && !mime.includes('svg');
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const items: PendingAttachment[] = [];
+    const rejected: string[] = [];
+    for (const file of files) {
+      if (!isAllowedAttachment(file.name)) {
+        rejected.push(file.name);
+        continue;
+      }
+      const mime = file.type || 'application/octet-stream';
+      items.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name, path: (file as any).path as string | undefined,
+        size: file.size, type: mime,
+        previewUrl: isImage(mime) ? URL.createObjectURL(file) : undefined,
+        file,
+      });
+    }
+    if (rejected.length > 0) {
+      setFileError(t('conversation.attachmentUnsupportedFile', { names: rejected.join(', ') }));
+      setTimeout(() => setFileError(null), 4000);
+    }
+    setPendingAttachments((prev) => [...prev, ...items]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [t]);
+  const removeAttachment = useCallback((id: string) => {
+    setPendingAttachments((prev) => {
+      const removed = prev.find((a) => a.id === id);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+  useEffect(() => () => { for (const a of pendingAttachments) { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); } }, [pendingAttachments]);
+  useEffect(() => {
+    const handleWindowDragOver = (event: DragEvent) => {
+      if (!hasFileTransfer(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = isAttachmentDropTarget(event.target) ? 'copy' : 'none';
+    };
+    const handleWindowDrop = (event: DragEvent) => {
+      if (!hasFileTransfer(event.dataTransfer)) return;
+      if (isAttachmentDropTarget(event.target)) return;
+      event.preventDefault();
+    };
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, []);
+  const handleFilesFromInput = () => { if (fileInputRef.current?.files?.length) addFiles(fileInputRef.current.files); };
+  const handleComposerDrag = (e: React.DragEvent) => {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const handleComposerDrop = (e: React.DragEvent) => {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const files = extractTransferFiles(e.dataTransfer);
+    if (files.length > 0) addFiles(files);
+  };
+  // ── End attachment state ──
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const preservingScrollRef = useRef(false);
@@ -344,10 +456,15 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
     setArtifactContent(null);
     setArtifactLoading(true);
     try {
-      const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
-      const assetOuterNodeId = outerNodeId && outerAttemptId ? outerNodeId : undefined;
-      const assetOuterAttemptId = outerNodeId && outerAttemptId ? outerAttemptId : undefined;
-      const content = await loader(taskId, runId, asset.roundId || roundId, asset.nodeId, asset.attemptId, asset.name, assetOuterNodeId, assetOuterAttemptId);
+      let content: ContentVm;
+      if (asset.kind === 'input-attachment') {
+        content = await showConversationAttachment(taskId, asset.name);
+      } else {
+        const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
+        const assetOuterNodeId = outerNodeId && outerAttemptId ? outerNodeId : undefined;
+        const assetOuterAttemptId = outerNodeId && outerAttemptId ? outerAttemptId : undefined;
+        content = await loader(taskId, runId, asset.roundId || roundId, asset.nodeId, asset.attemptId, asset.name, assetOuterNodeId, assetOuterAttemptId);
+      }
       setArtifactContent(content);
     } catch {
       setArtifactContent(null);
@@ -576,17 +693,24 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
     if (sending || awaitingResponse || sessionActive || cancelling) return;
     const optimisticEvent = optimisticUserEvent(trimmed);
     const promptId = promptIdFromEvent(optimisticEvent);
+    // Collect attachment paths
+    const attPaths = pendingAttachments.map((a) => a.path).filter((p): p is string => !!p);
+    // Build prompt text with file references (until ACP content blocks are wired)
+    const effectivePrompt = attPaths.length > 0
+      ? `${trimmed}\n\n[Attached files: ${pendingAttachments.map((a) => a.name).join(', ')}]`
+      : trimmed;
     setPrompt('');
+    setPendingAttachments([]);
     setSendError(null);
     pinToBottomRef.current = true;
-    setActiveTurnPrompt(trimmed);
+    setActiveTurnPrompt(effectivePrompt);
     setActiveTurnPromptId(promptId);
     setActiveTurnStartedAt(null);
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     setSending(true);
     try {
-      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, trimmed, promptId, effective ?? null, outerNodeId, outerAttemptId);
+      const updated = await sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, effectivePrompt, promptId, effective ?? null, outerNodeId, outerAttemptId);
       applySessionUpdate(updated);
       if (updated) {
         updateOptimisticEvents((current) => current.filter((event) => !hasMatchingUserPrompt(updated.events, event)));
@@ -826,6 +950,51 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
           {composerLocked ? (
             <AcpPermissionComposerLock />
           ) : (
+            <div
+              data-attachment-dropzone="true"
+              onDragEnter={handleComposerDrag}
+              onDragLeave={handleComposerDrag}
+              onDragOver={handleComposerDrag}
+              onDrop={handleComposerDrop}
+            >
+            {/* Attachment chips */}
+            {pendingAttachments.length > 0 ? (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/40 bg-card/40 px-2.5 py-1.5">
+                {pendingAttachments.map((a) => (
+                  <div
+                    key={a.id}
+                    className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 px-1.5 py-1 text-xs shadow-sm"
+                    onClick={() => {
+                      if (isImage(a.type)) { setPreviewImage(a); return; }
+                      if (a.file) {
+                        const reader = new FileReader();
+                        reader.onload = () => setTextPreview({ name: a.name, content: reader.result as string });
+                        reader.readAsText(a.file);
+                      }
+                    }}
+                    title={a.name}
+                  >
+                    {isImage(a.type) && a.previewUrl ? (
+                      <img src={a.previewUrl} alt={a.name} className="size-6 shrink-0 rounded object-cover" />
+                    ) : (
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded bg-muted/50 text-muted-foreground"><ImageIcon className="size-3.5" /></span>
+                    )}
+                    <span className="min-w-0 max-w-[100px] truncate font-medium">{a.name}</span>
+                    <Button variant="ghost" size="icon" className="size-4 shrink-0 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => { e.stopPropagation(); removeAttachment(a.id); }}>
+                      <X className="size-2.5" />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="ghost" size="sm" className="h-6 text-[11px] text-muted-foreground" onClick={() => setPendingAttachments([])}>
+                  {t('common.clear') ?? 'Clear'}
+                </Button>
+              </div>
+            ) : null}
+            {/* File error */}
+            {fileError ? (
+              <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{fileError}</div>
+            ) : null}
             <PromptInput
               value={prompt}
               onValueChange={setPrompt}
@@ -845,9 +1014,29 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
                 className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
                 placeholder={composerPlaceholder}
                 readOnly={activePromptLocked && !planInterventionOption}
+                onDragEnter={handleComposerDrag}
+                onDragOver={handleComposerDrag}
+                onDrop={handleComposerDrop}
+                onPaste={(e: React.ClipboardEvent) => {
+                  const items = e.clipboardData?.items;
+                  if (!items) return;
+                  const files: File[] = [];
+                  for (let i = 0; i < items.length; i++) {
+                    if (items[i].kind === 'file') { const f = items[i].getAsFile(); if (f) files.push(f); }
+                  }
+                  if (files.length > 0) { e.preventDefault(); addFiles(files); }
+                }}
               />
               <div className="mt-2 flex items-center justify-between gap-4 px-2 pb-1">
-                <span className="text-xs text-muted-foreground">{composerInputHint}</span>
+                <div className="flex items-center gap-2">
+                  <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFilesFromInput} />
+                  <PromptInputAction tooltip={t('acp.attachHint') ?? 'Attach files'}>
+                    <Button className="size-7 rounded-full" size="icon" variant="ghost" disabled={activePromptLocked && !planInterventionOption} onClick={() => fileInputRef.current?.click()}>
+                      <Paperclip className="size-3.5" />
+                    </Button>
+                  </PromptInputAction>
+                  <span className="text-xs text-muted-foreground">{composerInputHint}</span>
+                </div>
                 <PromptInputActions className="shrink-0 pl-2">
                   {canStopSession ? (
                     <PromptInputAction tooltip={t('acp.stopHint')}>
@@ -867,11 +1056,40 @@ export const ACPChatDialog = forwardRef<ACPChatDialogHandle, ACPChatDialogProps>
               </div>
               <AcpSessionConfigBar session={effective} />
             </PromptInput>
+            </div>
           )}
             </>
           )}
         </div>
       ) : null}
+      {/* Image preview dialog */}
+      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) setPreviewImage(null); }}>
+        <DialogContent
+          showCloseButton={false}
+          overlayClassName="bg-black/70"
+          className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
+        >
+          <DialogTitle className="sr-only">{previewImage?.name ?? 'Preview'}</DialogTitle>
+          {previewImage?.previewUrl ? (
+            <img
+              src={previewImage.previewUrl}
+              alt={previewImage.name}
+              draggable={false}
+              className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* Text preview dialog */}
+      <Dialog open={!!textPreview} onOpenChange={(open) => { if (!open) setTextPreview(null); }}>
+        <DialogContent className="max-h-[86vh] max-w-4xl gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b px-5 py-3">
+            <DialogTitle className="truncate text-sm">{textPreview?.name}</DialogTitle>
+          </DialogHeader>
+          <pre className="max-h-[70vh] overflow-auto p-5 font-mono text-xs leading-relaxed text-foreground/85 whitespace-pre-wrap break-words">{textPreview?.content}</pre>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 });

@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
 import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -130,6 +130,9 @@ export const desktopApi: RuntimeApi = {
   showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_attachment', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
+  showConversationAttachment(taskId: string, name: string) {
+    return invokeCommand('show_conversation_attachment', { taskId, name });
+  },
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
@@ -167,6 +170,9 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
+  },
+  switchConversationSession(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand<ConversationSessionSwitchVm>('switch_conversation_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   validateConversationCreate(input) {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });
@@ -212,6 +218,9 @@ export const desktopApi: RuntimeApi = {
   },
   saveConversationPreference(key, value) {
     return invokeCommand('save_conversation_preference', { key, value });
+  },
+  pickAttachmentFiles() {
+    return invokeCommand<Array<{ path: string; name: string; size: number }>>('pick_attachment_files');
   },
   openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });

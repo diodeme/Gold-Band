@@ -2753,6 +2753,7 @@ pub fn dynamic_acp_session_vm(
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
+    let _t0 = std::time::Instant::now();
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
         task_id,
         run_id,
@@ -2784,6 +2785,7 @@ pub fn dynamic_acp_session_vm(
     } else {
         serde_json::json!({})
     };
+    eprintln!("[perf] dynamic_acp_session_vm read session/snapshot: {:?}", _t0.elapsed());
     let worker_ref_path = app.paths.dynamic_node_worker_ref_file(
         task_id,
         run_id,
@@ -2801,6 +2803,7 @@ pub fn dynamic_acp_session_vm(
         outer_attempt_id,
         node_id,
     );
+    let _t1 = std::time::Instant::now();
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -2809,10 +2812,12 @@ pub fn dynamic_acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let raw_frame_count = count_jsonl_lines(&raw_path)?;
-    let system_prompt_append = extract_system_prompt_append(&raw_path)?;
-    let mut diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    merge_raw_frame_error(&mut diagnostics, scan_acp_raw_error(&raw_path)?);
+    eprintln!("[perf] dynamic_acp_session_vm read worker_ref: {:?}", _t1.elapsed());
+    let _t_diag = std::time::Instant::now();
+    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    eprintln!("[perf] dynamic_acp_session_vm scan_acp_diagnostics: {:?}", _t_diag.elapsed());
+    let system_prompt_append = extract_system_prompt_append(&raw_path);
+    let _t4 = std::time::Instant::now();
     apply_stale_session_completion_fuse_dynamic(
         app,
         task_id,
@@ -2826,6 +2831,7 @@ pub fn dynamic_acp_session_vm(
         &node_path,
         &mut session,
     )?;
+    eprintln!("[perf] dynamic_acp_session_vm fuse: {:?}", _t4.elapsed());
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -2840,6 +2846,7 @@ pub fn dynamic_acp_session_vm(
     }
     .to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
+    let _t5 = std::time::Instant::now();
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
             &timeline_path,
@@ -2855,6 +2862,7 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
+    eprintln!("[perf] dynamic_acp_session_vm scan events: {:?}", _t5.elapsed());
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -2869,6 +2877,7 @@ pub fn dynamic_acp_session_vm(
         .as_ref()
         .map(|state| state.provider.clone())
         .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
+    let _t6 = std::time::Instant::now();
     let adapter_display_name = continue_ref
         .and_then(|value| value.get("adapterDisplayName"))
         .and_then(|value| value.as_str())
@@ -2883,6 +2892,8 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    eprintln!("[perf] dynamic_acp_session_vm managed_agent: {:?}", _t6.elapsed());
+    eprintln!("[perf] dynamic_acp_session_vm TOTAL: {:?}", _t0.elapsed());
     Ok(Some(AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -2969,7 +2980,7 @@ pub fn dynamic_acp_session_vm(
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
-            raw_frame_count,
+            raw_frame_count: 0,
             event_count: event_scan.event_count,
             error_count: diagnostics.error_count,
             last_error: diagnostics.last_error,
@@ -2987,6 +2998,7 @@ pub fn acp_session_vm(
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
+    let _t0 = std::time::Instant::now();
     let snapshot_path = app
         .paths
         .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3022,9 +3034,11 @@ pub fn acp_session_vm(
     } else {
         serde_json::json!({})
     };
+    eprintln!("[perf] acp_session_vm read session/snapshot: {:?}", _t0.elapsed());
     let worker_ref_path = app
         .paths
         .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
+    let _t_wr = std::time::Instant::now();
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -3050,13 +3064,18 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let raw_frame_count = count_jsonl_lines(&raw_path)?;
-    let system_prompt_append = extract_system_prompt_append(&raw_path)?;
-    let mut diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    merge_raw_frame_error(&mut diagnostics, scan_acp_raw_error(&raw_path)?);
+    eprintln!("[perf] acp_session_vm read worker_ref/node: {:?}", _t_wr.elapsed());
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+    let node_path = app
+        .paths
+        .node_file(task_id, run_id, round_id, node_id, attempt_id);
+    let _t_diag = std::time::Instant::now();
+    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    eprintln!("[perf] acp_session_vm scan_acp_diagnostics: {:?}", _t_diag.elapsed());
+    let system_prompt_append = extract_system_prompt_append(&raw_path);
+    let _t_fuse = std::time::Instant::now();
     apply_stale_cancel_fuse(
         app,
         task_id,
@@ -3067,9 +3086,6 @@ pub fn acp_session_vm(
         &attempt_dir,
         &mut session,
     )?;
-    let node_path = app
-        .paths
-        .node_file(task_id, run_id, round_id, node_id, attempt_id);
     apply_stale_session_completion_fuse(
         app,
         task_id,
@@ -3081,6 +3097,7 @@ pub fn acp_session_vm(
         &node_path,
         &mut session,
     )?;
+    eprintln!("[perf] acp_session_vm fuse: {:?}", _t_fuse.elapsed());
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -3095,6 +3112,7 @@ pub fn acp_session_vm(
     }
     .to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
+    let _t_events = std::time::Instant::now();
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
             &timeline_path,
@@ -3110,6 +3128,7 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
+    eprintln!("[perf] acp_session_vm scan events: {:?}", _t_events.elapsed());
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -3126,6 +3145,7 @@ pub fn acp_session_vm(
         .map(|state| state.provider.clone())
         .or(node_provider)
         .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
+    let _t_agent = std::time::Instant::now();
     let adapter_display_name = continue_ref
         .and_then(|value| value.get("adapterDisplayName"))
         .and_then(|value| value.as_str())
@@ -3140,6 +3160,8 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    eprintln!("[perf] acp_session_vm managed_agent: {:?}", _t_agent.elapsed());
+    eprintln!("[perf] acp_session_vm TOTAL: {:?}", _t0.elapsed());
 
     Ok(Some(AcpSessionVm {
         session_id: continue_ref
@@ -3228,7 +3250,7 @@ pub fn acp_session_vm(
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
-            raw_frame_count,
+            raw_frame_count: 0,
             event_count: event_scan.event_count,
             error_count: diagnostics.error_count,
             last_error: diagnostics.last_error,
@@ -3256,10 +3278,6 @@ struct AcpDiagnosticsScan {
     last_error_timestamp: Option<String>,
 }
 
-struct AcpRawErrorScan {
-    message: String,
-    timestamp: Option<String>,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3358,7 +3376,7 @@ fn scan_acp_timeline(
                 {
                     continue;
                 }
-                final_items.push(compact_event_for_session(final_item.item));
+                final_items.push(final_item.item);
                 continue;
             }
 
@@ -3394,13 +3412,12 @@ fn scan_acp_timeline(
             if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
                 continue;
             }
-            let compacted = compact_event_for_session(patch.item);
             let should_replace = latest_by_item
                 .get(&patch.item_id)
                 .map(|(revision, _)| patch.revision >= *revision)
                 .unwrap_or(true);
             if should_replace {
-                latest_by_item.insert(patch.item_id, (patch.revision, compacted));
+                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
             }
         }
     }
@@ -3437,6 +3454,17 @@ fn scan_acp_timeline(
     } else {
         all_events.clone()
     };
+    // Compact only the events in the final window (not all events)
+    let filtered: Vec<_> = filtered
+        .into_iter()
+        .map(|event| {
+            if matches!(event.kind.as_str(), "permissionRequest") {
+                event // keep permission events as-is for pending check
+            } else {
+                compact_event_for_session(event)
+            }
+        })
+        .collect();
     let oldest_seq = filtered.first().map(|event| event.started_seq.unwrap_or(event.seq));
     let newest_seq = filtered.last().map(|event| event.ended_seq.unwrap_or(event.seq));
     let oldest_index = oldest_seq.and_then(|seq| {
@@ -3580,11 +3608,10 @@ fn scan_acp_events(
                 &mut last_seq,
             );
             if is_delta_event(&event) {
-                pending_delta = Some(compact_event_for_session(event));
+                pending_delta = Some(event);
             } else {
-                let compacted = compact_event_for_session(event);
                 flush_normalized_event(
-                    Some(compacted),
+                    Some(event),
                     before_seq,
                     after_seq,
                     limit,
@@ -3611,11 +3638,22 @@ fn scan_acp_events(
     );
 
     let session_elapsed_seconds = session_elapsed.finish(session_active);
-    let events = if after_seq.is_some() {
+    let mut events = if after_seq.is_some() {
         after_window
     } else {
         window.into_iter().collect::<Vec<_>>()
     };
+    // Compact only the events in the final window (not all events)
+    events = events
+        .into_iter()
+        .map(|event| {
+            if matches!(event.kind.as_str(), "permissionRequest") {
+                event
+            } else {
+                compact_event_for_session(event)
+            }
+        })
+        .collect();
     let oldest_seq = events.first().map(|event| event.seq);
     let newest_seq = events.last().map(|event| event.seq);
     let has_older = oldest_seq
@@ -3953,17 +3991,6 @@ fn current_epoch_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-fn merge_raw_frame_error(diagnostics: &mut AcpDiagnosticsScan, raw_error: Option<AcpRawErrorScan>) {
-    if diagnostics.last_error.is_some() {
-        return;
-    }
-    let Some(raw_error) = raw_error else {
-        return;
-    };
-    diagnostics.error_count += 1;
-    diagnostics.last_error = Some(raw_error.message);
-    diagnostics.last_error_timestamp = raw_error.timestamp;
-}
 
 fn flush_normalized_event(
     event: Option<AcpUiEventVm>,
@@ -4062,39 +4089,6 @@ fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
     )
 }
 
-fn scan_acp_raw_error(path: &camino::Utf8Path) -> Result<Option<AcpRawErrorScan>> {
-    let mut last_error = None;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let file = fs::File::open(path.as_std_path())?;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        let Some(error) = value.pointer("/frame/error") else {
-            continue;
-        };
-        let message = error
-            .get("message")
-            .and_then(|item| item.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| error.to_string());
-        last_error = Some(AcpRawErrorScan {
-            message,
-            timestamp: value
-                .get("timestamp")
-                .and_then(|item| item.as_str())
-                .map(str::to_string),
-        });
-    }
-    Ok(last_error)
-}
-
 fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
     let mut error_count = 0usize;
     let mut last_error = None;
@@ -4131,6 +4125,36 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
         last_error,
         last_error_timestamp,
     })
+}
+
+/// Extract system prompt append from the beginning of the raw ACP frame file.
+/// Only reads the first ~200 lines — system prompt is always in session/new or session/load frame at the start.
+fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let file = fs::File::open(path.as_std_path()).ok()?;
+    for line in std::io::BufReader::new(file).lines().take(500) {
+        let line = line.ok()?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line).ok()?;
+        if value.get("direction").and_then(|v| v.as_str()) != Some("outbound") {
+            continue;
+        }
+        let method = value.pointer("/frame/method").and_then(|v| v.as_str());
+        if !matches!(method, Some("session/new" | "session/load")) {
+            continue;
+        }
+        return value
+            .pointer("/frame/params/_meta/systemPrompt/append")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+    }
+    None
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
@@ -4380,53 +4404,6 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
         options,
         raw,
     }
-}
-
-fn count_jsonl_lines(path: &camino::Utf8Path) -> Result<usize> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    let file = fs::File::open(path.as_std_path())?;
-    Ok(BufReader::new(file)
-        .lines()
-        .map_while(std::result::Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .count())
-}
-
-fn extract_system_prompt_append(path: &camino::Utf8Path) -> Result<Option<String>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let file = fs::File::open(path.as_std_path())?;
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if value.get("direction").and_then(|item| item.as_str()) != Some("outbound") {
-            continue;
-        }
-        let method = value
-            .pointer("/frame/method")
-            .and_then(|item| item.as_str());
-        if !matches!(method, Some("session/new" | "session/load")) {
-            continue;
-        }
-        let prompt = value
-            .pointer("/frame/params/_meta/systemPrompt/append")
-            .and_then(|item| item.as_str())
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(str::to_string);
-        if prompt.is_some() {
-            return Ok(prompt);
-        }
-    }
-    Ok(None)
 }
 
 fn asset_item_vm(kind: &str, round_id: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
@@ -5042,24 +5019,19 @@ mod tests {
     }
 
     #[test]
-    fn raw_frame_error_populates_session_diagnostics() {
+    fn diagnostics_file_populates_session_diagnostics() {
         let dir =
-            std::env::temp_dir().join(format!("gold-band-raw-error-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("gold-band-diag-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let path = Utf8PathBuf::from_path_buf(dir.join("acp.raw.jsonl")).unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.join("acp.diagnostics.jsonl")).unwrap();
         fs::write(
             path.as_std_path(),
-            r#"{"timestamp":"1778771541Z","direction":"inbound","frame":{"error":{"code":-32603,"data":{"errorKind":"rate_limit"},"message":"Internal error: API Error: Request rejected (429)"},"id":3,"jsonrpc":"2.0"}}
+            r#"{"level":"error","message":"Internal error: API Error: Request rejected (429)","timestamp":"1778771541Z"}
 "#,
         )
         .unwrap();
 
-        let mut diagnostics = AcpDiagnosticsScan {
-            error_count: 0,
-            last_error: None,
-            last_error_timestamp: None,
-        };
-        merge_raw_frame_error(&mut diagnostics, scan_acp_raw_error(&path).unwrap());
+        let diagnostics = scan_acp_diagnostics(&path).unwrap();
 
         assert_eq!(diagnostics.error_count, 1);
         assert_eq!(

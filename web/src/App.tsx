@@ -4,12 +4,14 @@ import {
   checkUpdateManual,
   chooseWorkspace,
   continueRun,
+  createConversationRun,
   createTask,
   dismissUpdateAnnouncement,
   downloadAndInstallUpdate,
   getAgentRegistry,
   getConversationRun,
   getConversationSidebar,
+  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -18,6 +20,7 @@ import {
   getWorkflow,
   killRun,
   pinConversation,
+  rerunConversationTask,
   saveDesktopPreferences,
   saveUpdaterSettings,
   saveTaskWorkflow,
@@ -25,6 +28,7 @@ import {
   startRun,
   unpinConversation,
   updateTaskMetadata,
+  validateConversationCreate,
   addConversationWorkspace,
   removeConversationWorkspace,
   syncConversationWorkspace,
@@ -790,7 +794,25 @@ export function App() {
           agentRegistry={agentRegistry}
           busy={busy}
           onRunModeChange={setConversationRunMode}
-          onSubmit={(_input) => {}}
+          onSubmit={(input) => {
+            validateConversationCreate(input)
+              .then(async (validation) => {
+                if (!validation.valid) {
+                  setError(validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n'));
+                  return;
+                }
+                const run = await createConversationRun(input);
+                setConversationRun(run);
+                getConversationSidebar().then(setConversationSidebar).catch(() => {});
+                pushRoute('task-orchestration', taskListPage, {
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
+              })
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         />
       );
@@ -819,7 +841,20 @@ export function App() {
           run={conversationRun}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
-          onRerun={() => {}}
+          onRerun={() => {
+            if (!conversationRun) return;
+            rerunConversationTask(conversationRun.projectId, conversationRun.taskId)
+              .then((run) => {
+                setConversationRun(run);
+                pushRoute('task-orchestration', taskListPage, {
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
+              })
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onEditWorkflow={() => {}}
           onSaveWorkflow={async (json) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
@@ -829,9 +864,23 @@ export function App() {
             const key = leaf.outerNodeId
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
-            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, key)
-              .then(setConversationRun)
-              .catch(() => {});
+            switchConversationSession(
+              conversationPage.taskId,
+              conversationPage.runId,
+              leaf.roundId,
+              leaf.nodeId,
+              leaf.attemptId,
+              leaf.outerNodeId,
+              leaf.outerAttemptId,
+            ).then((switched) => {
+              setConversationRun((prev) => prev ? {
+                ...prev,
+                selectedSession: switched.selectedSession,
+                artifacts: switched.artifacts,
+                attachments: switched.attachments,
+                sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
+              } : prev);
+            }).catch(() => {});
           }}
           onSessionStopped={() => {}}
           onContinueRun={() => {}}

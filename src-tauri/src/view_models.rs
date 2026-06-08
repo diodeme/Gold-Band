@@ -2753,7 +2753,6 @@ pub fn dynamic_acp_session_vm(
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
-    let _t0 = std::time::Instant::now();
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
         task_id,
         run_id,
@@ -2785,7 +2784,6 @@ pub fn dynamic_acp_session_vm(
     } else {
         serde_json::json!({})
     };
-    eprintln!("[perf] dynamic_acp_session_vm read session/snapshot: {:?}", _t0.elapsed());
     let worker_ref_path = app.paths.dynamic_node_worker_ref_file(
         task_id,
         run_id,
@@ -2803,7 +2801,6 @@ pub fn dynamic_acp_session_vm(
         outer_attempt_id,
         node_id,
     );
-    let _t1 = std::time::Instant::now();
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -2812,12 +2809,8 @@ pub fn dynamic_acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    eprintln!("[perf] dynamic_acp_session_vm read worker_ref: {:?}", _t1.elapsed());
-    let _t_diag = std::time::Instant::now();
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    eprintln!("[perf] dynamic_acp_session_vm scan_acp_diagnostics: {:?}", _t_diag.elapsed());
     let system_prompt_append = extract_system_prompt_append(&raw_path);
-    let _t4 = std::time::Instant::now();
     apply_stale_session_completion_fuse_dynamic(
         app,
         task_id,
@@ -2831,7 +2824,6 @@ pub fn dynamic_acp_session_vm(
         &node_path,
         &mut session,
     )?;
-    eprintln!("[perf] dynamic_acp_session_vm fuse: {:?}", _t4.elapsed());
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -2846,7 +2838,6 @@ pub fn dynamic_acp_session_vm(
     }
     .to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let _t5 = std::time::Instant::now();
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
             &timeline_path,
@@ -2862,7 +2853,6 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
-    eprintln!("[perf] dynamic_acp_session_vm scan events: {:?}", _t5.elapsed());
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -2877,7 +2867,6 @@ pub fn dynamic_acp_session_vm(
         .as_ref()
         .map(|state| state.provider.clone())
         .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
-    let _t6 = std::time::Instant::now();
     let adapter_display_name = continue_ref
         .and_then(|value| value.get("adapterDisplayName"))
         .and_then(|value| value.as_str())
@@ -2892,8 +2881,6 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    eprintln!("[perf] dynamic_acp_session_vm managed_agent: {:?}", _t6.elapsed());
-    eprintln!("[perf] dynamic_acp_session_vm TOTAL: {:?}", _t0.elapsed());
     Ok(Some(AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -2998,7 +2985,6 @@ pub fn acp_session_vm(
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
 ) -> Result<Option<AcpSessionVm>> {
-    let _t0 = std::time::Instant::now();
     let snapshot_path = app
         .paths
         .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3034,11 +3020,9 @@ pub fn acp_session_vm(
     } else {
         serde_json::json!({})
     };
-    eprintln!("[perf] acp_session_vm read session/snapshot: {:?}", _t0.elapsed());
     let worker_ref_path = app
         .paths
         .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
-    let _t_wr = std::time::Instant::now();
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -3064,18 +3048,14 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    eprintln!("[perf] acp_session_vm read worker_ref/node: {:?}", _t_wr.elapsed());
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     let node_path = app
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
-    let _t_diag = std::time::Instant::now();
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    eprintln!("[perf] acp_session_vm scan_acp_diagnostics: {:?}", _t_diag.elapsed());
     let system_prompt_append = extract_system_prompt_append(&raw_path);
-    let _t_fuse = std::time::Instant::now();
     apply_stale_cancel_fuse(
         app,
         task_id,
@@ -3097,7 +3077,6 @@ pub fn acp_session_vm(
         &node_path,
         &mut session,
     )?;
-    eprintln!("[perf] acp_session_vm fuse: {:?}", _t_fuse.elapsed());
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -3112,7 +3091,6 @@ pub fn acp_session_vm(
     }
     .to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let _t_events = std::time::Instant::now();
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
             &timeline_path,
@@ -3128,7 +3106,6 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
-    eprintln!("[perf] acp_session_vm scan events: {:?}", _t_events.elapsed());
     let pending_permissions = if cancelling {
         Vec::new()
     } else {
@@ -3145,7 +3122,6 @@ pub fn acp_session_vm(
         .map(|state| state.provider.clone())
         .or(node_provider)
         .unwrap_or_else(|| gold_band::domain::DEFAULT_PROVIDER.to_string());
-    let _t_agent = std::time::Instant::now();
     let adapter_display_name = continue_ref
         .and_then(|value| value.get("adapterDisplayName"))
         .and_then(|value| value.as_str())
@@ -3160,8 +3136,6 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    eprintln!("[perf] acp_session_vm managed_agent: {:?}", _t_agent.elapsed());
-    eprintln!("[perf] acp_session_vm TOTAL: {:?}", _t0.elapsed());
 
     Ok(Some(AcpSessionVm {
         session_id: continue_ref

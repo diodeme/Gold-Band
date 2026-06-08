@@ -1175,8 +1175,6 @@ pub fn switch_conversation_session_vm(
     outer_node_id: Option<&str>,
     outer_attempt_id: Option<&str>,
 ) -> anyhow::Result<ConversationSessionSwitchVm> {
-    let _t0 = std::time::Instant::now();
-    let is_dynamic = outer_node_id.is_some() && outer_attempt_id.is_some();
     let selected_session = if let (Some(outer_id), Some(outer_attempt)) = (outer_node_id, outer_attempt_id) {
         crate::view_models::dynamic_acp_session_vm(
             app, task_id, run_id, round_id,
@@ -1192,9 +1190,7 @@ pub fn switch_conversation_session_vm(
         .ok()
         .flatten()
     };
-    eprintln!("[perf] switch_conversation_session_vm load session (dynamic={is_dynamic}): {:?}", _t0.elapsed());
 
-    let _t1 = std::time::Instant::now();
 
     let (artifacts, attachments) = if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
         let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
@@ -1241,8 +1237,6 @@ pub fn switch_conversation_session_vm(
             .collect::<Vec<_>>();
         (artifacts, attachments)
     };
-    eprintln!("[perf] switch_conversation_session_vm artifacts+attachments: {:?}", _t1.elapsed());
-    eprintln!("[perf] switch_conversation_session_vm TOTAL: {:?}", _t0.elapsed());
 
     Ok(ConversationSessionSwitchVm {
         selected_session,

@@ -124,7 +124,7 @@
   --gold-success: #3ddc97;
   --gold-warning: #d6b36a;
   --gold-danger: #ff6b76;
-  --titlebar: color-mix(in srgb, var(--background) 82%, white 4%);
+  --titlebar: var(--sidebar);
   --titlebar-foreground: #f4efe6;
   --titlebar-muted: #9b9488;
   --titlebar-border: rgba(244, 239, 230, 0.08);
@@ -169,7 +169,7 @@
   --gold-success: #2dd48f;
   --gold-warning: #d6b36a;
   --gold-danger: #ff7185;
-  --titlebar: color-mix(in srgb, var(--background) 88%, #0f172a 12%);
+  --titlebar: var(--sidebar);
   --titlebar-foreground: #edf4ff;
   --titlebar-muted: #98a6bd;
   --titlebar-border: rgba(152, 166, 189, 0.12);
@@ -213,7 +213,7 @@
   --gold-success: #15803d;
   --gold-warning: #9a6b1f;
   --gold-danger: #dc2626;
-  --titlebar: color-mix(in srgb, white 82%, #edf4ff 18%);
+  --titlebar: var(--sidebar);
   --titlebar-foreground: #111827;
   --titlebar-muted: #667085;
   --titlebar-border: rgba(49, 87, 213, 0.12);
@@ -257,7 +257,7 @@
   --gold-success: #15803d;
   --gold-warning: #9a6b1f;
   --gold-danger: #c83e43;
-  --titlebar: color-mix(in srgb, #fffdf8 78%, #ebe1d1 22%);
+  --titlebar: var(--sidebar);
   --titlebar-foreground: #211d16;
   --titlebar-muted: #756d60;
   --titlebar-border: rgba(54, 43, 28, 0.1);

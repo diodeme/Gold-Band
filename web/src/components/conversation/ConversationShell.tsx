@@ -127,7 +127,7 @@ export function ConversationShell({
         onToggleSidebar={onToggleSidebar}
         onToggleUiMode={onToggleUiMode}
       />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 bg-sidebar">
         <div
           className={cn(
             'relative h-full shrink-0 overflow-hidden transition-[width] duration-250 ease-out',
@@ -167,7 +167,7 @@ export function ConversationShell({
             onMouseDown={handleMouseDown}
           />
         </div>
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-gold-workspace">{children}</main>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-sidebar-border/70 rounded-tl-2xl bg-gold-workspace">{children}</main>
       </div>
     </div>
   );

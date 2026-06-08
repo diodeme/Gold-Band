@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, X, FileText, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { Send, Paperclip, Workflow, Bot, X, FileText, Folders, Image as ImageIcon, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -301,8 +301,8 @@ export function ConversationComposer({
             disabled={busy}
           />
           <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
-          <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3">
-            <div className="flex items-center gap-3">
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/40 pt-3">
+            <div className="flex min-w-0 items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -313,18 +313,24 @@ export function ConversationComposer({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-8 text-muted-foreground"
+                className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={busy}
               >
                 <Paperclip className="size-4" />
               </Button>
               {attachments.length > 0 ? (
-                <span className="text-xs text-muted-foreground">{attachments.length} file(s)</span>
-              ) : workspaces.length > 1 ? (
+                <span className="shrink-0 rounded-full border border-border/50 bg-gold-surface-high/30 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                  {attachments.length} file(s)
+                </span>
+              ) : null}
+              {workspaces.length > 1 ? (
                 <Select value={projectId} onValueChange={onWorkspaceChange}>
-                  <SelectTrigger className="h-7 w-auto min-w-[140px] gap-1 border-0 bg-transparent px-1 text-xs text-muted-foreground hover:text-foreground focus:ring-0">
-                    <SelectValue />
+                  <SelectTrigger className="h-9 min-w-[170px] max-w-[240px] gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
+                      <SelectValue />
+                    </span>
                   </SelectTrigger>
                   <SelectContent>
                     {workspaces.map((w) => (
@@ -333,10 +339,13 @@ export function ConversationComposer({
                   </SelectContent>
                 </Select>
               ) : (
-                <span className="text-xs text-muted-foreground">{workspaceName}</span>
+                <div className="flex h-9 min-w-[170px] max-w-[240px] items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground">
+                  <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
+                  <span className="truncate">{workspaceName}</span>
+                </div>
               )}
             </div>
-            <Button size="sm" className="h-8 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={handleSubmit}>
+            <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={handleSubmit}>
               <Send className="size-3.5" />
               {t('acp.send')}
             </Button>

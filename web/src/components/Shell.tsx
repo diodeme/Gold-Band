@@ -108,7 +108,7 @@ function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSetting
           onToggleSidebar={onToggleSidebar}
           onToggleUiMode={onToggleUiMode}
         />
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 bg-sidebar">
           <div
             className={cn(
               'shrink-0 overflow-hidden transition-[width] duration-250 ease-out',
@@ -118,7 +118,7 @@ function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSetting
           >
             <aside
               className={cn(
-                'flex min-h-0 h-full w-64 flex-col gap-5 border-r bg-sidebar px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
+                'flex min-h-0 h-full w-64 flex-col gap-5 bg-sidebar px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
                 sidebarCollapsed ? 'opacity-0' : 'opacity-100',
               )}
             >
@@ -145,7 +145,7 @@ function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSetting
               <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
             </aside>
           </div>
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-gold-workspace">{children}</main>
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-sidebar-border/70 rounded-tl-2xl bg-gold-workspace">{children}</main>
         </div>
       </div>
     </TooltipProvider>

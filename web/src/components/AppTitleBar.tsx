@@ -87,7 +87,7 @@ export function AppTitleBar({
   const modeLabel = uiMode === 'conversation' ? t('common.conversation') : t('common.workbench');
 
   return (
-    <header className="flex h-11 shrink-0 select-none items-center border-b border-titlebar-border bg-titlebar text-titlebar-foreground" onDoubleClick={handleTitleBarDoubleClick}>
+    <header className="flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground" onDoubleClick={handleTitleBarDoubleClick}>
       <div className="flex items-center gap-2 px-2.5">
         <Button
           variant="ghost"

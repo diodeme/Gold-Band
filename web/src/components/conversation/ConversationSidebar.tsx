@@ -55,6 +55,7 @@ export function ConversationSidebar({
     if (typeof pref === 'boolean') return pref;
     return false;
   });
+  const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -70,6 +71,10 @@ export function ConversationSidebar({
     });
   };
 
+  const togglePinnedWorkspace = (projectId: string) => {
+    setCollapsedPinnedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  };
+
   const activeRunId = active.kind === 'conversation-run' ? active.runId : null;
 
   const toggleWorkspace = (projectId: string) => {
@@ -78,7 +83,7 @@ export function ConversationSidebar({
 
   return (
     <TooltipProvider>
-      <aside className="flex min-h-0 h-full flex-col gap-2 border-r bg-sidebar px-3 py-3 text-sidebar-foreground">
+      <aside className="flex min-h-0 h-full flex-col gap-2 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -141,30 +146,35 @@ export function ConversationSidebar({
                   }, {}),
                 ).map(([projectId, tasks]) => {
                   const ws = vm.workspaces.find((w) => w.projectId === projectId);
+                  const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
-                      <div className="flex items-center gap-1.5 px-2 pt-0.5 pb-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                        <span className="size-3 shrink-0 flex items-center justify-center">
-                          <span className="block h-px w-2 bg-muted-foreground/40" />
-                        </span>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
+                        onClick={() => togglePinnedWorkspace(projectId)}
+                      >
+                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
                         <span className="truncate">{ws?.name ?? projectId}</span>
-                      </div>
-                      <div className="space-y-1">
-                        {tasks.map((task) => (
-                          <TaskRow
-                            key={`pinned-${task.projectId}-${task.taskId}`}
-                            task={task}
-                            pinned
-                            isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                            activeRunId={activeRunId}
-                            onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                            onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
-                            onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                            onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                            t={t}
-                          />
-                        ))}
-                      </div>
+                      </button>
+                      {!isWsCollapsed ? (
+                        <div className="space-y-1">
+                          {tasks.map((task) => (
+                            <TaskRow
+                              key={`pinned-${task.projectId}-${task.taskId}`}
+                              task={task}
+                              pinned
+                              isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                              activeRunId={activeRunId}
+                              onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                              onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
+                              onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                              onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                              t={t}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}

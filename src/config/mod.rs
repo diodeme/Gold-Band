@@ -322,6 +322,8 @@ pub struct StateConfig {
 pub struct ProjectAppConfig {
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +344,7 @@ pub struct RuntimeConfig {
     pub use_local_claude: bool,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for RuntimeConfig {
@@ -368,6 +371,7 @@ impl Default for RuntimeConfig {
             use_local_claude: false,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
+            permission_mode_mapping: BTreeMap::new(),
         }
     }
 }
@@ -415,6 +419,9 @@ impl RuntimeConfig {
         if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
         }
+        if let Some(ref mapping) = app_config.permission_mode_mapping {
+            self.permission_mode_mapping = mapping.clone();
+        }
         self
     }
 
@@ -423,6 +430,16 @@ impl RuntimeConfig {
         self.desktop_update_badges = state.desktop_update_badges.clone();
         self.desktop_available_update = state.desktop_available_update.clone();
         self
+    }
+
+    /// Resolve a normative permission mode (read_only/ask/full_access) to an agent-specific mode ID.
+    /// Falls back to the normative mode itself if no mapping is configured for the provider.
+    pub fn resolve_permission_mode(&self, provider: &str, normative_mode: &str) -> String {
+        self.permission_mode_mapping
+            .get(provider)
+            .and_then(|map| map.get(normative_mode))
+            .cloned()
+            .unwrap_or_else(|| normative_mode.to_string())
     }
 }
 
@@ -590,6 +607,7 @@ mod tests {
         let app_config = ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
         let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
@@ -643,6 +661,7 @@ mod tests {
         let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            ..Default::default()
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);

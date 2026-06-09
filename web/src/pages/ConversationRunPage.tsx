@@ -164,6 +164,7 @@ export function ConversationRunPage({
         <div ref={headerAreaRef} className="shrink-0 relative">
           <ConversationRunHeader
             run={run}
+            selectedSessionLeaf={selectedLeaf}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Circle } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { useState } from 'react';
 import type { ConversationSessionLeafVm, ConversationSessionTreeVm } from '../../types';
 import { Button } from '@/components/ui/button';
@@ -115,12 +115,13 @@ function SessionLeaf({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const statusColor = leaf.outcome === 'success'
+  const isRunning = leaf.status === 'running';
+  const statusDotClass = leaf.outcome === 'success'
     ? 'bg-emerald-500'
     : leaf.outcome === 'failure' || leaf.outcome === 'killed'
       ? 'bg-red-500'
-      : leaf.status === 'running'
-        ? 'bg-primary animate-pulse'
+      : isRunning
+        ? 'bg-primary'
         : 'bg-yellow-500';
 
   return (
@@ -132,7 +133,23 @@ function SessionLeaf({
       )}
       onClick={onSelect}
     >
-      <Circle className={cn('size-2 shrink-0 fill-current', statusColor)} />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80',
+          selected && 'border-sidebar-accent/80',
+        )}
+      >
+        {isRunning ? (
+          <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
+        ) : null}
+        <span
+          className={cn(
+            'relative inline-block size-2 rounded-full',
+            statusDotClass,
+          )}
+        />
+      </span>
       <span className="truncate">{leaf.pathLabel}</span>
     </button>
   );

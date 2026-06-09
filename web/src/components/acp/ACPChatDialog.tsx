@@ -2212,15 +2212,15 @@ export function ACPSessionHeader({
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
   return (
-    <div className="shrink-0 border-b bg-muted/10 px-5 py-2">
+    <div className="shrink-0 border-b border-border/60 bg-gold-surface-high/60 px-5 pb-1 pt-0 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--gold-line-soft)_56%,transparent)]">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 truncate text-sm font-semibold leading-6">
+        <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
           {session.adapterDisplayName ?? session.provider}
         </span>
         {mode ? (
           <Badge
             variant="outline"
-            className="max-w-full gap-1 rounded-full bg-background/50 px-1.5 py-0 text-[11px] font-normal"
+            className="max-w-full gap-1 rounded-full border-border/60 bg-background/30 px-1.5 py-0 text-[10px] font-normal text-foreground/78"
           >
             <span className="shrink-0 text-muted-foreground">
               {t("acp.permissionMode")}
@@ -2228,14 +2228,14 @@ export function ACPSessionHeader({
             <span className="min-w-0 truncate text-foreground">{mode}</span>
           </Badge>
         ) : null}
-        <span className="truncate text-[11px] text-muted-foreground">
+        <span className="truncate text-[10px] text-muted-foreground/82">
           {session.sessionId ?? t("acp.noSessionId")}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Button
             size="sm"
             variant="outline"
-            className="h-6 gap-1 px-2 text-[11px]"
+            className="h-5.5 gap-1 border-border/60 bg-background/22 px-2 text-[10px] font-normal text-foreground/80 hover:bg-background/38"
             onClick={onOpenSystemPrompt}
             disabled={!hasSystemPrompt}
           >
@@ -2245,7 +2245,12 @@ export function ACPSessionHeader({
           <Button
             size="sm"
             variant={rawActive ? "default" : "outline"}
-            className="h-6 gap-1 px-2 text-[11px]"
+            className={cn(
+              "h-5.5 gap-1 px-2 text-[10px] font-normal",
+              rawActive
+                ? "bg-primary/18 text-foreground hover:bg-primary/24"
+                : "border-border/60 bg-background/22 text-foreground/80 hover:bg-background/38",
+            )}
             onClick={onToggleRaw}
             disabled={rawLoading}
           >
@@ -2864,10 +2869,10 @@ const MessageBubble = memo(function MessageBubble({
       >
         <MessageContent
           className={cn(
-            "rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
+            "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
             isUser
-              ? "whitespace-pre-wrap rounded-br-md bg-primary text-primary-foreground"
-              : "rounded-bl-md border bg-card text-card-foreground",
+              ? "whitespace-pre-wrap rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+              : "rounded-bl-md border-border/70 bg-card text-card-foreground",
             failed &&
               "border border-destructive/40 bg-destructive/10 text-destructive",
           )}

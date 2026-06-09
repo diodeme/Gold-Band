@@ -25,10 +25,10 @@ export function ConversationAssetsBar({
   if (artifacts.length === 0 && attachments.length === 0 && (!inputAttachments || inputAttachments.length === 0)) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-4 py-2">
+    <div className="flex flex-wrap items-center gap-1.5 px-4 pt-0 pb-1">
       {inputAttachments && inputAttachments.length > 0 ? (
         <>
-          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-1">
+          <span className="mr-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
             {t('conversation.runtime.assetsBar.inputAttachments')}
           </span>
           {inputAttachments.map((item) => (
@@ -36,11 +36,11 @@ export function ConversationAssetsBar({
               key={`input-${item.name}`}
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 rounded-full px-2.5 text-xs"
+              className="h-6 gap-1 rounded-full px-2 text-[11px]"
               onClick={() => onOpenInputAttachment?.(item)}
             >
               <Upload className="size-3 text-blue-400" />
-              <span className="max-w-[120px] truncate">{item.title || item.name}</span>
+              <span className="max-w-[112px] truncate">{item.title || item.name}</span>
             </Button>
           ))}
         </>
@@ -50,11 +50,11 @@ export function ConversationAssetsBar({
           key={`artifact-${artifact.name}`}
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 rounded-full px-2.5 text-xs"
+          className="h-6 gap-1 rounded-full px-2 text-[11px]"
           onClick={() => onOpenArtifact?.(artifact)}
         >
           <FileText className="size-3 text-emerald-500" />
-          <span className="max-w-[120px] truncate">{artifact.title || artifact.name}</span>
+          <span className="max-w-[112px] truncate">{artifact.title || artifact.name}</span>
         </Button>
       ))}
       {attachments.map((attachment) => (
@@ -62,11 +62,11 @@ export function ConversationAssetsBar({
           key={`attachment-${attachment.name}`}
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 rounded-full px-2.5 text-xs"
+          className="h-6 gap-1 rounded-full px-2 text-[11px]"
           onClick={() => onOpenAttachment?.(attachment)}
         >
           <Paperclip className="size-3 text-muted-foreground" />
-          <span className="max-w-[120px] truncate">{attachment.title || attachment.name}</span>
+          <span className="max-w-[112px] truncate">{attachment.title || attachment.name}</span>
         </Button>
       ))}
       {artifacts.length === 0 && attachments.length === 0 && (!inputAttachments || inputAttachments.length === 0) ? (

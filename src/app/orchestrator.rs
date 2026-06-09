@@ -2650,6 +2650,23 @@ fn validate_dynamic_completion(
     errors
 }
 
+fn validate_dynamic_permission_mode(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+    normative_mode: &str,
+    make_error: impl FnOnce(&str) -> DynamicProposalValidationError,
+) -> Option<DynamicProposalValidationError> {
+    let doctor = ctx.app.provider_doctor(provider).ok()?;
+    let resolved = ctx.app.config.resolve_permission_mode(provider, normative_mode);
+    let supported = doctor.supported_modes();
+    let supported_ids: Vec<_> = supported.into_iter().map(|m| m.id).collect();
+    if !supported_ids.is_empty() && !supported_ids.iter().any(|id| id == &resolved) {
+        Some(make_error(&resolved))
+    } else {
+        None
+    }
+}
+
 fn validate_dynamic_node_spec(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -2823,24 +2840,18 @@ fn validate_dynamic_node_spec(
                         }),
                     ));
                 } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
-                    if let Ok(doctor) = ctx.app.provider_doctor(provider) {
-                        let resolved = ctx.app.config.resolve_permission_mode(provider, normative_mode);
-                        let supported_mode_ids = doctor
-                            .supported_modes()
-                            .into_iter()
-                            .map(|mode| mode.id)
-                            .collect::<std::collections::HashSet<_>>();
-                        if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(&resolved) {
-                            errors.push(dynamic_validation_error(
-                                "dynamic.node.permission-mode.unsupported",
-                                format!("dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`", spec.id, normative_mode, resolved),
-                                serde_json::json!({
-                                    "nodeId": spec.id,
-                                    "provider": provider,
-                                    "permissionMode": normative_mode,
-                                }),
-                            ));
-                        }
+                    if let Some(error) = validate_dynamic_permission_mode(ctx, provider, normative_mode, |resolved| {
+                        dynamic_validation_error(
+                            "dynamic.node.permission-mode.unsupported",
+                            format!("dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`", spec.id, normative_mode, resolved),
+                            serde_json::json!({
+                                "nodeId": spec.id,
+                                "provider": provider,
+                                "permissionMode": normative_mode,
+                            }),
+                        )
+                    }) {
+                        errors.push(error);
                     }
                 }
                 if let Some(profile) = spec.profile.as_deref() {
@@ -2980,24 +2991,18 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
-        if let Ok(doctor) = ctx.app.provider_doctor(&spec.provider) {
-            let resolved = ctx.app.config.resolve_permission_mode(&spec.provider, normative_mode);
-            let supported_mode_ids = doctor
-                .supported_modes()
-                .into_iter()
-                .map(|mode| mode.id)
-                .collect::<std::collections::HashSet<_>>();
-            if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(&resolved) {
-                errors.push(dynamic_validation_error(
-                    &format!("dynamic.{name}.permission-mode.unsupported"),
-                    format!("dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{}`", normative_mode, resolved, spec.provider),
-                    serde_json::json!({
-                        "provider": spec.provider,
-                        "stage": name,
-                        "permissionMode": normative_mode,
-                    }),
-                ));
-            }
+        if let Some(error) = validate_dynamic_permission_mode(ctx, &spec.provider, normative_mode, |resolved| {
+            dynamic_validation_error(
+                &format!("dynamic.{name}.permission-mode.unsupported"),
+                format!("dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{}`", normative_mode, resolved, spec.provider),
+                serde_json::json!({
+                    "provider": spec.provider,
+                    "stage": name,
+                    "permissionMode": normative_mode,
+                }),
+            )
+        }) {
+            errors.push(error);
         }
     }
     if spec.task.trim().is_empty() {

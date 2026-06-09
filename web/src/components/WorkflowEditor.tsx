@@ -586,6 +586,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
   const expression = conditionExpression(node.success_condition);
   const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
   const updateWorker = (patch: Partial<WorkflowWorkerNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
+  const modelOptions = selectedAgent?.supportedModels ?? [];
   const permissionModes = selectedAgent?.supportedModes ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null };
@@ -694,14 +695,14 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
-      {selectedAgent && selectedAgent.supportedModes && selectedAgent.supportedModes.length > 0 ? (
+      {modelOptions.length > 0 ? (
         <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
           <Select value={node.model ?? ''} onValueChange={(model) => updateWorker({ model })}>
             <SelectTrigger className={errorClass(errorsFor('model'))}>
               <SelectValue placeholder={t('workflowEditor.selectModel')} />
             </SelectTrigger>
             <SelectContent>
-              {selectedAgent.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+              {modelOptions.map((mode) => <SelectItem value={mode.id} key={mode.id}><span>{mode.name}{mode.description ? <><span className="mt-0.5 block text-[11px] text-muted-foreground">{mode.description}</span></> : null}</span></SelectItem>)}
             </SelectContent>
           </Select>
         </Field>
@@ -813,10 +814,13 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
   const strategy = node.agentStrategy.mode === 'dynamic'
     ? node.agentStrategy
     : node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
-  const permissionModeAgentId = node.agentStrategy.mode === 'fixed'
-    ? node.agentStrategy.provider
-    : node.agentStrategy.bootstrapProvider;
-  const permissionModes = agents.find((agent) => agent.agentType === permissionModeAgentId)?.supportedModes ?? [];
+  const isFixedStrategy = node.agentStrategy.mode === 'fixed';
+  const permissionModeAgentId = isFixedStrategy
+    ? (node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl).provider?.trim()
+    : null;
+  const agentSpecificModes = isFixedStrategy && permissionModeAgentId
+    ? (agents.find((a) => a.agentType === permissionModeAgentId)?.supportedModes ?? [])
+    : [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const updateControl = (patch: Partial<DynamicControlDsl>) => {
@@ -915,7 +919,8 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           {(() => {
             const fixedStrategy = node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
             const fixedAgent = agents.find((a) => a.agentType === fixedStrategy.provider);
-            if (fixedAgent && fixedAgent.supportedModes && fixedAgent.supportedModes.length > 0) {
+            const fixedModels = fixedAgent?.supportedModels ?? [];
+            if (fixedModels.length > 0) {
               return (
                 <Field label={t('workflowEditor.model')} errors={errorsFor('agentStrategy.model')}>
                   <Select
@@ -926,7 +931,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                       <SelectValue placeholder={t('workflowEditor.selectModel')} />
                     </SelectTrigger>
                     <SelectContent>
-                      {fixedAgent.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+                      {fixedModels.map((mode) => <SelectItem value={mode.id} key={mode.id}><span>{mode.name}{mode.description ? <><span className="mt-0.5 block text-[11px] text-muted-foreground">{mode.description}</span></> : null}</span></SelectItem>)}
                     </SelectContent>
                   </Select>
                 </Field>
@@ -954,9 +959,10 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           </Field>
           {(node.agentStrategy.availableAgents ?? []).map((agentRef, idx) => {
             const agentObj = agents.find((a) => a.agentType === agentRef.provider);
-            if (!agentObj || !agentObj.supportedModes || agentObj.supportedModes.length === 0) return null;
+            const agentModels = agentObj?.supportedModels ?? [];
+            if (agentModels.length === 0) return null;
             return (
-              <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
+              <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj!.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
                 <Select
                   value={agentRef.model ?? ''}
                   onValueChange={(model) => {
@@ -969,7 +975,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                     <SelectValue placeholder={t('workflowEditor.selectModel')} />
                   </SelectTrigger>
                   <SelectContent>
-                    {agentObj.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+                    {agentModels.map((mode) => <SelectItem value={mode.id} key={mode.id}><span>{mode.name}{mode.description ? <><span className="mt-0.5 block text-[11px] text-muted-foreground">{mode.description}</span></> : null}</span></SelectItem>)}
                   </SelectContent>
                 </Select>
               </Field>
@@ -992,7 +998,15 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={DEFAULT_PERMISSION_MODE}>{t('workflowEditor.permissionModeDefault')}</SelectItem>
-            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+            {isFixedStrategy
+              ? agentSpecificModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)
+              : (
+                <>
+                  <SelectItem value="read_only">{t('workflowEditor.permissionModeReadOnly')}</SelectItem>
+                  <SelectItem value="ask">{t('workflowEditor.permissionModeAsk')}</SelectItem>
+                  <SelectItem value="full_access">{t('workflowEditor.permissionModeFullAccess')}</SelectItem>
+                </>
+              )}
           </SelectContent>
         </Select>
       </Field>
@@ -2076,9 +2090,6 @@ function validateAiDynamicNodeForSave(
   t: (key: string, options?: Record<string, unknown>) => string,
 ) {
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
-  const permissionAgentId = node.agentStrategy.mode === 'fixed'
-    ? node.agentStrategy.provider?.trim()
-    : node.agentStrategy.bootstrapProvider?.trim();
   if (node.agentStrategy.mode === 'fixed') {
     const provider = node.agentStrategy.provider?.trim();
     if (!provider) {
@@ -2097,10 +2108,20 @@ function validateAiDynamicNodeForSave(
       addIssue(t('workflowEditor.validationDynamicRoutingPromptRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.routingPrompt'), node.id);
     }
   }
-  if (node.permission_mode?.trim() && permissionAgentId) {
-    const supportedModeIds = new Set((agentById.get(permissionAgentId)?.supportedModes ?? []).map((mode) => mode.id));
-    if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
-      addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
+  if (node.permission_mode?.trim()) {
+    if (node.agentStrategy.mode === 'fixed') {
+      const provider = node.agentStrategy.provider?.trim();
+      if (provider) {
+        const supportedModeIds = new Set((agentById.get(provider)?.supportedModes ?? []).map((mode) => mode.id));
+        if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
+          addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
+        }
+      }
+    } else {
+      const VALID_NORMATIVE_MODES = new Set(['read_only', 'ask', 'full_access']);
+      if (!VALID_NORMATIVE_MODES.has(node.permission_mode)) {
+        addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
+      }
     }
   }
   const knownProfileIds = new Set(profiles.map((profile) => profile.id));

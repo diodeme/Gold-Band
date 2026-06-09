@@ -92,11 +92,13 @@ export interface ManagedAgentVm {
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
+  supportedModels?: AcpModeVm[] | null;
 }
 
 export interface AcpModeVm {
   id: string;
   name: string;
+  description?: string | null;
 }
 
 export interface AcpUsageVm {

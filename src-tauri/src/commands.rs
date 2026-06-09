@@ -824,7 +824,10 @@ pub async fn send_acp_prompt(
                 CommandErrorVm::new("acp.missing-provider", serde_json::json!({}))
             })?;
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-            let permission_mode = node.permission_mode.clone();
+            let permission_mode = node
+                .permission_mode
+                .as_deref()
+                .map(|normative| app.config.resolve_permission_mode(provider, normative));
             let model = node.model.clone();
             let (session_mode, continue_ref) = if worker_ref_path.exists() {
                 let worker_ref =
@@ -1851,6 +1854,30 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
                 "reason": reason,
             }),
         ),
+        WorkflowValidationError::WorkerModelBlank { node_id, provider } => CommandErrorVm::new(
+            "workflow.model-blank",
+            serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        ),
+        WorkflowValidationError::DynamicFixedModelBlank { node_id } => CommandErrorVm::new(
+            "workflow.dynamic-fixed-model-blank",
+            serde_json::json!({ "nodeId": node_id }),
+        ),
+        WorkflowValidationError::DynamicAgentsEmpty { node_id } => CommandErrorVm::new(
+            "workflow.dynamic-agents-empty",
+            serde_json::json!({ "nodeId": node_id }),
+        ),
+        WorkflowValidationError::DynamicAgentDuplicate { node_id, provider } => CommandErrorVm::new(
+            "workflow.dynamic-agent-duplicate",
+            serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        ),
+        WorkflowValidationError::DynamicAgentModelBlank { node_id, provider } => CommandErrorVm::new(
+            "workflow.dynamic-agent-model-blank",
+            serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        ),
+        WorkflowValidationError::AgentModelBlank { provider } => CommandErrorVm::new(
+            "workflow.agent-model-blank",
+            serde_json::json!({ "provider": provider }),
+        ),
     }
 }
 
@@ -1948,6 +1975,83 @@ pub async fn set_acp_session_model(
     // Update models.currentModelId
     if let Some(models) = value.get_mut("models").and_then(|m| m.as_object_mut()) {
         models.insert("currentModelId".to_string(), serde_json::Value::String(model_id.clone()));
+    }
+
+    let updated_json = serde_json::to_string_pretty(&value)
+        .map_err(|error| CommandErrorVm::new("acp.session-serialize-error", serde_json::json!({ "error": error.to_string() })))?;
+    std::fs::write(&path, &updated_json)
+        .map_err(|error| CommandErrorVm::new("acp.session-write-error", serde_json::json!({ "error": error.to_string() })))?;
+
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
+pub async fn set_acp_session_permission_mode(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    permission_mode_id: String,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = state.app().map_err(command_error)?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+
+    let session_json = std::fs::read_to_string(&path)
+        .map_err(|error| CommandErrorVm::new("acp.session-read-error", serde_json::json!({ "error": error.to_string() })))?;
+    let mut value: serde_json::Value = serde_json::from_str(&session_json)
+        .map_err(|error| CommandErrorVm::new("acp.session-parse-error", serde_json::json!({ "error": error.to_string() })))?;
+
+    // Update modes.currentModeId
+    if let Some(modes) = value.get_mut("modes").and_then(|m| m.as_object_mut()) {
+        modes.insert("currentModeId".to_string(), serde_json::Value::String(permission_mode_id.clone()));
     }
 
     let updated_json = serde_json::to_string_pretty(&value)

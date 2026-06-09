@@ -20,7 +20,7 @@ use commands::{
     mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
     save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
-    select_recent_workspace, send_acp_prompt, set_acp_session_model, show_artifact,
+    select_recent_workspace, send_acp_prompt, set_acp_session_model, set_acp_session_permission_mode, show_artifact,
     show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
     update_profile, update_workflow_template,
 };
@@ -118,6 +118,7 @@ fn run() -> anyhow::Result<()> {
             get_acp_session,
             send_acp_prompt,
             set_acp_session_model,
+            set_acp_session_permission_mode,
             respond_acp_permission,
             cancel_acp_session,
             get_acp_raw_frames,

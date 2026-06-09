@@ -108,7 +108,6 @@ export interface RuntimeApi {
   dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
   downloadAndInstallUpdate(): Promise<void>;
-  getStartupCheckResult(): Promise<import('../types').StartupCheckResult | null>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;

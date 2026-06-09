@@ -34,7 +34,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::i18n::Translator;
 use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
-    StartupCheckResult, UpdateStatusVm, UpdaterSettingsVm, check_update,
+    UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
     updater_settings,
 };
@@ -1655,10 +1655,6 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
     run_download_and_install_update(&app).await.map_err(command_error)
 }
 
-#[tauri::command]
-pub fn get_startup_check_result(state: tauri::State<'_, DesktopState>) -> Option<StartupCheckResult> {
-    state.get_startup_check()
-}
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),

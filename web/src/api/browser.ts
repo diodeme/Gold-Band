@@ -170,6 +170,9 @@ export const browserApi: RuntimeApi = {
   sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null, _attachmentPaths?: string[]) {
     return Promise.resolve(fallback ?? null);
   },
+  setAcpSessionModel(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _modelId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve(null);
+  },
   respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
   },

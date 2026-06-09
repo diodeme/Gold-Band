@@ -2363,6 +2363,7 @@ fn selected_node_detail_vm(
         node_id,
         &node.attempt_id,
         None,
+        None,
     )?;
     let acp_conversations = acp_conversations_vm(app, task_id, run_id, round, node_id, nodes)?;
     let selected_conversation_key = acp_conversations
@@ -2553,6 +2554,7 @@ fn selected_dynamic_node_detail_vm(
         node_id,
         &dynamic_attempt_id,
         None,
+        None,
     )?;
     Ok(Some(NodeDetailVm {
         id: graph_node
@@ -2656,6 +2658,7 @@ fn acp_conversations_vm(
             node_id,
             &node.attempt_id,
             None,
+            None,
         )?;
         let acp_session_id = worker_acp_session_id.or_else(|| {
             acp_session
@@ -2753,6 +2756,7 @@ pub fn dynamic_acp_session_vm(
     node_id: &str,
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
+    preloaded_session_json: Option<serde_json::Value>,
 ) -> Result<Option<AcpSessionVm>> {
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
         task_id,
@@ -2769,7 +2773,9 @@ pub fn dynamic_acp_session_vm(
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
-    if !snapshot_path.exists()
+    let has_preloaded = preloaded_session_json.is_some();
+    if !has_preloaded
+        && !snapshot_path.exists()
         && !session_path.exists()
         && !timeline_path.exists()
         && !events_path.exists()
@@ -2778,7 +2784,9 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let mut session = if snapshot_path.exists() {
+    let mut session = if let Some(json) = preloaded_session_json {
+        json
+    } else if snapshot_path.exists() {
         read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
     } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
@@ -2986,6 +2994,7 @@ pub fn acp_session_vm(
     node_id: &str,
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
+    preloaded_session_json: Option<serde_json::Value>,
 ) -> Result<Option<AcpSessionVm>> {
     let snapshot_path = app
         .paths
@@ -3005,7 +3014,9 @@ pub fn acp_session_vm(
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
-    if !snapshot_path.exists()
+    let has_preloaded = preloaded_session_json.is_some();
+    if !has_preloaded
+        && !snapshot_path.exists()
         && !session_path.exists()
         && !timeline_path.exists()
         && !events_path.exists()
@@ -3015,7 +3026,9 @@ pub fn acp_session_vm(
         return Ok(None);
     }
 
-    let mut session = if snapshot_path.exists() {
+    let mut session = if let Some(json) = preloaded_session_json {
+        json
+    } else if snapshot_path.exists() {
         read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
     } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))

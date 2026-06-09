@@ -210,6 +210,7 @@ export interface WorkflowWorkerNodeDsl {
   type: 'worker';
   id: string;
   provider?: string | null;
+  model?: string | null;
   profile?: string | null;
   goal?: string | null;
   output?: WorkflowOutputContractDsl | null;
@@ -220,15 +221,22 @@ export interface WorkflowWorkerNodeDsl {
 
 export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrategyDsl | WorkflowAiDynamicDynamicAgentStrategyDsl;
 
+export interface DynamicAgentRefDsl {
+  provider: string;
+  model: string;
+}
+
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   mode: 'fixed';
   provider: string;
+  model?: string;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   routingPrompt: string;
+  availableAgents: DynamicAgentRefDsl[];
 }
 
 export interface WorkflowAiDynamicNodeDsl {

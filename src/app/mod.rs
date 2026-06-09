@@ -18,9 +18,10 @@ use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
-    END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
-    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
-    WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
+    AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl,
+    NEW_ROUND_NODE, NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode,
+    WorkflowControl, WorkflowDsl, WorkflowValidationError, validate_workflow,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
 use crate::process::kill_process_tree;
@@ -98,6 +99,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
             provider: Some(provider.to_string()),
+            model: None,
             profile: Some(
                 profiles
                     .get(role_key)
@@ -479,7 +481,50 @@ fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => dynamic.bootstrap_provider().map(|provider| vec![provider.to_string()]).unwrap_or_default(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                available_agents,
+                ..
+            } => {
+                let mut providers = vec![bootstrap_provider.clone()];
+                for agent_ref in available_agents {
+                    if !providers.contains(&agent_ref.provider) {
+                        providers.push(agent_ref.provider.clone());
+                    }
+                }
+                providers
+            }
+        },
+    }
+}
+
+/// Returns (provider, model) pairs for model validation.
+fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+    match node {
+        NodeDsl::Worker(worker) => worker
+            .provider
+            .as_ref()
+            .map(|p| (p.clone(), worker.model.clone()))
+            .into_iter()
+            .collect(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, model } => {
+                vec![(provider.clone(), model.clone())]
+            }
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                available_agents,
+                ..
+            } => {
+                let mut pairs = vec![(bootstrap_provider.clone(), None)];
+                for agent_ref in available_agents {
+                    pairs.push((agent_ref.provider.clone(), agent_ref.model.clone()));
+                }
+                pairs
+            }
+        },
     }
 }
 
@@ -2031,6 +2076,17 @@ impl App {
                 let (agent_type, _) = self.managed_agent(&provider)?;
                 if !agent_type.is_supported() {
                     bail!("agent `{provider}` is not supported yet");
+                }
+            }
+        }
+        // Validate model references are not blank (capability-level validation
+        // happens at runtime via provider_capabilities when the node executes).
+        for node in workflow.nodes_by_id.values() {
+            for (provider, model) in models_for_node(node) {
+                if let Some(model) = model {
+                    if model.trim().is_empty() {
+                        bail!("model for agent `{provider}` cannot be blank");
+                    }
                 }
             }
         }

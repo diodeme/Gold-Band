@@ -115,6 +115,9 @@ export const desktopApi: RuntimeApi = {
   sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
     return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
+  setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
+  },
   respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },

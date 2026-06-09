@@ -1353,6 +1353,17 @@ fn dynamic_agent_strategy_mode(dynamic: &AiDynamicNode) -> &'static str {
     }
 }
 
+fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option<String> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { model, .. } => model.clone(),
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => available_agents
+            .iter()
+            .find(|agent_ref| agent_ref.provider == provider)
+            .and_then(|agent_ref| agent_ref.model.clone()),
+    }
+}
 fn dynamic_agent_routing_prompt(dynamic: &AiDynamicNode) -> Option<&str> {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { .. } => None,
@@ -1501,6 +1512,10 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
+        model: ctx
+            .dynamic
+            .bootstrap_provider()
+            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider)),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3172,6 +3187,7 @@ fn dynamic_node_state_from_spec(
         workspace_path: None,
         provider: spec.provider,
         profile: spec.profile,
+        model: spec.model.clone(),
         permission_mode: inherited_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
@@ -3500,6 +3516,7 @@ fn create_dynamic_merge_node(
         workspace_path: None,
         provider: Some(group.merge.provider.clone()),
         profile: None,
+        model: None,
         permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -3557,6 +3574,7 @@ fn create_dynamic_acceptance_node(
         workspace_path: None,
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
+        model: None,
         permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -3723,6 +3741,11 @@ fn build_dynamic_worker_invocation(
             .permission_mode
             .clone()
             .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
+        model: node.model.clone().or_else(|| {
+            node.provider
+                .as_deref()
+                .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+        }),
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -3906,25 +3929,37 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
 }
 
 fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    let mut providers = ctx
-        .app
-        .managed_agents()
-        .keys()
-        .map(|agent_type| agent_type.as_str().to_string())
-        .collect::<Vec<_>>();
-    if let Some(provider) = ctx.dynamic.bootstrap_provider() {
-        providers.push(provider.to_string());
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
+            let model_label = model
+                .as_deref()
+                .map(|m| format!(" (model: {m})"))
+                .unwrap_or_default();
+            format!("- {provider}{model_label}")
+        }
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => {
+            if available_agents.is_empty() {
+                return "none".to_string();
+            }
+            available_agents
+                .iter()
+                .map(|agent_ref| {
+                    let model_label = agent_ref
+                        .model
+                        .as_deref()
+                        .map(|m| format!(" (model: {m})"))
+                        .unwrap_or_default();
+                    format!(
+                        "- {provider}{model_label}",
+                        provider = agent_ref.provider,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     }
-    providers.sort();
-    providers.dedup();
-    if providers.is_empty() {
-        return "none".to_string();
-    }
-    providers
-        .into_iter()
-        .map(|provider| format!("- {provider}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {

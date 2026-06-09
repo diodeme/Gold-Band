@@ -294,6 +294,7 @@ pub(crate) fn build_worker_invocation(
     let (
         profile,
         permission_mode,
+        model,
         output_contract,
         task_instruction,
         invocation_kind,
@@ -303,6 +304,7 @@ pub(crate) fn build_worker_invocation(
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
             worker.permission_mode.clone(),
+            worker.model.clone(),
             worker_output_contract(worker),
             worker_task_instruction(worker),
             InvocationKind::WorkerGeneric,
@@ -356,6 +358,7 @@ pub(crate) fn build_worker_invocation(
         task_instruction,
         session_mode,
         permission_mode,
+        model,
         continue_ref,
         resume_prompt,
         resume_prompt_id,

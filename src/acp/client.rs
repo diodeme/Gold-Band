@@ -112,7 +112,7 @@ pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: boo
         AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude, None)?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, "", false)?;
+        runtime.setup_session(cwd, None, None, None, "", false)?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
@@ -129,6 +129,7 @@ pub fn run_prompt(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    model: Option<String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
@@ -142,6 +143,7 @@ pub fn run_prompt(
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
+        model.as_deref(),
         &prompt.system_prompt,
         strict_continue,
     )?;
@@ -463,6 +465,7 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
+        model: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
     ) -> Result<bool> {
@@ -481,11 +484,7 @@ impl<'a> AcpRuntime<'a> {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.session_id = Some(session_id.to_string());
-                    if let Some(permission_mode) =
-                        permission_mode.filter(|value| !value.trim().is_empty())
-                    {
-                        self.apply_permission_mode(permission_mode)?;
-                    }
+                    self.apply_session_mode_options(permission_mode, model)?;
                     return Ok(true);
                 }
                 Err(err) => {
@@ -513,9 +512,7 @@ impl<'a> AcpRuntime<'a> {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.session_id = Some(session_id.to_string());
-        if let Some(permission_mode) = permission_mode.filter(|value| !value.trim().is_empty()) {
-            self.apply_permission_mode(permission_mode)?;
-        }
+        self.apply_session_mode_options(permission_mode, model)?;
         Ok(false)
     }
 
@@ -529,6 +526,22 @@ impl<'a> AcpRuntime<'a> {
         if let Some(config_options) = result.get("configOptions") {
             self.config_options = Some(config_options.clone());
         }
+    }
+
+    /// Applies the effective session mode: model takes priority, falls back to
+    /// permission_mode for backward compatibility.
+    fn apply_session_mode_options(
+        &mut self,
+        permission_mode: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let effective = model
+            .filter(|v| !v.trim().is_empty())
+            .or(permission_mode.filter(|v| !v.trim().is_empty()));
+        if let Some(value) = effective {
+            self.apply_permission_mode(value)?;
+        }
+        Ok(())
     }
 
     fn apply_permission_mode(&mut self, permission_mode: &str) -> Result<()> {

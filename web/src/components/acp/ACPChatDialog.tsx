@@ -87,6 +87,7 @@ import {
   getAcpSession,
   respondAcpPermission,
   sendAcpPrompt,
+  setAcpSessionModel,
   showArtifact,
   showAttachment,
   showConversationAttachment,
@@ -1849,7 +1850,27 @@ export const ACPChatDialog = forwardRef<
                           </PromptInputAction>
                         </PromptInputActions>
                       </div>
-                      <AcpSessionConfigBar session={effective} />
+                      <AcpSessionConfigBar
+                        session={effective}
+                        onModelChange={(modelId) => {
+                          setAcpSessionModel(
+                            taskId,
+                            runId,
+                            roundId,
+                            nodeId,
+                            attemptId,
+                            modelId,
+                            outerNodeId,
+                            outerAttemptId,
+                          )
+                            .then((updated) => {
+                              if (updated) applySessionUpdate(updated);
+                            })
+                            .catch((error) =>
+                              console.error('Failed to set ACP session model:', error),
+                            );
+                        }}
+                      />
                     </PromptInput>
                   </div>
                 )}
@@ -2156,35 +2177,74 @@ function AcpErrorBanner({ reason }: { reason: string }) {
   );
 }
 
-function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
+function AcpSessionConfigBar({
+  session,
+  onModelChange,
+}: {
+  session: AcpSessionVm;
+  onModelChange?: (modelId: string) => void;
+}) {
   const { t } = useTranslation();
-  const model =
-    session.config?.currentModelName ?? session.config?.currentModelId;
+  const currentModelId = session.config?.currentModelId ?? null;
+  const currentModelName = session.config?.currentModelName ?? null;
   const mode = session.config?.currentModeName ?? session.config?.currentModeId;
 
-  if (!model && !mode) return null;
+  const availableModels: { id: string; name: string }[] = useMemo(() => {
+    const raw = session.config?.models as Record<string, unknown> | null | undefined;
+    if (!raw) return [];
+    const list = raw.availableModels ?? raw.availableModes;
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (m: unknown): m is { modelId?: string; id?: string; name?: string } =>
+          typeof m === 'object' && m !== null && !Array.isArray(m),
+      )
+      .map((m) => {
+        const id = typeof m.modelId === 'string' ? m.modelId : typeof m.id === 'string' ? m.id : '';
+        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
+        return { id, name };
+      })
+      .filter((m) => m.id);
+  }, [session.config?.models]);
+
+  const handleModelSelect = useCallback(
+    (modelId: string) => {
+      onModelChange?.(modelId);
+    },
+    [onModelChange],
+  );
+
+  if (!currentModelId && !mode) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
-      {model ? (
-        <Badge
-          variant="outline"
-          className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal"
-        >
-          <span className="shrink-0 text-muted-foreground">
-            {t("acp.currentModel")}
-          </span>
-          <span className="min-w-0 truncate text-foreground">{model}</span>
+      {availableModels.length > 1 ? (
+        <Select value={currentModelId ?? ''} onValueChange={handleModelSelect}>
+          <SelectTrigger className="h-auto min-h-0 gap-1 border-0 bg-transparent px-1 py-0 text-xs shadow-none ring-0 focus:ring-0">
+            <span className="shrink-0 text-muted-foreground">
+              {t('acp.currentModel')}
+            </span>
+            <span className="min-w-0 truncate text-foreground">
+              {currentModelName ?? currentModelId}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {availableModels.map((m) => (
+              <SelectItem value={m.id} key={m.id}>
+                {m.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : currentModelId ? (
+        <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+          <span className="shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
+          <span className="min-w-0 truncate text-foreground">{currentModelName ?? currentModelId}</span>
         </Badge>
       ) : null}
       {mode ? (
-        <Badge
-          variant="outline"
-          className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal"
-        >
-          <span className="shrink-0 text-muted-foreground">
-            {t("acp.permissionMode")}
-          </span>
+        <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+          <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
           <span className="min-w-0 truncate text-foreground">{mode}</span>
         </Badge>
       ) : null}

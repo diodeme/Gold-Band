@@ -119,6 +119,8 @@ pub struct DynamicNodeState {
     pub profile: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub session_mode: SessionMode,
     pub continue_from_node_id: Option<String>,
     pub workflow_id: Option<String>,
@@ -211,6 +213,8 @@ pub struct DynamicNodeSpec {
     pub task: String,
     pub provider: Option<String>,
     pub profile: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
     #[serde(default)]

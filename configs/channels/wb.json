@@ -14,7 +14,7 @@
   "releaseBaseUrl": "http://maling.weoa.com/api/file/download",
   "metricsEnabled": true,
   "metricsToggleLocked": true,
-  "heartbeatEndpoint": "http://10.55.99.210:8095/api/client-report/heartbeat",
-  "nodeMetricsEndpoint": "http://10.55.99.210:8095/api/client-report/metrics/batch",
+  "heartbeatEndpoint": "http://maling.weoa.com/api/client-report/heartbeat",
+  "nodeMetricsEndpoint": "http://maling.weoa.com/api/client-report/metrics/batch",
   "metricsApiKey": "hMfUAuGbxO1mNYruf80z00O24GmoSga2eAxlS_bK7zQ"
 }

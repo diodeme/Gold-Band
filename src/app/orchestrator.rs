@@ -4920,10 +4920,20 @@ fn drive_from_node_with_initial_session(
             let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
             let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
                 crate::acp::events::read_session_tokens(&session_paths.session);
+            let seq = round.trace.iter()
+                .filter(|t| t.node_id == node.node_id)
+                .map(|t| t.sequence)
+                .last();
+            let agent_type = node.resolved_config.get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             run.last_executed_node = Some(crate::runtime::LastExecutedNode {
                 node_id: node.node_id.clone(),
                 uuid: node.uuid.clone().unwrap_or_default(),
+                round_uuid: round.uuid.clone().unwrap_or_default(),
                 node_name,
+                seq,
+                agent_type,
                 status: status_str.to_string(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),
@@ -4981,7 +4991,10 @@ fn drive_from_node_with_initial_session(
             run.last_executed_node = Some(crate::runtime::LastExecutedNode {
                 node_id: node.node_id.clone(),
                 uuid: node.uuid.clone().unwrap_or_default(),
+                round_uuid: round.uuid.clone().unwrap_or_default(),
                 node_name: node_name.clone(),
+                seq,
+                agent_type: agent_type.clone(),
                 status: status_str.to_string(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),

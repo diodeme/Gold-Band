@@ -10,7 +10,13 @@ use serde::{Deserialize, Serialize};
 pub struct LastExecutedNode {
     pub node_id: String,
     pub uuid: String,
+    #[serde(default)]
+    pub round_uuid: String,
     pub node_name: String,
+    #[serde(default)]
+    pub seq: Option<u32>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
     pub status: String,
     pub started_at: String,
     pub finished_at: Option<String>,

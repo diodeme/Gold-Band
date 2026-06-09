@@ -77,7 +77,10 @@ fn run_state_with_last_executed_node_serde() {
         last_executed_node: Some(LastExecutedNode {
             node_id: "n1".into(),
             uuid: "u1".into(),
+            round_uuid: "r1".into(),
             node_name: "测试2".into(),
+            seq: Some(1),
+            agent_type: Some("claude-acp".into()),
             status: "SUCCESS".into(),
             started_at: "100Z".into(),
             finished_at: Some("200Z".into()),
@@ -166,7 +169,10 @@ fn last_executed_node_serde_roundtrip() {
     let pred = LastExecutedNode {
         node_id: "n1".into(),
         uuid: "u1".into(),
+        round_uuid: "r1".into(),
         node_name: "测试".into(),
+        seq: Some(1),
+        agent_type: Some("claude-acp".into()),
         status: "SUCCESS".into(),
         started_at: "100Z".into(),
         finished_at: Some("200Z".into()),

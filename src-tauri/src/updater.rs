@@ -105,6 +105,10 @@ pub fn start_update_polling<R: Runtime>(app: AppHandle<R>) {
         tokio::time::sleep(Duration::from_secs(90)).await;
         loop {
             let _ = check_update(&app, true).await;
+            // 尝试后台静默下载关键更新
+            if let Err(e) = try_background_download(&app).await {
+                eprintln!("Background critical download failed: {e}");
+            }
             tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_MINUTES * 60)).await;
         }
     });
@@ -244,7 +248,7 @@ fn current_timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-// ── Silent / startup critical update ──
+// ── Silent / background critical update ──
 
 /// latest.json 顶层结构（仅取需要的字段）
 #[derive(Debug, Deserialize)]
@@ -254,27 +258,11 @@ struct LatestManifest {
     critical: bool,
 }
 
-/// 启动时关键更新检查结果，发送给前端 splash 画面
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartupCheckResult {
-    pub critical: bool,
-    pub error: Option<String>,
-}
-
 /// HTTP GET latest.json，返回解析后的 manifest
 async fn fetch_manifest(endpoint: &Url) -> Result<LatestManifest> {
     let response = reqwest::get(endpoint.as_str().to_owned()).await?;
     let manifest: LatestManifest = response.json().await?;
     Ok(manifest)
-}
-
-/// 持久化结果到 DesktopState 并 emit 事件（避免竞态）
-fn emit_startup_check<R: Runtime>(app: &AppHandle<R>, result: &StartupCheckResult) {
-    if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.set_startup_check(result.clone());
-    }
-    let _ = app.emit("gold-band://startup-update-check", result);
 }
 
 /// 获取当前 RuntimeConfig（从 DesktopState 中读取）
@@ -284,80 +272,7 @@ fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
     Some(context.config)
 }
 
-/// 启动时关键更新检查 —— 在 splash 阶段执行
-///
-/// - 渠道未开启静默更新：立即通知前端放行
-/// - 网络超时/错误：降级放行，不阻塞启动
-/// - critical = false 或已是最新版本：放行，后续由 start_update_polling 处理普通更新
-/// - critical = true 且有新版本：保持 splash，自动下载安装并重启
-pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-    let channel = current_channel_config();
-    if !channel.silent_update_enabled {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    // 保证 splash 至少展示一小段时间，避免闪烁
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-
-    // 解析 endpoint
-    let settings = match get_runtime_config(app) {
-        Some(config) => updater_settings(&config),
-        None => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-    let endpoint = match Url::parse(&settings.effective_url) {
-        Ok(url) => url,
-        Err(_) => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-
-    // 获取 latest.json manifest（10s 超时，超时即降级）
-    let manifest = match tokio::time::timeout(
-        Duration::from_secs(10),
-        fetch_manifest(&endpoint),
-    )
-    .await
-    {
-        Ok(Ok(manifest)) => manifest,
-        _ => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-
-    // 已是最新版本 → 放行（防止 latest.json 版本号不匹配导致的死循环）
-    let current_version = app.package_info().version.to_string();
-    if !version_is_newer(&manifest.version, &current_version) {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    if !manifest.critical {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    emit_startup_check(app, &StartupCheckResult { critical: true, error: None });
-
-    // 自动下载并安装（复用现有链路，download-progress 事件正常发送）
-    if let Err(e) = download_and_install_update(app).await {
-        eprintln!("Startup critical update failed: {e}");
-        emit_startup_check(app, &StartupCheckResult {
-            critical: false,
-            error: Some(format!("Update install failed: {e}")),
-        });
-    }
-
-    Ok(())
-}
-
-/// 简单语义版本比较：b 是否比 a 更新
-/// 仅比较 major.minor.patch，忽略 pre-release 和 build metadata
+/// 简单语义版本比较：latest 是否比 current 更新
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse_trio = |v: &str| -> Option<(u32, u32, u32)> {
         let digits = v.split(&['-', '+']).next()?;
@@ -371,6 +286,56 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     let Some((a_maj, a_min, a_pat)) = parse_trio(latest) else { return false };
     let Some((b_maj, b_min, b_pat)) = parse_trio(current) else { return false };
     (a_maj, a_min, a_pat) > (b_maj, b_min, b_pat)
+}
+
+/// 后台检测关键更新并静默下载，不安装
+pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    let channel = current_channel_config();
+    if !channel.silent_update_enabled {
+        return Ok(());
+    }
+
+    let updater = build_updater(app)?;
+    let Some(update) = updater.check().await? else {
+        return Ok(());
+    };
+
+    // 版本比较
+    let current = app.package_info().version.to_string();
+    if !version_is_newer(&update.version, &current) {
+        return Ok(());
+    }
+
+    // 读取 critical 标记
+    let settings = match get_runtime_config(app) {
+        Some(config) => updater_settings(&config),
+        None => return Ok(()),
+    };
+    let endpoint = Url::parse(&settings.effective_url)?;
+    let manifest = fetch_manifest(&endpoint).await?;
+    if !manifest.critical {
+        return Ok(());
+    }
+
+    // 后台静默下载
+    let bytes = update.download(|_chunk, _total| {}, || {}).await?;
+
+    // 存储到 DesktopState，等待退出时安装
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.store_pending_update(bytes);
+    }
+
+    Ok(())
+}
+
+/// 安装已下载的更新包，不下载、不 restart
+pub async fn install_downloaded_update<R: Runtime>(app: &AppHandle<R>, bytes: Vec<u8>) -> Result<()> {
+    let updater = build_updater(app)?;
+    let Some(update) = updater.check().await.context("updater.check-failed")? else {
+        return Err(anyhow!("updater.no-update"));
+    };
+    update.install(bytes).context("updater.install-failed")?;
+    Ok(())
 }
 
 #[cfg(test)]

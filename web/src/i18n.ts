@@ -765,6 +765,16 @@ const resources = {
           tooltip: '如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude',
           notFound: '未找到本地 Claude，将使用 SDK 内置版本',
         },
+        metrics: {
+          title: '指标上报',
+          enable: '开启指标上报',
+          enableDescription: '开启后，客户端会定时上报心跳和节点执行指标到配置的服务器。',
+          heartbeatEndpoint: '心跳接口地址',
+          nodeMetricsEndpoint: '节点详情接口地址',
+          apiKey: 'API Key',
+          apiKeySet: '(已设置)',
+          save: '保存',
+        },
         updater: {
           title: '更新',
           currentUrl: '更新地址',
@@ -1646,7 +1656,17 @@ const resources = {
           tooltip: 'If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.',
           notFound: 'Local Claude not found, using SDK bundled version',
         },
-        updater: {
+        metrics: {
+          title: 'Metrics Reporting',
+          enable: 'Enable metrics reporting',
+          enableDescription: 'When enabled, the client periodically reports heartbeat and node execution metrics to the configured server.',
+          heartbeatEndpoint: 'Heartbeat endpoint',
+          nodeMetricsEndpoint: 'Node metrics endpoint',
+          apiKey: 'API Key',
+          apiKeySet: '(Already set)',
+          save: 'Save',
+        },
+      updater: {
           title: 'Updates',
           currentUrl: 'Update URL',
           editUrl: 'Edit URL',

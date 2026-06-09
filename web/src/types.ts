@@ -25,6 +25,14 @@ export interface UpdaterSettingsVm {
   pollIntervalMinutes: number;
 }
 
+export interface MetricsSettingsVm {
+  enabled: boolean;
+  toggleLocked: boolean;
+  heartbeatEndpoint: string | null;
+  nodeMetricsEndpoint: string | null;
+  apiKeySet: boolean;
+}
+
 export interface UpdateInfoVm {
   version: string;
   currentVersion: string;
@@ -51,6 +59,7 @@ export interface AppBootstrapVm {
   recentWorkspaces: string[];
   preferences: PreferencesVm;
   updaterSettings: UpdaterSettingsVm;
+  metricsSettings: MetricsSettingsVm;
   updateStatus: UpdateStatusVm;
   updateBadges: UpdateBadgeStateVm;
   persistedAvailableUpdate?: UpdateInfoVm | null;

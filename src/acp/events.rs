@@ -126,6 +126,88 @@ impl AcpAttemptPaths {
     }
 }
 
+/// Read token totals from the ACP session metadata file and timeline.
+/// First reads `acp.session.json`, then scans `acp.timeline.jsonl` for usage events
+/// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
+pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
+    let mut input = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut total = 0u64;
+
+    // 1. Read acp.snapshot.json (acp.session.json may not exist)
+    let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
+    if let Some(ref sp) = snapshot_path {
+        if let Ok(contents) = std::fs::read_to_string(sp.as_std_path()) {
+            if let Ok(meta) = serde_json::from_str::<AcpSessionMetadata>(&contents) {
+                input = meta.input_tokens.unwrap_or(0);
+                output = meta.output_tokens.unwrap_or(0);
+                cache_read = meta.cached_read_tokens.unwrap_or(0);
+                total = meta.total_tokens.unwrap_or(0);
+                eprintln!("[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+            }
+        }
+    }
+
+    // 2. Scan timeline for usage events (may have more up-to-date data)
+    let timeline_path = session_path.parent().map(|p| p.join("acp.timeline.jsonl"));
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Ok(line_val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    // Unwrap AcpTimelineItem wrapper if present
+                    let event = line_val.get("item").unwrap_or(&line_val);
+                    let kind = event.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "usageUpdate" {
+                        if let Some(v) = event.get("inputTokens").and_then(|v| v.as_u64()) {
+                            input = input.max(v);
+                        }
+                        if let Some(v) = event.get("outputTokens").and_then(|v| v.as_u64()) {
+                            output = output.max(v);
+                        }
+                        if let Some(v) = event.get("cachedReadTokens").and_then(|v| v.as_u64()) {
+                            cache_read = cache_read.max(v);
+                        }
+                        if let Some(v) = event.get("totalTokens").and_then(|v| v.as_u64()) {
+                            total = total.max(v);
+                        }
+                    }
+                }
+            }
+            eprintln!("[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+        } else {
+            eprintln!("[metrics] failed to open timeline at {}", tp.as_str());
+        }
+    } else {
+        eprintln!("[metrics] no timeline file found for {}", session_path.as_str());
+    }
+
+    // 3. Debug: list files in attempt dir and show first timeline line
+    let dir = session_path.parent();
+    if let Some(d) = dir {
+        if let Ok(entries) = std::fs::read_dir(d.as_std_path()) {
+            eprintln!("[metrics] attempt_dir files:");
+            for e in entries.flatten() {
+                eprintln!("[metrics]   {}", e.file_name().to_string_lossy());
+            }
+        }
+    }
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for (i, line) in reader.lines().enumerate() {
+                if i >= 3 { break; }
+                if let Ok(l) = line {
+                    eprintln!("[metrics] timeline[{}]: {}", i, &l[..l.len().min(200)]);
+                }
+            }
+        }
+    }
+
+    (input, output, cache_read, total)
+}
+
 pub fn current_timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

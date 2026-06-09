@@ -36,6 +36,26 @@ pub(crate) fn next_run_id(runs_dir: &Utf8Path) -> Result<String> {
     Ok(format!("run-{max:03}", max = max_id + 1))
 }
 
+pub(crate) fn next_round_id(rounds_dir: &Utf8Path) -> Result<String> {
+    let mut max_id = 0_u32;
+    if rounds_dir.exists() {
+        for entry in fs::read_dir(rounds_dir.as_std_path())? {
+            let entry = entry?;
+            if let Some(name) = entry.file_name().to_str()
+                && let Some(number) = name.strip_prefix("round-")
+                && let Ok(parsed) = number.parse::<u32>()
+            {
+                max_id = max_id.max(parsed);
+            }
+        }
+    }
+    Ok(format!("round-{max:03}", max = max_id + 1))
+}
+
+pub(crate) fn generate_uuid() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
 pub(crate) fn next_attempt_id(node_dir: &Utf8Path) -> Result<String> {
     let next = latest_attempt_id(node_dir)?
         .and_then(|value| {

@@ -292,6 +292,10 @@ pub struct SettingsConfig {
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
+    pub desktop_metrics_enabled: Option<bool>,
+    pub desktop_heartbeat_endpoint: Option<String>,
+    pub desktop_node_metrics_endpoint: Option<String>,
+    pub desktop_metrics_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -330,6 +334,10 @@ pub struct RuntimeConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
+    pub desktop_metrics_enabled: bool,
+    pub desktop_heartbeat_endpoint: Option<String>,
+    pub desktop_node_metrics_endpoint: Option<String>,
+    pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
 }
@@ -356,6 +364,10 @@ impl Default for RuntimeConfig {
             desktop_available_update: None,
             agents,
             use_local_claude: false,
+            desktop_metrics_enabled: false,
+            desktop_heartbeat_endpoint: None,
+            desktop_node_metrics_endpoint: None,
+            desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
         }
@@ -395,6 +407,12 @@ impl RuntimeConfig {
         if let Some(use_local_claude) = settings.use_local_claude {
             self.use_local_claude = use_local_claude;
         }
+        if let Some(desktop_metrics_enabled) = settings.desktop_metrics_enabled {
+            self.desktop_metrics_enabled = desktop_metrics_enabled;
+        }
+        self.desktop_heartbeat_endpoint = settings.desktop_heartbeat_endpoint.clone();
+        self.desktop_node_metrics_endpoint = settings.desktop_node_metrics_endpoint.clone();
+        self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
         self
     }
 
@@ -712,6 +730,7 @@ pub enum ProfileSource {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedProfileRef {
     pub name: String,
+    pub display_name: String,
     pub source: ProfileSource,
     pub path: String,
 }

@@ -13,6 +13,11 @@ struct ChannelConfig {
     updater_endpoint: String,
     updater_public_key: String,
     allow_http_updater: bool,
+    metrics_enabled: bool,
+    metrics_toggle_locked: bool,
+    heartbeat_endpoint: String,
+    node_metrics_endpoint: String,
+    metrics_api_key: String,
 }
 
 fn main() {
@@ -49,6 +54,11 @@ fn main() {
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_ENDPOINT={}", config.updater_endpoint);
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_PUBLIC_KEY={}", config.updater_public_key);
     println!("cargo:rustc-env=GOLD_BAND_ALLOW_HTTP_UPDATER={}", config.allow_http_updater);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_ENABLED={}", config.metrics_enabled);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_TOGGLE_LOCKED={}", config.metrics_toggle_locked);
+    println!("cargo:rustc-env=GOLD_BAND_HEARTBEAT_ENDPOINT={}", config.heartbeat_endpoint);
+    println!("cargo:rustc-env=GOLD_BAND_NODE_METRICS_ENDPOINT={}", config.node_metrics_endpoint);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_API_KEY={}", config.metrics_api_key);
 
     tauri_build::build()
 }

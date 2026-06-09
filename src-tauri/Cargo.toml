@@ -23,3 +23,6 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["time"] }
 url = "2"
+reqwest = { version = "0.12", features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"

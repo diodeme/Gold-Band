@@ -4,6 +4,7 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod i18n;
+mod metrics;
 mod state;
 mod updater;
 mod view_models;
@@ -14,11 +15,11 @@ use commands::{
     cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_profile, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
     get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
-    check_update_manual, download_and_install_update, get_run_detail, get_system_fonts,
+    check_update_manual, download_and_install_update, get_metrics_settings, get_run_detail, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
     dismiss_update_announcement, kill_run, mark_settings_advanced_update_seen, open_in_file_manager,
     mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
-    save_task_workflow, save_updater_settings,
+    save_metrics_settings, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_workspace, send_acp_prompt, show_artifact,
     show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
@@ -32,10 +33,12 @@ use commands_conversation::{
     save_desktop_ui_mode, search_conversation_tasks, sync_conversation_workspace,
     unpin_conversation, update_task_metadata, validate_conversation_create,
 };
+use gold_band::observability::init_tracing;
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
 use updater::start_update_polling;
+use metrics::start_heartbeat_polling;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
@@ -59,6 +62,7 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                init_tracing(&paths, &ctx.config, true);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
@@ -70,6 +74,7 @@ fn run() -> anyhow::Result<()> {
                 }
             });
             start_update_polling(app.handle().clone());
+            start_heartbeat_polling(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

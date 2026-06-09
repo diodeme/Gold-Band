@@ -731,4 +731,72 @@ mod tests {
             Some(true)
         );
     }
+
+    // ── read_session_tokens tests ──
+    use tempfile::TempDir;
+    use std::io::Write as _;
+
+    #[test]
+    fn tokens_from_snapshot() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700
+        }"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 1000);
+        assert_eq!(o, 500);
+        assert_eq!(c, 200);
+        assert_eq!(t, 1700);
+    }
+
+    #[test]
+    fn tokens_no_files_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!((i, o, c, t), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn tokens_from_timeline_usage_update_camelcase() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":99,"outputTokens":33,"totalTokens":132}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 99);
+        assert_eq!(o, 33);
+        assert_eq!(t, 132);
+    }
+
+    #[test]
+    fn tokens_timeline_takes_max_across_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":100,"outputTokens":10,"totalTokens":110}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":500,"outputTokens":20,"totalTokens":520}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":300,"outputTokens":5,"totalTokens":305}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 500);
+        assert_eq!(o, 20);
+        assert_eq!(t, 520);
+    }
+
+    #[test]
+    fn tokens_ignores_non_usage_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"availableCommands"}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":77,"outputTokens":7,"totalTokens":84}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 77);
+        assert_eq!(o, 7);
+        assert_eq!(t, 84);
+    }
 }

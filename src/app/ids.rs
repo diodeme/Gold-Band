@@ -100,3 +100,41 @@ pub(crate) fn now_rfc3339_like() -> String {
         .unwrap_or_default();
     format!("{secs}Z")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn generate_uuid_length_32() {
+        let uuid = generate_uuid();
+        assert_eq!(uuid.len(), 32);
+        assert!(uuid.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn generate_uuid_100_unique() {
+        let mut ids: Vec<String> = (0..100).map(|_| generate_uuid()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn next_round_id_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let p = camino::Utf8Path::from_path(dir.path()).unwrap();
+        assert_eq!(next_round_id(p).unwrap(), "round-001");
+    }
+
+    #[test]
+    fn next_round_id_with_existing() {
+        let dir = TempDir::new().unwrap();
+        let p = camino::Utf8Path::from_path(dir.path()).unwrap();
+        std::fs::create_dir_all(p.join("round-001")).unwrap();
+        std::fs::create_dir_all(p.join("round-002")).unwrap();
+        std::fs::create_dir_all(p.join("round-005")).unwrap();
+        assert_eq!(next_round_id(p).unwrap(), "round-006");
+    }
+}

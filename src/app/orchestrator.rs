@@ -1342,6 +1342,7 @@ fn dynamic_runtime_context(
         node_dir,
         attempt_dir,
         attachments_dir,
+        task_inputs_dir: None,
     }
 }
 
@@ -3740,6 +3741,7 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
+        input_attachment_paths: Vec::new(),
     })
 }
 

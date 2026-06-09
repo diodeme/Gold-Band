@@ -32,6 +32,7 @@ use commands_conversation::{
     save_conversation_run_mode, save_desktop_ui_mode, search_conversation_tasks,
     show_conversation_attachment, switch_conversation_session, sync_conversation_workspace,
     unpin_conversation, update_task_metadata, validate_conversation_create,
+    get_supported_attachment_extensions,
 };
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
@@ -161,6 +162,7 @@ fn run() -> anyhow::Result<()> {
             remove_conversation_workspace,
             sync_conversation_workspace,
             save_conversation_preference,
+            get_supported_attachment_extensions,
             open_in_file_manager,
         ])
         .run(tauri::generate_context!())

@@ -257,12 +257,25 @@ fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) ->
 }
 
 fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+    let mut prompt_blocks: Vec<Value> = Vec::new();
+
+    // Add attachment content blocks first (images, resources)
+    for block in &prompt.content_blocks {
+        prompt_blocks.push(serde_json::to_value(block).unwrap_or_default());
+    }
+
+    // Add the text block with user prompt
+    let text = session_prompt_text(provider_id, prompt);
+    if !text.is_empty() {
+        prompt_blocks.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+
     json!({
         "sessionId": session_id,
-        "prompt": [{
-            "type": "text",
-            "text": session_prompt_text(provider_id, prompt),
-        }]
+        "prompt": prompt_blocks,
     })
 }
 
@@ -706,6 +719,7 @@ impl<'a> AcpRuntime<'a> {
             prompt.user_prompt.clone(),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
+            prompt.attachment_metas.clone(),
         );
         self.persist_event(&user_event)?;
         let result = self.request_with_progress(
@@ -1438,6 +1452,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         let text = session_prompt_text("codex-acp", &prompt);
@@ -1456,6 +1472,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");

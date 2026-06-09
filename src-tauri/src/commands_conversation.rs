@@ -512,7 +512,7 @@ pub fn show_conversation_attachment(
     let app = state.app().map_err(command_error)?;
     let path = app.paths.task_dir(&task_id)
         .join("authoring")
-        .join("attachments")
+        .join("inputs")
         .join(&name);
     if !path.exists() {
         return Err(CommandErrorVm::new(
@@ -574,4 +574,12 @@ fn base64_encode(bytes: &[u8]) -> String {
         out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { b'=' as char });
     }
     out
+}
+
+#[tauri::command]
+pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
+    Ok(gold_band::provider::supported_attachment_extensions()
+        .into_iter()
+        .map(str::to_string)
+        .collect())
 }

@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from '@/lib/attachments';
 
 interface AttachmentItem {
   id: string;
@@ -25,28 +26,6 @@ function formatSize(bytes: number): string {
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const size = bytes / 1024 ** i;
   return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[i]}`;
-}
-
-function isImageType(mime: string): boolean {
-  return mime.startsWith('image/') && !mime.includes('svg');
-}
-
-const ALLOWED_ATTACHMENT_EXTS = new Set([
-  'txt', 'md', 'json', 'jsonl', 'csv',
-  'png', 'jpg', 'jpeg', 'webp',
-  'rs', 'ts', 'tsx', 'js', 'jsx', 'py',
-  'go', 'java', 'c', 'cpp', 'h', 'hpp',
-  'html', 'css', 'xml', 'yaml', 'yml', 'toml',
-]);
-
-function attachmentExt(name: string): string {
-  const dot = name.lastIndexOf('.');
-  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
-}
-
-function isAllowedAttachment(name: string): boolean {
-  const ext = attachmentExt(name);
-  return ext !== '' && ALLOWED_ATTACHMENT_EXTS.has(ext);
 }
 
 function hasFileTransfer(dataTransfer: DataTransfer | null): boolean {
@@ -105,6 +84,9 @@ export function ConversationComposer({
   const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropCounterRef = useRef(0);
+  const allowedExts = useAttachmentExtensions();
+  const MAX_ATTACHMENT_COUNT = 20;
+  const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024;
 
   const isAuto = runMode.mode === 'auto';
   const canSubmit = content.trim().length > 0 && !busy;
@@ -115,13 +97,14 @@ export function ConversationComposer({
   const addFiles = useCallback((files: FileList | File[]) => {
     const items: AttachmentItem[] = [];
     const rejected: string[] = [];
+    let err: string | null = null;
     for (const file of files) {
-      if (!isAllowedAttachment(file.name)) {
+      if (allowedExts && !isAllowedAttachment(file.name, allowedExts)) {
         rejected.push(file.name);
         continue;
       }
       const mime = file.type || 'application/octet-stream';
-      const previewUrl = isImageType(mime) ? URL.createObjectURL(file) : undefined;
+      const previewUrl = isImageMime(mime) ? URL.createObjectURL(file) : undefined;
       items.push({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: file.name,
@@ -133,12 +116,29 @@ export function ConversationComposer({
       });
     }
     if (rejected.length > 0) {
-      setFileError(t('conversation.attachmentUnsupportedFile', { names: rejected.join(', ') }));
+      err = t('conversation.attachmentUnsupportedFile', { names: rejected.join(', ') });
+    }
+    if (!err) {
+      const total = attachments.length + items.length;
+      if (total > MAX_ATTACHMENT_COUNT) {
+        err = t('conversation.attachmentCountExceeded', { max: MAX_ATTACHMENT_COUNT });
+        items.length = Math.max(0, MAX_ATTACHMENT_COUNT - attachments.length);
+      }
+    }
+    if (!err) {
+      const totalSize = attachments.reduce((s, a) => s + a.size, 0)
+        + items.reduce((s, a) => s + a.size, 0);
+      if (totalSize > MAX_ATTACHMENT_TOTAL) {
+        err = t('conversation.attachmentTotalTooLarge');
+      }
+    }
+    if (err) {
+      setFileError(err);
       setTimeout(() => setFileError(null), 4000);
     }
     setAttachments((prev) => [...prev, ...items]);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [t]);
+  }, [t, attachments, allowedExts]);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => {
@@ -258,7 +258,7 @@ export function ConversationComposer({
   };
 
   const handlePreviewAttachment = useCallback((item: AttachmentItem) => {
-    if (isImageType(item.type)) {
+    if (isImageMime(item.type)) {
       setPreviewImage(item);
     } else if (item.file) {
       const reader = new FileReader();
@@ -475,7 +475,7 @@ export function ConversationComposer({
 }
 
 function AttachmentChip({ item, onRemove, onPreview }: { item: AttachmentItem; onRemove: () => void; onPreview?: () => void }) {
-  const isImage = isImageType(item.type);
+  const isImage = isImageMime(item.type);
   const Icon = isImage ? ImageIcon : FileText;
 
   return (

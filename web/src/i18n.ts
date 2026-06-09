@@ -820,6 +820,8 @@ const resources = {
         toggleToWorkbench: '切换到工作台',
         toggleToConversation: '切换到会话',
         attachmentUnsupportedFile: '不支持的文件类型: {{names}}',
+        attachmentCountExceeded: '最多支持 {{max}} 个附件',
+        attachmentTotalTooLarge: '附件总大小超过限制',
         validation: {
           'content.required': '内容不能为空',
           'agent.required': 'AUTO 模式需要选择 Agent',
@@ -1725,6 +1727,8 @@ const resources = {
         toggleToWorkbench: 'Switch to Workbench',
         toggleToConversation: 'Switch to Conversation',
         attachmentUnsupportedFile: 'Unsupported file type: {{names}}',
+        attachmentCountExceeded: 'Maximum {{max}} attachments allowed',
+        attachmentTotalTooLarge: 'Total attachment size exceeds limit',
         validation: {
           'content.required': 'Content is required',
           'agent.required': 'Agent is required for AUTO mode',

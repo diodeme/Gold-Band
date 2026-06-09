@@ -92,7 +92,7 @@ export interface RuntimeApi {
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
-  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
   respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
@@ -130,6 +130,7 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   pickAttachmentFiles(): Promise<Array<{ path: string; name: string; size: number }>>;
+  getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
 }
 

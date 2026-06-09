@@ -674,6 +674,13 @@ export interface AssetItemVm {
   attemptId: string;
 }
 
+export interface AttachmentMetaVm {
+  name: string;
+  path: string;
+  type: string;
+  size: number;
+}
+
 export interface LogEntryVm {
   id: string;
   timestamp: string;

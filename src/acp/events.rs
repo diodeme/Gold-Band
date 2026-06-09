@@ -10,6 +10,16 @@ use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AttachmentMeta {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpSessionMetadata {
     pub adapter_id: String,
     pub adapter_display_name: String,
@@ -348,6 +358,7 @@ pub fn user_prompt_event(
     content: String,
     prompt_id: Option<String>,
     hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
@@ -359,6 +370,9 @@ pub fn user_prompt_event(
     if hidden_from_chat {
         raw["hiddenFromChat"] = Value::Bool(true);
         raw["reason"] = Value::String("invalidOutputRepair".to_string());
+    }
+    if !attachments.is_empty() {
+        raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -607,6 +621,7 @@ mod tests {
             "继续".to_string(),
             Some("prompt-123".to_string()),
             false,
+            Vec::new(),
         );
         assert_eq!(
             event
@@ -626,6 +641,7 @@ mod tests {
             "继续".to_string(),
             None,
             false,
+            Vec::new(),
         );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
@@ -638,6 +654,7 @@ mod tests {
             "repair".to_string(),
             None,
             true,
+            Vec::new(),
         );
         assert_eq!(event.content, None);
         assert_eq!(

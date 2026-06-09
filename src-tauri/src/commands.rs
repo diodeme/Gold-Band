@@ -756,6 +756,7 @@ pub async fn send_acp_prompt(
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
     let task_id_for_emit = task_id.clone();
@@ -810,7 +811,7 @@ pub async fn send_acp_prompt(
             } else {
                 (SessionMode::New, None)
             };
-            let prompt_bundle = app
+            let mut prompt_bundle = app
                 .dynamic_acp_prompt_bundle_for_attempt(
                     &task_id,
                     &run_id,
@@ -824,6 +825,25 @@ pub async fn send_acp_prompt(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            // Resolve attachments
+            if let Some(ref paths) = attachment_paths {
+                if !paths.is_empty() {
+                    let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
+                    let _ = std::fs::create_dir_all(&user_inputs_dir);
+                    if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs") {
+                        // Copy files to user-inputs/
+                        for (r, src) in resolved.iter().zip(paths.iter()) {
+                            let src_path = std::path::Path::new(src);
+                            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
+                                let dest = std::path::Path::new(&user_inputs_dir).join(name);
+                                let _ = std::fs::copy(src_path, &dest);
+                            }
+                            prompt_bundle.attachment_metas.push(r.meta.clone());
+                            prompt_bundle.content_blocks.push(r.block.clone());
+                        }
+                    }
+                }
+            }
             let app_handle_for_live = app_handle_for_task.clone();
             let task_id_for_live = task_id.clone();
             let run_id_for_live = run_id.clone();
@@ -900,7 +920,7 @@ pub async fn send_acp_prompt(
         } else {
             (SessionMode::New, None)
         };
-        let prompt_bundle = app
+        let mut prompt_bundle = app
             .acp_prompt_bundle_for_attempt(
                 &task_id,
                 &run_id,
@@ -912,6 +932,24 @@ pub async fn send_acp_prompt(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        // Resolve attachments
+        if let Some(ref paths) = attachment_paths {
+            if !paths.is_empty() {
+                let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
+                let _ = std::fs::create_dir_all(&user_inputs_dir);
+                if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs") {
+                    for (r, src) in resolved.iter().zip(paths.iter()) {
+                        let src_path = std::path::Path::new(src);
+                        if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
+                            let dest = std::path::Path::new(&user_inputs_dir).join(name);
+                            let _ = std::fs::copy(src_path, &dest);
+                        }
+                        prompt_bundle.attachment_metas.push(r.meta.clone());
+                        prompt_bundle.content_blocks.push(r.block.clone());
+                    }
+                }
+            }
+        }
         let app_handle_for_live = app_handle_for_task.clone();
         let task_id_for_live = task_id.clone();
         let run_id_for_live = run_id.clone();

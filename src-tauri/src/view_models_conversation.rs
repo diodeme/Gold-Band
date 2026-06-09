@@ -912,7 +912,7 @@ fn missing_item(code: &str, label: &str, recovery_path: &str) -> ConversationMis
 // ── Input attachments (task-level authoring) ──
 
 fn input_attachments_vm(app: &App, task_id: &str) -> Vec<AssetItemVm> {
-    let dir = app.paths.task_dir(task_id).join("authoring").join("attachments");
+    let dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     if !dir.exists() {
         return Vec::new();
     }
@@ -1075,7 +1075,7 @@ pub fn create_conversation_run_vm(
 
     // Copy attachments to authoring dir
     if let Some(ref paths) = input.attachment_paths {
-        let attach_dir = authoring_dir.join("attachments");
+        let attach_dir = authoring_dir.join("inputs");
         fs::create_dir_all(attach_dir.as_std_path())?;
         for src in paths {
             let src_path = Path::new(src);

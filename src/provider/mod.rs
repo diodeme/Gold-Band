@@ -11,6 +11,45 @@ use serde_json::Value;
 use std::str::FromStr;
 use tracing::debug;
 
+use crate::acp::events::AttachmentMeta;
+
+/// Content block types for ACP session/prompt requests.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AcpContentBlock {
+    Image(AcpImageBlock),
+    Resource(AcpResourceBlock),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpImageBlock {
+    pub data: String,
+    pub mime_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpResourceBlock {
+    pub resource: AcpTextResourceContents,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTextResourceContents {
+    pub text: String,
+    pub uri: String,
+}
+
+/// Resolved attachment ready to be sent to ACP.
+#[derive(Debug, Clone)]
+pub struct ResolvedAttachment {
+    pub meta: AttachmentMeta,
+    pub block: AcpContentBlock,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
     pub provider_id: String,
@@ -75,6 +114,8 @@ pub struct WorkerInvocation {
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+    #[serde(default)]
+    pub input_attachment_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +132,8 @@ pub struct PromptRuntimeContext {
     pub node_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub attachments_dir: Utf8PathBuf,
+    #[serde(default)]
+    pub task_inputs_dir: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +215,8 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
+    pub attachment_metas: Vec<AttachmentMeta>,
+    pub content_blocks: Vec<AcpContentBlock>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +224,138 @@ pub struct PromptBundle {
 pub enum PromptVisibility {
     Visible,
     Hidden,
+}
+
+/// Resolve file paths into ResolvedAttachment structs.
+/// For images: base64-encode and produce an AcpContentBlock::Image.
+/// For text files: read as UTF-8 and produce an AcpContentBlock::Resource.
+/// Other files are skipped.
+pub fn resolve_attachments(paths: &[String], storage_prefix: &str) -> Result<Vec<ResolvedAttachment>> {
+    let mut resolved = Vec::new();
+    for path_str in paths {
+        let std_path = std::path::Path::new(path_str);
+        let name = std_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let data = std::fs::read(std_path)?;
+        let size = data.len() as u64;
+        let ext = std_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp");
+        let mime_type = mime_for_ext(&ext);
+
+        if is_image {
+            let b64 = base64_encode(&data);
+            let path_for_storage = format!("{}/{}", storage_prefix, name);
+            resolved.push(ResolvedAttachment {
+                meta: AttachmentMeta {
+                    name: name.clone(),
+                    path: path_for_storage,
+                    mime_type,
+                    size,
+                },
+                block: AcpContentBlock::Image(AcpImageBlock {
+                    data: b64,
+                    mime_type: mime_for_ext(&ext),
+                    uri: Some(format!("file://{}", path_str.replace('\\', "/"))),
+                }),
+            });
+        } else if is_text_ext(&ext) {
+            let text = String::from_utf8(data)
+                .unwrap_or_else(|_| "[binary file]".to_string());
+            let path_for_storage = format!("{}/{}", storage_prefix, name);
+            resolved.push(ResolvedAttachment {
+                meta: AttachmentMeta {
+                    name: name.clone(),
+                    path: path_for_storage,
+                    mime_type,
+                    size,
+                },
+                block: AcpContentBlock::Resource(AcpResourceBlock {
+                    resource: AcpTextResourceContents {
+                        text,
+                        uri: format!("file://{}", path_str.replace('\\', "/")),
+                    },
+                }),
+            });
+        }
+        // Non-image, non-text files are skipped for now
+    }
+    Ok(resolved)
+}
+
+/// Returns the set of file extensions supported as attachments.
+/// This is the single source of truth — the frontend queries it via Tauri command.
+pub fn supported_attachment_extensions() -> Vec<&'static str> {
+    vec![
+        "png", "jpg", "jpeg", "webp", "gif", "bmp",
+        "txt", "md", "markdown", "json", "jsonl", "csv",
+        "html", "htm", "css", "js", "ts", "tsx", "jsx",
+        "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
+        "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
+    ]
+}
+
+fn mime_for_ext(ext: &str) -> String {
+    match ext {
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "webp" => "image/webp".to_string(),
+        "gif" => "image/gif".to_string(),
+        "bmp" => "image/bmp".to_string(),
+        "txt" => "text/plain".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "json" => "application/json".to_string(),
+        "csv" => "text/csv".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "css" => "text/css".to_string(),
+        "js" => "text/javascript".to_string(),
+        "ts" => "text/typescript".to_string(),
+        "tsx" => "text/typescript".to_string(),
+        "jsx" => "text/javascript".to_string(),
+        "rs" => "text/rust".to_string(),
+        "py" => "text/python".to_string(),
+        "go" => "text/go".to_string(),
+        "java" => "text/java".to_string(),
+        "c" | "h" => "text/c".to_string(),
+        "cpp" | "hpp" => "text/cpp".to_string(),
+        "yaml" | "yml" => "text/yaml".to_string(),
+        "xml" => "text/xml".to_string(),
+        "toml" => "text/toml".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn is_text_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt" | "md" | "markdown" | "json" | "csv" | "html" | "htm"
+            | "css" | "js" | "ts" | "tsx" | "jsx" | "rs" | "py" | "go"
+            | "java" | "c" | "h" | "cpp" | "hpp" | "yaml" | "yml" | "xml"
+            | "toml" | "log" | "sql" | "sh" | "bash" | "zsh"
+    )
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 0x3F) as usize] as char } else { b'=' as char });
+        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { b'=' as char });
+    }
+    out
 }
 
 impl Default for PromptVisibility {
@@ -404,6 +581,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
                 user_prompt: resume_prompt.clone(),
                 prompt_id: req.resume_prompt_id.clone(),
                 visibility: req.resume_prompt_visibility,
+                attachment_metas: Vec::new(),
+                content_blocks: Vec::new(),
             });
         }
     }
@@ -449,11 +628,25 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         user_sections.push(format!("# Cold Attachment Index\n{}", index));
     }
 
+    // Resolve task input attachments
+    let mut attachment_metas = Vec::new();
+    let mut content_blocks = Vec::new();
+    if !req.input_attachment_paths.is_empty() {
+        if let Ok(resolved) = resolve_attachments(&req.input_attachment_paths, "task-inputs") {
+            for r in resolved {
+                attachment_metas.push(r.meta);
+                content_blocks.push(r.block);
+            }
+        }
+    }
+
     Ok(PromptBundle {
         system_prompt,
         user_prompt: user_sections.join("\n\n"),
         prompt_id: None,
         visibility: PromptVisibility::Visible,
+        attachment_metas,
+        content_blocks,
     })
 }
 
@@ -762,6 +955,7 @@ mod tests {
             attachments_dir: Utf8PathBuf::from(
                 "/run/rounds/round-001/nodes/dev/attempt-001/attachments",
             ),
+            task_inputs_dir: None,
         };
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
@@ -788,6 +982,7 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
+            input_attachment_paths: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

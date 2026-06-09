@@ -167,7 +167,7 @@ export const browserApi: RuntimeApi = {
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
-  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null, _attachmentPaths?: string[]) {
     return Promise.resolve(fallback ?? null);
   },
   respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
@@ -349,6 +349,15 @@ export const browserApi: RuntimeApi = {
   },
   pickAttachmentFiles() {
     return Promise.resolve([]);
+  },
+  getSupportedAttachmentExtensions() {
+    return Promise.resolve([
+      "png", "jpg", "jpeg", "webp", "gif", "bmp",
+      "txt", "md", "json", "jsonl", "csv",
+      "html", "htm", "css", "js", "ts", "tsx", "jsx",
+      "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
+      "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
+    ]);
   },
   openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();

@@ -134,8 +134,8 @@ export function getAcpSession(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId);
+export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
 export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -280,6 +280,10 @@ export function saveConversationPreference(key: string, value: unknown) {
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function getSupportedAttachmentExtensions() {
+  return getRuntimeApi().getSupportedAttachmentExtensions();
 }
 
 export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {

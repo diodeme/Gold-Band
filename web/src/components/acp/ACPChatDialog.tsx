@@ -19,7 +19,6 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
-  Package,
   Paperclip,
   Search,
   Send,
@@ -71,6 +70,7 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from "@/lib/attachments";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import {
@@ -169,45 +169,6 @@ function isAttachmentDropTarget(target: EventTarget | null): boolean {
   );
 }
 
-const ALLOWED_ATTACHMENT_EXTS = new Set([
-  "txt",
-  "md",
-  "json",
-  "jsonl",
-  "csv",
-  "png",
-  "jpg",
-  "jpeg",
-  "webp",
-  "rs",
-  "ts",
-  "tsx",
-  "js",
-  "jsx",
-  "py",
-  "go",
-  "java",
-  "c",
-  "cpp",
-  "h",
-  "hpp",
-  "html",
-  "css",
-  "xml",
-  "yaml",
-  "yml",
-  "toml",
-]);
-
-function attachmentExt(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
-}
-
-function isAllowedAttachment(name: string): boolean {
-  const ext = attachmentExt(name);
-  return ext !== "" && ALLOWED_ATTACHMENT_EXTS.has(ext);
-}
 type ToolTone = "muted" | "pending" | "running" | "success" | "danger";
 type AcpProcessingKind =
   | "sending"
@@ -536,14 +497,16 @@ export const ACPChatDialog = forwardRef<
   } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isImage = (mime: string) =>
-    mime.startsWith("image/") && !mime.includes("svg");
+  const allowedExts = useAttachmentExtensions();
+  const MAX_ATTACHMENT_COUNT = 20;
+  const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024; // 50MB
   const addFiles = useCallback(
     (files: FileList | File[]) => {
       const items: PendingAttachment[] = [];
       const rejected: string[] = [];
+      let err: string | null = null;
       for (const file of files) {
-        if (!isAllowedAttachment(file.name)) {
+        if (allowedExts && !isAllowedAttachment(file.name, allowedExts)) {
           rejected.push(file.name);
           continue;
         }
@@ -554,22 +517,35 @@ export const ACPChatDialog = forwardRef<
           path: (file as any).path as string | undefined,
           size: file.size,
           type: mime,
-          previewUrl: isImage(mime) ? URL.createObjectURL(file) : undefined,
+          previewUrl: isImageMime(mime) ? URL.createObjectURL(file) : undefined,
           file,
         });
       }
       if (rejected.length > 0) {
-        setFileError(
-          t("conversation.attachmentUnsupportedFile", {
-            names: rejected.join(", "),
-          }),
-        );
+        err = t("conversation.attachmentUnsupportedFile", { names: rejected.join(", ") });
+      }
+      if (!err) {
+        const total = pendingAttachments.length + items.length;
+        if (total > MAX_ATTACHMENT_COUNT) {
+          err = t("conversation.attachmentCountExceeded", { max: MAX_ATTACHMENT_COUNT });
+          items.length = Math.max(0, MAX_ATTACHMENT_COUNT - pendingAttachments.length);
+        }
+      }
+      if (!err) {
+        const totalSize = pendingAttachments.reduce((s, a) => s + a.size, 0)
+          + items.reduce((s, a) => s + a.size, 0);
+        if (totalSize > MAX_ATTACHMENT_TOTAL) {
+          err = t("conversation.attachmentTotalTooLarge");
+        }
+      }
+      if (err) {
+        setFileError(err);
         setTimeout(() => setFileError(null), 4000);
       }
       setPendingAttachments((prev) => [...prev, ...items]);
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [t],
+    [t, pendingAttachments, allowedExts],
   );
   const removeAttachment = useCallback((id: string) => {
     setPendingAttachments((prev) => {
@@ -822,6 +798,7 @@ export const ACPChatDialog = forwardRef<
 
   const handleOpenArtifactDetail = useCallback(
     async (asset: AssetItemVm) => {
+      setArtifactsDialogOpen(true);
       setSelectedArtifact(asset);
       setArtifactContent(null);
       setArtifactLoading(true);
@@ -856,6 +833,15 @@ export const ACPChatDialog = forwardRef<
     },
     [taskId, runId, roundId],
   );
+
+  const handleArtifactsDialogOpenChange = useCallback((open: boolean) => {
+    setArtifactsDialogOpen(open);
+    if (!open) {
+      setSelectedArtifact(null);
+      setArtifactContent(null);
+      setArtifactLoading(false);
+    }
+  }, []);
 
   useImperativeHandle(
     ref,
@@ -1267,11 +1253,7 @@ export const ACPChatDialog = forwardRef<
     const attPaths = pendingAttachments
       .map((a) => a.path)
       .filter((p): p is string => !!p);
-    // Build prompt text with file references (until ACP content blocks are wired)
-    const effectivePrompt =
-      attPaths.length > 0
-        ? `${trimmed}\n\n[Attached files: ${pendingAttachments.map((a) => a.name).join(", ")}]`
-        : trimmed;
+    const effectivePrompt = trimmed;
     setPrompt("");
     setPendingAttachments([]);
     setSendError(null);
@@ -1294,6 +1276,7 @@ export const ACPChatDialog = forwardRef<
         effective ?? null,
         outerNodeId,
         outerAttemptId,
+        attPaths.length > 0 ? attPaths : undefined,
       );
       applySessionUpdate(updated);
       if (updated) {
@@ -1537,10 +1520,8 @@ export const ACPChatDialog = forwardRef<
           Boolean(effective.systemPromptAppend?.trim()) ||
           Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))
         }
-        artifactCount={artifacts.length + attachments.length}
         onToggleRaw={toggleRawFrames}
         onOpenSystemPrompt={() => setSystemPromptOpen(true)}
-        onOpenArtifacts={() => setArtifactsDialogOpen(true)}
       />
       <SystemPromptDialog
         open={systemPromptOpen}
@@ -1555,7 +1536,7 @@ export const ACPChatDialog = forwardRef<
         selectedArtifact={selectedArtifact}
         artifactContent={artifactContent}
         artifactLoading={artifactLoading}
-        onOpenChange={setArtifactsDialogOpen}
+        onOpenChange={handleArtifactsDialogOpenChange}
         onOpenDetail={handleOpenArtifactDetail}
         onBack={() => {
           setSelectedArtifact(null);
@@ -1644,11 +1625,11 @@ export const ACPChatDialog = forwardRef<
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
           {todoEntries.length > 0 ? (
-            <div className="px-4 pt-2">
+            <div className="px-4 pt-1.5">
               <AcpTodoPanel entries={todoEntries} />
             </div>
           ) : null}
-          <div className="border-t px-4 pt-2 pb-4">
+          <div className="border-t px-4 pt-1.5 pb-1.5">
             <AcpUsagePanel
               usage={effective?.usage}
               isRunning={isSessionActive(effective.status)}
@@ -1661,7 +1642,7 @@ export const ACPChatDialog = forwardRef<
                   : null
               }
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
-              className="mb-2"
+              className="mb-1"
             />
             {externalComposerState?.kind === "invalid-workflow" ? (
               <AcpExternalComposerState
@@ -1701,7 +1682,7 @@ export const ACPChatDialog = forwardRef<
                             key={a.id}
                             className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 px-1.5 py-1 text-xs shadow-sm"
                             onClick={() => {
-                              if (isImage(a.type)) {
+                              if (isImageMime(a.type)) {
                                 setPreviewImage(a);
                                 return;
                               }
@@ -1717,7 +1698,7 @@ export const ACPChatDialog = forwardRef<
                             }}
                             title={a.name}
                           >
-                            {isImage(a.type) && a.previewUrl ? (
+                            {isImageMime(a.type) && a.previewUrl ? (
                               <img
                                 src={a.previewUrl}
                                 alt={a.name}
@@ -1798,7 +1779,7 @@ export const ACPChatDialog = forwardRef<
                           }
                         }}
                       />
-                      <div className="mt-2 flex items-center justify-between gap-4 px-2 pb-1">
+                      <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
                         <div className="flex items-center gap-2">
                           <input
                             ref={fileInputRef}
@@ -2184,7 +2165,7 @@ function AcpSessionConfigBar({ session }: { session: AcpSessionVm }) {
   if (!model && !mode) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-2 py-2 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
       {model ? (
         <Badge
           variant="outline"
@@ -2216,34 +2197,30 @@ export function ACPSessionHeader({
   rawActive,
   rawLoading,
   systemPromptAvailable,
-  artifactCount = 0,
   onToggleRaw,
   onOpenSystemPrompt,
-  onOpenArtifacts,
 }: {
   session: AcpSessionVm;
   rawActive: boolean;
   rawLoading: boolean;
   systemPromptAvailable?: boolean;
-  artifactCount?: number;
   onToggleRaw: () => void;
   onOpenSystemPrompt: () => void;
-  onOpenArtifacts?: () => void;
 }) {
   const { t } = useTranslation();
   const mode = session.config?.currentModeName ?? session.config?.currentModeId;
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
   return (
-    <div className="shrink-0 border-b bg-muted/10 px-5 py-2.5">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="min-w-0 truncate text-base font-semibold">
+    <div className="shrink-0 border-b bg-muted/10 px-5 py-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 truncate text-sm font-semibold leading-6">
           {session.adapterDisplayName ?? session.provider}
         </span>
         {mode ? (
           <Badge
             variant="outline"
-            className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal"
+            className="max-w-full gap-1 rounded-full bg-background/50 px-1.5 py-0 text-[11px] font-normal"
           >
             <span className="shrink-0 text-muted-foreground">
               {t("acp.permissionMode")}
@@ -2251,25 +2228,14 @@ export function ACPSessionHeader({
             <span className="min-w-0 truncate text-foreground">{mode}</span>
           </Badge>
         ) : null}
-        <span className="truncate text-xs text-muted-foreground">
+        <span className="truncate text-[11px] text-muted-foreground">
           {session.sessionId ?? t("acp.noSessionId")}
         </span>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {artifactCount > 0 && onOpenArtifacts ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 px-2.5 text-xs"
-              onClick={onOpenArtifacts}
-            >
-              <Package className="size-3" />
-              {t("acp.viewArtifacts")}
-            </Button>
-          ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Button
             size="sm"
             variant="outline"
-            className="h-7 gap-1.5 px-2.5 text-xs"
+            className="h-6 gap-1 px-2 text-[11px]"
             onClick={onOpenSystemPrompt}
             disabled={!hasSystemPrompt}
           >
@@ -2279,7 +2245,7 @@ export function ACPSessionHeader({
           <Button
             size="sm"
             variant={rawActive ? "default" : "outline"}
-            className="h-7 gap-1.5 px-2.5 text-xs"
+            className="h-6 gap-1 px-2 text-[11px]"
             onClick={onToggleRaw}
             disabled={rawLoading}
           >
@@ -2880,6 +2846,9 @@ const MessageBubble = memo(function MessageBubble({
   const { t } = useTranslation();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
+  const rawAttachments: Array<{ name: string; path: string; type: string; size: number }> =
+    rawObject(event.raw)?.attachments as any ?? [];
+  const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
   return (
     <Message
       className={cn(
@@ -2905,6 +2874,25 @@ const MessageBubble = memo(function MessageBubble({
         >
           {isUser ? event.content : <Markdown>{event.content ?? ""}</Markdown>}
         </MessageContent>
+        {hasAttachments ? (
+          <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
+            {rawAttachments.map((att) => (
+              <button
+                key={att.path}
+                type="button"
+                className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                title={`${att.name} (${formatAttachmentSize(att.size)})`}
+              >
+                {att.type.startsWith("image/") ? (
+                  <ImageIcon className="size-3 text-blue-400" />
+                ) : (
+                  <FileText className="size-3 text-muted-foreground" />
+                )}
+                <span className="max-w-[120px] truncate">{att.name}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {event.optimistic || failed ? (
           <div
             className={cn(
@@ -3884,6 +3872,12 @@ function rawObject(value: unknown): Record<string, unknown> | null {
 
 function arrayValue(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function mergeRaw(previous: unknown, next: unknown) {

@@ -15,7 +15,7 @@ use gold_band::config::{
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
-use gold_band::provider::supported_modes_from_capabilities;
+use gold_band::provider::{supported_modes_from_capabilities, supported_models_from_capabilities};
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::channel::current_channel_config;
@@ -103,6 +103,7 @@ pub struct ManagedAgentVm {
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
+    pub supported_models: Option<Vec<AcpModeVm>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +111,7 @@ pub struct ManagedAgentVm {
 pub struct AcpModeVm {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -879,10 +881,22 @@ fn managed_agent_vm(
                 .into_iter()
                 .map(|mode| AcpModeVm {
                     id: mode.id.clone(),
-                    name: mode.name.unwrap_or(mode.id),
+                    name: mode.name.unwrap_or_else(|| mode.id.clone()),
+                    description: mode.description.clone(),
                 })
                 .collect::<Vec<_>>();
             (!modes.is_empty()).then_some(modes)
+        }),
+        supported_models: diagnostic.and_then(|diagnostic| {
+            let models = supported_models_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|model| AcpModeVm {
+                    id: model.id.clone(),
+                    name: model.name.unwrap_or_else(|| model.id.clone()),
+                    description: model.description.clone(),
+                })
+                .collect::<Vec<_>>();
+            (!models.is_empty()).then_some(models)
         }),
     }
 }
@@ -1133,6 +1147,30 @@ fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
                 "workflowName": workflow_name,
                 "reason": reason,
             }),
+        }),
+        Some(WorkflowValidationError::WorkerModelBlank { node_id, provider }) => Some(WorkflowErrorVm {
+            code: "workflow.model-blank".to_string(),
+            params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        }),
+        Some(WorkflowValidationError::DynamicFixedModelBlank { node_id }) => Some(WorkflowErrorVm {
+            code: "workflow.dynamic-fixed-model-blank".to_string(),
+            params: serde_json::json!({ "nodeId": node_id }),
+        }),
+        Some(WorkflowValidationError::DynamicAgentsEmpty { node_id }) => Some(WorkflowErrorVm {
+            code: "workflow.dynamic-agents-empty".to_string(),
+            params: serde_json::json!({ "nodeId": node_id }),
+        }),
+        Some(WorkflowValidationError::DynamicAgentDuplicate { node_id, provider }) => Some(WorkflowErrorVm {
+            code: "workflow.dynamic-agent-duplicate".to_string(),
+            params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        }),
+        Some(WorkflowValidationError::DynamicAgentModelBlank { node_id, provider }) => Some(WorkflowErrorVm {
+            code: "workflow.dynamic-agent-model-blank".to_string(),
+            params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        }),
+        Some(WorkflowValidationError::AgentModelBlank { provider }) => Some(WorkflowErrorVm {
+            code: "workflow.agent-model-blank".to_string(),
+            params: serde_json::json!({ "provider": provider }),
         }),
         None if summary.workflow_error.is_some() => Some(WorkflowErrorVm {
             code: "workflow.invalid".to_string(),

@@ -535,11 +535,33 @@ impl<'a> AcpRuntime<'a> {
         permission_mode: Option<&str>,
         model: Option<&str>,
     ) -> Result<()> {
-        let effective = model
-            .filter(|v| !v.trim().is_empty())
-            .or(permission_mode.filter(|v| !v.trim().is_empty()));
-        if let Some(value) = effective {
-            self.apply_permission_mode(value)?;
+        if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
+            self.set_session_model(m)?;
+        } else if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
+            self.apply_permission_mode(pm)?;
+        }
+        Ok(())
+    }
+
+    fn set_session_model(&mut self, model: &str) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP model selection requires a session id"))?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Ok(());
+        }
+        if self.modes.is_some() {
+            let result = self.request(
+                "session/set_mode",
+                json!({
+                    "sessionId": session_id,
+                    "modeId": model,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_mode(model);
         }
         Ok(())
     }

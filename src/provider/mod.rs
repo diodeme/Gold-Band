@@ -69,6 +69,7 @@ pub struct ProviderCapabilities {
 pub struct AcpModeOption {
     pub id: String,
     pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,10 @@ pub struct DoctorResult {
 impl DoctorResult {
     pub fn supported_modes(&self) -> Vec<AcpModeOption> {
         supported_modes_from_capabilities(self.capabilities.as_ref())
+    }
+
+    pub fn supported_models(&self) -> Vec<AcpModeOption> {
+        supported_models_from_capabilities(self.capabilities.as_ref())
     }
 }
 
@@ -379,6 +384,15 @@ pub trait ProviderAdapter: Send + Sync {
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
 }
 
+fn option_str(option: &Value, key: &str) -> Option<String> {
+    option
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
     if let Some(options) = capabilities
         .and_then(find_mode_config_option)
@@ -394,12 +408,8 @@ pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<Ac
                 }
                 Some(AcpModeOption {
                     id: id.to_string(),
-                    name: option
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string),
+                    name: option_str(option, "name"),
+                    description: option_str(option, "description"),
                 })
             })
             .collect();
@@ -424,9 +434,60 @@ pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<Ac
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
+                description: None,
             })
         })
         .collect()
+}
+
+/// Extracts available AI models from agent capabilities.
+/// Reads from `configOptions[?category="model"].options` (not configOptions[?id="mode"]
+/// which carries permission-mode values, and not `modes.availableModes` which also
+/// carries permission modes).
+pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
+    if let Some(options) = capabilities
+        .and_then(find_model_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+    {
+        return options
+            .iter()
+            .filter_map(|option| {
+                let id = option.get("value").and_then(Value::as_str)?.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                Some(AcpModeOption {
+                    id: id.to_string(),
+                    name: option
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    description: option
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                })
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Finds the config option with `category == "model"` (AI model selector).
+fn find_model_config_option(capabilities: &Value) -> Option<&Value> {
+    capabilities
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("category").and_then(Value::as_str) == Some("model")
+            })
+        })
 }
 
 fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {

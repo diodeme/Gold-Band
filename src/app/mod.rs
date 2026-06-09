@@ -2085,7 +2085,9 @@ impl App {
             for (provider, model) in models_for_node(node) {
                 if let Some(model) = model {
                     if model.trim().is_empty() {
-                        bail!("model for agent `{provider}` cannot be blank");
+                        bail!(WorkflowValidationError::AgentModelBlank {
+                            provider: provider.clone(),
+                        });
                     }
                 }
             }

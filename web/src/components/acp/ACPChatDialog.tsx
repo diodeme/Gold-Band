@@ -88,6 +88,7 @@ import {
   respondAcpPermission,
   sendAcpPrompt,
   setAcpSessionModel,
+  setAcpSessionPermissionMode,
   showArtifact,
   showAttachment,
   showConversationAttachment,
@@ -1870,6 +1871,24 @@ export const ACPChatDialog = forwardRef<
                               console.error('Failed to set ACP session model:', error),
                             );
                         }}
+                        onPermissionModeChange={(permissionModeId) => {
+                          setAcpSessionPermissionMode(
+                            taskId,
+                            runId,
+                            roundId,
+                            nodeId,
+                            attemptId,
+                            permissionModeId,
+                            outerNodeId,
+                            outerAttemptId,
+                          )
+                            .then((updated) => {
+                              if (updated) applySessionUpdate(updated);
+                            })
+                            .catch((error) =>
+                              console.error('Failed to set ACP session permission mode:', error),
+                            );
+                        }}
                       />
                     </PromptInput>
                   </div>
@@ -2180,32 +2199,83 @@ function AcpErrorBanner({ reason }: { reason: string }) {
 function AcpSessionConfigBar({
   session,
   onModelChange,
+  onPermissionModeChange,
 }: {
   session: AcpSessionVm;
   onModelChange?: (modelId: string) => void;
+  onPermissionModeChange?: (permissionModeId: string) => void;
 }) {
   const { t } = useTranslation();
   const currentModelId = session.config?.currentModelId ?? null;
   const currentModelName = session.config?.currentModelName ?? null;
-  const mode = session.config?.currentModeName ?? session.config?.currentModeId;
+  const currentModeId = session.config?.currentModeId ?? null;
+  const currentModeName = session.config?.currentModeName ?? null;
+  const mode = currentModeName ?? currentModeId;
 
   const availableModels: { id: string; name: string }[] = useMemo(() => {
-    const raw = session.config?.models as Record<string, unknown> | null | undefined;
-    if (!raw) return [];
-    const list = raw.availableModels ?? raw.availableModes;
+    // prefer models.availableModels from session/set_mode responses;
+    // fallback: configOptions[?category="model"].options from session/new or capabilities
+    const models = session.config?.models as Record<string, unknown> | null | undefined;
+    const configOptions = session.config?.configOptions as Array<{
+      category?: string;
+      options?: Array<{ value?: string; name?: string }>;
+    }> | null | undefined;
+
+    const listFromModels =
+      models ? (models.availableModels ?? models.availableModes) : null;
+
+    const listFromConfig = configOptions?.find(o => o.category === 'model')?.options;
+
+    const list = Array.isArray(listFromModels) && listFromModels.length > 0
+      ? listFromModels
+      : listFromConfig;
+
     if (!Array.isArray(list)) return [];
     return list
       .filter(
-        (m: unknown): m is { modelId?: string; id?: string; name?: string } =>
+        (m: unknown): m is { modelId?: string; id?: string; value?: string; name?: string } =>
           typeof m === 'object' && m !== null && !Array.isArray(m),
       )
       .map((m) => {
-        const id = typeof m.modelId === 'string' ? m.modelId : typeof m.id === 'string' ? m.id : '';
+        const id = typeof m.modelId === 'string' ? m.modelId
+          : typeof m.value === 'string' ? m.value
+          : typeof m.id === 'string' ? m.id : '';
         const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
         return { id, name };
       })
       .filter((m) => m.id);
-  }, [session.config?.models]);
+  }, [session.config?.models, session.config?.configOptions]);
+
+  const availablePermissionModes: { id: string; name: string }[] = useMemo(() => {
+    const modes = session.config?.modes as Record<string, unknown> | null | undefined;
+    const configOptions = session.config?.configOptions as Array<{
+      category?: string;
+      options?: Array<{ value?: string; name?: string }>;
+    }> | null | undefined;
+
+    const listFromModes =
+      modes ? (modes.availableModes ?? modes.availableModels) : null;
+
+    const listFromConfig = configOptions?.find(o => o.category === 'mode')?.options;
+
+    const list = Array.isArray(listFromModes) && listFromModes.length > 0
+      ? listFromModes
+      : listFromConfig;
+
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (m: unknown): m is { id?: string; value?: string; name?: string } =>
+          typeof m === 'object' && m !== null && !Array.isArray(m),
+      )
+      .map((m) => {
+        const id = typeof m.id === 'string' ? m.id
+          : typeof m.value === 'string' ? m.value : '';
+        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
+        return { id, name };
+      })
+      .filter((m) => m.id);
+  }, [session.config?.modes, session.config?.configOptions]);
 
   const handleModelSelect = useCallback(
     (modelId: string) => {
@@ -2214,21 +2284,32 @@ function AcpSessionConfigBar({
     [onModelChange],
   );
 
+  const handlePermissionModeSelect = useCallback(
+    (permissionModeId: string) => {
+      onPermissionModeChange?.(permissionModeId);
+    },
+    [onPermissionModeChange],
+  );
+
   if (!currentModelId && !mode) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
       {availableModels.length > 1 ? (
         <Select value={currentModelId ?? ''} onValueChange={handleModelSelect}>
-          <SelectTrigger className="h-auto min-h-0 gap-1 border-0 bg-transparent px-1 py-0 text-xs shadow-none ring-0 focus:ring-0">
+          <SelectTrigger className="h-7 max-w-full gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
             <span className="shrink-0 text-muted-foreground">
               {t('acp.currentModel')}
             </span>
-            <span className="min-w-0 truncate text-foreground">
-              {currentModelName ?? currentModelId}
-            </span>
+            <SelectValue className="min-w-0 truncate" />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent
+            side="top"
+            sideOffset={8}
+            position="popper"
+            align="start"
+            className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
+          >
             {availableModels.map((m) => (
               <SelectItem value={m.id} key={m.id}>
                 {m.name}
@@ -2243,10 +2324,34 @@ function AcpSessionConfigBar({
         </Badge>
       ) : null}
       {mode ? (
-        <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
-          <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-          <span className="min-w-0 truncate text-foreground">{mode}</span>
-        </Badge>
+        availablePermissionModes.length > 1 ? (
+          <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
+            <SelectTrigger className="h-7 max-w-full gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
+              <span className="shrink-0 text-muted-foreground">
+                {t('acp.permissionMode')}
+              </span>
+              <SelectValue className="min-w-0 truncate" />
+            </SelectTrigger>
+            <SelectContent
+              side="top"
+              sideOffset={8}
+              position="popper"
+              align="start"
+              className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
+            >
+              {availablePermissionModes.map((m) => (
+                <SelectItem value={m.id} key={m.id}>
+                  {m.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+            <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
+            <span className="min-w-0 truncate text-foreground">{mode}</span>
+          </Badge>
+        )
       ) : null}
     </div>
   );

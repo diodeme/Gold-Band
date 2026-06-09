@@ -118,6 +118,9 @@ export const desktopApi: RuntimeApi = {
   setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
   },
+  setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
+  },
   respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },

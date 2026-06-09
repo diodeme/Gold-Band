@@ -2822,21 +2822,22 @@ fn validate_dynamic_node_spec(
                             "provider": provider,
                         }),
                     ));
-                } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
+                } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
                     if let Ok(doctor) = ctx.app.provider_doctor(provider) {
+                        let resolved = ctx.app.config.resolve_permission_mode(provider, normative_mode);
                         let supported_mode_ids = doctor
                             .supported_modes()
                             .into_iter()
                             .map(|mode| mode.id)
                             .collect::<std::collections::HashSet<_>>();
-                        if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
+                        if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(&resolved) {
                             errors.push(dynamic_validation_error(
                                 "dynamic.node.permission-mode.unsupported",
-                                format!("dynamic worker `{}` permissionMode `{}` is not supported by provider `{provider}`", spec.id, permission_mode),
+                                format!("dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`", spec.id, normative_mode, resolved),
                                 serde_json::json!({
                                     "nodeId": spec.id,
                                     "provider": provider,
-                                    "permissionMode": permission_mode,
+                                    "permissionMode": normative_mode,
                                 }),
                             ));
                         }
@@ -2978,21 +2979,22 @@ fn validate_dynamic_agent_task_spec(
                 "stage": name,
             }),
         ));
-    } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
+    } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
         if let Ok(doctor) = ctx.app.provider_doctor(&spec.provider) {
+            let resolved = ctx.app.config.resolve_permission_mode(&spec.provider, normative_mode);
             let supported_mode_ids = doctor
                 .supported_modes()
                 .into_iter()
                 .map(|mode| mode.id)
                 .collect::<std::collections::HashSet<_>>();
-            if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
+            if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(&resolved) {
                 errors.push(dynamic_validation_error(
                     &format!("dynamic.{name}.permission-mode.unsupported"),
-                    format!("dynamic {name} permissionMode `{}` is not supported by provider `{}`", permission_mode, spec.provider),
+                    format!("dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{}`", normative_mode, resolved, spec.provider),
                     serde_json::json!({
                         "provider": spec.provider,
                         "stage": name,
-                        "permissionMode": permission_mode,
+                        "permissionMode": normative_mode,
                     }),
                 ));
             }
@@ -3737,10 +3739,16 @@ fn build_dynamic_worker_invocation(
         extra_system_sections,
         task_instruction: Some(dynamic_task_instruction(ctx, graph, node)),
         session_mode,
-        permission_mode: node
-            .permission_mode
-            .clone()
-            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
+        permission_mode: {
+            let raw = node
+                .permission_mode
+                .clone()
+                .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned));
+            match (raw, node.provider.as_deref()) {
+                (Some(normative), Some(provider)) => Some(ctx.app.config.resolve_permission_mode(provider, &normative)),
+                (other, _) => other,
+            }
+        },
         model: node.model.clone().or_else(|| {
             node.provider
                 .as_deref()

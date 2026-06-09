@@ -25,9 +25,9 @@ AI-DYNAMIC remaining budget:
 {{ allowed_workflow_snapshots }}
 - Dynamic node agent strategy: {{ agent_strategy_mode }}
 - Bootstrap agent: {{ bootstrap_provider }}
-{% if agent_strategy_mode == "dynamic" %}- Node agent routing guidance:
+{% if agent_strategy_mode == "dynamic" %}- Agent and model routing guidance:
 {{ agent_routing_prompt }}
-- Available providers:
+- Available agents and models:
 {{ available_providers }}
 {% endif %}- Available profiles:
 {{ available_profiles }}

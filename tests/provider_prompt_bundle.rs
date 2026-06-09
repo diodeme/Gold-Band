@@ -74,6 +74,7 @@ fn invocation() -> WorkerInvocation {
         task_instruction: Some("Implement the requested change".to_string()),
         session_mode: SessionMode::New,
         permission_mode: None,
+        model: None,
         continue_ref: None,
         resume_prompt: None,
         resume_prompt_id: None,

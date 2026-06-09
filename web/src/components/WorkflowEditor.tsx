@@ -17,7 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   NEW_ROUND_NODE,
@@ -688,12 +688,24 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         />
       </Field>
       <Field label={t('workflowEditor.agent')} errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null })}>
+        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null, model: null })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
+      {selectedAgent && selectedAgent.supportedModes && selectedAgent.supportedModes.length > 0 ? (
+        <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
+          <Select value={node.model ?? ''} onValueChange={(model) => updateWorker({ model })}>
+            <SelectTrigger className={errorClass(errorsFor('model'))}>
+              <SelectValue placeholder={t('workflowEditor.selectModel')} />
+            </SelectTrigger>
+            <SelectContent>
+              {selectedAgent.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
       <Field label={<ProfileLabel t={t} onOpenProfileManagement={onOpenProfileManagement} />} errors={errorsFor('profile')}>
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
       </Field>
@@ -857,25 +869,31 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
         <Select
           value={node.agentStrategy.mode}
           onValueChange={(mode) => {
+            const cur = node.agentStrategy;
             if (mode === 'fixed') {
-              const nextProvider = node.agentStrategy.mode === 'fixed'
-                ? node.agentStrategy.provider
-                : node.agentStrategy.bootstrapProvider;
+              const nextProvider = cur.mode === 'fixed'
+                ? cur.provider
+                : cur.bootstrapProvider;
               updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
-              updateAgentStrategy({ mode: 'fixed', provider: nextProvider });
+              updateAgentStrategy({ mode: 'fixed', provider: nextProvider, model: undefined });
               return;
             }
-            const nextBootstrapProvider = node.agentStrategy.mode === 'dynamic'
-              ? node.agentStrategy.bootstrapProvider
-              : node.agentStrategy.provider;
-            const nextRoutingPrompt = node.agentStrategy.mode === 'dynamic'
-              ? node.agentStrategy.routingPrompt
+            const curDynamic = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
+            const nextBootstrapProvider = cur.mode === 'dynamic'
+              ? cur.bootstrapProvider
+              : (cur as WorkflowAiDynamicFixedAgentStrategyDsl).provider;
+            const nextRoutingPrompt = cur.mode === 'dynamic'
+              ? cur.routingPrompt
               : '';
+            const nextAvailableAgents = cur.mode === 'dynamic'
+              ? cur.availableAgents
+              : [];
             updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
             updateAgentStrategy({
               mode: 'dynamic',
               bootstrapProvider: nextBootstrapProvider,
               routingPrompt: nextRoutingPrompt,
+              availableAgents: nextAvailableAgents,
             });
           }}
         >
@@ -887,12 +905,36 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
         </Select>
       </Field>
       {node.agentStrategy.mode === 'fixed' ? (
-        <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} errors={errorsFor('agentStrategy.provider')}>
-          <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider }); }}>
-            <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-            <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
-          </Select>
-        </Field>
+        <>
+          <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} errors={errorsFor('agentStrategy.provider')}>
+            <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider, model: undefined } as WorkflowAiDynamicFixedAgentStrategyDsl); }}>
+              <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+              <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          {(() => {
+            const fixedStrategy = node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
+            const fixedAgent = agents.find((a) => a.agentType === fixedStrategy.provider);
+            if (fixedAgent && fixedAgent.supportedModes && fixedAgent.supportedModes.length > 0) {
+              return (
+                <Field label={t('workflowEditor.model')} errors={errorsFor('agentStrategy.model')}>
+                  <Select
+                    value={fixedStrategy.model ?? ''}
+                    onValueChange={(model) => updateAgentStrategy({ mode: 'fixed', provider: fixedStrategy.provider, model } as WorkflowAiDynamicFixedAgentStrategyDsl)}
+                  >
+                    <SelectTrigger className={errorClass(errorsFor('agentStrategy.model'))}>
+                      <SelectValue placeholder={t('workflowEditor.selectModel')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {fixedAgent.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              );
+            }
+            return null;
+          })()}
+        </>
       ) : (
         <>
           <Field label={<HelpLabel label={t('workflowEditor.dynamicBootstrapAgent')} help={t('workflowEditor.dynamicBootstrapAgentHelp')} />} errors={errorsFor('agentStrategy.bootstrapProvider')}>
@@ -901,6 +943,38 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
               <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
+          <Field label={<HelpLabel label={t('workflowEditor.dynamicAvailableAgents')} help={t('workflowEditor.dynamicAvailableAgentsHelp')} />} errors={errorsFor('agentStrategy.availableAgents')}>
+            <AgentMultiSelect
+              agents={agents}
+              selectedAgents={node.agentStrategy.availableAgents ?? []}
+              invalid={errorsFor('agentStrategy.availableAgents').length > 0}
+              onChange={(availableAgents) => updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents })}
+              t={t}
+            />
+          </Field>
+          {(node.agentStrategy.availableAgents ?? []).map((agentRef, idx) => {
+            const agentObj = agents.find((a) => a.agentType === agentRef.provider);
+            if (!agentObj || !agentObj.supportedModes || agentObj.supportedModes.length === 0) return null;
+            return (
+              <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
+                <Select
+                  value={agentRef.model ?? ''}
+                  onValueChange={(model) => {
+                    const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                    next[idx] = { ...next[idx], model };
+                    updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                  }}
+                >
+                  <SelectTrigger className={errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`))}>
+                    <SelectValue placeholder={t('workflowEditor.selectModel')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agentObj.supportedModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+            );
+          })}
           <Field label={<HelpLabel label={t('workflowEditor.dynamicAgentRoutingPrompt')} help={t('workflowEditor.dynamicAgentRoutingPromptHelp')} />} errors={errorsFor('agentStrategy.routingPrompt')}>
             <Textarea
               className={errorClass(errorsFor('agentStrategy.routingPrompt'))}
@@ -974,26 +1048,176 @@ function WorkflowEditorSection({ title, children }: { title: string; children: R
   );
 }
 
-function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t }: { profiles: ProfileVm[]; selectedProfileIds: string[]; invalid: boolean; onChange: (profileIds: string[]) => void; t: (key: string) => string }) {
+type MultiSelectPopoverProps<T> = {
+  items: T[];
+  getItemId: (item: T) => string;
+  filterFn: (item: T, search: string) => boolean;
+  isSelected: (id: string) => boolean;
+  onToggle: (id: string) => void;
+  onRemove: (id: string) => void;
+  renderBadge: (id: string) => ReactNode;
+  renderItem: (item: T, isSelected: boolean) => ReactNode;
+  placeholder: string;
+  emptyMessage: string;
+  triggerEmptyLabel: string;
+  showTriggerEmpty: boolean;
+  invalid: boolean;
+  resetSearchOnClose?: boolean;
+};
+
+function MultiSelectPopover<T>({ items, getItemId, filterFn, isSelected, onToggle, onRemove, renderBadge, renderItem, placeholder, emptyMessage, triggerEmptyLabel, showTriggerEmpty, invalid, resetSearchOnClose }: MultiSelectPopoverProps<T>) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const selected = new Set(selectedProfileIds);
-  const profileById = new Map(profiles.map((profile) => [profile.id, profile] as const));
-  const selectedProfiles = selectedProfileIds
-    .map((profileId) => profileById.get(profileId))
-    .filter((profile): profile is ProfileVm => Boolean(profile));
-  const invalidProfileIds = selectedProfileIds.filter((profileId) => !profileById.has(profileId));
+  const selectedIds = useMemo(() => new Set(items.filter((item) => isSelected(getItemId(item))).map(getItemId)), [items, isSelected, getItemId]);
+  const filteredItems = useMemo(
+    () => (search.trim() ? items.filter((item) => filterFn(item, search)) : items),
+    [items, search, filterFn],
+  );
+
+  return (
+    <Popover open={open} onOpenChange={(nextOpen) => {
+      setOpen(nextOpen);
+      if (!nextOpen && resetSearchOnClose) setSearch('');
+    }} modal>
+      <PopoverTrigger asChild>
+        <Button variant="outline" role="combobox" className={cn('h-auto min-h-9 w-full justify-between px-2 py-1.5 font-normal', invalid && 'border-destructive')}>
+          <span className="flex min-w-0 flex-1 flex-wrap gap-1">
+            {[...selectedIds].map((id) => (
+              <Badge key={id} variant="secondary" className="max-w-full gap-1">
+                {renderBadge(id)}
+                <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onRemove(id); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onRemove(id); }}>
+                  <X className="size-3" />
+                </span>
+              </Badge>
+            ))}
+            {showTriggerEmpty && selectedIds.size === 0 ? <span className="px-1 text-muted-foreground">{triggerEmptyLabel}</span> : null}
+          </span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput value={search} onValueChange={setSearch} placeholder={placeholder} />
+          <CommandList>
+            {filteredItems.length === 0 ? <CommandEmpty>{emptyMessage}</CommandEmpty> : null}
+            <CommandGroup>
+              {filteredItems.map((item) => {
+                const id = getItemId(item);
+                const selected = isSelected(id);
+                return (
+                  <CommandItem key={id} value={id} onSelect={() => onToggle(id)} className="items-start py-2">
+                    <Check className={cn('mt-0.5 size-4', selected ? 'opacity-100' : 'opacity-0')} />
+                    {renderItem(item, selected)}
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function AgentMultiSelect({ agents, selectedAgents, invalid, onChange, t }: { agents: ManagedAgentVm[]; selectedAgents: DynamicAgentRefDsl[]; invalid: boolean; onChange: (agents: DynamicAgentRefDsl[]) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  const selectedMap = useMemo(
+    () => new Map(selectedAgents.map((a) => [a.provider, a])),
+    [selectedAgents],
+  );
+  const toggleAgent = useCallback(
+    (agentType: string) => {
+      const next = new Map(selectedMap);
+      if (next.has(agentType)) {
+        next.delete(agentType);
+      } else {
+        next.set(agentType, { provider: agentType, model: '' });
+      }
+      onChange(Array.from(next.values()));
+    },
+    [selectedMap, onChange],
+  );
+  const getItemId = useCallback((a: ManagedAgentVm) => a.agentType, []);
+  const filterFn = useCallback(
+    (a: ManagedAgentVm, s: string) =>
+      a.agentType.toLowerCase().includes(s.toLowerCase()) ||
+      a.displayName.toLowerCase().includes(s.toLowerCase()),
+    [],
+  );
+  const isSelected = useCallback((id: string) => selectedMap.has(id), [selectedMap]);
+  const onRemove = useCallback(
+    (id: string) => {
+      const next = new Map(selectedMap);
+      next.delete(id);
+      onChange(Array.from(next.values()));
+    },
+    [selectedMap, onChange],
+  );
+  const renderBadge = useCallback(
+    (id: string) => {
+      const agent = agents.find((a) => a.agentType === id);
+      return (
+        <>
+          <span className="max-w-40 truncate">{agent?.displayName ?? id}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">{id}</span>
+        </>
+      );
+    },
+    [agents],
+  );
+  const renderItem = useCallback(
+    (agent: ManagedAgentVm, _selected: boolean) => (
+      <span>
+        <span>{agent.displayName}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{agent.agentType}</span>
+      </span>
+    ),
+    [],
+  );
+
+  return (
+    <MultiSelectPopover
+      items={agents}
+      getItemId={getItemId}
+      filterFn={filterFn}
+      isSelected={isSelected}
+      onToggle={toggleAgent}
+      onRemove={onRemove}
+      renderBadge={renderBadge}
+      renderItem={renderItem}
+      placeholder={t('workflowEditor.selectAgent')}
+      emptyMessage={t('workflowEditor.noDoctorReadyAgents')}
+      triggerEmptyLabel={t('workflowEditor.dynamicAvailableAgents')}
+      showTriggerEmpty
+      invalid={invalid}
+    />
+  );
+}
+
+function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t }: { profiles: ProfileVm[]; selectedProfileIds: string[]; invalid: boolean; onChange: (profileIds: string[]) => void; t: (key: string) => string }) {
+  const selected = useMemo(() => new Set(selectedProfileIds), [selectedProfileIds]);
+  const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile] as const)), [profiles]);
+  const selectedProfiles = useMemo(
+    () => selectedProfileIds.map((pid) => profileById.get(pid)).filter((p): p is ProfileVm => Boolean(p)),
+    [selectedProfileIds, profileById],
+  );
+  const invalidProfileIds = useMemo(
+    () => selectedProfileIds.filter((pid) => !profileById.has(pid)),
+    [selectedProfileIds, profileById],
+  );
+  const toggleProfile = (profileId: string) => {
+    onChange(
+      selected.has(profileId)
+        ? selectedProfileIds.filter((item) => item !== profileId)
+        : [...selectedProfileIds, profileId],
+    );
+  };
+
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProfiles = normalizedSearch
     ? profiles.filter((profile) => profileSearchText(profile).includes(normalizedSearch))
     : profiles;
-  const toggleProfile = (profileId: string) => {
-    const next = selected.has(profileId)
-      ? selectedProfileIds.filter((item) => item !== profileId)
-      : [...selectedProfileIds, profileId];
-    onChange(next);
-  };
-  const removeProfile = (profileId: string) => onChange(selectedProfileIds.filter((item) => item !== profileId));
 
   return (
     <Popover open={open} onOpenChange={(nextOpen) => {
@@ -1007,7 +1231,7 @@ function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t
               <Badge key={profile.id} variant="secondary" className="max-w-full gap-1">
                 <span className="max-w-40 truncate">{profile.name}</span>
                 <span className="font-mono text-[10px] text-muted-foreground">{profile.id}</span>
-                <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeProfile(profile.id); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeProfile(profile.id); }}>
+                <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onChange(selectedProfileIds.filter((item) => item !== profile.id)); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onChange(selectedProfileIds.filter((item) => item !== profile.id)); }}>
                   <X className="size-3" />
                 </span>
               </Badge>
@@ -1015,7 +1239,7 @@ function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t
             {invalidProfileIds.map((profileId) => (
               <Badge key={profileId} variant="destructive" className="max-w-full gap-1">
                 <span className="max-w-44 truncate font-mono text-[10px]">{profileId}</span>
-                <span role="button" tabIndex={0} className="rounded-full" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeProfile(profileId); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeProfile(profileId); }}>
+                <span role="button" tabIndex={0} className="rounded-full" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onChange(selectedProfileIds.filter((item) => item !== profileId)); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onChange(selectedProfileIds.filter((item) => item !== profileId)); }}>
                   <X className="size-3" />
                 </span>
               </Badge>
@@ -1059,23 +1283,44 @@ function ProfileMultiSelect({ profiles, selectedProfileIds, invalid, onChange, t
 
 function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNestedDynamic, invalid, onChange, t }: { templates: WorkflowTemplate[]; selectedWorkflowIds: string[]; allowNestedDynamic: boolean; invalid: boolean; onChange: (workflowIds: string[]) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   const [open, setOpen] = useState(false);
-  const selected = new Set(selectedWorkflowIds);
-  const workflowIdCounts = workflowIdCountMap(templates);
-  const uniqueSelectableTemplateByWorkflowId = new Map(
-    templates
-      .filter((template) => workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t) === null)
-      .map((template) => [template.workflow.id.trim(), template] as const),
+  const selected = useMemo(() => new Set(selectedWorkflowIds), [selectedWorkflowIds]);
+  const workflowIdCounts = useMemo(() => workflowIdCountMap(templates), [templates]);
+  const uniqueSelectableTemplateByWorkflowId = useMemo(
+    () =>
+      new Map(
+        templates
+          .filter((template) => workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t) === null)
+          .map((template) => [template.workflow.id.trim(), template] as const),
+      ),
+    [templates, workflowIdCounts, allowNestedDynamic, t],
   );
-  const selectedTemplates = selectedWorkflowIds
-    .map((workflowId) => uniqueSelectableTemplateByWorkflowId.get(workflowId))
-    .filter((template): template is WorkflowTemplate => Boolean(template));
-  const invalidWorkflowIds = selectedWorkflowIds.filter((workflowId) => !uniqueSelectableTemplateByWorkflowId.has(workflowId));
-  const workflowOptions = templates.map((template) => ({
-    template,
-    reason: workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t),
-  }));
-  const selectableOptions = workflowOptions.filter((option) => option.reason === null);
-  const disabledOptions = workflowOptions.filter((option) => option.reason !== null);
+  const selectedTemplates = useMemo(
+    () =>
+      selectedWorkflowIds
+        .map((workflowId) => uniqueSelectableTemplateByWorkflowId.get(workflowId))
+        .filter((template): template is WorkflowTemplate => Boolean(template)),
+    [selectedWorkflowIds, uniqueSelectableTemplateByWorkflowId],
+  );
+  const invalidWorkflowIds = useMemo(
+    () => selectedWorkflowIds.filter((workflowId) => !uniqueSelectableTemplateByWorkflowId.has(workflowId)),
+    [selectedWorkflowIds, uniqueSelectableTemplateByWorkflowId],
+  );
+  const workflowOptions = useMemo(
+    () =>
+      templates.map((template) => ({
+        template,
+        reason: workflowDisabledReason(template, workflowIdCounts, allowNestedDynamic, t),
+      })),
+    [templates, workflowIdCounts, allowNestedDynamic, t],
+  );
+  const selectableOptions = useMemo(
+    () => workflowOptions.filter((option) => option.reason === null),
+    [workflowOptions],
+  );
+  const disabledOptions = useMemo(
+    () => workflowOptions.filter((option) => option.reason !== null),
+    [workflowOptions],
+  );
   const toggleWorkflow = (workflowId: string) => {
     const next = selected.has(workflowId)
       ? selectedWorkflowIds.filter((item) => item !== workflowId)

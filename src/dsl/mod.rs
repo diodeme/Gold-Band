@@ -242,6 +242,8 @@ impl NodeDsl {
 pub struct WorkerNode {
     pub id: String,
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub profile: Option<String>,
     pub goal: Option<String>,
     pub output: Option<OutputContractDsl>,
@@ -308,7 +310,10 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| serde::de::Error::missing_field("agentStrategy"))?;
-                AiDynamicAgentStrategy::Fixed { provider }
+                AiDynamicAgentStrategy::Fixed {
+                    provider,
+                    model: None,
+                }
             }
         };
         Ok(Self {
@@ -337,7 +342,7 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
 impl AiDynamicNode {
     pub fn bootstrap_provider(&self) -> Option<&str> {
         match &self.agent_strategy {
-            AiDynamicAgentStrategy::Fixed { provider } => Some(provider.as_str()),
+            AiDynamicAgentStrategy::Fixed { provider, .. } => Some(provider.as_str()),
             AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider, ..
             } => Some(bootstrap_provider.as_str()),
@@ -359,12 +364,24 @@ pub enum AiDynamicAgentStrategy {
     #[serde(rename_all = "camelCase")]
     Fixed {
         provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Dynamic {
         bootstrap_provider: String,
         routing_prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_agents: Vec<DynamicAgentRef>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicAgentRef {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,6 +513,12 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
         !provider.is_empty(),
         "worker node `{id}` provider cannot be blank"
     );
+    if let Some(model) = &worker.model {
+        ensure!(
+            !model.trim().is_empty(),
+            "worker node `{id}` model cannot be blank"
+        );
+    }
     if let Some(profile) = &worker.profile {
         ensure!(
             !profile.trim().is_empty(),
@@ -565,15 +588,22 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
 
 fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     match &node.agent_strategy {
-        AiDynamicAgentStrategy::Fixed { provider } => {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
             ensure!(
                 !provider.trim().is_empty(),
                 "ai-dynamic node `{id}` fixed provider cannot be blank"
             );
+            if let Some(model) = model {
+                ensure!(
+                    !model.trim().is_empty(),
+                    "ai-dynamic node `{id}` fixed model cannot be blank"
+                );
+            }
         }
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             routing_prompt,
+            available_agents,
         } => {
             ensure!(
                 !bootstrap_provider.trim().is_empty(),
@@ -583,6 +613,28 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                 !routing_prompt.trim().is_empty(),
                 "ai-dynamic node `{id}` routingPrompt cannot be blank"
             );
+            ensure!(
+                !available_agents.is_empty(),
+                "ai-dynamic node `{id}` availableAgents cannot be empty"
+            );
+            let mut seen_providers = HashSet::new();
+            for agent_ref in available_agents {
+                let provider = agent_ref.provider.trim();
+                ensure!(
+                    !provider.is_empty(),
+                    "ai-dynamic node `{id}` available agent provider cannot be blank"
+                );
+                ensure!(
+                    seen_providers.insert(provider.to_string()),
+                    "ai-dynamic node `{id}` available agent `{provider}` is duplicated"
+                );
+                if let Some(model) = &agent_ref.model {
+                    ensure!(
+                        !model.trim().is_empty(),
+                        "ai-dynamic node `{id}` available agent `{provider}` model cannot be blank"
+                    );
+                }
+            }
         }
     }
     if let Some(permission_mode) = &node.permission_mode {

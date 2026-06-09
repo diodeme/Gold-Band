@@ -719,13 +719,13 @@ pub fn conversation_run_vm(
             crate::view_models::dynamic_acp_session_vm(
                 app, task_id, run_id, &leaf.round_id,
                 outer_id, outer_attempt,
-                &leaf.node_id, &leaf.attempt_id, None,
+                &leaf.node_id, &leaf.attempt_id, None, None,
             )
             .ok()
             .flatten()
         } else {
             crate::view_models::acp_session_vm(
-                app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None,
+                app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None, None,
             )
             .ok()
             .flatten()
@@ -997,7 +997,7 @@ fn build_auto_workflow(agent_type: &str, _model_id: Option<&str>, permission_mod
         nodes: vec![
             NodeDsl::AiDynamic(AiDynamicNode {
                 id: "ai-dynamic".to_string(),
-                agent_strategy: AiDynamicAgentStrategy::Fixed { provider },
+                agent_strategy: AiDynamicAgentStrategy::Fixed { provider, model: None },
                 permission_mode: permission_mode.map(|s| s.to_string()),
                 allowed_profiles: Vec::new(),
                 global_goal: global_goal.map(|s| s.to_string()),
@@ -1179,13 +1179,13 @@ pub fn switch_conversation_session_vm(
         crate::view_models::dynamic_acp_session_vm(
             app, task_id, run_id, round_id,
             outer_id, outer_attempt,
-            node_id, attempt_id, None,
+            node_id, attempt_id, None, None,
         )
         .ok()
         .flatten()
     } else {
         crate::view_models::acp_session_vm(
-            app, task_id, run_id, round_id, node_id, attempt_id, None,
+            app, task_id, run_id, round_id, node_id, attempt_id, None, None,
         )
         .ok()
         .flatten()

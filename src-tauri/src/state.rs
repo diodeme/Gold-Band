@@ -10,7 +10,7 @@ use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
 
-use crate::updater::{StartupCheckResult, UpdateInfoVm, UpdateStatusVm, initial_update_status};
+use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -87,7 +87,7 @@ pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
-    startup_check: Mutex<Option<StartupCheckResult>>,
+    pending_critical_update: Mutex<Option<Vec<u8>>>,
 }
 
 impl DesktopState {
@@ -98,7 +98,7 @@ impl DesktopState {
             context: Mutex::new(context),
             agent_diagnostics: Mutex::new(persisted_diagnostics),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
-            startup_check: Mutex::new(None),
+            pending_critical_update: Mutex::new(None),
         }
     }
 
@@ -157,19 +157,19 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn get_startup_check(&self) -> Option<StartupCheckResult> {
-        self.startup_check
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-    }
-
-    pub fn set_startup_check(&self, result: StartupCheckResult) -> Result<()> {
-        self.startup_check
+    pub fn store_pending_update(&self, bytes: Vec<u8>) -> Result<()> {
+        self.pending_critical_update
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .replace(result);
+            .replace(bytes);
         Ok(())
+    }
+
+    pub fn take_pending_update(&self) -> Option<Vec<u8>> {
+        self.pending_critical_update
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
     }
 
     pub fn persist_updater_last_checked_at(&self, checked_at: Option<String>) -> Result<()> {

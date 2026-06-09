@@ -3,7 +3,7 @@ use std::process::{Child, Stdio};
 use anyhow::{Context, Result, ensure};
 
 use crate::config::AcpAdapterConfig;
-use crate::process::{background_command, find_executable_in_path};
+use crate::process::{background_command, find_executable_in_path, resolve_cmd_to_exe};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
@@ -45,7 +45,10 @@ pub fn spawn_adapter(
     }
     if use_local_claude && !config.env.contains_key("CLAUDE_CODE_EXECUTABLE") {
         if let Some(claude_path) = find_executable_in_path("claude") {
-            command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+            // Ensure we pass a real executable, not a .cmd wrapper that
+            // Node.js child_process.spawn() cannot launch on Windows.
+            let executable_path = resolve_cmd_to_exe(&claude_path).unwrap_or(claude_path);
+            command.env("CLAUDE_CODE_EXECUTABLE", executable_path);
         }
     }
     let child = command

@@ -176,6 +176,11 @@ struct UpdateDownloadProgress {
 }
 
 pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    // 清除后台静默下载的 pending bytes，防止退出时重复安装
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.take_pending_update();
+    }
+
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {
         return Err(anyhow!("updater.no-update"));

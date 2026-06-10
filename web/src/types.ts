@@ -5,11 +5,6 @@ export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
-export interface StartupCheckResult {
-  critical: boolean;
-  error?: string | null;
-}
-
 export interface PreferencesVm {
   theme: DesktopThemePreference;
   language: DesktopLanguage;
@@ -28,6 +23,14 @@ export interface UpdaterSettingsVm {
   overrideUrl?: string | null;
   effectiveUrl: string;
   pollIntervalMinutes: number;
+}
+
+export interface MetricsSettingsVm {
+  enabled: boolean;
+  toggleLocked: boolean;
+  heartbeatEndpoint: string | null;
+  nodeMetricsEndpoint: string | null;
+  apiKeySet: boolean;
 }
 
 export interface UpdateInfoVm {
@@ -56,6 +59,7 @@ export interface AppBootstrapVm {
   recentWorkspaces: string[];
   preferences: PreferencesVm;
   updaterSettings: UpdaterSettingsVm;
+  metricsSettings: MetricsSettingsVm;
   updateStatus: UpdateStatusVm;
   updateBadges: UpdateBadgeStateVm;
   persistedAvailableUpdate?: UpdateInfoVm | null;

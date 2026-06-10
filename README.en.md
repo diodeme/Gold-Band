@@ -6,6 +6,8 @@
 
 > Local · Workflow-Driven · AI Agent Orchestration
 >
+> Harness Engineering | Loop Engineering
+>
 > Making long-running AI Coding tasks more controllable, observable, and reliable
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)

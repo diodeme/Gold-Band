@@ -170,7 +170,8 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     let stderr_writer = BoxMakeWriter::new(std::io::stderr);
 
     let progress_filter = EnvFilter::new(format!("{PROGRESS_TARGET}=info"));
-    let debug_filter = EnvFilter::new(format!("gold_band={}", config.log_level.as_directive()));
+    let level = config.log_level.as_directive();
+    let debug_filter = EnvFilter::new(format!("gold_band={level},gold_band_desktop={level}"));
 
     let file_layer = fmt::layer()
         .with_ansi(false)

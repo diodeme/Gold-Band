@@ -3,7 +3,7 @@ use crate::domain::{ResolvedConfig, RunStatus, VERSION};
 use crate::dsl::{JsonConditionDsl, NodeDsl};
 use crate::runtime::NodeState;
 
-use super::ids::now_rfc3339_like;
+use super::ids::{generate_uuid, now_rfc3339_like};
 
 pub(crate) fn create_node_state(
     run_id: &str,
@@ -26,6 +26,7 @@ pub(crate) fn create_node_state(
         finished_at: None,
         manual_check_pending: false,
         resolved_config: resolved_config_for_node(node_dsl, resolved_profile),
+        uuid: Some(generate_uuid()),
     }
 }
 
@@ -58,6 +59,10 @@ pub(crate) fn resolved_config_for_node(
                 );
             }
             if let Some(profile) = resolved_profile.as_ref() {
+                config.insert(
+                    "profileName".to_string(),
+                    serde_json::Value::String(profile.display_name.clone()),
+                );
                 config.insert(
                     "profileSource".to_string(),
                     serde_json::to_value(&profile.source).expect("serialize profile source"),
@@ -119,6 +124,10 @@ pub(crate) fn resolved_config_for_node(
                 );
             }
             if let Some(profile) = resolved_profile.as_ref() {
+                config.insert(
+                    "profileName".to_string(),
+                    serde_json::Value::String(profile.display_name.clone()),
+                );
                 config.insert(
                     "profileSource".to_string(),
                     serde_json::to_value(&profile.source).expect("serialize profile source"),

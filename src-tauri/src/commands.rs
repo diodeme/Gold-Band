@@ -36,6 +36,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
+use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     StartupCheckResult, UpdateStatusVm, UpdaterSettingsVm, check_update,
@@ -605,7 +606,7 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -620,7 +621,7 @@ pub fn continue_run(
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -638,7 +639,7 @@ pub fn submit_manual_check(
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -662,7 +663,7 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -729,6 +730,38 @@ pub fn get_log_page(
 ) -> CommandResult<LogPageVm> {
     let app = state.app().map_err(command_error)?;
     log_page_vm(&app, query).map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<MetricsSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let vm = metrics_settings(&context.config);
+    eprintln!(
+        "[metrics] enabled={} toggle_locked={} heartbeat={:?} node_metrics={:?} api_key_set={}",
+        vm.enabled, vm.toggle_locked, vm.heartbeat_endpoint, vm.node_metrics_endpoint, vm.api_key_set,
+    );
+    Ok(vm)
+}
+
+#[tauri::command]
+pub fn save_metrics_settings(
+    state: State<'_, DesktopState>,
+    enabled: bool,
+    heartbeat_endpoint: Option<String>,
+    node_metrics_endpoint: Option<String>,
+    api_key: Option<String>,
+) -> CommandResult<MetricsSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    existing.desktop_metrics_enabled = Some(enabled);
+    existing.desktop_heartbeat_endpoint = heartbeat_endpoint.filter(|s| !s.trim().is_empty());
+    existing.desktop_node_metrics_endpoint = node_metrics_endpoint.filter(|s| !s.trim().is_empty());
+    existing.desktop_metrics_api_key = api_key.filter(|s| !s.trim().is_empty());
+    app.save_settings(&existing).map_err(command_error)?;
+    state.update_settings_config(&existing).map_err(command_error)?;
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(metrics_settings(&updated_context.config))
 }
 
 fn acp_live_update_emitter(

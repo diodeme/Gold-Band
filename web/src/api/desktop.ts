@@ -3,6 +3,16 @@ import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
+// ── Metrics Settings ──
+
+export interface MetricsSettingsVm {
+    enabled: boolean;
+    toggleLocked: boolean;
+    heartbeatEndpoint: string | null;
+    nodeMetricsEndpoint: string | null;
+    apiKeySet: boolean;
+}
+
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
@@ -164,6 +174,12 @@ export const desktopApi: RuntimeApi = {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });
   },
+  getMetricsSettings() {
+    return invokeCommand<MetricsSettingsVm>('get_metrics_settings');
+  },
+  saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
+    return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey });
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },
@@ -181,9 +197,6 @@ export const desktopApi: RuntimeApi = {
   },
   downloadAndInstallUpdate() {
     return invokeCommand('download_and_install_update');
-  },
-  getStartupCheckResult() {
-    return invokeCommand<import('../types').StartupCheckResult | null>('get_startup_check_result');
   },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {

@@ -20,6 +20,7 @@ use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, Worker
 
 use crate::channel::current_channel_config;
 use crate::i18n::Translator;
+use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
@@ -59,6 +60,7 @@ pub struct AppBootstrapVm {
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
     pub updater_settings: UpdaterSettingsVm,
+    pub metrics_settings: MetricsSettingsVm,
     pub update_status: UpdateStatusVm,
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
@@ -826,8 +828,13 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     }
 }
 
-fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>) -> Option<UpdateInfoVm> {
-    update.map(|update| UpdateInfoVm {
+fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>, current_version: &str) -> Option<UpdateInfoVm> {
+    let update = update?;
+    // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
+    if update.current_version != current_version {
+        return None;
+    }
+    Some(UpdateInfoVm {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
         notes: update.notes.clone(),
@@ -849,6 +856,7 @@ pub fn bootstrap_vm(
     client_version: impl Into<String>,
     needs_workspace: bool,
 ) -> AppBootstrapVm {
+    let client_version_string: String = client_version.into();
     let channel_config = current_channel_config();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
@@ -860,12 +868,14 @@ pub fn bootstrap_vm(
             app.config.use_local_claude,
         ),
         updater_settings: updater_settings(&app.config),
+        metrics_settings: metrics_settings(&app.config),
         update_status,
         update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
         persisted_available_update: persisted_available_update_vm(
             app.config.desktop_available_update.as_ref(),
+            &client_version_string,
         ),
-        client_version: client_version.into(),
+        client_version: client_version_string,
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),

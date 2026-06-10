@@ -322,19 +322,21 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
     Ok(())
 }
 
-/// 从文件路径安装更新包，成功则删除文件
+/// 从文件路径安装更新包
+/// 先删文件再 install —— Windows NSIS 安装器会重启 App 杀死当前进程，
+/// 若 install 后才删文件可能没机会执行，导致残留文件 → 下次启动死循环
 pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino::Utf8Path) -> Result<()> {
     let bytes = std::fs::read(path.as_std_path()).context("failed to read pending update file")?;
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {
-        // 版本已最新？清理残留文件
         let _ = std::fs::remove_file(path.as_std_path());
+        let _ = std::fs::remove_dir(pending_update_dir());
         return Err(anyhow!("updater.no-update"));
     };
-    update.install(bytes).context("updater.install-failed")?;
-    // 安装成功，删除文件和空目录
+    // 先删文件，再安装 —— 即使 install 内 App 被重启，文件也不残留
     let _ = std::fs::remove_file(path.as_std_path());
     let _ = std::fs::remove_dir(pending_update_dir());
+    update.install(bytes).context("updater.install-failed")?;
     Ok(())
 }
 

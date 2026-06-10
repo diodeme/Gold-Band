@@ -366,6 +366,9 @@ pub struct MetricsEventContext {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
+    // Used by NodeCompleted to report the real status instead of hardcoding.
+    pub outcome: Option<String>,
 }
 
 /// Event types emitted by the orchestrator for metrics reporting.

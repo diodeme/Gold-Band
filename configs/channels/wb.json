@@ -17,5 +17,5 @@
   "metricsToggleLocked": true,
   "heartbeatEndpoint": "http://maling.weoa.com/api/client-report/heartbeat",
   "nodeMetricsEndpoint": "http://maling.weoa.com/api/client-report/metrics/batch",
-  "metricsApiKey": "hMfUAuGbxO1mNYruf80z00O24GmoSga2eAxlS_bK7zQ"
+  "metricsApiKey": ""
 }

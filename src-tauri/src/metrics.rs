@@ -450,7 +450,8 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                 let user_id = get_system_username();
                 let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
-                // Last completed node
+                // Last completed node — use actual outcome from orchestrator
+                let last_node_status = ctx.outcome.clone().unwrap_or_else(|| "SUCCESS".to_string());
                 let last_node = NodeMetricItem {
                     workspace: ctx.repo_root.clone(),
                     user_id: user_id.clone(),
@@ -468,13 +469,13 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                     output_tokens: ctx.output_tokens,
                     cache_read_tokens: ctx.cache_read_tokens,
                     total_tokens: ctx.total_tokens,
-                    status: "SUCCESS".to_string(),
+                    status: last_node_status.clone(),
                     reported_at: Some(reported_at.clone()),
                 };
                 let end_started = ctx.finished_at.as_ref()
                     .map(|s| to_iso8601(s))
                     .unwrap_or_else(|| reported_at.clone());
-                // End sentinel
+                // End sentinel inherits the last node's outcome
                 let end_sentinel = NodeMetricItem {
                     workspace: ctx.repo_root.clone(),
                     user_id: user_id.clone(),
@@ -492,7 +493,7 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                     output_tokens: 0,
                     cache_read_tokens: 0,
                     total_tokens: 0,
-                    status: "SUCCESS".to_string(),
+                    status: last_node_status,
                     reported_at: Some(reported_at.clone()),
                 };
                 let batch = NodeMetricBatch { metrics: vec![last_node, end_sentinel] };

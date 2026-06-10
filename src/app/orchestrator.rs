@@ -4573,6 +4573,7 @@ fn drive_from_node_with_initial_session(
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 total_tokens: 0,
+                outcome: None,
             };
             metrics_cb(metrics_ctx, super::MetricsEvent::NodeStarted {
                 predecessor: run.last_executed_node.clone(),
@@ -5023,6 +5024,7 @@ fn drive_from_node_with_initial_session(
                 output_tokens: ot,
                 cache_read_tokens: cr,
                 total_tokens: tt,
+                outcome: Some(status_str.to_string()),
             };
             // Send with predecessor = this node's final state
             metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);

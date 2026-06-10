@@ -176,9 +176,12 @@ struct UpdateDownloadProgress {
 }
 
 pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-    // 清除后台静默下载的 pending bytes，防止退出时重复安装
+    // 清除后台静默下载的文件，防止退出时重复安装
     if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.take_pending_update();
+        if let Some(path) = state.take_pending_update() {
+            let _ = std::fs::remove_file(path.as_std_path());
+            let _ = std::fs::remove_dir(pending_update_dir());
+        }
     }
 
     let updater = build_updater(app)?;

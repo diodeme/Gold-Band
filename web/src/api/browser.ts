@@ -197,6 +197,9 @@ export const browserApi: RuntimeApi = {
   showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
   },
+  showConversationAttachment(_taskId: string, name: string) {
+    return Promise.resolve({ ...mockContent, title: name, kind: 'input-attachment' });
+  },
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
@@ -251,6 +254,9 @@ export const browserApi: RuntimeApi = {
   downloadAndInstallUpdate() {
     return Promise.resolve();
   },
+  getStartupCheckResult() {
+    return Promise.resolve(null);
+  },
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {
     return Promise.resolve();
@@ -277,12 +283,16 @@ export const browserApi: RuntimeApi = {
       activeSessions: [],
       artifacts: [],
       attachments: [],
+      inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
     };
     return Promise.resolve(run);
+  },
+  switchConversationSession(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ selectedSession: null, artifacts: [], attachments: [] });
   },
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
@@ -301,6 +311,7 @@ export const browserApi: RuntimeApi = {
       activeSessions: [],
       artifacts: [],
       attachments: [],
+      inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
@@ -347,6 +358,9 @@ export const browserApi: RuntimeApi = {
   },
   saveConversationPreference(_key, _value) {
     return Promise.resolve();
+  },
+  pickAttachmentFiles() {
+    return Promise.resolve([]);
   },
   openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();

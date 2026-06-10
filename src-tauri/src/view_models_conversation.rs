@@ -1,15 +1,21 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use gold_band::config::ConversationState;
+use gold_band::config::StateConfig;
 use gold_band::app::App;
 use gold_band::app::is_run_continuable;
+use gold_band::app::CreateTaskInput;
 use gold_band::domain::RunStatus;
 use gold_band::domain::NodeType;
 use gold_band::dynamic::DynamicGraphState;
-use gold_band::dsl::WorkflowDsl;
-use gold_band::storage::read_json;
+use gold_band::dsl::{
+    AiDynamicAgentStrategy, AiDynamicNode, EdgeDsl, EdgeOutcome, NodeDsl, WorkflowDsl,
+    END_NODE,
+};
+use gold_band::storage::{read_json, write_json};
 use crate::view_models::{round_detail_vm, workflow_graph_vm, AssetItemVm, GraphVm};
 
 // ── Conversation View Models ──
@@ -77,6 +83,7 @@ pub struct ConversationRunVm {
     pub active_sessions: Vec<ConversationActiveSessionVm>,
     pub artifacts: Vec<crate::view_models::AssetItemVm>,
     pub attachments: Vec<crate::view_models::AssetItemVm>,
+    pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
     pub workflow_valid: bool,
     pub workflow_error: Option<crate::view_models::WorkflowErrorVm>,
@@ -84,6 +91,14 @@ pub struct ConversationRunVm {
     pub workflow_graph: GraphVm,
     pub resumable: bool,
     pub pause_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSessionSwitchVm {
+    pub selected_session: Option<crate::view_models::AcpSessionVm>,
+    pub artifacts: Vec<crate::view_models::AssetItemVm>,
+    pub attachments: Vec<crate::view_models::AssetItemVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,7 +223,7 @@ pub struct ConversationSearchResultVm {
 
 pub fn conversation_sidebar_vm(
     app: &App,
-    conv_state: &ConversationState,
+    state: &StateConfig,
 ) -> ConversationSidebarVm {
     // Build workspaces: always include the default (current repo) workspace,
     // then merge stored workspaces, deduplicating by project_id.
@@ -227,7 +242,7 @@ pub fn conversation_sidebar_vm(
         name: default_name,
     }];
 
-    for w in &conv_state.conversation_workspaces {
+    for w in &state.conversation_workspaces {
         if w.project_id != default_project_id {
             workspaces.push(ConversationWorkspaceVm {
                 project_id: w.project_id.clone(),
@@ -242,7 +257,7 @@ pub fn conversation_sidebar_vm(
     // Read real tasks from the app
     let mut pinned_tasks: Vec<ConversationTaskRowVm> = Vec::new();
     let mut tasks_by_workspace: HashMap<String, Vec<ConversationTaskRowVm>> = HashMap::new();
-    let pinned_set: std::collections::HashSet<(String, String)> = conv_state
+    let pinned_set: std::collections::HashSet<(String, String)> = state
         .conversation_pins
         .iter()
         .map(|p| (p.project_id.clone(), p.task_id.clone()))
@@ -259,7 +274,7 @@ pub fn conversation_sidebar_vm(
             let task_id = &summary.task.id;
             let project_id = &default_project_id; // Single workspace for now
             let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
-            let pin_order = conv_state.conversation_pins.iter()
+            let pin_order = state.conversation_pins.iter()
                 .find(|p| p.project_id == *project_id && p.task_id == *task_id)
                 .map(|p| p.order);
 
@@ -349,7 +364,7 @@ pub fn conversation_sidebar_vm(
         });
     }
 
-    let last_active_workspace_id = conv_state.last_conversation_workspace.clone()
+    let last_active_workspace_id = state.last_conversation_workspace.clone()
         .or_else(|| workspaces.first().map(|w| w.project_id.clone()));
 
     ConversationSidebarVm {
@@ -436,23 +451,19 @@ pub fn conversation_run_vm(
     run_id: &str,
     selected_session_key: Option<&str>,
 ) -> anyhow::Result<ConversationRunVm> {
-    eprintln!("[conv_run] loading task={task_id} run={run_id} project={project_id}");
 
     // Read the run state from disk
     let run = match app.run_status(task_id, run_id) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[conv_run] run_status FAILED: {e:#}");
             return Err(anyhow::anyhow!("run not found: {task_id}/{run_id}: {e}"));
         }
     };
-    eprintln!("[conv_run] run loaded: status={:?} outcome={:?}", run.status, run.outcome);
 
     // Read the task state for title
     let task_state = app.task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
     let title = task_state.title.unwrap_or_else(|| task_id.to_string());
-    eprintln!("[conv_run] task title={title}");
 
     // Read conversation metadata if exists
     let conversation_json_path = app.paths.task_dir(task_id)
@@ -467,7 +478,6 @@ pub fn conversation_run_vm(
     } else {
         ("workflow".to_string(), false)
     };
-    eprintln!("[conv_run] run_mode={run_mode} auto_title={auto_title}");
 
     // Build the session tree from rounds/nodes/attempts
     // Read workflow snapshot once for node order + validity + raw JSON
@@ -487,7 +497,6 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
-    eprintln!("[conv_run] found {} rounds", rounds.len());
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
 
@@ -501,7 +510,6 @@ pub fn conversation_run_vm(
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        eprintln!("[conv_run]   round {} ({}) → {} nodes", round.index, round.id, nodes.len());
         let mut tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
 
         for node in &nodes {
@@ -509,7 +517,6 @@ pub fn conversation_run_vm(
             let all_attempts = app.attempt_list(
                 task_id, run_id, &round.id, &node.node_id,
             )?;
-            eprintln!("[conv_run]     node {} (type={:?}) → {} attempts ai_dynamic={is_ai_dynamic}", node.node_id, node.node_type, all_attempts.len());
 
             // Build child nodes for AI-DYNAMIC
             let mut outer_nodes: Option<Vec<ConversationTreeNodeVm>> = None;
@@ -536,7 +543,6 @@ pub fn conversation_run_vm(
                                 })
                                 .unwrap_or_default();
                             dyn_attempt_ids.sort();
-                            eprintln!("[conv_run]       dynamic child {} → {} attempts", dyn_node.id, dyn_attempt_ids.len());
 
                             let mut dyn_leafs: Vec<ConversationSessionLeafVm> = Vec::new();
                             for dyn_attempt_id in &dyn_attempt_ids {
@@ -609,7 +615,6 @@ pub fn conversation_run_vm(
                                 outer_nodes: None,
                             });
                         }
-                        eprintln!("[conv_run]       built {} dynamic child tree nodes", dynamic_tree_nodes.len());
                         outer_nodes = Some(dynamic_tree_nodes);
                     }
                 }
@@ -707,21 +712,10 @@ pub fn conversation_run_vm(
             format!("{}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id)
         }
     });
-    eprintln!("[conv_run] effective_key={effective_key:?}");
 
     // Load the selected ACP session
     let selected_session = if let Some(ref leaf) = selected_leaf {
         if let (Some(outer_id), Some(outer_attempt)) = (leaf.outer_node_id.as_deref(), leaf.outer_attempt_id.as_deref()) {
-            eprintln!("[conv_run] loading dynamic_acp_session outer={outer_id}/{outer_attempt} node={}/{}", leaf.node_id, leaf.attempt_id);
-            match crate::view_models::dynamic_acp_session_vm(
-                app, task_id, run_id, &leaf.round_id,
-                outer_id, outer_attempt,
-                &leaf.node_id, &leaf.attempt_id, None,
-            ) {
-                Ok(Some(ref session)) => eprintln!("[conv_run] dynamic acp_session loaded: {} events", session.events.len()),
-                Ok(None) => eprintln!("[conv_run] dynamic acp_session returned None (no data on disk)"),
-                Err(ref e) => eprintln!("[conv_run] dynamic acp_session error: {e:#}"),
-            }
             crate::view_models::dynamic_acp_session_vm(
                 app, task_id, run_id, &leaf.round_id,
                 outer_id, outer_attempt,
@@ -730,14 +724,6 @@ pub fn conversation_run_vm(
             .ok()
             .flatten()
         } else {
-            eprintln!("[conv_run] loading acp_session for {}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id);
-            match crate::view_models::acp_session_vm(
-                app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None,
-            ) {
-                Ok(Some(ref session)) => eprintln!("[conv_run] acp_session loaded: {} events", session.events.len()),
-                Ok(None) => eprintln!("[conv_run] acp_session returned None (no data on disk)"),
-                Err(ref e) => eprintln!("[conv_run] acp_session error: {e:#}"),
-            }
             crate::view_models::acp_session_vm(
                 app, task_id, run_id, &leaf.round_id, &leaf.node_id, &leaf.attempt_id, None,
             )
@@ -745,10 +731,8 @@ pub fn conversation_run_vm(
             .flatten()
         }
     } else {
-        eprintln!("[conv_run] no selected_leaf, skipping acp_session load");
         None
     };
-    eprintln!("[conv_run] selected_session={}", if selected_session.is_some() { "Some" } else { "None" });
 
     let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
         if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -811,6 +795,8 @@ pub fn conversation_run_vm(
         (Vec::new(), Vec::new())
     };
 
+    let input_attachments = input_attachments_vm(app, task_id);
+
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
     let run_outcome = run.outcome.map(|o| enum_label(&o));
@@ -856,6 +842,7 @@ pub fn conversation_run_vm(
         active_sessions,
         artifacts,
         attachments,
+        input_attachments,
         workflow_status: "valid".to_string(),
         workflow_valid,
         workflow_error: None,
@@ -865,58 +852,271 @@ pub fn conversation_run_vm(
     })
 }
 
+// ── Attachment validation helpers ──
+
+const MAX_ATTACHMENT_COUNT: usize = 10;
+const MAX_ATTACHMENT_PER_FILE: u64 = 25 * 1024 * 1024; // 25 MB
+const MAX_ATTACHMENT_TOTAL: u64 = 100 * 1024 * 1024; // 100 MB
+
+fn allowed_attachment_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt" | "md" | "json" | "jsonl" | "csv"
+            | "png" | "jpg" | "jpeg" | "webp"
+            | "rs" | "ts" | "tsx" | "js" | "jsx" | "py"
+            | "go" | "java" | "c" | "cpp" | "h" | "hpp"
+            | "html" | "css" | "xml" | "yaml" | "yml" | "toml"
+    )
+}
+
+fn validate_attachment_paths(paths: &[String]) -> Vec<String> {
+    let mut errors: Vec<String> = Vec::new();
+    if paths.len() > MAX_ATTACHMENT_COUNT {
+        errors.push("conversation.attachment-count-exceeded".to_string());
+        return errors;
+    }
+    let mut total_size: u64 = 0;
+    let mut seen = std::collections::HashSet::new();
+    for p in paths {
+        if !seen.insert(p) {
+            continue;
+        }
+        let path = Path::new(p);
+        if !path.exists() {
+            errors.push("conversation.attachment-not-found".to_string());
+            continue;
+        }
+        if path.is_dir() {
+            errors.push("conversation.attachment-unsupported-type".to_string());
+            continue;
+        }
+        let meta = match path.metadata() { Ok(m) => m, Err(_) => { errors.push("conversation.attachment-unreadable".to_string()); continue; } };
+        if meta.len() == 0 { errors.push("conversation.attachment-unreadable".to_string()); continue; }
+        if meta.len() > MAX_ATTACHMENT_PER_FILE { errors.push("conversation.attachment-too-large".to_string()); continue; }
+        total_size += meta.len();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !allowed_attachment_ext(ext.to_lowercase().as_str()) {
+            errors.push("conversation.attachment-unsupported-type".to_string());
+        }
+    }
+    if total_size > MAX_ATTACHMENT_TOTAL {
+        errors.push("conversation.attachment-total-too-large".to_string());
+    }
+    errors
+}
+
+fn missing_item(code: &str, label: &str, recovery_path: &str) -> ConversationMissingItemVm {
+    ConversationMissingItemVm { code: code.to_string(), label: label.to_string(), recovery_path: recovery_path.to_string() }
+}
+
+// ── Input attachments (task-level authoring) ──
+
+fn input_attachments_vm(app: &App, task_id: &str) -> Vec<AssetItemVm> {
+    let dir = app.paths.task_dir(task_id).join("authoring").join("attachments");
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut files: Vec<AssetItemVm> = std::fs::read_dir(dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .filter_map(|entry| {
+                    let name = entry.file_name().into_string().ok()?;
+                    let size = entry.metadata().ok()?.len();
+                    Some(AssetItemVm {
+                        kind: "input-attachment".to_string(),
+                        title: format!("{} ({} KB)", name, size / 1024),
+                        preview: name.clone(),
+                        tone: "info".to_string(),
+                        round_id: String::new(),
+                        node_id: String::new(),
+                        attempt_id: String::new(),
+                        name,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files
+}
+
+// ── Validated create ──
+
 pub fn validate_conversation_create_vm(
-    _app: &App,
-    _input: &ConversationCreateInputVm,
+    app: &App,
+    input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
+    let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
+
+    if input.content.trim().is_empty() {
+        missing.push(missing_item("content.required", "Content is required", "/chat"));
+    }
+
+    if input.run_mode == "auto" {
+        let config = input.auto_config.as_ref();
+        if config.map(|c| c.agent_type.trim().is_empty()).unwrap_or(true) {
+            missing.push(missing_item("agent.required", "Agent is required for AUTO mode", "/chat/agents"));
+        }
+    } else if input.run_mode == "workflow" {
+        if input.workflow_template_id.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+            missing.push(missing_item("workflow.required", "Workflow template is required", "/chat/run-modes"));
+        } else if let Some(ref tid) = input.workflow_template_id {
+            let store = app.workflow_templates().ok();
+            let found = store.as_ref().and_then(|s| s.templates.iter().find(|t| t.id == *tid));
+            if found.is_none() {
+                missing.push(missing_item("workflow.not-found", "Selected workflow template not found", "/chat/run-modes"));
+            }
+        }
+    }
+
+    // Validate attachments
+    if let Some(ref paths) = input.attachment_paths {
+        let errors = validate_attachment_paths(paths);
+        for code in &errors {
+            missing.push(missing_item(code, code, "/chat"));
+        }
+    }
+
     Ok(ConversationValidationResultVm {
-        valid: true,
-        missing_items: Vec::new(),
+        valid: missing.is_empty(),
+        missing_items: missing,
     })
 }
 
+// ── Real create ──
+
+fn build_auto_workflow(agent_type: &str, _model_id: Option<&str>, permission_mode: Option<&str>, global_goal: Option<&str>) -> WorkflowDsl {
+    let provider = agent_type.to_string();
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "auto-workflow".to_string(),
+        entry: "ai-dynamic".to_string(),
+        control: Default::default(),
+        nodes: vec![
+            NodeDsl::AiDynamic(AiDynamicNode {
+                id: "ai-dynamic".to_string(),
+                agent_strategy: AiDynamicAgentStrategy::Fixed { provider },
+                permission_mode: permission_mode.map(|s| s.to_string()),
+                allowed_profiles: Vec::new(),
+                global_goal: global_goal.map(|s| s.to_string()),
+                control: Default::default(),
+                allowed_workflows: Vec::new(),
+            }),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "ai-dynamic".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+            },
+        ],
+    }
+}
+
 pub fn create_conversation_run_vm(
-    _app: &App,
+    app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationRunVm> {
     let title = if input.content.is_empty() {
         "New Task".to_string()
     } else {
-        input
-            .content
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(12)
-            .collect()
+        input.content.lines().next().unwrap_or("").chars().take(12).collect()
     };
-    Ok(ConversationRunVm {
-        project_id: input.project_id.clone(),
-        task_id: format!("task-{}", chrono::Utc::now().timestamp_millis()),
-        run_id: format!("run-{}", chrono::Utc::now().timestamp_millis()),
-        title,
-        auto_title: true,
-        run_mode: input.run_mode.clone(),
+
+    // Build workflow
+    let workflow = if input.run_mode == "auto" {
+        let config = input.auto_config.as_ref();
+        let agent = config.map(|c| c.agent_type.as_str()).unwrap_or("");
+        let model = config.and_then(|c| c.model_id.as_deref());
+        let perm = config.and_then(|c| c.permission_mode.as_deref());
+        let goal = config.and_then(|c| c.global_goal.as_deref());
+        build_auto_workflow(agent, model, perm, goal)
+    } else {
+        // Load from template
+        let store = app.workflow_templates()?;
+        let template_id = input.workflow_template_id.as_deref().unwrap_or("default");
+        store.templates.iter()
+            .find(|t| t.id == template_id)
+            .map(|t| t.workflow.clone())
+            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?
+    };
+
+    // Create task
+    let summary = app.create_task_from_requirement(CreateTaskInput {
+        title: Some(title.clone()),
+        description: None,
+        requirement_file_name: None,
+        requirement_content: input.content.clone(),
+        workflow,
         workflow_template_id: input.workflow_template_id.clone(),
-        run_status: "running".to_string(),
-        run_outcome: None,
-        session_tree: ConversationSessionTreeVm {
-            rounds: Vec::new(),
-            selected_session_key: None,
-        },
-        selected_session: None,
-        active_sessions: Vec::new(),
-        artifacts: Vec::new(),
-        attachments: Vec::new(),
-        workflow_status: "valid".to_string(),
-        workflow_valid: true,
-        workflow_error: None,
-        workflow_json: None,
-        workflow_graph: GraphVm { nodes: Vec::new(), edges: Vec::new() },
-        resumable: false,
-        pause_reason: None,
-    })
+    })?;
+
+    let task_id = summary.task.id.clone();
+
+    // Save conversation metadata
+    let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
+    fs::create_dir_all(authoring_dir.as_std_path())?;
+
+    let meta = serde_json::json!({
+        "version": "1",
+        "source": "conversation-ui",
+        "runMode": input.run_mode,
+        "workflowTemplateId": input.workflow_template_id,
+        "titleAutoGenerated": true,
+        "initialAttachmentNames": input.attachment_paths.as_ref().map(|paths| {
+            paths.iter().map(|p| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string()).collect::<Vec<_>>()
+        }),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+    });
+    write_json(&authoring_dir.join("conversation.json"), &meta)?;
+
+    // Copy attachments to authoring dir
+    if let Some(ref paths) = input.attachment_paths {
+        let attach_dir = authoring_dir.join("attachments");
+        fs::create_dir_all(attach_dir.as_std_path())?;
+        for src in paths {
+            let src_path = Path::new(src);
+            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
+                let dest = attach_dir.join(name);
+                let _ = fs::copy(src_path, &dest);
+            }
+        }
+    }
+
+    // Start run
+    let run = app.run_start(&task_id, None)?;
+
+    // Return early VM from the run
+    conversation_run_vm(app, &input.project_id, &task_id, &run.id, None)
+        .or_else(|_| {
+            Ok(ConversationRunVm {
+                project_id: input.project_id.clone(),
+                task_id: task_id.clone(),
+                run_id: run.id,
+                title,
+                auto_title: true,
+                run_mode: input.run_mode.clone(),
+                workflow_template_id: input.workflow_template_id.clone(),
+                run_status: enum_label(&run.status),
+                run_outcome: None,
+                session_tree: ConversationSessionTreeVm { rounds: Vec::new(), selected_session_key: None },
+                selected_session: None,
+                active_sessions: Vec::new(),
+                artifacts: Vec::new(),
+                attachments: Vec::new(),
+                input_attachments: Vec::new(),
+                workflow_status: "valid".to_string(),
+                workflow_valid: true,
+                workflow_error: None,
+                workflow_json: None,
+                workflow_graph: GraphVm { nodes: Vec::new(), edges: Vec::new() },
+                resumable: false,
+                pause_reason: None,
+            })
+        })
 }
 
 pub fn rerun_conversation_task_vm(
@@ -924,8 +1124,125 @@ pub fn rerun_conversation_task_vm(
     project_id: &str,
     task_id: &str,
 ) -> anyhow::Result<ConversationRunVm> {
-    let new_run_id = format!("run-{}", chrono::Utc::now().timestamp_millis());
-    conversation_run_vm(app, project_id, task_id, &new_run_id, None)
+    // Kill running run if any
+    if let Ok(summaries) = app.task_summaries() {
+        if let Some(ts) = summaries.iter().find(|s| s.task.id == task_id) {
+            if let Some(ref latest) = ts.latest_run {
+                if latest.status == RunStatus::Running {
+                    let _ = app.run_kill(task_id, &latest.id);
+                }
+            }
+        }
+    }
+    // Start new run
+    let run = app.run_start(task_id, None)?;
+    conversation_run_vm(app, project_id, task_id, &run.id, None)
+        .or_else(|_| {
+            Ok(ConversationRunVm {
+                project_id: project_id.to_string(),
+                task_id: task_id.to_string(),
+                run_id: run.id,
+                title: String::new(),
+                auto_title: false,
+                run_mode: "workflow".to_string(),
+                workflow_template_id: None,
+                run_status: enum_label(&run.status),
+                run_outcome: None,
+                session_tree: ConversationSessionTreeVm { rounds: Vec::new(), selected_session_key: None },
+                selected_session: None,
+                active_sessions: Vec::new(),
+                artifacts: Vec::new(),
+                attachments: Vec::new(),
+                input_attachments: Vec::new(),
+                workflow_status: "valid".to_string(),
+                workflow_valid: true,
+                workflow_error: None,
+                workflow_json: None,
+                workflow_graph: GraphVm { nodes: Vec::new(), edges: Vec::new() },
+                resumable: false,
+                pause_reason: None,
+            })
+        })
+}
+
+pub fn switch_conversation_session_vm(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> anyhow::Result<ConversationSessionSwitchVm> {
+    let selected_session = if let (Some(outer_id), Some(outer_attempt)) = (outer_node_id, outer_attempt_id) {
+        crate::view_models::dynamic_acp_session_vm(
+            app, task_id, run_id, round_id,
+            outer_id, outer_attempt,
+            node_id, attempt_id, None,
+        )
+        .ok()
+        .flatten()
+    } else {
+        crate::view_models::acp_session_vm(
+            app, task_id, run_id, round_id, node_id, attempt_id, None,
+        )
+        .ok()
+        .flatten()
+    };
+
+
+    let (artifacts, attachments) = if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
+        let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
+            task_id, run_id, round_id,
+            outer_node_id, outer_attempt_id,
+            node_id, attempt_id,
+        );
+        let attachments_dir = app.paths.dynamic_node_attachments_dir(
+            task_id, run_id, round_id,
+            outer_node_id, outer_attempt_id,
+            node_id, attempt_id,
+        );
+        let artifacts = std::fs::read_dir(artifacts_dir.as_std_path())
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .map(|name| asset_item_vm("artifact", round_id, node_id, attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let attachments = std::fs::read_dir(attachments_dir.as_std_path())
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .map(|name| asset_item_vm("attachment", round_id, node_id, attempt_id, name))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        (artifacts, attachments)
+    } else {
+        let artifacts = app
+            .artifact_list(task_id, run_id, round_id, node_id, attempt_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| asset_item_vm("artifact", round_id, node_id, attempt_id, name))
+            .collect::<Vec<_>>();
+        let attachments = app
+            .attachment_list(task_id, run_id, round_id, node_id, attempt_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| asset_item_vm("attachment", round_id, node_id, attempt_id, name))
+            .collect::<Vec<_>>();
+        (artifacts, attachments)
+    };
+
+    Ok(ConversationSessionSwitchVm {
+        selected_session,
+        artifacts,
+        attachments,
+    })
 }
 
 pub fn update_task_metadata_vm(
@@ -941,6 +1258,5 @@ pub fn update_task_metadata_vm(
         task.description = Some(desc.to_string());
     }
     gold_band::storage::write_json(&app.paths.task_file(task_id), &task)?;
-    eprintln!("[conv_run] updated task metadata: title={title}");
     Ok(())
 }

@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, PanelLeft, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
@@ -30,7 +30,7 @@ export function ConversationSidebar({
   vm,
   active,
   onSelect,
-  onToggleUiMode,
+  onToggleUiMode: _onToggleUiMode,
   onNewConversation,
   onSearch,
   onSelectTask,
@@ -55,6 +55,7 @@ export function ConversationSidebar({
     if (typeof pref === 'boolean') return pref;
     return false;
   });
+  const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -70,6 +71,10 @@ export function ConversationSidebar({
     });
   };
 
+  const togglePinnedWorkspace = (projectId: string) => {
+    setCollapsedPinnedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  };
+
   const activeRunId = active.kind === 'conversation-run' ? active.runId : null;
 
   const toggleWorkspace = (projectId: string) => {
@@ -78,23 +83,7 @@ export function ConversationSidebar({
 
   return (
     <TooltipProvider>
-      <aside className="flex min-h-0 h-full flex-col gap-2 border-r bg-sidebar px-3 py-3 text-sidebar-foreground">
-        {/* Brand + toggle */}
-        <div className="flex items-center gap-2 px-1 pb-0.5">
-          <span className="grid h-6 w-9 shrink-0 place-items-center rounded-lg border border-sidebar-border bg-sidebar-accent/60 p-0.5">
-            <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
-          </span>
-          <span className="min-w-0 flex-1 text-sm font-semibold text-primary">Gold Band</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={onToggleUiMode}>
-                <PanelLeft className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent sideOffset={6}>{t('conversation.toggleToWorkbench')}</TooltipContent>
-          </Tooltip>
-        </div>
-
+      <aside className="flex min-h-0 h-full flex-col gap-2 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -137,14 +126,12 @@ export function ConversationSidebar({
           />
         </div>
 
-        <Separator className="my-0.5" />
-
         {/* Pinned section — fixed, collapsible, outside scroll */}
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0">
+          <div className="shrink-0 border-y border-border py-0.5">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-xs font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[13px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -159,33 +146,44 @@ export function ConversationSidebar({
                   }, {}),
                 ).map(([projectId, tasks]) => {
                   const ws = vm.workspaces.find((w) => w.projectId === projectId);
+                  const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
-                      <div className="px-2 py-0.5 text-[10px] font-medium text-muted-foreground/60">
-                        {ws?.name ?? projectId}
-                      </div>
-                      {tasks.map((task) => (
-                        <TaskRow
-                          key={`pinned-${task.projectId}-${task.taskId}`}
-                          task={task}
-                          pinned
-                          isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                          activeRunId={activeRunId}
-                          onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                          onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
-                          onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                          onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                          t={t}
-                        />
-                      ))}
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
+                        onClick={() => togglePinnedWorkspace(projectId)}
+                      >
+                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
+                        <span className="truncate">{ws?.name ?? projectId}</span>
+                      </button>
+                      {!isWsCollapsed ? (
+                        <div className="space-y-1">
+                          {tasks.map((task) => (
+                            <TaskRow
+                              key={`pinned-${task.projectId}-${task.taskId}`}
+                              task={task}
+                              pinned
+                              isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                              activeRunId={activeRunId}
+                              onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                              onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
+                              onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                              onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                              t={t}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
               </div>
             ) : null}
-            <Separator className="my-1" />
           </div>
-        ) : null}
+        ) : (
+          <Separator className="my-0.5" />
+        )}
 
         {/* Workspace sections — scrollable with sticky headers */}
         <ScrollArea className="min-h-0 flex-1">
@@ -215,7 +213,7 @@ export function ConversationSidebar({
                   </span>
                 </div>
                 {expandedWorkspaces[ws.projectId] ? (
-                  <div>
+                  <div className="space-y-1">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
@@ -344,7 +342,7 @@ function TaskRow({
   };
 
   return (
-    <div>
+    <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
       <div
         className={cn(
           'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
@@ -357,7 +355,7 @@ function TaskRow({
           {editing ? (
             <input
               ref={editInputRef}
-              className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-sm outline-none"
+              className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
               onBlur={commitRename}
@@ -365,7 +363,7 @@ function TaskRow({
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
           )}
           {relativeTime ? (
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
@@ -389,7 +387,7 @@ function TaskRow({
         </span>
       </div>
       {expanded && hasMultipleRuns ? (
-        <div className="ml-4 border-l border-border/60 pl-3">
+        <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
             const color = runStatusColor(run);
             const runTime = run.status !== 'running'

@@ -5,6 +5,11 @@ export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
+export interface StartupCheckResult {
+  critical: boolean;
+  error?: string | null;
+}
+
 export interface PreferencesVm {
   theme: DesktopThemePreference;
   language: DesktopLanguage;
@@ -866,6 +871,7 @@ export interface ConversationRunVm {
   activeSessions: ConversationActiveSessionVm[];
   artifacts: AssetItemVm[];
   attachments: AssetItemVm[];
+  inputAttachments: AssetItemVm[];
   workflowStatus: string;
   workflowValid: boolean;
   workflowError?: WorkflowErrorVm | null;
@@ -873,6 +879,12 @@ export interface ConversationRunVm {
   workflowGraph: GraphVm;
   resumable: boolean;
   pauseReason?: string | null;
+}
+
+export interface ConversationSessionSwitchVm {
+  selectedSession?: AcpSessionVm | null;
+  artifacts: AssetItemVm[];
+  attachments: AssetItemVm[];
 }
 
 export interface ConversationActiveSessionVm {

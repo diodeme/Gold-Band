@@ -11,19 +11,18 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn find_executable_in_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var("PATH").ok()?;
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    for dir in path_var.split(separator) {
-        let candidate = PathBuf::from(dir).join(name);
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
         if candidate.is_file() {
             return Some(candidate);
         }
         #[cfg(windows)]
         {
-            let candidate_exe = PathBuf::from(dir).join(format!("{name}.exe"));
+            let candidate_exe = dir.join(format!("{name}.exe"));
             if candidate_exe.is_file() {
                 return Some(candidate_exe);
             }
-            let candidate_cmd = PathBuf::from(dir).join(format!("{name}.cmd"));
+            let candidate_cmd = dir.join(format!("{name}.cmd"));
             if candidate_cmd.is_file() {
                 return Some(candidate_cmd);
             }

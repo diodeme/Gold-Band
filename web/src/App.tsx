@@ -1,15 +1,19 @@
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   checkUpdateManual,
   chooseWorkspace,
   continueRun,
+  createConversationRun,
   createTask,
   dismissUpdateAnnouncement,
   downloadAndInstallUpdate,
   getAgentRegistry,
   getConversationRun,
+  getConversationRunMode,
   getConversationSidebar,
+  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -18,6 +22,7 @@ import {
   getWorkflow,
   killRun,
   pinConversation,
+  rerunConversationTask,
   saveDesktopPreferences,
   saveUpdaterSettings,
   saveTaskWorkflow,
@@ -25,6 +30,7 @@ import {
   startRun,
   unpinConversation,
   updateTaskMetadata,
+  validateConversationCreate,
   addConversationWorkspace,
   removeConversationWorkspace,
   syncConversationWorkspace,
@@ -54,6 +60,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { StartupSplash, type SplashPhase } from './components/StartupSplash';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -74,6 +81,7 @@ import type {
   PrimaryModule,
   RoundDetailVm,
   RoundSelection,
+  StartupCheckResult,
   TaskListVm,
   TaskPage,
   UpdateStatusVm,
@@ -126,6 +134,7 @@ export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
   const savedUiMode = (typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-ui-mode')) as DesktopUiMode | null;
   const [uiMode, setUiMode] = useState<DesktopUiMode>(savedUiMode ?? initialRoute.uiMode);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
@@ -157,6 +166,9 @@ export function App() {
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
+  const [startupPhase, setStartupPhase] = useState<SplashPhase>('checking');
+  const [splashProgress, setSplashProgress] = useState({ downloaded: 0, total: null as number | null });
+  const [splashUpdateVersion, setSplashUpdateVersion] = useState<string | null>(null);
   const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
@@ -193,6 +205,16 @@ export function App() {
   useEffect(() => {
     applyFont(preferences.font);
   }, [preferences.font]);
+
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('gold-band-sidebar-collapsed', sidebarCollapsed ? 'true' : 'false');
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    getCurrentWindow().setDecorations(false).catch(() => {});
+  }, []);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
@@ -266,12 +288,51 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!isTauriRuntime()) {
+      setStartupPhase('done');
+      return undefined;
+    }
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    function handleStartupCheck(result: StartupCheckResult) {
+      if (result.critical) {
+        setStartupPhase('downloading');
+      } else {
+        setStartupPhase('done');
+      }
+    }
+
+    // check-then-listen：先读后端缓存，消除事件竞态
+    import('./api').then(({ getStartupCheckResult }) => {
+      getStartupCheckResult().then((cached) => {
+        if (!active) return;
+        if (cached) {
+          handleStartupCheck(cached);
+          return;
+        }
+        void listen<StartupCheckResult>('gold-band://startup-update-check', (event) => {
+          if (active) handleStartupCheck(event.payload);
+        }).then((dispose) => {
+          if (active) unlisten = dispose; else dispose();
+        });
+      });
+    });
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
       if (!active) return;
       setDownloadProgress(event.payload);
+      setSplashProgress(event.payload);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -553,6 +614,22 @@ export function App() {
     pushRoute('settings', taskPage);
   };
 
+  // 安全超时：15s 内未收到任何事件则自动进入主 UI（防止事件竞态导致 splash 卡死）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setStartupPhase((current) => (current === 'checking' ? 'done' : current));
+    }, 15_000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (startupPhase !== 'downloading') return;
+    const { downloaded, total } = splashProgress;
+    if (total !== null && total > 0 && downloaded >= total) {
+      setStartupPhase('installing');
+    }
+  }, [startupPhase, splashProgress]);
+
   const onInstallUpdate = async () => {
     setBusy(true);
     setDownloadProgress(null);
@@ -608,6 +685,15 @@ export function App() {
           ? <ContextManagementPage />
           : renderTaskContent();
 
+  if (startupPhase !== 'done') {
+    return (
+      <StartupSplash
+        phase={startupPhase}
+        progress={splashProgress}
+        version={splashUpdateVersion}
+      />
+    );
+  }
   const onToggleUiMode = () => {
     const nextMode: DesktopUiMode = uiMode === 'conversation' ? 'workbench' : 'conversation';
     setUiMode(nextMode);
@@ -646,6 +732,7 @@ export function App() {
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
+      sidebarCollapsed={sidebarCollapsed}
       onSelect={(module) => {
         const nextTaskPage = module === 'task-orchestration' ? taskListPage : taskPage;
         setWorkspacePickerOpen(false);
@@ -655,6 +742,7 @@ export function App() {
       }}
       onSelectConversation={onSelectConversation}
       onToggleUiMode={onToggleUiMode}
+      onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
         setActiveWorkspaceId(null);
@@ -705,7 +793,7 @@ export function App() {
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {shouldShowUpdateAnnouncement ? (
-        <div className="pointer-events-none fixed left-1/2 top-1 z-50 -translate-x-1/2">
+        <div className="pointer-events-none fixed left-1/2 top-13 z-50 -translate-x-1/2">
           <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
             <AlertDescription className="flex items-center justify-between gap-4 text-sm">
               <button type="button" className="inline-flex min-w-0 items-center gap-2 font-medium text-foreground hover:text-primary" onClick={onOpenUpdateAnnouncement}>
@@ -799,12 +887,35 @@ export function App() {
         <ConversationHomePage
           projectId={defaultProjectId}
           workspaceName={defaultWorkspaceName}
+          workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           busy={busy}
           onRunModeChange={setConversationRunMode}
-          onSubmit={(_input) => {}}
+          onSubmit={(input) => {
+            validateConversationCreate(input)
+              .then(async (validation) => {
+                if (!validation.valid) {
+                  setError(validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n'));
+                  return;
+                }
+                const run = await createConversationRun(input);
+                setConversationRun(run);
+                getConversationSidebar().then(setConversationSidebar).catch(() => {});
+                pushRoute('task-orchestration', taskListPage, {
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
+              })
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onWorkspaceChange={(projectId) => {
+            setActiveWorkspaceId(projectId);
+            getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+          }}
         />
       );
     }
@@ -832,7 +943,20 @@ export function App() {
           run={conversationRun}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
-          onRerun={() => {}}
+          onRerun={() => {
+            if (!conversationRun) return;
+            rerunConversationTask(conversationRun.projectId, conversationRun.taskId)
+              .then((run) => {
+                setConversationRun(run);
+                pushRoute('task-orchestration', taskListPage, {
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
+              })
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onEditWorkflow={() => {}}
           onSaveWorkflow={async (json) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
@@ -842,9 +966,23 @@ export function App() {
             const key = leaf.outerNodeId
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
-            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, key)
-              .then(setConversationRun)
-              .catch(() => {});
+            switchConversationSession(
+              conversationPage.taskId,
+              conversationPage.runId,
+              leaf.roundId,
+              leaf.nodeId,
+              leaf.attemptId,
+              leaf.outerNodeId,
+              leaf.outerAttemptId,
+            ).then((switched) => {
+              setConversationRun((prev) => prev ? {
+                ...prev,
+                selectedSession: switched.selectedSession,
+                artifacts: switched.artifacts,
+                attachments: switched.attachments,
+                sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
+              } : prev);
+            }).catch(() => {});
           }}
           onSessionStopped={() => {}}
           onContinueRun={() => {}}
@@ -862,12 +1000,17 @@ export function App() {
     return <ConversationHomePage
       projectId={defaultProjectId}
       workspaceName={defaultWorkspaceName}
+      workspaces={conversationSidebar.workspaces}
       runMode={conversationRunMode}
       agentRegistry={agentRegistry}
       busy={busy}
       onRunModeChange={setConversationRunMode}
       onSubmit={(_input) => {}}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+      onWorkspaceChange={(projectId) => {
+        setActiveWorkspaceId(projectId);
+        getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+      }}
     />;
   }
 

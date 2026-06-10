@@ -17,6 +17,7 @@ pub struct DesktopChannelConfig {
     pub heartbeat_endpoint: &'static str,
     pub node_metrics_endpoint: &'static str,
     pub metrics_api_key: &'static str,
+    pub silent_update_enabled: bool,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -35,6 +36,7 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         heartbeat_endpoint: option_env!("GOLD_BAND_HEARTBEAT_ENDPOINT").unwrap_or(""),
         node_metrics_endpoint: option_env!("GOLD_BAND_NODE_METRICS_ENDPOINT").unwrap_or(""),
         metrics_api_key: option_env!("GOLD_BAND_METRICS_API_KEY").unwrap_or(""),
+        silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
     };
     eprintln!(
         "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} heartbeat={} node_metrics={} apikey_set={}",

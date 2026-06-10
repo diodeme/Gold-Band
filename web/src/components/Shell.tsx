@@ -1,10 +1,11 @@
-import { Bot, Boxes, ChevronsUpDown, Command, MessageSquare, PanelLeft, Settings } from 'lucide-react';
+import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationPage, ConversationSidebarVm, DesktopUiMode, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ConversationShell } from '@/components/conversation/ConversationShell';
+import { AppTitleBar } from './AppTitleBar';
 import { cn } from '@/lib/utils';
 
 interface ShellProps {
@@ -16,9 +17,11 @@ interface ShellProps {
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
+  sidebarCollapsed: boolean;
   onSelect: (module: PrimaryModule) => void;
   onSelectConversation: (page: ConversationPage) => void;
   onToggleUiMode: () => void;
+  onToggleSidebar: () => void;
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
   onConversationSearch: () => void;
@@ -33,14 +36,17 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onSelectConversation, onToggleUiMode, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
+        appName={appName}
         vm={conversationSidebar}
         active={conversationPage}
+        sidebarCollapsed={sidebarCollapsed}
         onSelect={onSelectConversation}
         onToggleUiMode={onToggleUiMode}
+        onToggleSidebar={onToggleSidebar}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
         onSelectTask={onConversationSelectTask}
@@ -63,8 +69,10 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
       repoRoot={repoRoot}
       needsWorkspace={needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
+      sidebarCollapsed={sidebarCollapsed}
       onSelect={onSelect}
       onToggleUiMode={onToggleUiMode}
+      onToggleSidebar={onToggleSidebar}
       onChooseWorkspace={onChooseWorkspace}
     >
       {children}
@@ -80,61 +88,65 @@ interface WorkbenchShellProps {
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
+  sidebarCollapsed: boolean;
   onSelect: (module: PrimaryModule) => void;
   onToggleUiMode: () => void;
+  onToggleSidebar: () => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onToggleUiMode, onChooseWorkspace, children }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onToggleUiMode, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
-      <div className="grid h-screen grid-cols-[256px_minmax(0,1fr)] bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
-        <aside className="flex min-h-0 flex-col gap-5 border-r bg-sidebar px-5 py-7 text-sidebar-foreground">
-          <Button variant="ghost" className="h-auto justify-start gap-3 px-0 py-0 hover:bg-transparent" asChild>
-            <a href="/tasks" onClick={(event) => handleNavLinkClick(event, () => onSelect('task-orchestration'))}>
-              <span className="grid h-9 w-14 place-items-center rounded-lg border border-sidebar-border bg-sidebar-accent/60 p-1">
-                <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
-              </span>
-              <span className="text-left">
-                <strong className="block text-xl leading-none text-primary">{appName}</strong>
-                <small className="mt-1 block text-[11px] uppercase tracking-[0.18em] text-muted-foreground">AI Orchestrator</small>
-              </span>
-            </a>
-          </Button>
+      <div className="flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
+        <AppTitleBar
+          appName={appName}
+          uiMode="workbench"
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={onToggleSidebar}
+          onToggleUiMode={onToggleUiMode}
+        />
+        <div className="flex min-h-0 flex-1 bg-sidebar">
+          <div
+            className={cn(
+              'shrink-0 overflow-hidden transition-[width] duration-250 ease-out',
+              sidebarCollapsed && 'pointer-events-none',
+            )}
+            style={{ width: sidebarCollapsed ? 0 : 256 }}
+          >
+            <aside
+              className={cn(
+                'flex min-h-0 h-full w-64 flex-col gap-5 bg-sidebar px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
+                sidebarCollapsed ? 'opacity-0' : 'opacity-100',
+              )}
+            >
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace}>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
+                      <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
+                    </span>
+                    <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}</TooltipContent>
+              </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace}>
-                <span className="min-w-0">
-                  <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
-                  <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
-                </span>
-                <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}</TooltipContent>
-          </Tooltip>
+              <nav className="mt-6 flex flex-1 flex-col gap-2">
+                <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
+                <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<Bot />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
+                <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<Boxes />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
+              </nav>
 
-          <nav className="mt-6 flex flex-1 flex-col gap-2">
-            <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
-            <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<Bot />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
-            <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<Boxes />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
-          </nav>
-
-          <div className="flex items-center gap-2 rounded-lg border border-sidebar-border px-3 py-2">
-            <MessageSquare className="size-4 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">{t('conversation.toggleToConversation')}</span>
-            <Button variant="ghost" size="icon" className="ml-auto size-7" onClick={onToggleUiMode} aria-label={t('conversation.toggleToConversation')}>
-              <PanelLeft className="size-4" />
-            </Button>
+              <Separator />
+              <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
+            </aside>
           </div>
-
-          <Separator />
-          <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
-        </aside>
-        <main className="relative flex min-w-0 flex-col overflow-hidden bg-gold-workspace">{children}</main>
+          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-sidebar-border/70 rounded-tl-2xl bg-gold-workspace">{children}</main>
+        </div>
       </div>
     </TooltipProvider>
   );

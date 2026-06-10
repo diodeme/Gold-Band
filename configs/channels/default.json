@@ -1,5 +1,6 @@
 {
   "channel": "default",
+  "silentUpdateEnabled": false,
   "appName": "Gold Band",
   "appKey": "gold-band",
   "configDirName": ".gold-band",

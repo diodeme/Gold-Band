@@ -10,7 +10,7 @@ mod transition_context;
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
 use crate::config::{
-    ConsoleThemeName, ConversationState, DesktopAvailableUpdate, DesktopFontPreference,
+    ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
     ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
 };
@@ -586,18 +586,6 @@ impl App {
 
     pub fn save_state(&self, state: &StateConfig) -> Result<()> {
         write_json(&self.paths.user_state_file(), state)
-    }
-
-    pub fn load_conversation_state(&self) -> Result<ConversationState> {
-        let path = self.paths.conversation_state_file();
-        if !path.exists() {
-            return Ok(ConversationState::default());
-        }
-        read_json(&path)
-    }
-
-    pub fn save_conversation_state(&self, state: &ConversationState) -> Result<()> {
-        write_json(&self.paths.conversation_state_file(), state)
     }
 
     pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {

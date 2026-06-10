@@ -11,6 +11,7 @@ import type {
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationSearchResultVm,
+  ConversationSessionSwitchVm,
   ConversationSidebarVm,
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
@@ -98,6 +99,7 @@ export interface RuntimeApi {
   getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
   showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
+  showConversationAttachment(taskId: string, name: string): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
@@ -109,10 +111,12 @@ export interface RuntimeApi {
   dismissUpdateAnnouncement(version: string): Promise<UpdateBadgeStateVm>;
   checkUpdateManual(): Promise<UpdateStatusVm>;
   downloadAndInstallUpdate(): Promise<void>;
+  getStartupCheckResult(): Promise<import('../types').StartupCheckResult | null>;
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
+  switchConversationSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
@@ -128,6 +132,7 @@ export interface RuntimeApi {
   removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
+  pickAttachmentFiles(): Promise<Array<{ path: string; name: string; size: number }>>;
   openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
 }
 

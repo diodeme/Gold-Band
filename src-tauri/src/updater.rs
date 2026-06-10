@@ -327,8 +327,9 @@ pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino:
         return Err(anyhow!("updater.no-update"));
     };
     update.install(bytes).context("updater.install-failed")?;
-    // 安装成功，删除文件
+    // 安装成功，删除文件和空目录
     let _ = std::fs::remove_file(path.as_std_path());
+    let _ = std::fs::remove_dir(PENDING_UPDATE_DIR);
     Ok(())
 }
 

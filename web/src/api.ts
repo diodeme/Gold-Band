@@ -205,10 +205,6 @@ export function getMetricsSettings() {
 export function saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
   return getRuntimeApi().saveMetricsSettings(enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey);
 }
-
-export function getStartupCheckResult() {
-  return getRuntimeApi().getStartupCheckResult();
-}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);

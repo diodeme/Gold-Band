@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use gold_band::config::RuntimeConfig;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
@@ -105,6 +105,10 @@ pub fn start_update_polling<R: Runtime>(app: AppHandle<R>) {
         tokio::time::sleep(Duration::from_secs(90)).await;
         loop {
             let _ = check_update(&app, true).await;
+            // 尝试后台静默下载关键更新
+            if let Err(e) = try_background_download(&app).await {
+                eprintln!("Background critical download failed: {e}");
+            }
             tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_MINUTES * 60)).await;
         }
     });
@@ -172,6 +176,14 @@ struct UpdateDownloadProgress {
 }
 
 pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    // 清除后台静默下载的文件，防止退出时重复安装
+    if let Some(state) = app.try_state::<DesktopState>() {
+        if let Some(path) = state.take_pending_update() {
+            let _ = std::fs::remove_file(path.as_std_path());
+            let _ = std::fs::remove_dir(pending_update_dir());
+        }
+    }
+
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {
         return Err(anyhow!("updater.no-update"));
@@ -244,120 +256,13 @@ fn current_timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-// ── Silent / startup critical update ──
+// ── Silent / background critical update ──
 
-/// latest.json 顶层结构（仅取需要的字段）
-#[derive(Debug, Deserialize)]
-struct LatestManifest {
-    version: String,
-    #[serde(default)]
-    critical: bool,
+fn pending_update_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("gold-band-update")
 }
 
-/// 启动时关键更新检查结果，发送给前端 splash 画面
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartupCheckResult {
-    pub critical: bool,
-    pub error: Option<String>,
-}
-
-/// HTTP GET latest.json，返回解析后的 manifest
-async fn fetch_manifest(endpoint: &Url) -> Result<LatestManifest> {
-    let response = reqwest::get(endpoint.as_str().to_owned()).await?;
-    let manifest: LatestManifest = response.json().await?;
-    Ok(manifest)
-}
-
-/// 持久化结果到 DesktopState 并 emit 事件（避免竞态）
-fn emit_startup_check<R: Runtime>(app: &AppHandle<R>, result: &StartupCheckResult) {
-    if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.set_startup_check(result.clone());
-    }
-    let _ = app.emit("gold-band://startup-update-check", result);
-}
-
-/// 获取当前 RuntimeConfig（从 DesktopState 中读取）
-fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
-    let state = app.state::<DesktopState>();
-    let context = state.context().ok()?;
-    Some(context.config)
-}
-
-/// 启动时关键更新检查 —— 在 splash 阶段执行
-///
-/// - 渠道未开启静默更新：立即通知前端放行
-/// - 网络超时/错误：降级放行，不阻塞启动
-/// - critical = false 或已是最新版本：放行，后续由 start_update_polling 处理普通更新
-/// - critical = true 且有新版本：保持 splash，自动下载安装并重启
-pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-    let channel = current_channel_config();
-    if !channel.silent_update_enabled {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    // 保证 splash 至少展示一小段时间，避免闪烁
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-
-    // 解析 endpoint
-    let settings = match get_runtime_config(app) {
-        Some(config) => updater_settings(&config),
-        None => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-    let endpoint = match Url::parse(&settings.effective_url) {
-        Ok(url) => url,
-        Err(_) => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-
-    // 获取 latest.json manifest（10s 超时，超时即降级）
-    let manifest = match tokio::time::timeout(
-        Duration::from_secs(10),
-        fetch_manifest(&endpoint),
-    )
-    .await
-    {
-        Ok(Ok(manifest)) => manifest,
-        _ => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
-
-    // 已是最新版本 → 放行（防止 latest.json 版本号不匹配导致的死循环）
-    let current_version = app.package_info().version.to_string();
-    if !version_is_newer(&manifest.version, &current_version) {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    if !manifest.critical {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-        return Ok(());
-    }
-
-    emit_startup_check(app, &StartupCheckResult { critical: true, error: None });
-
-    // 自动下载并安装（复用现有链路，download-progress 事件正常发送）
-    if let Err(e) = download_and_install_update(app).await {
-        eprintln!("Startup critical update failed: {e}");
-        emit_startup_check(app, &StartupCheckResult {
-            critical: false,
-            error: Some(format!("Update install failed: {e}")),
-        });
-    }
-
-    Ok(())
-}
-
-/// 简单语义版本比较：b 是否比 a 更新
-/// 仅比较 major.minor.patch，忽略 pre-release 和 build metadata
+/// 简单语义版本比较：latest 是否比 current 更新
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse_trio = |v: &str| -> Option<(u32, u32, u32)> {
         let digits = v.split(&['-', '+']).next()?;
@@ -371,6 +276,90 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     let Some((a_maj, a_min, a_pat)) = parse_trio(latest) else { return false };
     let Some((b_maj, b_min, b_pat)) = parse_trio(current) else { return false };
     (a_maj, a_min, a_pat) > (b_maj, b_min, b_pat)
+}
+
+/// 后台检测关键更新并静默下载到文件，不安装
+pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+    let channel = current_channel_config();
+    if !channel.silent_update_enabled {
+        return Ok(());
+    }
+
+    let updater = build_updater(app)?;
+    let Some(update) = updater.check().await? else {
+        return Ok(());
+    };
+
+    let current = app.package_info().version.to_string();
+    if !version_is_newer(&update.version, &current) {
+        return Ok(());
+    }
+
+    let is_critical = update
+        .raw_json
+        .get("critical")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_critical {
+        return Ok(());
+    }
+
+    // 后台静默下载
+    let bytes = update.download(|_chunk, _total| {}, || {}).await?;
+
+    // 写入 /tmp/gold-band-update/（崩溃也不丢）
+    let dir = pending_update_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("update-{}.pkg", update.version));
+    std::fs::write(&path, &bytes)?;
+
+    if let Some(state) = app.try_state::<DesktopState>() {
+        let _ = state.store_pending_update(
+            camino::Utf8PathBuf::from_path_buf(path).map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?,
+        );
+    }
+
+    Ok(())
+}
+
+/// 从文件路径安装更新包，成功则删除文件
+pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino::Utf8Path) -> Result<()> {
+    let bytes = std::fs::read(path.as_std_path()).context("failed to read pending update file")?;
+    let updater = build_updater(app)?;
+    let Some(update) = updater.check().await.context("updater.check-failed")? else {
+        // 版本已最新？清理残留文件
+        let _ = std::fs::remove_file(path.as_std_path());
+        return Err(anyhow!("updater.no-update"));
+    };
+    update.install(bytes).context("updater.install-failed")?;
+    // 安装成功，删除文件和空目录
+    let _ = std::fs::remove_file(path.as_std_path());
+    let _ = std::fs::remove_dir(pending_update_dir());
+    Ok(())
+}
+
+/// 启动时检查 /tmp 是否有上次未安装成功的残留包
+pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
+    let dir = pending_update_dir();
+    if !dir.is_dir() {
+        return;
+    }
+    // 清理空目录（之前完全处理完的）
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let handle = app.clone();
+                let utf8_path = match camino::Utf8PathBuf::from_path_buf(path.clone()) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                tauri::async_runtime::spawn(async move {
+                    let _ = install_pending_file(&handle, &utf8_path).await;
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

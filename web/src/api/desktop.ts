@@ -177,9 +177,6 @@ export const desktopApi: RuntimeApi = {
   downloadAndInstallUpdate() {
     return invokeCommand('download_and_install_update');
   },
-  getStartupCheckResult() {
-    return invokeCommand<import('../types').StartupCheckResult | null>('get_startup_check_result');
-  },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {
     return invokeCommand('save_desktop_ui_mode', { mode });

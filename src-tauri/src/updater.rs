@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use gold_band::config::RuntimeConfig;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
@@ -255,28 +255,6 @@ fn current_timestamp() -> String {
 
 // ── Silent / background critical update ──
 
-/// latest.json 顶层结构（仅取需要的字段）
-#[derive(Debug, Deserialize)]
-struct LatestManifest {
-    version: String,
-    #[serde(default)]
-    critical: bool,
-}
-
-/// HTTP GET latest.json，返回解析后的 manifest
-async fn fetch_manifest(endpoint: &Url) -> Result<LatestManifest> {
-    let response = reqwest::get(endpoint.as_str().to_owned()).await?;
-    let manifest: LatestManifest = response.json().await?;
-    Ok(manifest)
-}
-
-/// 获取当前 RuntimeConfig（从 DesktopState 中读取）
-fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
-    let state = app.state::<DesktopState>();
-    let context = state.context().ok()?;
-    Some(context.config)
-}
-
 /// 简单语义版本比较：latest 是否比 current 更新
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse_trio = |v: &str| -> Option<(u32, u32, u32)> {
@@ -294,6 +272,8 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
 }
 
 /// 后台检测关键更新并静默下载，不安装
+/// 复用 check_update_inner 已拉取的 latest.json（通过 updater.check() 的 raw_json），
+/// 不再额外发 HTTP 请求
 pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let channel = current_channel_config();
     if !channel.silent_update_enabled {
@@ -311,14 +291,13 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
         return Ok(());
     }
 
-    // 读取 critical 标记
-    let settings = match get_runtime_config(app) {
-        Some(config) => updater_settings(&config),
-        None => return Ok(()),
-    };
-    let endpoint = Url::parse(&settings.effective_url)?;
-    let manifest = fetch_manifest(&endpoint).await?;
-    if !manifest.critical {
+    // 从 updater.check() 返回的 raw_json 中直接读取 critical，无需额外请求
+    let is_critical = update
+        .raw_json
+        .get("critical")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_critical {
         return Ok(());
     }
 

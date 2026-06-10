@@ -84,7 +84,10 @@ pub fn updater_settings(config: &RuntimeConfig) -> UpdaterSettingsVm {
 }
 
 pub fn normalize_updater_url_override(value: Option<String>) -> Result<Option<String>> {
-    let Some(value) = value.map(|item| item.trim().to_string()).filter(|item| !item.is_empty()) else {
+    let Some(value) = value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+    else {
         return Ok(None);
     };
     validate_updater_url(&value)?;
@@ -187,7 +190,10 @@ pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Resu
                     *acc += chunk_size;
                     let _ = app_handle.emit(
                         "gold-band://update-download-progress",
-                        UpdateDownloadProgress { downloaded: *acc, total },
+                        UpdateDownloadProgress {
+                            downloaded: *acc,
+                            total,
+                        },
                     );
                 }
             },
@@ -293,7 +299,13 @@ fn get_runtime_config<R: Runtime>(app: &AppHandle<R>) -> Option<RuntimeConfig> {
 pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let channel = current_channel_config();
     if !channel.silent_update_enabled {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
+        emit_startup_check(
+            app,
+            &StartupCheckResult {
+                critical: false,
+                error: None,
+            },
+        );
         return Ok(());
     }
 
@@ -304,53 +316,88 @@ pub async fn startup_critical_check<R: Runtime>(app: &AppHandle<R>) -> Result<()
     let settings = match get_runtime_config(app) {
         Some(config) => updater_settings(&config),
         None => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
+            emit_startup_check(
+                app,
+                &StartupCheckResult {
+                    critical: false,
+                    error: None,
+                },
+            );
             return Ok(());
         }
     };
     let endpoint = match Url::parse(&settings.effective_url) {
         Ok(url) => url,
         Err(_) => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
+            emit_startup_check(
+                app,
+                &StartupCheckResult {
+                    critical: false,
+                    error: None,
+                },
+            );
             return Ok(());
         }
     };
 
     // 获取 latest.json manifest（10s 超时，超时即降级）
-    let manifest = match tokio::time::timeout(
-        Duration::from_secs(10),
-        fetch_manifest(&endpoint),
-    )
-    .await
-    {
-        Ok(Ok(manifest)) => manifest,
-        _ => {
-            emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
-            return Ok(());
-        }
-    };
+    let manifest =
+        match tokio::time::timeout(Duration::from_secs(10), fetch_manifest(&endpoint)).await {
+            Ok(Ok(manifest)) => manifest,
+            _ => {
+                emit_startup_check(
+                    app,
+                    &StartupCheckResult {
+                        critical: false,
+                        error: None,
+                    },
+                );
+                return Ok(());
+            }
+        };
 
     // 已是最新版本 → 放行（防止 latest.json 版本号不匹配导致的死循环）
     let current_version = app.package_info().version.to_string();
     if !version_is_newer(&manifest.version, &current_version) {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
+        emit_startup_check(
+            app,
+            &StartupCheckResult {
+                critical: false,
+                error: None,
+            },
+        );
         return Ok(());
     }
 
     if !manifest.critical {
-        emit_startup_check(app, &StartupCheckResult { critical: false, error: None });
+        emit_startup_check(
+            app,
+            &StartupCheckResult {
+                critical: false,
+                error: None,
+            },
+        );
         return Ok(());
     }
 
-    emit_startup_check(app, &StartupCheckResult { critical: true, error: None });
+    emit_startup_check(
+        app,
+        &StartupCheckResult {
+            critical: true,
+            error: None,
+        },
+    );
 
     // 自动下载并安装（复用现有链路，download-progress 事件正常发送）
     if let Err(e) = download_and_install_update(app).await {
         eprintln!("Startup critical update failed: {e}");
-        emit_startup_check(app, &StartupCheckResult {
-            critical: false,
-            error: Some(format!("Update install failed: {e}")),
-        });
+        emit_startup_check(
+            app,
+            &StartupCheckResult {
+                critical: false,
+                error: Some(format!("Update install failed: {e}")),
+            },
+        );
     }
 
     Ok(())
@@ -368,8 +415,12 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
             parts.next()?.parse().ok()?,
         ))
     };
-    let Some((a_maj, a_min, a_pat)) = parse_trio(latest) else { return false };
-    let Some((b_maj, b_min, b_pat)) = parse_trio(current) else { return false };
+    let Some((a_maj, a_min, a_pat)) = parse_trio(latest) else {
+        return false;
+    };
+    let Some((b_maj, b_min, b_pat)) = parse_trio(current) else {
+        return false;
+    };
     (a_maj, a_min, a_pat) > (b_maj, b_min, b_pat)
 }
 
@@ -379,7 +430,10 @@ mod tests {
 
     #[test]
     fn accepts_https_updater_url() {
-        validate_updater_url("https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json").unwrap();
+        validate_updater_url(
+            "https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json",
+        )
+        .unwrap();
     }
 
     #[test]

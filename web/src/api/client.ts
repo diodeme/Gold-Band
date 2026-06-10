@@ -6,7 +6,10 @@ import type {
   AcpUiEventVm,
   AgentRegistryVm,
   AppBootstrapVm,
+  AutoTemplate,
+  AutoTemplateStore,
   ContentVm,
+  ConversationAutoConfigVm,
   ConversationCreateInput,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -82,6 +85,11 @@ export interface RuntimeApi {
   saveWorkflowTemplate(name: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
   updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
   deleteWorkflowTemplate(templateId: string): Promise<WorkflowTemplateStore>;
+  getAutoTemplates(): Promise<AutoTemplateStore>;
+  saveAutoTemplate(name: string, config: ConversationAutoConfigVm): Promise<AutoTemplateStore>;
+  updateAutoTemplate(templateId: string, name: string, config: ConversationAutoConfigVm): Promise<AutoTemplateStore>;
+  deleteAutoTemplate(templateId: string): Promise<AutoTemplateStore>;
+  replaceAutoTemplates(templates: AutoTemplate[]): Promise<AutoTemplateStore>;
   getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;

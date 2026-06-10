@@ -1,10 +1,15 @@
-use std::{collections::BTreeMap, sync::{Arc, Mutex}};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig};
+use gold_band::config::{
+    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
@@ -62,7 +67,14 @@ impl DesktopContext {
 
     pub fn app_with_acp_live_update(
         &self,
-        live_update: Arc<dyn Fn(gold_band::app::AcpLiveEventContext, gold_band::acp::events::AcpUiEvent) -> anyhow::Result<()> + Send + Sync>,
+        live_update: Arc<
+            dyn Fn(
+                    gold_band::app::AcpLiveEventContext,
+                    gold_band::acp::events::AcpUiEvent,
+                ) -> anyhow::Result<()>
+                + Send
+                + Sync,
+        >,
     ) -> App {
         self.app().with_acp_live_update(live_update)
     }
@@ -123,7 +135,9 @@ impl DesktopState {
             .context
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
-        let state: StateConfig = read_json(&GoldBandPaths::new(guard.repo_root.clone()).user_state_file()).unwrap_or_default();
+        let state: StateConfig =
+            read_json(&GoldBandPaths::new(guard.repo_root.clone()).user_state_file())
+                .unwrap_or_default();
         guard.config = RuntimeConfig::default()
             .apply_settings(settings)
             .apply_app_config(&guard.app_config)
@@ -252,7 +266,12 @@ impl DesktopState {
     }
 
     pub fn prune_agent_diagnostics(&self) -> Result<()> {
-        let managed_agent_types = self.app()?.managed_agents().keys().copied().collect::<std::collections::BTreeSet<_>>();
+        let managed_agent_types = self
+            .app()?
+            .managed_agents()
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
         let snapshot = {
             let mut diagnostics = self
                 .agent_diagnostics

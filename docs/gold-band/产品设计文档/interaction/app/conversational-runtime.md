@@ -36,8 +36,11 @@
 - 当前选中 session 的顶部 trigger 也显示同一枚状态标记，与下拉树中的 attempt 行保持一致
 - 点击展开 round → node → attempt 层级树
 - 用户可切换具体 session
-- 每个 attempt 前仅显示轻量状态圆点：绿色成功、红色失败、黄色暂停/待处理；运行中使用主色圆点配外圈脉冲 halo
+- 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中使用主色圆点配外圈脉冲 halo
 - 已选中的 session 行仍保留同一枚状态标记，不能因为选中高亮而丢失运行态/结果态识别
+- `status / outcome / pauseReason` 只作为运行事实字段保留；Session Switcher、顶部选中栏、工作流查看 Sheet 不在前端自行推断成功/失败/暂停，而是统一消费后端派生的 `runtimeDisplay.code / tone / icon / terminal / resumable / reasonCode`
+- `completed + outcome=null` 不展示为成功；成功必须来自 `outcome=success` 派生出的 `runtimeDisplay.tone=success`
+- AI-DYNAMIC 内部节点的 session 状态来源于 dynamic graph 中的节点状态（`dynamic/nodes/<node-id>/node.json` 或 `graph.json.nodes`），ACP attempt 目录只代表聊天会话记录，不作为工作流节点成败状态来源
 
 ### 默认 session 选择
 - 用户已有选中 session 且仍有效时保持
@@ -61,15 +64,23 @@
 ## Composer 状态
 
 ### 互斥状态
-1. **正常输入**：用户可自由输入消息（含附件）
-2. **继续按钮**：当前 session 暂停可继续时，显示继续按钮
-3. **工作流无效修复按钮**：工作流无效时，显示修改按钮
-4. **运行错误提示/操作**：显示错误原因和操作入口
+1. **正常输入**：当前 session 已正常结束时，用户可继续输入消息（含附件）
+2. **运行中锁定**：当前 session 正在运行时不允许输入消息
+3. **运行错误提示/操作**：当前 session 派生为 `runtimeDisplay.code=error-blocked` 或终局失败时，不允许输入，显示错误原因和修复入口；`error-blocked` 不归入“暂停可继续”，`killed / failure / invalid` 也必须使用终止或失败文案，错误态不得复用“当前会话已暂停，可继续运行”这类暂停提示
+4. **工作流无效修复按钮**：需要通过 runtime 继续暂停 run 且 workflow 无效时，不允许输入，显示修改按钮；该状态优先于普通暂停继续
+5. **继续按钮**：当前 session 普通暂停且可继续时不允许输入，显示继续按钮
+
+### 修复入口
+
+- 会话运行时的“修复”按钮与旧任务工作流页的 repair drawer 心智一致：打开当前任务工作流编辑 Sheet，让用户修复 workflow 配置。
+- 修复 Sheet 标题使用“修复工作流”，而不是普通“编辑工作流”；Header 中展示无效状态、查看错误原因入口和错误原因摘要，帮助用户理解为什么需要修复。
+- 在会话页保存修复后的 workflow 后，必须重新拉取当前 conversation run VM，使 workflow 有效性、session tree、工作流图与 composer 状态立即刷新。
+- 修复入口不直接调用 `continueRun`；用户完成修复后再按运行态规则继续。
 
 ### 继续输入
-- `continueRun` 继续同一个 session
-- 不进入工作流 runtime
-- 复用现有实现
+- 当前 session 正常结束后，在会话窗口追问属于 ACP same-session prompt，不要求 authoring workflow 合法
+- 追问发送时，当前会话对应行进入旋转运行态；结束后只影响该 ACP session 的消息流，不触发工作流 runtime 继续执行
+- 当前 run 暂停后通过 runtime 继续仍然要求 workflow 合法；如果 workflow 无效，composer 只显示修改按钮
 
 ### 停止
 - 停止并重跑在顶部操作区
@@ -112,6 +123,13 @@
 - 展开后展示完整条目列表，每项包含状态 Badge 和内容
 - 仅显示主会话顶层 todo；子 Agent 内部 plan 保留在各自分组中
 - 每次 plan 更新时面板实时刷新，不再在消息流中追加重复 plan 卡片
+
+## Composer 配置栏
+
+- composer 底部模型与权限配置统一使用胶囊式控件外观，模型选择器需要明确表现出“可展开下拉”的交互心智，不能像纯文本标签
+- 模型下拉列表默认向上弹出，并受当前窗口可用高度约束；超出时内部滚动，不允许选项直接溢出会话窗口外
+- 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话
+- 模型选中态只在触发器展示模型名称，长描述只在下拉项中换行展示，不允许撑破触发器或越出窗口边界
 
 ## 工具调用参数展示
 

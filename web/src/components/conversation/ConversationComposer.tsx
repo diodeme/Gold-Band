@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, X, FileText, Folders, Image as ImageIcon, Loader2 } from 'lucide-react';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm } from '../../types';
+import { Send, Paperclip, Workflow, Bot, X, FileText, Folders, Image as ImageIcon } from 'lucide-react';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { selectableAgentOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { cn } from '@/lib/utils';
 import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from '@/lib/attachments';
 
@@ -55,6 +56,7 @@ interface ConversationComposerProps {
   workspaces: ConversationWorkspaceVm[];
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
+  workflowTemplates: WorkflowTemplateStore | null;
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onSubmit: (input: ConversationCreateInput) => void;
@@ -68,6 +70,7 @@ export function ConversationComposer({
   workspaces,
   runMode,
   agentRegistry,
+  workflowTemplates,
   busy,
   onRunModeChange,
   onSubmit,
@@ -78,7 +81,11 @@ export function ConversationComposer({
   const [content, setContent] = useState('');
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
+  const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
+  const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
+  const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [runModeError, setRunModeError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<AttachmentItem | null>(null);
   const [textPreview, setTextPreview] = useState<{ name: string; content: string } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -89,10 +96,50 @@ export function ConversationComposer({
   const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024;
 
   const isAuto = runMode.mode === 'auto';
+  const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
+  const isDynamicAuto = autoStrategy === 'dynamic';
   const canSubmit = content.trim().length > 0 && !busy;
-  const agents = agentRegistry?.agents.filter((a) => a.supported) ?? [];
+  const agentOptions = selectableAgentOptions(agentRegistry, t);
+  const agents = agentOptions.filter((item) => item.selectable).map((item) => item.agent);
   const selectedAgentObj = agents.find((a) => a.agentType === selectedAgent);
-  const models: { id: string; name: string }[] = [];
+  const models = selectedAgentObj?.supportedModels ?? [];
+  const permissionModes = selectedAgentObj?.supportedModes ?? [];
+  const templates = workflowTemplates?.templates ?? [];
+
+  useEffect(() => {
+    setSelectedAgent(runMode.autoConfig?.agentType ?? '');
+    setSelectedModel(runMode.autoConfig?.modelId ?? '');
+    setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
+    setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
+    setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
+  }, [runMode, workflowTemplates]);
+
+  const autoConfigWithSession = (patch: Partial<ConversationAutoConfigVm> = {}): ConversationAutoConfigVm => {
+    const base = runMode.autoConfig ?? { agentType: selectedAgent };
+    if (isDynamicAuto) {
+      return {
+        ...base,
+        agentStrategy: 'dynamic',
+        agentType: base.agentType || base.bootstrapAgentType || selectedAgent,
+        permissionMode: selectedPermissionMode || undefined,
+        globalGoal: globalGoal.trim() || undefined,
+        ...patch,
+      };
+    }
+    return {
+      ...base,
+      agentStrategy: 'fixed',
+      agentType: selectedAgent,
+      modelId: selectedModel || undefined,
+      permissionMode: selectedPermissionMode || undefined,
+      globalGoal: globalGoal.trim() || undefined,
+      ...patch,
+    };
+  };
+
+  const updateAutoSession = (patch: Partial<ConversationAutoConfigVm>) => {
+    onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) });
+  };
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const items: AttachmentItem[] = [];
@@ -186,16 +233,27 @@ export function ConversationComposer({
   const handleSubmit = () => {
     if (!canSubmit) return;
     const paths = attachments.map((a) => a.path).filter((p): p is string => !!p);
-    onSubmit({
+    const input: ConversationCreateInput = {
       projectId,
       content: content.trim(),
       runMode: runMode.mode,
-      workflowTemplateId: isAuto ? undefined : runMode.workflowTemplateId ?? undefined,
+      workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
       autoConfig: isAuto
-        ? { agentType: selectedAgent, modelId: selectedModel || undefined }
+        ? autoConfigWithSession()
         : undefined,
       attachmentPaths: paths.length > 0 ? paths : undefined,
-    });
+    };
+    const localIssues = isAuto
+      ? validateAutoConfig(input.autoConfig, agentRegistry, workflowTemplates, t)
+      : !input.workflowTemplateId
+        ? [t('conversation.home.selectWorkflowTemplate')]
+        : [];
+    if (localIssues.length > 0) {
+      setRunModeError(localIssues.join('\n'));
+      return;
+    }
+    setRunModeError(null);
+    onSubmit(input);
     setContent('');
     setAttachments([]);
   };
@@ -332,7 +390,7 @@ export function ConversationComposer({
                       <SelectValue />
                     </span>
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent position="popper" align="start">
                     {workspaces.map((w) => (
                       <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
                     ))}
@@ -384,7 +442,7 @@ export function ConversationComposer({
                 'rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
-              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: runMode.autoConfig })}
+              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
             >
               {t('conversation.home.auto')}
             </button>
@@ -394,7 +452,7 @@ export function ConversationComposer({
                 'rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 !isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
-              onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: runMode.workflowTemplateId })}
+              onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId })}
             >
               {t('conversation.home.workflow')}
             </button>
@@ -407,37 +465,112 @@ export function ConversationComposer({
           </Button>
         </div>
 
-        {/* AUTO options: agent + model */}
         {isAuto ? (
-          <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
-            <Bot className="size-4 text-muted-foreground" />
-            <div className="flex items-center gap-3 flex-1">
-              <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); }}>
-                <SelectTrigger className="h-8 w-[180px] text-xs">
-                  <SelectValue placeholder={t('conversation.home.selectAgent')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {agents.map((a) => (
-                    <SelectItem key={a.agentType} value={a.agentType}>{a.displayName}</SelectItem>
-                  ))}
-                  {agents.length === 0 ? (
-                    <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noAgent')}</div>
-                  ) : null}
-                </SelectContent>
-              </Select>
-              {selectedAgentObj && models.length > 0 ? (
-                <Select value={selectedModel} onValueChange={setSelectedModel}>
-                  <SelectTrigger className="h-8 w-[180px] text-xs">
-                    <SelectValue placeholder={t('conversation.home.selectModel')} />
+          <div className="space-y-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Bot className="size-4 text-muted-foreground" />
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+                {isDynamicAuto ? (
+                  <div className="flex h-8 min-w-0 items-center rounded-md border border-border/60 bg-background/40 px-3 text-xs text-muted-foreground">
+                    <span className="truncate">{t('conversation.home.dynamicAgent')}</span>
+                  </div>
+                ) : (
+                  <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); updateAutoSession({ agentType: v, modelId: undefined }); }}>
+                    <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
+                      <SelectValue placeholder={t('conversation.home.selectAgent')} />
+                    </SelectTrigger>
+                    <SelectContent position="popper" align="start">
+                      {agentOptions.map(({ agent: a, selectable, reason }) => (
+                        <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
+                          <span className="block min-w-0">
+                            <span className="block truncate">{a.displayName}</span>
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                          </span>
+                        </SelectItem>
+                      ))}
+                      {agentOptions.length === 0 ? (
+                        <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noAgent')}</div>
+                      ) : null}
+                    </SelectContent>
+                  </Select>
+                )}
+                {!isDynamicAuto && selectedAgentObj && models.length > 0 ? (
+                  <Select value={selectedModel} onValueChange={(modelId) => { setSelectedModel(modelId); updateAutoSession({ modelId }); }}>
+                    <SelectTrigger className="h-8 w-[200px] min-w-0 text-xs">
+                      <span className="min-w-0 flex-1 truncate text-left">{models.find((m) => m.id === selectedModel)?.name ?? t('conversation.home.selectModel')}</span>
+                    </SelectTrigger>
+                    <SelectContent position="popper" align="start" className="w-[min(26rem,calc(100vw-2rem))]">
+                      {models.map((m) => (
+                        <SelectItem key={m.id} value={m.id} className="items-start py-2">
+                          <span className="block min-w-0">
+                            <span className="block truncate font-medium">{m.name}</span>
+                            {m.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span> : null}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : null}
+                <Select value={selectedPermissionMode || '__default__'} onValueChange={(value) => { const next = value === '__default__' ? '' : value; setSelectedPermissionMode(next); updateAutoSession({ permissionMode: next || undefined }); }}>
+                  <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
+                    <SelectValue placeholder={t('runMode.permissionMode')} />
                   </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                    ))}
+                  <SelectContent position="popper" align="start">
+                    <SelectItem value="__default__">{t('workflowEditor.permissionModeDefault')}</SelectItem>
+                    {isDynamicAuto ? (
+                      <>
+                        <SelectItem value="read_only">{t('workflowEditor.permissionModeReadOnly')}</SelectItem>
+                        <SelectItem value="ask">{t('workflowEditor.permissionModeAsk')}</SelectItem>
+                        <SelectItem value="full_access">{t('workflowEditor.permissionModeFullAccess')}</SelectItem>
+                      </>
+                    ) : permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-              ) : null}
+                <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
+                  <Workflow className="size-3" />
+                  {t('conversation.home.configureAuto')}
+                </Button>
+              </div>
             </div>
+            <textarea
+              className="w-full min-h-14 resize-y rounded-md border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/10"
+              value={globalGoal}
+              placeholder={t('runMode.globalGoalPlaceholder')}
+              onChange={(event) => {
+                setGlobalGoal(event.target.value);
+                updateAutoSession({ globalGoal: event.target.value.trim() || undefined });
+              }}
+            />
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+            <Workflow className="size-4 text-muted-foreground" />
+            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id }); }}>
+              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+                <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                {templates.map((tpl) => (
+                  <SelectItem key={tpl.id} value={tpl.id}>{tpl.name}</SelectItem>
+                ))}
+                {templates.length === 0 ? (
+                  <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noWorkflowTemplate')}</div>
+                ) : null}
+              </SelectContent>
+            </Select>
+            <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
+              <Workflow className="size-3" />
+              {t('conversation.home.configureWorkflow')}
+            </Button>
+          </div>
+        )}
+        {runModeError ? (
+          <div className="flex items-start gap-3 whitespace-pre-wrap rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <span className="min-w-0 flex-1">{runModeError}</span>
+            <Button variant="outline" size="sm" className="h-7 shrink-0 border-destructive/30 bg-background/40 px-2 text-xs text-destructive hover:text-destructive" onClick={onOpenRunModeSettings}>
+              <Workflow className="mr-1 size-3" />
+              {t('conversation.runtime.repairAction')}
+            </Button>
           </div>
         ) : null}
       </div>
@@ -507,4 +640,3 @@ function AttachmentChip({ item, onRemove, onPreview }: { item: AttachmentItem; o
     </div>
   );
 }
-

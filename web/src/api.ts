@@ -98,6 +98,26 @@ export function deleteWorkflowTemplate(templateId: string) {
   return getRuntimeApi().deleteWorkflowTemplate(templateId);
 }
 
+export function getAutoTemplates() {
+  return getRuntimeApi().getAutoTemplates();
+}
+
+export function saveAutoTemplate(name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['saveAutoTemplate']>[1]) {
+  return getRuntimeApi().saveAutoTemplate(name, config);
+}
+
+export function updateAutoTemplate(templateId: string, name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['updateAutoTemplate']>[2]) {
+  return getRuntimeApi().updateAutoTemplate(templateId, name, config);
+}
+
+export function deleteAutoTemplate(templateId: string) {
+  return getRuntimeApi().deleteAutoTemplate(templateId);
+}
+
+export function replaceAutoTemplates(templates: Parameters<ReturnType<typeof getRuntimeApi>['replaceAutoTemplates']>[0]) {
+  return getRuntimeApi().replaceAutoTemplates(templates);
+}
+
 export function getRunDetail(taskId: string, runId: string) {
   return getRuntimeApi().getRunDetail(taskId, runId);
 }

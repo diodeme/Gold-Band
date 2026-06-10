@@ -102,11 +102,18 @@ impl ProviderAdapter for DynamicProvider {
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         self.invocations.lock().unwrap().push(req.clone());
-        let (status, output_artifact) = match (&self.scenario, req.runtime_context.run_id.as_str(), req.runtime_context.node_id.as_str(), req.session_mode) {
-            (DynamicScenario::WorkflowInvocationPauseThenContinue { .. }, "run-002", "child", SessionMode::New) => (
-                ProviderRunStatus::Interrupted,
-                None,
-            ),
+        let (status, output_artifact) = match (
+            &self.scenario,
+            req.runtime_context.run_id.as_str(),
+            req.runtime_context.node_id.as_str(),
+            req.session_mode,
+        ) {
+            (
+                DynamicScenario::WorkflowInvocationPauseThenContinue { .. },
+                "run-002",
+                "child",
+                SessionMode::New,
+            ) => (ProviderRunStatus::Interrupted, None),
             _ => {
                 let output_artifact = match self.dynamic_artifact_for(&req) {
                     Some(content) => Some(OutputArtifactPayload {
@@ -198,12 +205,21 @@ impl DynamicProvider {
             (DynamicScenario::SessionContinuePrompt, "bootstrap") => {
                 Some(session_continue_fanout_completion())
             }
-            (DynamicScenario::SessionContinuePrompt, "branch-a") => Some(end_completion("branch A done")),
-            (DynamicScenario::SessionContinuePrompt, "branch-b") => Some(session_continue_single_completion()),
-            (DynamicScenario::SessionContinuePrompt, "branch-c") => Some(end_completion("branch C done")),
-            (DynamicScenario::InvalidSessionContinue, "bootstrap") => Some(invalid_session_continue_completion()),
+            (DynamicScenario::SessionContinuePrompt, "branch-a") => {
+                Some(end_completion("branch A done"))
+            }
+            (DynamicScenario::SessionContinuePrompt, "branch-b") => {
+                Some(session_continue_single_completion())
+            }
+            (DynamicScenario::SessionContinuePrompt, "branch-c") => {
+                Some(end_completion("branch C done"))
+            }
+            (DynamicScenario::InvalidSessionContinue, "bootstrap") => {
+                Some(invalid_session_continue_completion())
+            }
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
-            | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") => {
+            | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") =>
+            {
                 let workflow_id = workflow_id.lock().unwrap().clone();
                 Some(workflow_invocation_completion(&workflow_id))
             }
@@ -257,7 +273,7 @@ fn fanout_completion(_profile: &str) -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn nested_fanout_completion(_profile: &str) -> String {
@@ -305,7 +321,7 @@ fn nested_fanout_completion(_profile: &str) -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn end_completion(summary: &str) -> String {
@@ -341,7 +357,7 @@ fn invalid_workflow_invocation_completion(_profile: &str) -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn too_many_fanout_branches_completion(_profile: &str) -> String {
@@ -399,7 +415,7 @@ fn too_many_fanout_branches_completion(_profile: &str) -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn invalid_profile_and_overflow_completion() -> String {
@@ -457,7 +473,7 @@ fn invalid_profile_and_overflow_completion() -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn session_continue_fanout_completion() -> String {
@@ -505,7 +521,7 @@ fn session_continue_fanout_completion() -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn session_continue_single_completion() -> String {
@@ -530,7 +546,7 @@ fn session_continue_single_completion() -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn invalid_session_continue_completion() -> String {
@@ -554,7 +570,7 @@ fn invalid_session_continue_completion() -> String {
                 }
             }
         }"#
-        .to_string()
+    .to_string()
 }
 
 fn workflow_invocation_completion(workflow_id: &str) -> String {
@@ -699,8 +715,16 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(bootstrap.system_prompt.contains("bootstrap"));
     assert!(bootstrap.system_prompt.contains("claude-acp"));
     assert!(bootstrap.system_prompt.contains("dynamic-node-completion"));
-    assert!(bootstrap.user_prompt.contains("# Requirement\nExercise AI-DYNAMIC"));
-    assert!(bootstrap.user_prompt.contains("# Task\nDesign the first internal dynamic step"));
+    assert!(
+        bootstrap
+            .user_prompt
+            .contains("# Requirement\nExercise AI-DYNAMIC")
+    );
+    assert!(
+        bootstrap
+            .user_prompt
+            .contains("# Task\nDesign the first internal dynamic step")
+    );
     let merge = render_prompt_bundle(&invocations[3]).unwrap();
     assert!(merge.system_prompt.contains("group-core"));
     assert!(merge.system_prompt.contains("branch-a"));
@@ -811,9 +835,11 @@ fn ai_dynamic_rejects_unallowed_workflow_invocation() {
         graph.proposals.last().unwrap().validation_errors[0].code,
         "dynamic.workflow-invocation.workflow-unallowed"
     );
-    assert!(graph.proposals.last().unwrap().validation_errors[0]
-        .message
-        .contains("references unallowed workflow"));
+    assert!(
+        graph.proposals.last().unwrap().validation_errors[0]
+            .message
+            .contains("references unallowed workflow")
+    );
 }
 
 #[test]
@@ -957,29 +983,39 @@ fn ai_dynamic_repairs_over_limit_fanout_before_pausing() {
         graph.proposals[0].validation_errors[0].code,
         "dynamic.fanout.max-fanout-exceeded"
     );
-    assert!(graph.proposals[0].validation_errors[0]
-        .message
-        .contains("maxFanout"));
+    assert!(
+        graph.proposals[0].validation_errors[0]
+            .message
+            .contains("maxFanout")
+    );
     assert!(graph.proposals.iter().any(|proposal| {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
     }));
 
     let invocations = provider.invocations.lock().unwrap();
-    assert!(invocations.iter().any(|invocation| invocation.session_mode == SessionMode::Continue));
+    assert!(
+        invocations
+            .iter()
+            .any(|invocation| invocation.session_mode == SessionMode::Continue)
+    );
     let repair_invocation = invocations
         .iter()
         .find(|invocation| invocation.session_mode == SessionMode::Continue)
         .unwrap();
-    assert!(repair_invocation
-        .resume_prompt
-        .as_deref()
-        .unwrap()
-        .contains("maxFanout"));
-    assert!(repair_invocation
-        .resume_prompt
-        .as_deref()
-        .unwrap()
-        .contains("remaining dynamic nodes"));
+    assert!(
+        repair_invocation
+            .resume_prompt
+            .as_deref()
+            .unwrap()
+            .contains("maxFanout")
+    );
+    assert!(
+        repair_invocation
+            .resume_prompt
+            .as_deref()
+            .unwrap()
+            .contains("remaining dynamic nodes")
+    );
 }
 
 #[test]
@@ -1003,15 +1039,19 @@ fn ai_dynamic_repairs_multiple_validation_errors_in_one_retry() {
         graph.proposals[0].validation_status,
         DynamicProposalValidationStatus::Rejected
     );
-    assert!(graph.proposals[0]
-        .validation_errors
-        .iter()
-        .any(|error| error.code == "dynamic.fanout.max-fanout-exceeded"));
-    assert!(graph.proposals[0]
-        .validation_errors
-        .iter()
-        .any(|error| error.code == "dynamic.profile.unknown"
-            && error.message.contains("unknown profile `missing-profile`")));
+    assert!(
+        graph.proposals[0]
+            .validation_errors
+            .iter()
+            .any(|error| error.code == "dynamic.fanout.max-fanout-exceeded")
+    );
+    assert!(
+        graph.proposals[0]
+            .validation_errors
+            .iter()
+            .any(|error| error.code == "dynamic.profile.unknown"
+                && error.message.contains("unknown profile `missing-profile`"))
+    );
     assert!(graph.proposals.iter().any(|proposal| {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
     }));
@@ -1042,8 +1082,16 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
     assert_eq!(run.outcome, Some(RunOutcome::Success));
 
     let graph = dynamic_graph(&app, task_id);
-    assert!(graph.nodes.iter().any(|node| node.id == "branch-c" && node.session_mode == SessionMode::Continue));
-    assert!(graph.nodes.iter().any(|node| node.id == "branch-c" && node.continue_from_node_id.as_deref() == Some("branch-b")));
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| node.id == "branch-c" && node.session_mode == SessionMode::Continue)
+    );
+    assert!(
+        graph.nodes.iter().any(|node| node.id == "branch-c"
+            && node.continue_from_node_id.as_deref() == Some("branch-b"))
+    );
 
     let invocations = provider.invocations.lock().unwrap();
     let branch_b = render_prompt_bundle(
@@ -1081,7 +1129,10 @@ fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
 
     let graph = dynamic_graph(&app, task_id);
     assert!(graph.proposals.iter().any(|proposal| {
-        proposal.validation_errors.iter().any(|error| error.code == "dynamic.node.session.workflow-invocation-disallowed")
+        proposal
+            .validation_errors
+            .iter()
+            .any(|error| error.code == "dynamic.node.session.workflow-invocation-disallowed")
     }));
 }
 
@@ -1210,7 +1261,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
 
     let graph = dynamic_graph(&app, task_id);
     assert_eq!(graph.run.status, DynamicRunStatus::Paused);
-    assert_eq!(graph.run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert_eq!(
+        graph.run.pause_reason,
+        Some(PauseReason::ProcessInterrupted)
+    );
     let invocation_node = graph
         .nodes
         .iter()
@@ -1222,7 +1276,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
     let child_run: gold_band::runtime::RunState =
         gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
     assert_eq!(child_run.status, RunStatus::Paused);
-    assert_eq!(child_run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert_eq!(
+        child_run.pause_reason,
+        Some(PauseReason::ProcessInterrupted)
+    );
 
     let resumed = app.run_continue(task_id, "run-001", None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);
@@ -1297,17 +1354,28 @@ fn ai_dynamic_pause_all_running_sessions_recursively_pauses_child_run() {
     let paused_runs = app.pause_all_running_sessions().unwrap();
     assert!(paused_runs.is_empty());
 
-    let paused = app.run_pause(task_id, "run-001", PauseReason::ProcessInterrupted).unwrap();
+    let paused = app
+        .run_pause(task_id, "run-001", PauseReason::ProcessInterrupted)
+        .unwrap();
     assert_eq!(paused.status, RunStatus::Paused);
     assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
 
     let graph = dynamic_graph(&app, task_id);
-    assert_eq!(graph.run.status, gold_band::dynamic::DynamicRunStatus::Paused);
-    assert_eq!(graph.run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert_eq!(
+        graph.run.status,
+        gold_band::dynamic::DynamicRunStatus::Paused
+    );
+    assert_eq!(
+        graph.run.pause_reason,
+        Some(PauseReason::ProcessInterrupted)
+    );
     let child_run: gold_band::runtime::RunState =
         gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
     assert_eq!(child_run.status, RunStatus::Paused);
-    assert_eq!(child_run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert_eq!(
+        child_run.pause_reason,
+        Some(PauseReason::ProcessInterrupted)
+    );
 }
 
 #[test]
@@ -1399,7 +1467,15 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
             .unwrap(),
     )
     .unwrap();
-    assert!(child_invocation.user_prompt.contains("Run child workflow from frozen snapshot"));
+    assert!(
+        child_invocation
+            .user_prompt
+            .contains("Run child workflow from frozen snapshot")
+    );
     assert!(child_invocation.user_prompt.contains("Run child work"));
-    assert!(child_invocation.user_prompt.contains("# Requirement\nExercise AI-DYNAMIC"));
+    assert!(
+        child_invocation
+            .user_prompt
+            .contains("# Requirement\nExercise AI-DYNAMIC")
+    );
 }

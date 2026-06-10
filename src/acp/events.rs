@@ -462,9 +462,7 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
 pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
     let used = raw.get("used").and_then(Value::as_u64);
     let size = raw.get("size").and_then(Value::as_u64);
-    let cost_amount = raw
-        .pointer("/cost/amount")
-        .and_then(Value::as_f64);
+    let cost_amount = raw.pointer("/cost/amount").and_then(Value::as_f64);
     (used, size, cost_amount)
 }
 
@@ -491,7 +489,8 @@ mod tests {
 
     #[test]
     fn extract_usage_all_fields() {
-        let raw = json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
+        let raw =
+            json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
         let (used, size, cost) = extract_usage_fields(&raw);
         assert_eq!(used, Some(12345));
         assert_eq!(size, Some(200000));
@@ -583,7 +582,10 @@ mod tests {
 
     #[test]
     fn kind_to_ui_available_commands_update() {
-        assert_eq!(kind_to_ui_kind("available_commands_update"), "availableCommands");
+        assert_eq!(
+            kind_to_ui_kind("available_commands_update"),
+            "availableCommands"
+        );
     }
 
     #[test]

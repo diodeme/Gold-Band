@@ -413,7 +413,9 @@ impl RuntimeConfig {
     }
 
     pub fn apply_app_config(mut self, app_config: &ProjectAppConfig) -> Self {
-        if let Some(acp_session_title_refresh_enabled) = app_config.acp_session_title_refresh_enabled {
+        if let Some(acp_session_title_refresh_enabled) =
+            app_config.acp_session_title_refresh_enabled
+        {
             self.acp_session_title_refresh_enabled = acp_session_title_refresh_enabled;
         }
         if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
@@ -447,7 +449,8 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        DesktopUpdateBadgeState, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+        StateConfig,
     };
     use std::str::FromStr;
 
@@ -541,10 +544,19 @@ mod tests {
         let json = serde_json::to_string_pretty(&settings).unwrap();
         let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.console_theme, Some(ConsoleThemeName::Nord));
-        assert_eq!(roundtripped.desktop_theme, Some(DesktopThemePreference::Dark));
+        assert_eq!(
+            roundtripped.desktop_theme,
+            Some(DesktopThemePreference::Dark)
+        );
         assert_eq!(roundtripped.desktop_language, Some(DesktopLanguage::En));
-        assert_eq!(roundtripped.desktop_font.as_deref(), Some("Microsoft YaHei UI"));
-        assert!(matches!(roundtripped.log_level, Some(RuntimeLogLevel::Trace)));
+        assert_eq!(
+            roundtripped.desktop_font.as_deref(),
+            Some("Microsoft YaHei UI")
+        );
+        assert!(matches!(
+            roundtripped.log_level,
+            Some(RuntimeLogLevel::Trace)
+        ));
     }
 
     #[test]
@@ -567,11 +579,17 @@ mod tests {
         let json = serde_json::to_string_pretty(&state).unwrap();
         let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            roundtripped.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            roundtripped
+                .desktop_update_badges
+                .settings_entry_seen_version
+                .as_deref(),
             Some("1.2.3")
         );
         assert_eq!(
-            roundtripped.desktop_available_update.as_ref().map(|u| u.version.as_str()),
+            roundtripped
+                .desktop_available_update
+                .as_ref()
+                .map(|u| u.version.as_str()),
             Some("1.2.3")
         );
         assert_eq!(
@@ -637,11 +655,17 @@ mod tests {
             Some("2026-05-27 10:00:00")
         );
         assert_eq!(
-            config.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            config
+                .desktop_update_badges
+                .settings_entry_seen_version
+                .as_deref(),
             Some("1.2.3")
         );
         assert_eq!(
-            config.desktop_available_update.as_ref().map(|u| u.version.as_str()),
+            config
+                .desktop_available_update
+                .as_ref()
+                .map(|u| u.version.as_str()),
             Some("1.2.3")
         );
     }
@@ -719,11 +743,17 @@ mod tests {
             Some("2026-05-27 10:00:00")
         );
         assert_eq!(
-            config.desktop_update_badges.settings_entry_seen_version.as_deref(),
+            config
+                .desktop_update_badges
+                .settings_entry_seen_version
+                .as_deref(),
             Some("1.2.3")
         );
         assert_eq!(
-            config.desktop_available_update.as_ref().map(|u| u.version.as_str()),
+            config
+                .desktop_available_update
+                .as_ref()
+                .map(|u| u.version.as_str()),
             Some("1.2.3")
         );
     }
@@ -782,9 +812,43 @@ pub struct ConversationRunModeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAutoConfig {
+    pub agent_strategy: Option<String>,
     pub agent_type: String,
+    pub bootstrap_agent_type: Option<String>,
+    pub bootstrap_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
+    pub routing_prompt: Option<String>,
+    pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRef>>,
     pub allowed_profiles: Option<Vec<String>>,
     pub global_goal: Option<String>,
+    pub control: Option<ConversationDynamicControl>,
+    pub active_template_id: Option<String>,
+    pub active_template_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDynamicAgentRef {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAllowedWorkflowRef {
+    pub workflow_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDynamicControl {
+    pub max_dynamic_nodes: u32,
+    pub max_fanout: u32,
+    pub max_depth: u32,
+    pub max_parallel: u32,
+    pub max_group_depth: u32,
+    pub max_workflow_invocations: u32,
+    pub allow_nested_dynamic: bool,
 }

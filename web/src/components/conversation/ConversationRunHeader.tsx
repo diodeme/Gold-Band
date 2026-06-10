@@ -34,16 +34,9 @@ export function ConversationRunHeader({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(run.title);
   const inputRef = useRef<HTMLInputElement>(null);
-  const selectedSessionRunning = selectedSessionLeaf?.status === 'running';
-  const selectedSessionDotClass = selectedSessionLeaf?.outcome === 'success'
-    ? 'bg-emerald-500'
-    : selectedSessionLeaf?.outcome === 'failure' || selectedSessionLeaf?.outcome === 'killed'
-      ? 'bg-red-500'
-      : selectedSessionRunning
-        ? 'bg-primary'
-        : selectedSessionLeaf
-          ? 'bg-yellow-500'
-          : '';
+  const selectedSessionDisplay = selectedSessionLeaf?.runtimeDisplay;
+  const selectedSessionRunning = selectedSessionDisplay?.tone === 'running';
+  const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
 
   const startEditing = useCallback(() => {
     setTitleValue(run.title);
@@ -162,4 +155,13 @@ export function ConversationRunHeader({
       </div>
     </div>
   );
+}
+
+function runtimeDotClass(tone?: string | null) {
+  if (tone === 'success') return 'bg-emerald-500';
+  if (tone === 'danger') return 'bg-red-500';
+  if (tone === 'running') return 'bg-primary';
+  if (tone === 'warning') return 'bg-yellow-500';
+  if (tone === 'neutral') return 'bg-muted-foreground';
+  return '';
 }

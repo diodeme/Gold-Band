@@ -3,7 +3,9 @@ use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_output
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
-use crate::prompts::{RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template};
+use crate::prompts::{
+    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template,
+};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -237,7 +239,10 @@ pub enum PromptVisibility {
 /// For images: base64-encode and produce an AcpContentBlock::Image.
 /// For text files: read as UTF-8 and produce an AcpContentBlock::Resource.
 /// Other files are skipped.
-pub fn resolve_attachments(paths: &[String], storage_prefix: &str) -> Result<Vec<ResolvedAttachment>> {
+pub fn resolve_attachments(
+    paths: &[String],
+    storage_prefix: &str,
+) -> Result<Vec<ResolvedAttachment>> {
     let mut resolved = Vec::new();
     for path_str in paths {
         let std_path = std::path::Path::new(path_str);
@@ -254,7 +259,10 @@ pub fn resolve_attachments(paths: &[String], storage_prefix: &str) -> Result<Vec
             .unwrap_or("")
             .to_lowercase();
 
-        let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp");
+        let is_image = matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+        );
         let mime_type = mime_for_ext(&ext);
 
         if is_image {
@@ -274,8 +282,7 @@ pub fn resolve_attachments(paths: &[String], storage_prefix: &str) -> Result<Vec
                 }),
             });
         } else if is_text_ext(&ext) {
-            let text = String::from_utf8(data)
-                .unwrap_or_else(|_| "[binary file]".to_string());
+            let text = String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string());
             let path_for_storage = format!("{}/{}", storage_prefix, name);
             resolved.push(ResolvedAttachment {
                 meta: AttachmentMeta {
@@ -301,11 +308,9 @@ pub fn resolve_attachments(paths: &[String], storage_prefix: &str) -> Result<Vec
 /// This is the single source of truth — the frontend queries it via Tauri command.
 pub fn supported_attachment_extensions() -> Vec<&'static str> {
     vec![
-        "png", "jpg", "jpeg", "webp", "gif", "bmp",
-        "txt", "md", "markdown", "json", "jsonl", "csv",
-        "html", "htm", "css", "js", "ts", "tsx", "jsx",
-        "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
-        "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "txt", "md", "markdown", "json", "jsonl",
+        "csv", "html", "htm", "css", "js", "ts", "tsx", "jsx", "rs", "py", "go", "java", "c", "h",
+        "cpp", "hpp", "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
     ]
 }
 
@@ -342,10 +347,35 @@ fn mime_for_ext(ext: &str) -> String {
 fn is_text_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "txt" | "md" | "markdown" | "json" | "csv" | "html" | "htm"
-            | "css" | "js" | "ts" | "tsx" | "jsx" | "rs" | "py" | "go"
-            | "java" | "c" | "h" | "cpp" | "hpp" | "yaml" | "yml" | "xml"
-            | "toml" | "log" | "sql" | "sh" | "bash" | "zsh"
+        "txt"
+            | "md"
+            | "markdown"
+            | "json"
+            | "csv"
+            | "html"
+            | "htm"
+            | "css"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "rs"
+            | "py"
+            | "go"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "toml"
+            | "log"
+            | "sql"
+            | "sh"
+            | "bash"
+            | "zsh"
     )
 }
 
@@ -359,8 +389,16 @@ fn base64_encode(bytes: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
         out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 0x3F) as usize] as char } else { b'=' as char });
-        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { b'=' as char });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
     }
     out
 }
@@ -377,7 +415,11 @@ pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
     fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult>;
-    fn run_worker_with_live_update(&self, req: WorkerInvocation, _live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
+    fn run_worker_with_live_update(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<AcpLiveUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         self.run_worker(req)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
@@ -484,9 +526,9 @@ fn find_model_config_option(capabilities: &Value) -> Option<&Value> {
         .get("configOptions")
         .and_then(Value::as_array)
         .and_then(|options| {
-            options.iter().find(|option| {
-                option.get("category").and_then(Value::as_str) == Some("model")
-            })
+            options
+                .iter()
+                .find(|option| option.get("category").and_then(Value::as_str) == Some("model"))
         })
 }
 
@@ -562,7 +604,11 @@ impl ProviderAdapter for AcpProvider {
         self.run_worker_with_live_update(req, None)
     }
 
-    fn run_worker_with_live_update(&self, req: WorkerInvocation, live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
+    fn run_worker_with_live_update(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -716,7 +762,11 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
 
 fn render_system_prompt(req: &WorkerInvocation) -> String {
     render_template(
-        prompt_by_language(req.runtime_context.language, RUNTIME_SYSTEM_ZH_CN, RUNTIME_SYSTEM_EN),
+        prompt_by_language(
+            req.runtime_context.language,
+            RUNTIME_SYSTEM_ZH_CN,
+            RUNTIME_SYSTEM_EN,
+        ),
         runtime_system_context(req),
     )
     .expect("prompt template renders")
@@ -876,7 +926,10 @@ fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String
                 parts.push(reason.to_string());
             }
             if let Some(artifact) = &predecessor.output_artifact {
-                parts.push(format!("输出 artifact={}: {}", artifact.name, artifact.path));
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
                 if let Some(preview) = artifact.preview.as_deref() {
                     parts.push(format!("输出预览={}", preview.trim()));
                 }
@@ -901,10 +954,9 @@ fn runtime_output_contract_context(
             .schema_text
             .clone()
             .or_else(|| {
-                contract
-                    .schema
-                    .as_ref()
-                    .map(|schema| serde_json::to_string_pretty(schema).expect("serialize output schema"))
+                contract.schema.as_ref().map(|schema| {
+                    serde_json::to_string_pretty(schema).expect("serialize output schema")
+                })
             })
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
@@ -946,16 +998,14 @@ pub fn provider_capabilities_for_type(
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
     }
-    Ok(
-        AcpProvider::new(
-            agent_type.as_str(),
-            agent_type.default_adapter_config(),
-            false,
-            false,
-        )
-            .describe_provider()
-            .capabilities,
+    Ok(AcpProvider::new(
+        agent_type.as_str(),
+        agent_type.default_adapter_config(),
+        false,
+        false,
     )
+    .describe_provider()
+    .capabilities)
 }
 
 pub fn supports_continue_session(provider_id: &str) -> Result<bool> {

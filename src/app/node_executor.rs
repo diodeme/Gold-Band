@@ -15,11 +15,11 @@ use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
     validate_worker_ref_state,
 };
-use crate::storage::{read_json, write_json};
 use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
+use crate::storage::{read_json, write_json};
 
-use super::{AcpLiveEventContext, App};
 use super::ids::now_rfc3339_like;
+use super::{AcpLiveEventContext, App};
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
     worker
@@ -433,7 +433,12 @@ pub(crate) fn execute_ai_node(
     };
     let attempt_dir_for_index = invocation.attempt_dir.clone();
     let live_update = app.acp_live_update_for(live_update_context);
-    let result = app.provider_for_id(provider_id)?.run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
+    let result = app
+        .provider_for_id(provider_id)?
+        .run_worker_with_live_update(
+            invocation,
+            live_update.as_ref().map(|callback| callback as _),
+        )?;
 
     // Fire-and-forget: index this attempt for cross-session search
     let ctx = AttemptIndexContext {

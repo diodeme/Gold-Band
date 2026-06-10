@@ -111,7 +111,8 @@ import type {
 
 export type AcpExternalComposerState =
   | { kind: "normal" }
-  | { kind: "invalid-workflow"; workflowError: string }
+  | { kind: "paused"; message: string; onContinue?: () => void }
+  | { kind: "invalid-workflow"; workflowError: string; onRepair?: () => void }
   | { kind: "runtime-error"; errorMessage: string; onRepair?: () => void };
 
 export interface ACPChatDialogHandle {
@@ -610,6 +611,7 @@ export const ACPChatDialog = forwardRef<
   const cancelRequestedRef = useRef(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
   const sessionRefreshSeqRef = useRef(0);
+  const configGenerationRef = useRef(0);
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
 
@@ -977,6 +979,21 @@ export const ACPChatDialog = forwardRef<
     });
   };
 
+  const patchSessionConfig = (patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
+    const base = latestSessionRef.current ?? currentSession ?? effective ?? null;
+    if (!base) return;
+    const updated: AcpSessionVm = {
+      ...base,
+      config: {
+        ...(base.config ?? {}),
+        ...patch,
+      },
+    };
+    configGenerationRef.current += 1;
+    latestSessionRef.current = updated;
+    setCurrentSession(updated);
+  };
+
   const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
     const normalized = normalizeEventUpdate(event);
     if (
@@ -1059,7 +1076,17 @@ export const ACPChatDialog = forwardRef<
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
         if (event.event) applyEventUpdate(event.event);
-        else applySessionUpdate(event.session ?? null);
+        else {
+          // Guard against subscription refresh overwriting a pending user config change
+          const incoming = event.session;
+          if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
+            const cfg = latestSessionRef.current.config;
+            if (incoming.config) {
+              incoming.config = { ...incoming.config, currentModelId: cfg.currentModelId, currentModelName: cfg.currentModelName, currentModeId: cfg.currentModeId, currentModeName: cfg.currentModeName };
+            }
+          }
+          applySessionUpdate(incoming ?? null);
+        }
       });
       try {
         const updated = await getAcpSession(
@@ -1650,6 +1677,13 @@ export const ACPChatDialog = forwardRef<
               <AcpExternalComposerState
                 kind="invalid-workflow"
                 message={externalComposerState.workflowError}
+                onAction={externalComposerState.onRepair}
+              />
+            ) : externalComposerState?.kind === "paused" ? (
+              <AcpExternalComposerState
+                kind="paused"
+                message={externalComposerState.message}
+                onAction={externalComposerState.onContinue}
               />
             ) : externalComposerState?.kind === "runtime-error" ? (
               <AcpExternalComposerState
@@ -1854,6 +1888,16 @@ export const ACPChatDialog = forwardRef<
                       <AcpSessionConfigBar
                         session={effective}
                         onModelChange={(modelId) => {
+                          const selected = findAcpConfigOption(
+                            effective.config?.models,
+                            effective.config?.configOptions,
+                            "model",
+                            modelId,
+                          );
+                          patchSessionConfig({
+                            currentModelId: modelId,
+                            currentModelName: selected?.name ?? modelId,
+                          });
                           setAcpSessionModel(
                             taskId,
                             runId,
@@ -1865,13 +1909,27 @@ export const ACPChatDialog = forwardRef<
                             outerAttemptId,
                           )
                             .then((updated) => {
-                              if (updated) applySessionUpdate(updated);
+                              if (updated) {
+                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+                                applySessionUpdate(updated);
+                              }
                             })
-                            .catch((error) =>
-                              console.error('Failed to set ACP session model:', error),
-                            );
+                            .catch((error) => {
+                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+                              console.error('Failed to set ACP session model:', error);
+                            });
                         }}
                         onPermissionModeChange={(permissionModeId) => {
+                          const selected = findAcpConfigOption(
+                            effective.config?.modes,
+                            effective.config?.configOptions,
+                            "mode",
+                            permissionModeId,
+                          );
+                          patchSessionConfig({
+                            currentModeId: permissionModeId,
+                            currentModeName: selected?.name ?? permissionModeId,
+                          });
                           setAcpSessionPermissionMode(
                             taskId,
                             runId,
@@ -1883,11 +1941,15 @@ export const ACPChatDialog = forwardRef<
                             outerAttemptId,
                           )
                             .then((updated) => {
-                              if (updated) applySessionUpdate(updated);
+                              if (updated) {
+                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+                                applySessionUpdate(updated);
+                              }
                             })
-                            .catch((error) =>
-                              console.error('Failed to set ACP session permission mode:', error),
-                            );
+                            .catch((error) => {
+                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+                              console.error('Failed to set ACP session permission mode:', error);
+                            });
                         }}
                       />
                     </PromptInput>
@@ -2012,43 +2074,56 @@ function AcpExternalComposerState({
   message,
   onAction,
 }: {
-  kind: "invalid-workflow" | "runtime-error";
+  kind: "invalid-workflow" | "runtime-error" | "paused";
   message: string;
   onAction?: () => void;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
+  const isPaused = kind === "paused";
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl border px-4 py-3 shadow-sm shadow-background/20",
+        "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-sm shadow-background/20",
         isError
           ? "border-destructive/20 bg-destructive/5"
-          : "border-amber-500/20 bg-amber-500/5",
+          : isPaused
+            ? "border-primary/20 bg-primary/5"
+            : "border-amber-500/20 bg-amber-500/5",
       )}
     >
       <span
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-lg",
+          "flex size-9 shrink-0 items-center justify-center rounded-lg",
           isError
             ? "bg-destructive/10 text-destructive"
-            : "bg-amber-500/10 text-amber-500",
+            : isPaused
+              ? "bg-primary/10 text-primary"
+              : "bg-amber-500/10 text-amber-500",
         )}
       >
-        <ShieldQuestion className="size-4" />
+        {isError ? (
+          <CircleStop className="size-4" />
+        ) : isPaused ? (
+          <Clock className="size-4" />
+        ) : (
+          <ShieldQuestion className="size-4" />
+        )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+      <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
         {message}
       </span>
       {onAction ? (
         <Button
-          size="sm"
-          className="h-7 shrink-0 rounded-full px-3 text-xs"
+          size="default"
+          className="h-9 shrink-0 rounded-full px-4 text-sm"
           onClick={onAction}
         >
-          {isError
-            ? t("conversation.runtime.repairAction")
-            : t("conversation.runtime.repairWorkflow")}
+          {isPaused
+            ? t("conversation.runtime.composerContinue")
+            : isError
+              ? t("conversation.runtime.repairAction")
+              : t("conversation.runtime.repairWorkflow")}
         </Button>
       ) : null}
     </div>
@@ -2196,6 +2271,47 @@ function AcpErrorBanner({ reason }: { reason: string }) {
   );
 }
 
+function findAcpConfigOption(
+  groupedOptions: unknown,
+  configOptions: unknown,
+  category: "model" | "mode",
+  id: string,
+) {
+  const grouped = rawObject(groupedOptions);
+  const groupedList = arrayValue(
+    grouped?.[category === "model" ? "availableModels" : "availableModes"],
+  );
+  const groupedMatch = groupedList
+    ?.map(rawObject)
+    .find((option) => {
+      const optionId =
+        stringValue(option?.modelId) ??
+        stringValue(option?.id) ??
+        stringValue(option?.value);
+      return optionId === id;
+    });
+  if (groupedMatch) {
+    return {
+      id,
+      name: stringValue(groupedMatch.name) ?? id,
+    };
+  }
+  const configOption = arrayValue(configOptions)
+    ?.map(rawObject)
+    .find(
+      (option) =>
+        stringValue(option?.id) === category ||
+        stringValue(option?.category) === category,
+    );
+  const configMatch = arrayValue(configOption?.options)
+    ?.map(rawObject)
+    .find((option) => stringValue(option?.value) === id);
+  return {
+    id,
+    name: stringValue(configMatch?.name) ?? id,
+  };
+}
+
 function AcpSessionConfigBar({
   session,
   onModelChange,
@@ -2212,13 +2328,13 @@ function AcpSessionConfigBar({
   const currentModeName = session.config?.currentModeName ?? null;
   const mode = currentModeName ?? currentModeId;
 
-  const availableModels: { id: string; name: string }[] = useMemo(() => {
+  const availableModels: { id: string; name: string; description?: string | null }[] = useMemo(() => {
     // prefer models.availableModels from session/set_mode responses;
     // fallback: configOptions[?category="model"].options from session/new or capabilities
     const models = session.config?.models as Record<string, unknown> | null | undefined;
     const configOptions = session.config?.configOptions as Array<{
       category?: string;
-      options?: Array<{ value?: string; name?: string }>;
+      options?: Array<{ value?: string; name?: string; description?: string | null }>;
     }> | null | undefined;
 
     const listFromModels =
@@ -2233,7 +2349,7 @@ function AcpSessionConfigBar({
     if (!Array.isArray(list)) return [];
     return list
       .filter(
-        (m: unknown): m is { modelId?: string; id?: string; value?: string; name?: string } =>
+        (m: unknown): m is { modelId?: string; id?: string; value?: string; name?: string; description?: string | null } =>
           typeof m === 'object' && m !== null && !Array.isArray(m),
       )
       .map((m) => {
@@ -2241,16 +2357,17 @@ function AcpSessionConfigBar({
           : typeof m.value === 'string' ? m.value
           : typeof m.id === 'string' ? m.id : '';
         const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        return { id, name };
+        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
+        return { id, name, description };
       })
       .filter((m) => m.id);
   }, [session.config?.models, session.config?.configOptions]);
 
-  const availablePermissionModes: { id: string; name: string }[] = useMemo(() => {
+  const availablePermissionModes: { id: string; name: string; description?: string | null }[] = useMemo(() => {
     const modes = session.config?.modes as Record<string, unknown> | null | undefined;
     const configOptions = session.config?.configOptions as Array<{
       category?: string;
-      options?: Array<{ value?: string; name?: string }>;
+      options?: Array<{ value?: string; name?: string; description?: string | null }>;
     }> | null | undefined;
 
     const listFromModes =
@@ -2265,14 +2382,15 @@ function AcpSessionConfigBar({
     if (!Array.isArray(list)) return [];
     return list
       .filter(
-        (m: unknown): m is { id?: string; value?: string; name?: string } =>
+        (m: unknown): m is { id?: string; value?: string; name?: string; description?: string | null } =>
           typeof m === 'object' && m !== null && !Array.isArray(m),
       )
       .map((m) => {
         const id = typeof m.id === 'string' ? m.id
           : typeof m.value === 'string' ? m.value : '';
         const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        return { id, name };
+        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
+        return { id, name, description };
       })
       .filter((m) => m.id);
   }, [session.config?.modes, session.config?.configOptions]);
@@ -2294,14 +2412,14 @@ function AcpSessionConfigBar({
   if (!currentModelId && !mode) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
       {availableModels.length > 1 ? (
         <Select value={currentModelId ?? ''} onValueChange={handleModelSelect}>
-          <SelectTrigger className="h-7 max-w-full gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
+          <SelectTrigger className="h-7 min-w-0 max-w-[min(22rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
             <span className="shrink-0 text-muted-foreground">
               {t('acp.currentModel')}
             </span>
-            <SelectValue className="min-w-0 truncate" />
+            <span className="min-w-0 flex-1 truncate text-left">{currentModelName ?? currentModelId}</span>
           </SelectTrigger>
           <SelectContent
             side="top"
@@ -2311,8 +2429,13 @@ function AcpSessionConfigBar({
             className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
           >
             {availableModels.map((m) => (
-              <SelectItem value={m.id} key={m.id}>
-                {m.name}
+              <SelectItem value={m.id} key={m.id} className="items-start py-2">
+                <span className="block min-w-0">
+                  <span className="block truncate font-medium">{m.name}</span>
+                  {m.description ? (
+                    <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
+                  ) : null}
+                </span>
               </SelectItem>
             ))}
           </SelectContent>
@@ -2326,11 +2449,11 @@ function AcpSessionConfigBar({
       {mode ? (
         availablePermissionModes.length > 1 ? (
           <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
-            <SelectTrigger className="h-7 max-w-full gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
+            <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
               <span className="shrink-0 text-muted-foreground">
                 {t('acp.permissionMode')}
               </span>
-              <SelectValue className="min-w-0 truncate" />
+              <span className="min-w-0 flex-1 truncate text-left">{currentModeName ?? currentModeId}</span>
             </SelectTrigger>
             <SelectContent
               side="top"
@@ -2340,8 +2463,13 @@ function AcpSessionConfigBar({
               className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
             >
               {availablePermissionModes.map((m) => (
-                <SelectItem value={m.id} key={m.id}>
-                  {m.name}
+                <SelectItem value={m.id} key={m.id} className="items-start py-2">
+                  <span className="block min-w-0">
+                    <span className="block truncate font-medium">{m.name}</span>
+                    {m.description ? (
+                      <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
+                    ) : null}
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>

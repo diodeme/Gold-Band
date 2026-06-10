@@ -361,6 +361,15 @@ impl AiDynamicNode {
         }
     }
 
+    pub fn bootstrap_model(&self) -> Option<&str> {
+        match &self.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { model, .. } => model.as_deref(),
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_model, ..
+            } => bootstrap_model.as_deref(),
+        }
+    }
+
     pub fn permission_mode(&self) -> Option<&str> {
         self.permission_mode.as_deref()
     }
@@ -382,6 +391,8 @@ pub enum AiDynamicAgentStrategy {
     #[serde(rename_all = "camelCase")]
     Dynamic {
         bootstrap_provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap_model: Option<String>,
         routing_prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_agents: Vec<DynamicAgentRef>,
@@ -617,6 +628,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         }
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
+            bootstrap_model,
             routing_prompt,
             available_agents,
         } => {
@@ -624,15 +636,19 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                 !bootstrap_provider.trim().is_empty(),
                 "ai-dynamic node `{id}` bootstrapProvider cannot be blank"
             );
-            ensure!(
-                !routing_prompt.trim().is_empty(),
-                "ai-dynamic node `{id}` routingPrompt cannot be blank"
-            );
+            if let Some(model) = bootstrap_model {
+                if model.trim().is_empty() {
+                    bail!(WorkflowValidationError::DynamicFixedModelBlank {
+                        node_id: id.to_string(),
+                    });
+                }
+            }
             if available_agents.is_empty() {
                 bail!(WorkflowValidationError::DynamicAgentsEmpty {
                     node_id: id.to_string(),
                 });
             }
+            let has_routing_prompt = !routing_prompt.trim().is_empty();
             let mut seen_providers = HashSet::new();
             for agent_ref in available_agents {
                 let provider = agent_ref.provider.trim();
@@ -653,6 +669,11 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                             provider: provider.to_string(),
                         });
                     }
+                } else if !has_routing_prompt {
+                    bail!(WorkflowValidationError::DynamicAgentModelBlank {
+                        node_id: id.to_string(),
+                        provider: provider.to_string(),
+                    });
                 }
             }
         }
@@ -664,7 +685,10 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         );
         if matches!(&node.agent_strategy, AiDynamicAgentStrategy::Dynamic { .. }) {
             ensure!(
-                matches!(permission_mode.as_str(), "read_only" | "ask" | "full_access"),
+                matches!(
+                    permission_mode.as_str(),
+                    "read_only" | "ask" | "full_access"
+                ),
                 "ai-dynamic node `{id}` permissionMode must be one of: read_only, ask, full_access, got `{permission_mode}`"
             );
         }
@@ -845,7 +869,10 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             .filter(|edge| edge.to != END_NODE && edge.to != NEW_ROUND_NODE)
             .for_each(|edge| pending.push(edge.to.clone()));
     }
-    if let Some(node_id) = nodes_by_id.keys().find(|node_id| !reachable.contains(*node_id)) {
+    if let Some(node_id) = nodes_by_id
+        .keys()
+        .find(|node_id| !reachable.contains(*node_id))
+    {
         return Err(WorkflowValidationError::UnreachableNode {
             node_id: node_id.clone(),
         }

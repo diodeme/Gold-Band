@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
 import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -84,6 +84,21 @@ export const desktopApi: RuntimeApi = {
   },
   deleteWorkflowTemplate(templateId: string) {
     return invokeCommand('delete_workflow_template', { templateId });
+  },
+  getAutoTemplates() {
+    return invokeCommand('get_auto_templates');
+  },
+  saveAutoTemplate(name: string, config: ConversationAutoConfigVm) {
+    return invokeCommand('save_auto_template', { input: { name, config } });
+  },
+  updateAutoTemplate(templateId: string, name: string, config: ConversationAutoConfigVm) {
+    return invokeCommand('update_auto_template', { templateId, input: { name, config } });
+  },
+  deleteAutoTemplate(templateId: string) {
+    return invokeCommand('delete_auto_template', { templateId });
+  },
+  replaceAutoTemplates(templates: AutoTemplate[]) {
+    return invokeCommand('replace_auto_templates', { input: { templates } });
   },
   getRunDetail(taskId: string, runId: string) {
     return invokeCommand('get_run_detail', { taskId, runId });

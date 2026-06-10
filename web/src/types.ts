@@ -225,7 +225,7 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 
 export interface DynamicAgentRefDsl {
   provider: string;
-  model: string;
+  model?: string | null;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
@@ -237,6 +237,7 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
+  bootstrapModel?: string | null;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -303,6 +304,19 @@ export interface WorkflowTemplate {
   id: string;
   name: string;
   workflow: WorkflowDsl;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutoTemplateStore {
+  version: string;
+  templates: AutoTemplate[];
+}
+
+export interface AutoTemplate {
+  id: string;
+  name: string;
+  config: ConversationAutoConfigVm;
   createdAt: string;
   updatedAt: string;
 }
@@ -411,6 +425,15 @@ export interface GraphVm {
   edges: GraphEdgeVm[];
 }
 
+export interface RuntimeDisplayVm {
+  code: string;
+  tone: 'success' | 'danger' | 'running' | 'warning' | 'neutral' | string;
+  icon: 'check' | 'error' | 'pause' | 'dot' | string;
+  terminal: boolean;
+  resumable: boolean;
+  reasonCode?: string | null;
+}
+
 export interface GraphNodeVm {
   id: string;
   nodeId?: string | null;
@@ -419,6 +442,7 @@ export interface GraphNodeVm {
   nodeType: string;
   status?: string | null;
   outcome?: string | null;
+  runtimeDisplay: RuntimeDisplayVm;
   attemptId?: string | null;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
@@ -439,6 +463,7 @@ export interface GraphAttemptVm {
   sequence?: number | null;
   status: string;
   outcome?: string | null;
+  runtimeDisplay: RuntimeDisplayVm;
   sessionMode?: string | null;
   acpSessionId?: string | null;
   current: boolean;
@@ -834,6 +859,7 @@ export interface ConversationSessionLeafVm {
   pathLabel: string;
   status: string;
   outcome?: string | null;
+  runtimeDisplay: RuntimeDisplayVm;
   current: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -852,6 +878,7 @@ export interface ConversationRoundNodeVm {
   index: number;
   label: string;
   status: string;
+  runtimeDisplay: RuntimeDisplayVm;
   nodes: ConversationTreeNodeVm[];
 }
 
@@ -860,6 +887,7 @@ export interface ConversationTreeNodeVm {
   label: string;
   nodeType: string;
   status: string;
+  runtimeDisplay: RuntimeDisplayVm;
   attempts: ConversationSessionLeafVm[];
   outerNodes?: ConversationTreeNodeVm[];
 }
@@ -903,6 +931,7 @@ export interface ConversationActiveSessionVm {
   outerAttemptId?: string | null;
   pathLabel: string;
   status: string;
+  runtimeDisplay: RuntimeDisplayVm;
   sessionId?: string | null;
   startedAt?: string | null;
 }
@@ -914,11 +943,20 @@ export interface ConversationRunModeVm {
 }
 
 export interface ConversationAutoConfigVm {
+  agentStrategy?: 'fixed' | 'dynamic';
   agentType: string;
+  bootstrapAgentType?: string | null;
+  bootstrapModelId?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;
+  availableAgents?: DynamicAgentRefDsl[];
+  routingPrompt?: string | null;
+  allowedWorkflows?: AllowedWorkflowRefDsl[];
   allowedProfiles?: string[];
   globalGoal?: string | null;
+  control?: DynamicControlDsl | null;
+  activeTemplateId?: string | null;
+  activeTemplateName?: string | null;
 }
 
 export interface ConversationCreateInput {

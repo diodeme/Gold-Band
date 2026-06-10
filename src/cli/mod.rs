@@ -2,8 +2,7 @@ use crate::app::App;
 use crate::command::execute::execute_command;
 use crate::command::{ArtifactCommand, Command, CommandResult, RunCommand, TaskCommand};
 use crate::config::{
-    ConsoleThemeName, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
-    StateConfig,
+    ConsoleThemeName, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
 };
 use crate::console::run_console;
 use crate::observability::{init_tracing, touch_log_file_best_effort};
@@ -238,7 +237,9 @@ mod tests {
     fn stderr_progress_enabled(cli: &Cli) -> bool {
         !matches!(cli.command, Commands::Console { .. })
     }
-    use crate::config::{ConsoleThemeName, ProjectAppConfig, RuntimeLogLevel, SettingsConfig, StateConfig};
+    use crate::config::{
+        ConsoleThemeName, ProjectAppConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+    };
     use clap::Parser;
 
     #[test]

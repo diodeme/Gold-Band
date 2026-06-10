@@ -115,14 +115,8 @@ function SessionLeaf({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const isRunning = leaf.status === 'running';
-  const statusDotClass = leaf.outcome === 'success'
-    ? 'bg-emerald-500'
-    : leaf.outcome === 'failure' || leaf.outcome === 'killed'
-      ? 'bg-red-500'
-      : isRunning
-        ? 'bg-primary'
-        : 'bg-yellow-500';
+  const isRunning = leaf.runtimeDisplay.tone === 'running';
+  const statusDotClass = runtimeDotClass(leaf.runtimeDisplay.tone);
 
   return (
     <button
@@ -153,4 +147,13 @@ function SessionLeaf({
       <span className="truncate">{leaf.pathLabel}</span>
     </button>
   );
+}
+
+function runtimeDotClass(tone?: string | null) {
+  if (tone === 'success') return 'bg-emerald-500';
+  if (tone === 'danger') return 'bg-red-500';
+  if (tone === 'running') return 'bg-primary';
+  if (tone === 'warning') return 'bg-yellow-500';
+  if (tone === 'neutral') return 'bg-muted-foreground';
+  return 'bg-muted-foreground';
 }

@@ -13,6 +13,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationSidebar,
+  getWorkflowTemplates,
   switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
@@ -35,6 +36,7 @@ import {
   removeConversationWorkspace,
   syncConversationWorkspace,
   saveDesktopUiMode,
+  saveConversationRunMode,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -69,6 +71,7 @@ import type {
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
+  WorkflowTemplateStore,
   ConversationSidebarVm,
   CreateTaskInput,
   DesktopFontPreference,
@@ -134,6 +137,7 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
@@ -244,6 +248,19 @@ export function App() {
       .then(setConversationSidebar)
       .catch(() => {}); // Silently fail - sidebar will show empty state
   }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    getAgentRegistry().then(setAgentRegistry).catch(() => {});
+    getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
+  }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
+    getConversationRunMode(defaultProjectId)
+      .then((mode) => { if (mode) setConversationRunMode(mode); })
+      .catch(() => {});
+  }, [bootstrap, uiMode, defaultProjectId]);
 
   // Load conversation run when navigating to a run page
   useEffect(() => {
@@ -447,6 +464,11 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const updateConversationRunMode = (mode: ConversationRunModeVm) => {
+    setConversationRunMode(mode);
+    saveConversationRunMode(defaultProjectId, mode).catch(() => {});
   };
 
   const onKillRun = (taskId: string, runId: string) => {
@@ -878,9 +900,16 @@ export function App() {
           workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
+          workflowTemplates={conversationWorkflowTemplates}
           busy={busy}
-          onRunModeChange={setConversationRunMode}
+          onRunModeChange={updateConversationRunMode}
           onSubmit={(input) => {
+            const nextMode: ConversationRunModeVm = input.runMode === 'auto'
+              ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
+              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId };
+            setConversationRunMode(nextMode);
+            setBusy(true);
+            saveConversationRunMode(input.projectId, nextMode).catch(() => {});
             validateConversationCreate(input)
               .then(async (validation) => {
                 if (!validation.valid) {
@@ -897,7 +926,8 @@ export function App() {
                   runId: run.runId,
                 });
               })
-              .catch((err) => setError(displayAppError(t, err)));
+              .catch((err) => setError(displayAppError(t, err)))
+              .finally(() => setBusy(false));
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
@@ -912,8 +942,9 @@ export function App() {
         <RunModeManagementPage
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
-          workflowTemplates={null}
-          onSave={(mode) => setConversationRunMode(mode)}
+          workflowTemplates={conversationWorkflowTemplates}
+          onSave={updateConversationRunMode}
+          onWorkflowTemplatesChange={setConversationWorkflowTemplates}
           onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );
@@ -949,6 +980,8 @@ export function App() {
           onSaveWorkflow={async (json) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
             await saveTaskWorkflow(conversationPage.taskId, dsl);
+            const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
+            setConversationRun(refreshed);
           }}
           onSelectSession={(leaf) => {
             const key = leaf.outerNodeId
@@ -975,8 +1008,12 @@ export function App() {
             }).catch(() => {});
           }}
           onSessionStopped={() => {}}
-          onContinueRun={() => {}}
-          onRepairWorkflow={() => {}}
+          onContinueRun={() => {
+            continueRun(conversationPage.taskId, conversationPage.runId)
+              .then(() => getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId))
+              .then(setConversationRun)
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onTitleChange={(title) => {
             setConversationRun((prev) => prev ? { ...prev, title } : prev);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
@@ -991,10 +1028,11 @@ export function App() {
       projectId={defaultProjectId}
       workspaceName={defaultWorkspaceName}
       workspaces={conversationSidebar.workspaces}
-      runMode={conversationRunMode}
-      agentRegistry={agentRegistry}
-      busy={busy}
-      onRunModeChange={setConversationRunMode}
+          runMode={conversationRunMode}
+          agentRegistry={agentRegistry}
+          workflowTemplates={conversationWorkflowTemplates}
+          busy={busy}
+      onRunModeChange={updateConversationRunMode}
       onSubmit={(_input) => {}}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {

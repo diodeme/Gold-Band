@@ -43,9 +43,8 @@ use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
 use metrics::start_heartbeat_polling;
-use updater::{retry_pending_startup_install, start_update_polling};
 use tauri::{Manager, WindowEvent};
-use updater::{start_update_polling, startup_critical_check};
+use updater::{retry_pending_startup_install, start_update_polling};
 
 fn main() {
     if let Err(error) = run() {
@@ -155,6 +154,7 @@ fn run() -> anyhow::Result<()> {
             save_updater_settings,
             get_metrics_settings,
             save_metrics_settings,
+            get_startup_check_result,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,

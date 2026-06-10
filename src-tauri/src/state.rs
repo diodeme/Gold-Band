@@ -87,7 +87,7 @@ pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
-    pending_critical_update: Mutex<Option<Vec<u8>>>,
+    pending_critical_update: Mutex<Option<Utf8PathBuf>>,
 }
 
 impl DesktopState {
@@ -157,15 +157,15 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn store_pending_update(&self, bytes: Vec<u8>) -> Result<()> {
+    pub fn store_pending_update(&self, path: Utf8PathBuf) -> Result<()> {
         self.pending_critical_update
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .replace(bytes);
+            .replace(path);
         Ok(())
     }
 
-    pub fn take_pending_update(&self) -> Option<Vec<u8>> {
+    pub fn take_pending_update(&self) -> Option<Utf8PathBuf> {
         self.pending_critical_update
             .lock()
             .ok()

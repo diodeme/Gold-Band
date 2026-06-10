@@ -255,6 +255,8 @@ fn current_timestamp() -> String {
 
 // ── Silent / background critical update ──
 
+const PENDING_UPDATE_DIR: &str = "/tmp/gold-band-update";
+
 /// 简单语义版本比较：latest 是否比 current 更新
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse_trio = |v: &str| -> Option<(u32, u32, u32)> {
@@ -271,9 +273,7 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     (a_maj, a_min, a_pat) > (b_maj, b_min, b_pat)
 }
 
-/// 后台检测关键更新并静默下载，不安装
-/// 复用 check_update_inner 已拉取的 latest.json（通过 updater.check() 的 raw_json），
-/// 不再额外发 HTTP 请求
+/// 后台检测关键更新并静默下载到文件，不安装
 pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     let channel = current_channel_config();
     if !channel.silent_update_enabled {
@@ -285,13 +285,11 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
         return Ok(());
     };
 
-    // 版本比较
     let current = app.package_info().version.to_string();
     if !version_is_newer(&update.version, &current) {
         return Ok(());
     }
 
-    // 从 updater.check() 返回的 raw_json 中直接读取 critical，无需额外请求
     let is_critical = update
         .raw_json
         .get("critical")
@@ -304,22 +302,58 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
     // 后台静默下载
     let bytes = update.download(|_chunk, _total| {}, || {}).await?;
 
-    // 存储到 DesktopState，等待退出时安装
+    // 写入 /tmp/gold-band-update/（崩溃也不丢）
+    let dir = std::path::Path::new(PENDING_UPDATE_DIR);
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("update-{}.pkg", update.version));
+    std::fs::write(&path, &bytes)?;
+
     if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.store_pending_update(bytes);
+        let _ = state.store_pending_update(
+            camino::Utf8PathBuf::from_path_buf(path).map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?,
+        );
     }
 
     Ok(())
 }
 
-/// 安装已下载的更新包，不下载、不 restart
-pub async fn install_downloaded_update<R: Runtime>(app: &AppHandle<R>, bytes: Vec<u8>) -> Result<()> {
+/// 从文件路径安装更新包，成功则删除文件
+pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino::Utf8Path) -> Result<()> {
+    let bytes = std::fs::read(path.as_std_path()).context("failed to read pending update file")?;
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {
+        // 版本已最新？清理残留文件
+        let _ = std::fs::remove_file(path.as_std_path());
         return Err(anyhow!("updater.no-update"));
     };
     update.install(bytes).context("updater.install-failed")?;
+    // 安装成功，删除文件
+    let _ = std::fs::remove_file(path.as_std_path());
     Ok(())
+}
+
+/// 启动时检查 /tmp 是否有上次未安装成功的残留包
+pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
+    let dir = std::path::Path::new(PENDING_UPDATE_DIR);
+    if !dir.is_dir() {
+        return;
+    }
+    // 清理空目录（之前完全处理完的）
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let handle = app.clone();
+                let utf8_path = match camino::Utf8PathBuf::from_path_buf(path.clone()) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                tauri::async_runtime::spawn(async move {
+                    let _ = install_pending_file(&handle, &utf8_path).await;
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

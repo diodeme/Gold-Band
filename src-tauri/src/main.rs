@@ -36,7 +36,7 @@ use commands_conversation::{
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
-use updater::start_update_polling;
+use updater::{retry_pending_startup_install, start_update_polling};
 use tauri::{Manager, WindowEvent};
 
 fn main() {
@@ -70,6 +70,7 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             Ok(())
         })
@@ -80,11 +81,11 @@ fn run() -> anyhow::Result<()> {
                     let _ = app.pause_all_running_sessions();
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
-                // 关键更新：退出前安装已下载的包
-                if let Some(bytes) = state.take_pending_update() {
+                // 关键更新：退出前安装已下载的包，成功自动删文件
+                if let Some(path) = state.take_pending_update() {
                     let handle = window.app_handle().clone();
                     tauri::async_runtime::block_on(async move {
-                        let _ = crate::updater::install_downloaded_update(&handle, bytes).await;
+                        let _ = crate::updater::install_pending_file(&handle, &path).await;
                     });
                 }
             }

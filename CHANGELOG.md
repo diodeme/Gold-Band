@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.5.0](https://github.com/diodeme/Gold-Band/compare/v0.4.0...v0.5.0) (2026-06-10)
+
+
+### Features
+
+* **acp:** cache session titles behind project feature flag ([f39214d](https://github.com/diodeme/Gold-Band/commit/f39214d2273814d3a49d626afea661aecad2c6ed))
+* add auto-templates and runtime display status normalization ([cb4b415](https://github.com/diodeme/Gold-Band/commit/cb4b415a01e6da77d666c518b550c369e99bd84a))
+* add model selection for workflow nodes and ACP sessions ([4787f6e](https://github.com/diodeme/Gold-Band/commit/4787f6e38b8b8fc65f98d28966f053db907803af))
+* add normative permission mode mapping and ACP session mode dropdown ([846b2f8](https://github.com/diodeme/Gold-Band/commit/846b2f83b107133af9648ae31ac56f3e4269a78c))
+* add silent critical update on startup ([650341a](https://github.com/diodeme/Gold-Band/commit/650341a0ca989926aa91044698e7427978d129d4))
+* add silent critical update on startup ([ef863f7](https://github.com/diodeme/Gold-Band/commit/ef863f7c15c2f7239183827ae247ac80c6f9d508))
+* ai dynamic routing ([048febc](https://github.com/diodeme/Gold-Band/commit/048febcfc3fa0bae4d3175ca752b1e9d2f32fefd))
+* client metrics reporting — heartbeat, node execution metrics, and settings UI ([8664313](https://github.com/diodeme/Gold-Band/commit/8664313a1f49fc2b81111305c82324e4c0cc7976))
+* **conversation:** add per-message file attachments via ACP content blocks ([4663186](https://github.com/diodeme/Gold-Band/commit/4663186e187ffbb3ecef2a235898fbcc4e9bbfcf))
+* **conversation:** add shared desktop title bar ([a4544a4](https://github.com/diodeme/Gold-Band/commit/a4544a413dfa1a10d01cf7d113441c8211a650e2))
+* **conversation:** attachment upload, preview, validation and drag-drop polish ([c8bf74a](https://github.com/diodeme/Gold-Band/commit/c8bf74a1f917cbc0148a403d2ecb72de1d3d38de))
+* **conversation:** polish runtime session chrome ([0f009c7](https://github.com/diodeme/Gold-Band/commit/0f009c73af32c84b66b5206999586f4529f2e4ae))
+* **conversation:** polish runtime workflow interactions ([e0003b8](https://github.com/diodeme/Gold-Band/commit/e0003b8dc080e6c56ae98ce2d7c251cc2c8ce095))
+* **desktop:** add persistent resizable drawers ([0c8d23b](https://github.com/diodeme/Gold-Band/commit/0c8d23b3133550bf4a7cf2a6e0390cf7930066e6))
+* improve new UI ([6569e62](https://github.com/diodeme/Gold-Band/commit/6569e628adb130672ec16e2e2a2a8a8bc6d61758))
+* new UI framework for conversational home ([f1277c6](https://github.com/diodeme/Gold-Band/commit/f1277c688b209972fe31d31a5aae04e538992217))
+* **runtime:** centralize localized prompt templates ([ecb4232](https://github.com/diodeme/Gold-Band/commit/ecb4232ba385fe81e9a94002334e77313456d1de))
+* **storage:** add SQLite search index for cross-session prompt and task retrieval ([f624444](https://github.com/diodeme/Gold-Band/commit/f624444c1d66be4124cf68a7e9ab2cc26db780d6))
+* support critical flag in build-channel.mjs via positional arg ([f2a9230](https://github.com/diodeme/Gold-Band/commit/f2a9230939c9c44eb3a21da44dad44f9671f9b41))
+* track token usage per session ([#29](https://github.com/diodeme/Gold-Band/issues/29)) ([46e216a](https://github.com/diodeme/Gold-Band/commit/46e216addd8dc11120723578bd0b9be359549882))
+* **workflow:** add ai dynamic routing node ([824dae8](https://github.com/diodeme/Gold-Band/commit/824dae8b9af6b9e0d65f569d54b6d9e6d477a1f0))
+* **workflow:** add ai-dynamic agent strategies ([4349c60](https://github.com/diodeme/Gold-Band/commit/4349c6086b7dcda13a5a2cb3cd9a82291a3e4e13))
+* **workflow:** add ai-dynamic output protocol prompts ([4de4af6](https://github.com/diodeme/Gold-Band/commit/4de4af6cdafeea32bf4c75c42dd38ef05217624a))
+* **workflow:** extend AI-DYNAMIC node configuration ([f847289](https://github.com/diodeme/Gold-Band/commit/f847289e92fa145de60b8edc161a7fdd1307cc3c))
+* **workflow:** let ai-dynamic fanout own downstream specs ([8c731ec](https://github.com/diodeme/Gold-Band/commit/8c731ec67ef89ccdd39419f02c68d7af72acbcaf))
+
+
+### Bug Fixes
+
+* **acp:** allow scroll-up during streaming and render new events while reading history ([01458c6](https://github.com/diodeme/Gold-Band/commit/01458c6c792a0d8e1829a39dc94c359b1134b6c0))
+* **acp:** eliminate residual scroll jitter and accidental snap-back during streaming ([7dd2086](https://github.com/diodeme/Gold-Band/commit/7dd2086527f964ff83df7506e55029496680c33e))
+* **acp:** normalize elapsed time unit labels ([2f177ca](https://github.com/diodeme/Gold-Band/commit/2f177ca42711fe30e4cbd455804a196ec4d5633d))
+* **acp:** remove cancel grace period, fix dynamic worker pause, persist fuse, and fix continue button ([c727bc5](https://github.com/diodeme/Gold-Band/commit/c727bc5ca0de81eec79a5272b2fbd2a92a03925d))
+* **acp:** resolve follow-up session lifecycle — promptId propagation, optimistic lock, stale status, and direct process kill ([73cbb2f](https://github.com/diodeme/Gold-Band/commit/73cbb2f9c9dc5f91c9545c18a0d25fb1e74fcddc))
+* **acp:** stabilize live chat sessions ([9e929e9](https://github.com/diodeme/Gold-Band/commit/9e929e9c5ddd44052262d4270aa66e53630d71a1))
+* add missing closing delimiters after get_startup_check_result ([d73837a](https://github.com/diodeme/Gold-Band/commit/d73837a5dec1a46a2a36cc809de1dd02f0fb07e4))
+* clean up empty update directory after successful install ([a6ce0b4](https://github.com/diodeme/Gold-Band/commit/a6ce0b4579061f848945c7b4d3b70c2cfb015d30))
+* clear pending update bytes before manual install ([e9a8d4b](https://github.com/diodeme/Gold-Band/commit/e9a8d4bb1d0952ca6da381b1af535d82280b939f))
+* **conversation:** polish shell and composer surfaces ([e11014c](https://github.com/diodeme/Gold-Band/commit/e11014c934c1e57c5d3404be74f1a9b6854af8b2))
+* correct model dropdown data source and improve validation feedback ([fbe0d22](https://github.com/diodeme/Gold-Band/commit/fbe0d22c50f347481725c687d7635ab376054c74))
+* delete downloaded update file before install to prevent loop ([5243019](https://github.com/diodeme/Gold-Band/commit/5243019b24f5223f4faefcbf6ed10a29673f7107))
+* delete downloaded update file when user manually installs ([ef811f3](https://github.com/diodeme/Gold-Band/commit/ef811f3b6a499ec263774f06728d197f1eb16baa))
+* **desktop:** align ACP fonts and preserve agent diagnostics ([588ca23](https://github.com/diodeme/Gold-Band/commit/588ca232a9bdb5bdfe5c1eddd21641828a3ab0c6))
+* **desktop:** prevent double .json extension in dynamic node artifact paths ([261f708](https://github.com/diodeme/Gold-Band/commit/261f708e2b85d4392b68bdd82fa1b276b7abd02a))
+* **desktop:** unify help tooltip interactions ([cf74f66](https://github.com/diodeme/Gold-Band/commit/cf74f6661a73418c94b41d9e787b1c14152cdf0f))
+* eliminate splash event race with check-then-listen pattern ([52b5281](https://github.com/diodeme/Gold-Band/commit/52b5281afeee47db693d4aa9a8fba17142c59f8b))
+* prevent silent update loop by comparing versions before download ([9ab9453](https://github.com/diodeme/Gold-Band/commit/9ab945340d9ebc9c373114251edf0ac6fde77f1f))
+* prevent theme flash during splash screen startup ([60aa4b9](https://github.com/diodeme/Gold-Band/commit/60aa4b97a6d95a9c5ed496ac5892587322614cc2))
+* reduce HTTP requests and clear stale red dot on startup ([2ce17c5](https://github.com/diodeme/Gold-Band/commit/2ce17c5606d4bc933f78a2304270313d0f78791b))
+* remove version_is_newer check from background download ([4a3ae70](https://github.com/diodeme/Gold-Band/commit/4a3ae7009d1e91f2fa1c755498a2640613649b42))
+* resolve duplicate import and add missing DesktopState startup_check methods ([21dfa6f](https://github.com/diodeme/Gold-Band/commit/21dfa6f88cc798ba62215024e818fe2d74f2e1ff))
+* **runtime:** preserve resumable ai-dynamic child runs ([e124873](https://github.com/diodeme/Gold-Band/commit/e1248738a5271e3b03913c2b6144d7a716e4943b))
+* set NSIS installMode to currentUser to avoid UAC on update ([1142b1a](https://github.com/diodeme/Gold-Band/commit/1142b1a6c2df6cc77b32d5cbfda879b533643d24))
+* use std::env::temp_dir() for cross-platform temp path ([2b9061a](https://github.com/diodeme/Gold-Band/commit/2b9061ab0342cf4e01060e392408ed510c6ac5f7))
+* **workflow:** align editor save and validation flows ([1562402](https://github.com/diodeme/Gold-Band/commit/15624026acce644057e78692bafbcad38faecc4f))
+* **workflow:** remove default attempt and round limits ([2ed7a2e](https://github.com/diodeme/Gold-Band/commit/2ed7a2e9b2cfdb053c7fb9b1bdef0f9147ce6d92))
+
+
+### Performance Improvements
+
+* **acp:** eliminate spinner jank and reduce main-thread pressure during streaming ([dcd7e11](https://github.com/diodeme/Gold-Band/commit/dcd7e11c73b1ea6b372815e200058c39391cd13e))
+* add timeline/events parse cache and React concurrent rendering ([7e6ce9c](https://github.com/diodeme/Gold-Band/commit/7e6ce9c401b3e6fd85ae9c511db4cb25bc56dd16))
+
 ## [0.4.0](https://github.com/diodeme/Gold-Band/compare/v0.3.1...v0.4.0) (2026-05-28)
 
 

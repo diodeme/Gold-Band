@@ -339,7 +339,7 @@ pub fn normalize_session_update(
     seq: u64,
     session_id: Option<String>,
     update: &Value,
-) -> Vec<AcpUiEvent> {
+) -> AcpUiEvent {
     let timestamp = current_timestamp();
     let kind = update
         .get("sessionUpdate")
@@ -373,7 +373,7 @@ pub fn normalize_session_update(
         event.content = Some(String::new());
     }
 
-    vec![event]
+    event
 }
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {

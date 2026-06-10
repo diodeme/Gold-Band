@@ -25,11 +25,12 @@ AI-DYNAMIC 当前剩余预算：
 {{ allowed_workflow_snapshots }}
 - 动态节点 agent 策略：{{ agent_strategy_mode }}
 - 初始分发节点 agent：{{ bootstrap_provider }}
-{% if agent_strategy_mode == "dynamic" %}- 节点 agent 选择说明：
+{% if agent_strategy_mode == "dynamic" %}- agent 和模型决策指南：
 {{ agent_routing_prompt }}
-- 可用 providers：
+- 可用 agent 及模型：
 {{ available_providers }}
-{% endif %}- 可用 profiles：
+{% endif %}
+- 可用 profiles：
 {{ available_profiles }}
 - 剩余预算：
 {{ remaining_budget }}

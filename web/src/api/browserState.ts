@@ -1,4 +1,4 @@
-import type { AppBootstrapVm, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
+import type { AppBootstrapVm, AutoTemplateStore, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
 import { mockBootstrap, mockProfileList, mockUpdateBadges, mockUpdateStatus, mockUpdaterSettings, mockWorkflowTemplates } from '../mockData';
 
 export class BrowserPreviewState {
@@ -7,6 +7,7 @@ export class BrowserPreviewState {
   private updateStatus: UpdateStatusVm = cloneUpdateStatus(mockUpdateStatus);
   private updateBadges: UpdateBadgeStateVm = cloneUpdateBadges(mockUpdateBadges);
   private workflowTemplates: WorkflowTemplateStore = cloneWorkflowTemplateStore(mockWorkflowTemplates);
+  private autoTemplates: AutoTemplateStore = { version: '0.1', templates: [] };
 
   getAppBootstrap(): AppBootstrapVm {
     return {
@@ -78,6 +79,15 @@ export class BrowserPreviewState {
     this.workflowTemplates = cloneWorkflowTemplateStore(store);
     return this.getWorkflowTemplates();
   }
+
+  getAutoTemplates(): AutoTemplateStore {
+    return cloneAutoTemplateStore(this.autoTemplates);
+  }
+
+  setAutoTemplates(store: AutoTemplateStore) {
+    this.autoTemplates = cloneAutoTemplateStore(store);
+    return this.getAutoTemplates();
+  }
 }
 
 export const browserPreviewState = new BrowserPreviewState();
@@ -113,6 +123,16 @@ function cloneWorkflowTemplateStore(store: WorkflowTemplateStore): WorkflowTempl
     templates: store.templates.map((template) => ({
       ...template,
       workflow: structuredClone(template.workflow),
+    })),
+  };
+}
+
+function cloneAutoTemplateStore(store: AutoTemplateStore): AutoTemplateStore {
+  return {
+    ...store,
+    templates: store.templates.map((template) => ({
+      ...template,
+      config: structuredClone(template.config),
     })),
   };
 }

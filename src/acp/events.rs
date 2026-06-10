@@ -10,6 +10,16 @@ use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AttachmentMeta {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpSessionMetadata {
     pub adapter_id: String,
     pub adapter_display_name: String,
@@ -430,6 +440,7 @@ pub fn user_prompt_event(
     content: String,
     prompt_id: Option<String>,
     hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
@@ -441,6 +452,9 @@ pub fn user_prompt_event(
     if hidden_from_chat {
         raw["hiddenFromChat"] = Value::Bool(true);
         raw["reason"] = Value::String("invalidOutputRepair".to_string());
+    }
+    if !attachments.is_empty() {
+        raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -525,9 +539,7 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
 pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
     let used = raw.get("used").and_then(Value::as_u64);
     let size = raw.get("size").and_then(Value::as_u64);
-    let cost_amount = raw
-        .pointer("/cost/amount")
-        .and_then(Value::as_f64);
+    let cost_amount = raw.pointer("/cost/amount").and_then(Value::as_f64);
     (used, size, cost_amount)
 }
 
@@ -554,7 +566,8 @@ mod tests {
 
     #[test]
     fn extract_usage_all_fields() {
-        let raw = json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
+        let raw =
+            json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
         let (used, size, cost) = extract_usage_fields(&raw);
         assert_eq!(used, Some(12345));
         assert_eq!(size, Some(200000));
@@ -646,7 +659,10 @@ mod tests {
 
     #[test]
     fn kind_to_ui_available_commands_update() {
-        assert_eq!(kind_to_ui_kind("available_commands_update"), "availableCommands");
+        assert_eq!(
+            kind_to_ui_kind("available_commands_update"),
+            "availableCommands"
+        );
     }
 
     #[test]
@@ -684,6 +700,7 @@ mod tests {
             "继续".to_string(),
             Some("prompt-123".to_string()),
             false,
+            Vec::new(),
         );
         assert_eq!(
             event
@@ -703,6 +720,7 @@ mod tests {
             "继续".to_string(),
             None,
             false,
+            Vec::new(),
         );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
@@ -715,6 +733,7 @@ mod tests {
             "repair".to_string(),
             None,
             true,
+            Vec::new(),
         );
         assert_eq!(event.content, None);
         assert_eq!(

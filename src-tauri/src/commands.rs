@@ -1,17 +1,21 @@
 use gold_band::acp::client;
-use gold_band::acp::events::{AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq, load_timeline_items, permission_decision_event, write_timeline_items};
+use gold_band::acp::events::{
+    AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq,
+    load_timeline_items, permission_decision_event, write_timeline_items,
+};
 use gold_band::acp::permission::{
     cancel_pending_permission_requests, request_cancel, write_permission_response,
 };
 use gold_band::app::{
-    CreateTaskInput, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
+    AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
+    ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
-use gold_band::storage::{read_json, write_json};
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use gold_band::storage::{read_json, write_json};
 use std::{
     collections::BTreeSet,
     fs,
@@ -24,8 +28,8 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    ManagedAgentConfig, ManagedAgentType,
+    AcpAdapterConfig, ConversationAutoConfig, DesktopFontPreference, DesktopLanguage,
+    DesktopThemePreference, ManagedAgentConfig, ManagedAgentType,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -35,17 +39,17 @@ use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
-    UpdateStatusVm, UpdaterSettingsVm, check_update,
+    StartupCheckResult, UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
     updater_settings,
 };
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
-    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm, RoundDetailVm,
-    RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
-    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
+    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm,
+    RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm,
+    UpdateBadgeStateVm, WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
+    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, preferences_vm, round_detail_vm,
+    run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -53,6 +57,25 @@ const ACP_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
+
+fn resolve_acp_attempt_dir(
+    app: &gold_band::app::App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> Utf8PathBuf {
+    if let (Some(on), Some(oa)) = (outer_node_id, outer_attempt_id) {
+        app.paths
+            .dynamic_node_attempt_dir(task_id, run_id, round_id, on, oa, node_id, attempt_id)
+    } else {
+        app.paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +147,26 @@ pub struct SaveWorkflowTemplateInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateWorkflowTemplateInputVm {
     pub workflow: WorkflowDsl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAutoTemplateInputVm {
+    pub name: String,
+    pub config: ConversationAutoConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAutoTemplateInputVm {
+    pub name: String,
+    pub config: ConversationAutoConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceAutoTemplatesInputVm {
+    pub templates: Vec<AutoTemplate>,
 }
 
 #[tauri::command]
@@ -201,7 +244,9 @@ pub fn create_agent(
             }),
         )
         .map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -232,7 +277,9 @@ pub fn update_agent(
             }),
         )
         .map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
     state
         .clear_agent_diagnostic(agent_type)
         .map_err(command_error)?;
@@ -251,7 +298,9 @@ pub fn delete_agent(
     let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -353,12 +402,11 @@ pub fn choose_workspace(
     else {
         return Ok(None);
     };
-    let path = path.into_path().map_err(|_| {
-        CommandErrorVm::new("workspace.path-resolve-failed", serde_json::json!({}))
-    })?;
-    let repo_root = Utf8PathBuf::from_path_buf(path).map_err(|_| {
-        CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({}))
-    })?;
+    let path = path
+        .into_path()
+        .map_err(|_| CommandErrorVm::new("workspace.path-resolve-failed", serde_json::json!({})))?;
+    let repo_root = Utf8PathBuf::from_path_buf(path)
+        .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
     let context = state.set_workspace(repo_root).map_err(command_error)?;
     let update_status = state.update_status().map_err(command_error)?;
     Ok(Some(bootstrap_vm(
@@ -483,6 +531,53 @@ pub fn delete_workflow_template(
 }
 
 #[tauri::command]
+pub fn get_auto_templates(state: State<'_, DesktopState>) -> CommandResult<AutoTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.auto_templates().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn save_auto_template(
+    state: State<'_, DesktopState>,
+    input: SaveAutoTemplateInputVm,
+) -> CommandResult<AutoTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.save_auto_template(input.name, input.config)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn update_auto_template(
+    state: State<'_, DesktopState>,
+    template_id: String,
+    input: UpdateAutoTemplateInputVm,
+) -> CommandResult<AutoTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.update_auto_template(&template_id, input.name, input.config)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn delete_auto_template(
+    state: State<'_, DesktopState>,
+    template_id: String,
+) -> CommandResult<AutoTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.delete_auto_template(&template_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn replace_auto_templates(
+    state: State<'_, DesktopState>,
+    input: ReplaceAutoTemplatesInputVm,
+) -> CommandResult<AutoTemplateStore> {
+    let app = state.app().map_err(command_error)?;
+    app.replace_auto_templates(input.templates)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn get_run_detail(
     state: State<'_, DesktopState>,
     task_id: String,
@@ -505,7 +600,11 @@ pub fn get_round_detail(
 }
 
 #[tauri::command]
-pub fn start_run(app_handle: AppHandle, state: State<'_, DesktopState>, task_id: String) -> CommandResult<RunSummaryVm> {
+pub fn start_run(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    task_id: String,
+) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     app.run_start_background(&task_id, None)
@@ -596,7 +695,9 @@ pub fn show_artifact(
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (&outer_node_id, &outer_attempt_id)
+    {
         let artifact_name = name.strip_suffix(".json").unwrap_or(&name);
         let path = app.paths.dynamic_node_artifact_file(
             &task_id,
@@ -663,7 +764,10 @@ pub fn save_metrics_settings(
     Ok(metrics_settings(&updated_context.config))
 }
 
-fn acp_live_update_emitter(app_handle: AppHandle) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync> {
+fn acp_live_update_emitter(
+    app_handle: AppHandle,
+) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
+{
     Arc::new(move |context, event| {
         emit_acp_event_update(
             &app_handle,
@@ -691,7 +795,18 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
-    emit_acp_update(app_handle, task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id, session, None);
+    emit_acp_update(
+        app_handle,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+        session,
+        None,
+    );
 }
 
 fn emit_acp_event_update(
@@ -705,7 +820,18 @@ fn emit_acp_event_update(
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
 ) {
-    emit_acp_update(app_handle, task_id, run_id, round_id, node_id, attempt_id, outer_node_id, outer_attempt_id, None, Some(event));
+    emit_acp_update(
+        app_handle,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+        None,
+        Some(event),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -750,7 +876,9 @@ pub fn get_acp_session(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
-    if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
         return dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -761,6 +889,7 @@ pub fn get_acp_session(
             &node_id,
             &attempt_id,
             query,
+            None,
         )
         .map_err(command_error);
     }
@@ -772,6 +901,7 @@ pub fn get_acp_session(
         &node_id,
         &attempt_id,
         query,
+        None,
     )
     .map_err(command_error)
 }
@@ -789,6 +919,7 @@ pub async fn send_acp_prompt(
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = state.app().map_err(command_error)?;
     let task_id_for_emit = task_id.clone();
@@ -835,7 +966,11 @@ pub async fn send_acp_prompt(
                 CommandErrorVm::new("acp.missing-provider", serde_json::json!({}))
             })?;
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-            let permission_mode = node.permission_mode.clone();
+            let permission_mode = node
+                .permission_mode
+                .as_deref()
+                .map(|normative| app.config.resolve_permission_mode(provider, normative));
+            let model = current_acp_session_model(&attempt_dir).or_else(|| node.model.clone());
             let (session_mode, continue_ref) = if worker_ref_path.exists() {
                 let worker_ref =
                     read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
@@ -843,7 +978,7 @@ pub async fn send_acp_prompt(
             } else {
                 (SessionMode::New, None)
             };
-            let prompt_bundle = app
+            let mut prompt_bundle = app
                 .dynamic_acp_prompt_bundle_for_attempt(
                     &task_id,
                     &run_id,
@@ -857,6 +992,27 @@ pub async fn send_acp_prompt(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            // Resolve attachments
+            if let Some(ref paths) = attachment_paths {
+                if !paths.is_empty() {
+                    let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
+                    let _ = std::fs::create_dir_all(&user_inputs_dir);
+                    if let Ok(resolved) =
+                        gold_band::provider::resolve_attachments(paths, "user-inputs")
+                    {
+                        // Copy files to user-inputs/
+                        for (r, src) in resolved.iter().zip(paths.iter()) {
+                            let src_path = std::path::Path::new(src);
+                            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
+                                let dest = std::path::Path::new(&user_inputs_dir).join(name);
+                                let _ = std::fs::copy(src_path, &dest);
+                            }
+                            prompt_bundle.attachment_metas.push(r.meta.clone());
+                            prompt_bundle.content_blocks.push(r.block.clone());
+                        }
+                    }
+                }
+            }
             let app_handle_for_live = app_handle_for_task.clone();
             let task_id_for_live = task_id.clone();
             let run_id_for_live = run_id.clone();
@@ -873,6 +1029,7 @@ pub async fn send_acp_prompt(
                 &prompt_bundle,
                 session_mode,
                 permission_mode,
+                model,
                 continue_ref,
                 app.config.use_local_claude,
                 app.config.acp_session_title_refresh_enabled,
@@ -901,6 +1058,7 @@ pub async fn send_acp_prompt(
                 outer_attempt_id,
                 &node_id,
                 &attempt_id,
+                None,
                 None,
             )
             .map_err(command_error);
@@ -933,7 +1091,7 @@ pub async fn send_acp_prompt(
         } else {
             (SessionMode::New, None)
         };
-        let prompt_bundle = app
+        let mut prompt_bundle = app
             .acp_prompt_bundle_for_attempt(
                 &task_id,
                 &run_id,
@@ -945,12 +1103,32 @@ pub async fn send_acp_prompt(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        // Resolve attachments
+        if let Some(ref paths) = attachment_paths {
+            if !paths.is_empty() {
+                let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
+                let _ = std::fs::create_dir_all(&user_inputs_dir);
+                if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs")
+                {
+                    for (r, src) in resolved.iter().zip(paths.iter()) {
+                        let src_path = std::path::Path::new(src);
+                        if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
+                            let dest = std::path::Path::new(&user_inputs_dir).join(name);
+                            let _ = std::fs::copy(src_path, &dest);
+                        }
+                        prompt_bundle.attachment_metas.push(r.meta.clone());
+                        prompt_bundle.content_blocks.push(r.block.clone());
+                    }
+                }
+            }
+        }
         let app_handle_for_live = app_handle_for_task.clone();
         let task_id_for_live = task_id.clone();
         let run_id_for_live = run_id.clone();
         let round_id_for_live = round_id.clone();
         let node_id_for_live = node_id.clone();
         let attempt_id_for_live = attempt_id.clone();
+        let model = current_acp_session_model(&attempt_dir);
         client::run_prompt(
             provider,
             &agent_config.adapter,
@@ -959,6 +1137,7 @@ pub async fn send_acp_prompt(
             &prompt_bundle,
             session_mode,
             permission_mode,
+            model,
             continue_ref,
             app.config.use_local_claude,
             app.config.acp_session_title_refresh_enabled,
@@ -985,6 +1164,7 @@ pub async fn send_acp_prompt(
             &round_id,
             &node_id,
             &attempt_id,
+            None,
             None,
         )
         .map_err(command_error)
@@ -1065,12 +1245,13 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
             None,
+            None,
         )
         .map_err(command_error)?
     } else {
-        let attempt_dir = app
-            .paths
-            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        let attempt_dir =
+            app.paths
+                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
         write_permission_response(
             &attempt_dir,
             &request_id,
@@ -1091,6 +1272,7 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
             None,
+            None,
         )
         .map_err(command_error)?
     };
@@ -1107,7 +1289,11 @@ pub fn respond_acp_permission(
     );
     spawn_index_attempt(
         state.inner(),
-        &task_id, &run_id, &round_id, &node_id, &attempt_id,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
         outer_node_id.as_deref(),
         outer_attempt_id.as_deref(),
     );
@@ -1125,13 +1311,16 @@ fn spawn_index_attempt(
     outer_attempt_id: Option<&str>,
 ) {
     let Ok(app) = state.app() else { return };
-    let attempt_dir = if let (Some(on), Some(oa)) = (outer_node_id, outer_attempt_id) {
-        app.paths.dynamic_node_attempt_dir(
-            task_id, run_id, round_id, on, oa, node_id, attempt_id,
-        )
-    } else {
-        app.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
-    };
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
     let ctx = AttemptIndexContext {
         task_id: task_id.to_string(),
         run_id: run_id.to_string(),
@@ -1157,22 +1346,16 @@ fn spawn_acp_cancel_shutdown(
     outer_attempt_id: Option<String>,
 ) {
     thread::spawn(move || {
-        let attempt_dir = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-        {
-            app.paths.dynamic_node_attempt_dir(
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-            )
-        } else {
-            app.paths
-                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
-        };
+        let attempt_dir = resolve_acp_attempt_dir(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        );
         graceful_stop_provider(&attempt_dir.join("provider.pid"));
     });
 }
@@ -1229,15 +1412,18 @@ fn persist_cancelled_dynamic_session_snapshot(
     node_id: &str,
     attempt_id: &str,
 ) -> anyhow::Result<()> {
-    let snapshot_path = app.paths.dynamic_node_attempt_dir(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        node_id,
-        attempt_id,
-    ).join("acp.snapshot.json");
+    let snapshot_path = app
+        .paths
+        .dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
+        )
+        .join("acp.snapshot.json");
     if !snapshot_path.exists() {
         return Ok(());
     }
@@ -1268,7 +1454,10 @@ fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
         + 1
 }
 
-fn should_append_legacy_permission_event(events_path: &camino::Utf8Path, timeline_path: &camino::Utf8Path) -> bool {
+fn should_append_legacy_permission_event(
+    events_path: &camino::Utf8Path,
+    timeline_path: &camino::Utf8Path,
+) -> bool {
     events_path.exists() && !timeline_path.exists()
 }
 
@@ -1343,7 +1532,8 @@ pub fn cancel_acp_session(
             &attempt_id,
         );
         request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
-        cancel_pending_permission_requests(&attempt_dir, requested_at.clone()).map_err(command_error)?;
+        cancel_pending_permission_requests(&attempt_dir, requested_at.clone())
+            .map_err(command_error)?;
         background_app
             .pause_dynamic_attempt_runtime_state(
                 &task_id,
@@ -1386,12 +1576,13 @@ pub fn cancel_acp_session(
             &node_id,
             &attempt_id,
             None,
+            None,
         )
         .map_err(command_error)?
     } else {
-        let attempt_dir = app
-            .paths
-            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        let attempt_dir =
+            app.paths
+                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
         request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
         cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
         background_app
@@ -1431,6 +1622,7 @@ pub fn cancel_acp_session(
             &node_id,
             &attempt_id,
             None,
+            None,
         )
         .map_err(command_error)?
     };
@@ -1447,7 +1639,11 @@ pub fn cancel_acp_session(
     );
     spawn_index_attempt(
         state.inner(),
-        &task_id, &run_id, &round_id, &node_id, &attempt_id,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
         outer_node_id.as_deref(),
         outer_attempt_id.as_deref(),
     );
@@ -1468,16 +1664,21 @@ pub async fn get_acp_raw_frames(
 ) -> CommandResult<AcpRawFramePageVm> {
     let app = state.app().map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || {
-        if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
-            let path = app.paths.dynamic_node_attempt_dir(
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-            ).join("acp.raw.jsonl");
+        if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+        {
+            let path = app
+                .paths
+                .dynamic_node_attempt_dir(
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &node_id,
+                    &attempt_id,
+                )
+                .join("acp.raw.jsonl");
             return super::view_models::acp_raw_frame_page_vm_for_path(
                 &path,
                 query.unwrap_or(AcpRawFrameQueryInput {
@@ -1525,16 +1726,21 @@ pub fn show_attachment(
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
-        let path = app.paths.dynamic_node_attachments_dir(
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-        ).join(&name);
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (&outer_node_id, &outer_attempt_id)
+    {
+        let path = app
+            .paths
+            .dynamic_node_attachments_dir(
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+            )
+            .join(&name);
         app.artifact_show_path(&path)
     } else {
         app.attachment_show(&task_id, &run_id, &round_id, &node_id, &attempt_id, &name)
@@ -1562,7 +1768,9 @@ pub fn show_worker_ref(
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
     let labels = Translator::new(app.config.desktop_language);
-    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) = (&outer_node_id, &outer_attempt_id) {
+    let content = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (&outer_node_id, &outer_attempt_id)
+    {
         let path = app.paths.dynamic_node_worker_ref_file(
             &task_id,
             &run_id,
@@ -1607,7 +1815,9 @@ pub fn save_desktop_preferences(
     let settings = app
         .set_user_use_local_claude(use_local_claude)
         .map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
     Ok(preferences_vm(theme, language, font, use_local_claude))
 }
 
@@ -1622,7 +1832,9 @@ pub fn save_updater_settings(
     let settings = app
         .set_user_desktop_updater_url_override(override_url)
         .map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
     let config = state.context().map_err(command_error)?.config;
     let settings = updater_settings(&config);
     Ok(settings)
@@ -1685,13 +1897,24 @@ pub async fn check_update_manual(app: AppHandle) -> CommandResult<UpdateStatusVm
 
 #[tauri::command]
 pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
-    run_download_and_install_update(&app).await.map_err(command_error)
+    run_download_and_install_update(&app)
+        .await
+        .map_err(command_error)
 }
 
+#[tauri::command]
+pub fn get_startup_check_result(
+    state: tauri::State<'_, DesktopState>,
+) -> Option<StartupCheckResult> {
+    state.get_startup_check()
+}
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => dynamic.bootstrap_provider().map(|provider| vec![provider.to_string()]).unwrap_or_default(),
+        NodeDsl::AiDynamic(dynamic) => dynamic
+            .bootstrap_provider()
+            .map(|provider| vec![provider.to_string()])
+            .unwrap_or_default(),
     }
 }
 
@@ -1748,7 +1971,9 @@ fn ensure_workflow_agents_doctor_ready(
         })?;
         let supported_modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
         if !supported_modes.is_empty()
-            && !supported_modes.iter().any(|mode| mode.id == permission_mode)
+            && !supported_modes
+                .iter()
+                .any(|mode| mode.id == permission_mode)
         {
             return Err(CommandErrorVm::new(
                 "workflow.permission-mode-unsupported",
@@ -1824,6 +2049,34 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
                 "reason": reason,
             }),
         ),
+        WorkflowValidationError::WorkerModelBlank { node_id, provider } => CommandErrorVm::new(
+            "workflow.model-blank",
+            serde_json::json!({ "nodeId": node_id, "provider": provider }),
+        ),
+        WorkflowValidationError::DynamicFixedModelBlank { node_id } => CommandErrorVm::new(
+            "workflow.dynamic-fixed-model-blank",
+            serde_json::json!({ "nodeId": node_id }),
+        ),
+        WorkflowValidationError::DynamicAgentsEmpty { node_id } => CommandErrorVm::new(
+            "workflow.dynamic-agents-empty",
+            serde_json::json!({ "nodeId": node_id }),
+        ),
+        WorkflowValidationError::DynamicAgentDuplicate { node_id, provider } => {
+            CommandErrorVm::new(
+                "workflow.dynamic-agent-duplicate",
+                serde_json::json!({ "nodeId": node_id, "provider": provider }),
+            )
+        }
+        WorkflowValidationError::DynamicAgentModelBlank { node_id, provider } => {
+            CommandErrorVm::new(
+                "workflow.dynamic-agent-model-blank",
+                serde_json::json!({ "nodeId": node_id, "provider": provider }),
+            )
+        }
+        WorkflowValidationError::AgentModelBlank { provider } => CommandErrorVm::new(
+            "workflow.agent-model-blank",
+            serde_json::json!({ "provider": provider }),
+        ),
     }
 }
 
@@ -1849,6 +2102,66 @@ fn default_search_limit() -> usize {
     20
 }
 
+fn set_acp_config_option_current_value(
+    value: &mut serde_json::Value,
+    category_or_id: &str,
+    next_value: &str,
+) {
+    let Some(options) = value
+        .get_mut("configOptions")
+        .and_then(|options| options.as_array_mut())
+    else {
+        return;
+    };
+    if let Some(option) = options.iter_mut().find(|option| {
+        option.get("id").and_then(|item| item.as_str()) == Some(category_or_id)
+            || option.get("category").and_then(|item| item.as_str()) == Some(category_or_id)
+    }) {
+        if let Some(object) = option.as_object_mut() {
+            object.insert(
+                "currentValue".to_string(),
+                serde_json::Value::String(next_value.to_string()),
+            );
+        }
+    }
+}
+
+fn current_acp_session_model(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return None;
+    };
+    let value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())?;
+    value
+        .get("models")
+        .and_then(|models| models.get("currentModelId"))
+        .and_then(|model| model.as_str())
+        .or_else(|| {
+            value
+                .get("configOptions")
+                .and_then(|options| options.as_array())
+                .and_then(|options| {
+                    options.iter().find(|option| {
+                        option.get("id").and_then(|item| item.as_str()) == Some("model")
+                            || option.get("category").and_then(|item| item.as_str())
+                                == Some("model")
+                    })
+                })
+                .and_then(|option| option.get("currentValue"))
+                .and_then(|model| model.as_str())
+        })
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SearchTasksInput {
@@ -1866,8 +2179,9 @@ pub async fn search_tasks(
     let limit = input.limit.min(200);
     let query = input.query;
     tauri::async_runtime::spawn_blocking(move || {
-        let index = gold_band::storage::sqlite::search_index()
-            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        let index = gold_band::storage::sqlite::search_index().ok_or_else(|| {
+            CommandErrorVm::new("search.index-unavailable", serde_json::json!({}))
+        })?;
         index.search_tasks(&query, limit).map_err(|e| {
             CommandErrorVm::new(
                 "search.query-failed",
@@ -1880,6 +2194,200 @@ pub async fn search_tasks(
 }
 
 #[tauri::command]
+pub async fn set_acp_session_model(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    model_id: String,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = state.app().map_err(command_error)?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+
+    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-read-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-parse-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    // Update models.currentModelId
+    if let Some(models) = value.get_mut("models").and_then(|m| m.as_object_mut()) {
+        models.insert(
+            "currentModelId".to_string(),
+            serde_json::Value::String(model_id.clone()),
+        );
+    }
+    set_acp_config_option_current_value(&mut value, "model", &model_id);
+
+    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-serialize-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    std::fs::write(&path, &updated_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-write-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
+pub async fn set_acp_session_permission_mode(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    permission_mode_id: String,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = state.app().map_err(command_error)?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+
+    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-read-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-parse-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    // Update modes.currentModeId
+    if let Some(modes) = value.get_mut("modes").and_then(|m| m.as_object_mut()) {
+        modes.insert(
+            "currentModeId".to_string(),
+            serde_json::Value::String(permission_mode_id.clone()),
+        );
+    }
+    set_acp_config_option_current_value(&mut value, "mode", &permission_mode_id);
+
+    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-serialize-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    std::fs::write(&path, &updated_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-write-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
 pub async fn search_acp_prompts(
     state: State<'_, DesktopState>,
     input: SearchAcpPromptsInput,
@@ -1888,8 +2396,9 @@ pub async fn search_acp_prompts(
     let limit = input.limit.min(200);
     let query = input.query;
     tauri::async_runtime::spawn_blocking(move || {
-        let index = gold_band::storage::sqlite::search_index()
-            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        let index = gold_band::storage::sqlite::search_index().ok_or_else(|| {
+            CommandErrorVm::new("search.index-unavailable", serde_json::json!({}))
+        })?;
         index.search_prompts(&query, limit).map_err(|e| {
             CommandErrorVm::new(
                 "search.query-failed",
@@ -1910,8 +2419,9 @@ pub async fn search_acp_sessions(
     let limit = input.limit.min(200);
     let query = input.query;
     tauri::async_runtime::spawn_blocking(move || {
-        let index = gold_band::storage::sqlite::search_index()
-            .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
+        let index = gold_band::storage::sqlite::search_index().ok_or_else(|| {
+            CommandErrorVm::new("search.index-unavailable", serde_json::json!({}))
+        })?;
         index.search_sessions(&query, limit).map_err(|e| {
             CommandErrorVm::new(
                 "search.query-failed",
@@ -1940,8 +2450,11 @@ pub fn open_in_file_manager(
     let path = match (&outer_node_id, &outer_attempt_id, &node_id, &attempt_id) {
         (Some(onid), Some(oaid), nid, aid) => {
             let p = app.paths.dynamic_node_attempt_dir(
-                &task_id, &run_id, &round_id,
-                onid, oaid,
+                &task_id,
+                &run_id,
+                &round_id,
+                onid,
+                oaid,
                 nid,
                 aid.as_deref().unwrap_or(""),
             );
@@ -1950,7 +2463,8 @@ pub fn open_in_file_manager(
         }
         _ => {
             let p = if let Some(aid) = &attempt_id {
-                app.paths.attempt_dir(&task_id, &run_id, &round_id, &node_id, aid)
+                app.paths
+                    .attempt_dir(&task_id, &run_id, &round_id, &node_id, aid)
             } else {
                 app.paths.node_dir(&task_id, &run_id, &round_id, &node_id)
             };

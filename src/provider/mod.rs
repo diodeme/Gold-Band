@@ -3,13 +3,54 @@ use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_output
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
-use crate::prompts::{RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template};
+use crate::prompts::{
+    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template,
+};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
 use tracing::debug;
+
+use crate::acp::events::AttachmentMeta;
+
+/// Content block types for ACP session/prompt requests.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AcpContentBlock {
+    Image(AcpImageBlock),
+    Resource(AcpResourceBlock),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpImageBlock {
+    pub data: String,
+    pub mime_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpResourceBlock {
+    pub resource: AcpTextResourceContents,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTextResourceContents {
+    pub text: String,
+    pub uri: String,
+}
+
+/// Resolved attachment ready to be sent to ACP.
+#[derive(Debug, Clone)]
+pub struct ResolvedAttachment {
+    pub meta: AttachmentMeta,
+    pub block: AcpContentBlock,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -30,6 +71,7 @@ pub struct ProviderCapabilities {
 pub struct AcpModeOption {
     pub id: String,
     pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +84,10 @@ pub struct DoctorResult {
 impl DoctorResult {
     pub fn supported_modes(&self) -> Vec<AcpModeOption> {
         supported_modes_from_capabilities(self.capabilities.as_ref())
+    }
+
+    pub fn supported_models(&self) -> Vec<AcpModeOption> {
+        supported_models_from_capabilities(self.capabilities.as_ref())
     }
 }
 
@@ -62,6 +108,8 @@ pub struct WorkerInvocation {
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub continue_ref: Option<serde_json::Value>,
     pub resume_prompt: Option<String>,
     pub resume_prompt_id: Option<String>,
@@ -75,6 +123,8 @@ pub struct WorkerInvocation {
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+    #[serde(default)]
+    pub input_attachment_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +141,8 @@ pub struct PromptRuntimeContext {
     pub node_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub attachments_dir: Utf8PathBuf,
+    #[serde(default)]
+    pub task_inputs_dir: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +224,8 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
+    pub attachment_metas: Vec<AttachmentMeta>,
+    pub content_blocks: Vec<AcpContentBlock>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +233,174 @@ pub struct PromptBundle {
 pub enum PromptVisibility {
     Visible,
     Hidden,
+}
+
+/// Resolve file paths into ResolvedAttachment structs.
+/// For images: base64-encode and produce an AcpContentBlock::Image.
+/// For text files: read as UTF-8 and produce an AcpContentBlock::Resource.
+/// Other files are skipped.
+pub fn resolve_attachments(
+    paths: &[String],
+    storage_prefix: &str,
+) -> Result<Vec<ResolvedAttachment>> {
+    let mut resolved = Vec::new();
+    for path_str in paths {
+        let std_path = std::path::Path::new(path_str);
+        let name = std_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let data = std::fs::read(std_path)?;
+        let size = data.len() as u64;
+        let ext = std_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let is_image = matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+        );
+        let mime_type = mime_for_ext(&ext);
+
+        if is_image {
+            let b64 = base64_encode(&data);
+            let path_for_storage = format!("{}/{}", storage_prefix, name);
+            resolved.push(ResolvedAttachment {
+                meta: AttachmentMeta {
+                    name: name.clone(),
+                    path: path_for_storage,
+                    mime_type,
+                    size,
+                },
+                block: AcpContentBlock::Image(AcpImageBlock {
+                    data: b64,
+                    mime_type: mime_for_ext(&ext),
+                    uri: Some(format!("file://{}", path_str.replace('\\', "/"))),
+                }),
+            });
+        } else if is_text_ext(&ext) {
+            let text = String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string());
+            let path_for_storage = format!("{}/{}", storage_prefix, name);
+            resolved.push(ResolvedAttachment {
+                meta: AttachmentMeta {
+                    name: name.clone(),
+                    path: path_for_storage,
+                    mime_type,
+                    size,
+                },
+                block: AcpContentBlock::Resource(AcpResourceBlock {
+                    resource: AcpTextResourceContents {
+                        text,
+                        uri: format!("file://{}", path_str.replace('\\', "/")),
+                    },
+                }),
+            });
+        }
+        // Non-image, non-text files are skipped for now
+    }
+    Ok(resolved)
+}
+
+/// Returns the set of file extensions supported as attachments.
+/// This is the single source of truth — the frontend queries it via Tauri command.
+pub fn supported_attachment_extensions() -> Vec<&'static str> {
+    vec![
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "txt", "md", "markdown", "json", "jsonl",
+        "csv", "html", "htm", "css", "js", "ts", "tsx", "jsx", "rs", "py", "go", "java", "c", "h",
+        "cpp", "hpp", "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
+    ]
+}
+
+fn mime_for_ext(ext: &str) -> String {
+    match ext {
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "webp" => "image/webp".to_string(),
+        "gif" => "image/gif".to_string(),
+        "bmp" => "image/bmp".to_string(),
+        "txt" => "text/plain".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "json" => "application/json".to_string(),
+        "csv" => "text/csv".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "css" => "text/css".to_string(),
+        "js" => "text/javascript".to_string(),
+        "ts" => "text/typescript".to_string(),
+        "tsx" => "text/typescript".to_string(),
+        "jsx" => "text/javascript".to_string(),
+        "rs" => "text/rust".to_string(),
+        "py" => "text/python".to_string(),
+        "go" => "text/go".to_string(),
+        "java" => "text/java".to_string(),
+        "c" | "h" => "text/c".to_string(),
+        "cpp" | "hpp" => "text/cpp".to_string(),
+        "yaml" | "yml" => "text/yaml".to_string(),
+        "xml" => "text/xml".to_string(),
+        "toml" => "text/toml".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn is_text_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt"
+            | "md"
+            | "markdown"
+            | "json"
+            | "csv"
+            | "html"
+            | "htm"
+            | "css"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "rs"
+            | "py"
+            | "go"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "toml"
+            | "log"
+            | "sql"
+            | "sh"
+            | "bash"
+            | "zsh"
+    )
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
+    }
+    out
 }
 
 impl Default for PromptVisibility {
@@ -193,11 +415,24 @@ pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
     fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult>;
-    fn run_worker_with_live_update(&self, req: WorkerInvocation, _live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
+    fn run_worker_with_live_update(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<AcpLiveUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         self.run_worker(req)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
+}
+
+fn option_str(option: &Value, key: &str) -> Option<String> {
+    option
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
@@ -215,12 +450,8 @@ pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<Ac
                 }
                 Some(AcpModeOption {
                     id: id.to_string(),
-                    name: option
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string),
+                    name: option_str(option, "name"),
+                    description: option_str(option, "description"),
                 })
             })
             .collect();
@@ -245,9 +476,60 @@ pub fn supported_modes_from_capabilities(capabilities: Option<&Value>) -> Vec<Ac
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
+                description: None,
             })
         })
         .collect()
+}
+
+/// Extracts available AI models from agent capabilities.
+/// Reads from `configOptions[?category="model"].options` (not configOptions[?id="mode"]
+/// which carries permission-mode values, and not `modes.availableModes` which also
+/// carries permission modes).
+pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<AcpModeOption> {
+    if let Some(options) = capabilities
+        .and_then(find_model_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+    {
+        return options
+            .iter()
+            .filter_map(|option| {
+                let id = option.get("value").and_then(Value::as_str)?.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                Some(AcpModeOption {
+                    id: id.to_string(),
+                    name: option
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    description: option
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                })
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Finds the config option with `category == "model"` (AI model selector).
+fn find_model_config_option(capabilities: &Value) -> Option<&Value> {
+    capabilities
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("category").and_then(Value::as_str) == Some("model"))
+        })
 }
 
 fn find_mode_config_option(capabilities: &Value) -> Option<&Value> {
@@ -322,7 +604,11 @@ impl ProviderAdapter for AcpProvider {
         self.run_worker_with_live_update(req, None)
     }
 
-    fn run_worker_with_live_update(&self, req: WorkerInvocation, live_update: Option<AcpLiveUpdate<'_>>) -> Result<ProviderRunResult> {
+    fn run_worker_with_live_update(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -343,6 +629,7 @@ impl ProviderAdapter for AcpProvider {
             &prompt,
             req.session_mode,
             req.permission_mode.clone(),
+            req.model.clone(),
             req.continue_ref.clone(),
             self.use_local_claude,
             self.acp_session_title_refresh_enabled,
@@ -404,6 +691,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
                 user_prompt: resume_prompt.clone(),
                 prompt_id: req.resume_prompt_id.clone(),
                 visibility: req.resume_prompt_visibility,
+                attachment_metas: Vec::new(),
+                content_blocks: Vec::new(),
             });
         }
     }
@@ -449,17 +738,35 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         user_sections.push(format!("# Cold Attachment Index\n{}", index));
     }
 
+    // Resolve task input attachments
+    let mut attachment_metas = Vec::new();
+    let mut content_blocks = Vec::new();
+    if !req.input_attachment_paths.is_empty() {
+        if let Ok(resolved) = resolve_attachments(&req.input_attachment_paths, "task-inputs") {
+            for r in resolved {
+                attachment_metas.push(r.meta);
+                content_blocks.push(r.block);
+            }
+        }
+    }
+
     Ok(PromptBundle {
         system_prompt,
         user_prompt: user_sections.join("\n\n"),
         prompt_id: None,
         visibility: PromptVisibility::Visible,
+        attachment_metas,
+        content_blocks,
     })
 }
 
 fn render_system_prompt(req: &WorkerInvocation) -> String {
     render_template(
-        prompt_by_language(req.runtime_context.language, RUNTIME_SYSTEM_ZH_CN, RUNTIME_SYSTEM_EN),
+        prompt_by_language(
+            req.runtime_context.language,
+            RUNTIME_SYSTEM_ZH_CN,
+            RUNTIME_SYSTEM_EN,
+        ),
         runtime_system_context(req),
     )
     .expect("prompt template renders")
@@ -619,7 +926,10 @@ fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String
                 parts.push(reason.to_string());
             }
             if let Some(artifact) = &predecessor.output_artifact {
-                parts.push(format!("输出 artifact={}: {}", artifact.name, artifact.path));
+                parts.push(format!(
+                    "输出 artifact={}: {}",
+                    artifact.name, artifact.path
+                ));
                 if let Some(preview) = artifact.preview.as_deref() {
                     parts.push(format!("输出预览={}", preview.trim()));
                 }
@@ -644,10 +954,9 @@ fn runtime_output_contract_context(
             .schema_text
             .clone()
             .or_else(|| {
-                contract
-                    .schema
-                    .as_ref()
-                    .map(|schema| serde_json::to_string_pretty(schema).expect("serialize output schema"))
+                contract.schema.as_ref().map(|schema| {
+                    serde_json::to_string_pretty(schema).expect("serialize output schema")
+                })
             })
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
@@ -689,16 +998,14 @@ pub fn provider_capabilities_for_type(
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
     }
-    Ok(
-        AcpProvider::new(
-            agent_type.as_str(),
-            agent_type.default_adapter_config(),
-            false,
-            false,
-        )
-            .describe_provider()
-            .capabilities,
+    Ok(AcpProvider::new(
+        agent_type.as_str(),
+        agent_type.default_adapter_config(),
+        false,
+        false,
     )
+    .describe_provider()
+    .capabilities)
 }
 
 pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
@@ -762,6 +1069,7 @@ mod tests {
             attachments_dir: Utf8PathBuf::from(
                 "/run/rounds/round-001/nodes/dev/attempt-001/attachments",
             ),
+            task_inputs_dir: None,
         };
         let req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
@@ -778,6 +1086,7 @@ mod tests {
             task_instruction: Some("Create a structured result".to_string()),
             session_mode: SessionMode::New,
             permission_mode: None,
+            model: None,
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,
@@ -788,6 +1097,7 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
+            input_attachment_paths: Vec::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

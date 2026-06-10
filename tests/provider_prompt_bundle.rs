@@ -29,6 +29,7 @@ fn runtime_context() -> PromptRuntimeContext {
         attachments_dir: Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/attachments",
         ),
+        task_inputs_dir: None,
     }
 }
 
@@ -73,6 +74,7 @@ fn invocation() -> WorkerInvocation {
         task_instruction: Some("Implement the requested change".to_string()),
         session_mode: SessionMode::New,
         permission_mode: None,
+        model: None,
         continue_ref: None,
         resume_prompt: None,
         resume_prompt_id: None,
@@ -95,6 +97,7 @@ fn invocation() -> WorkerInvocation {
                 "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../report.md",
             ),
         }],
+        input_attachment_paths: Vec::new(),
     }
 }
 

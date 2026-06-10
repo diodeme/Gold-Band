@@ -21,9 +21,13 @@ pub(crate) fn resolve_workflow_profiles(
     let mut profiles = Vec::new();
     for node in &workflow.nodes {
         match node {
-            NodeDsl::Worker(worker) => {
-                push_profile(paths, &mut profiles, node.id(), worker.profile.as_deref(), language)?
-            }
+            NodeDsl::Worker(worker) => push_profile(
+                paths,
+                &mut profiles,
+                node.id(),
+                worker.profile.as_deref(),
+                language,
+            )?,
             NodeDsl::AiDynamic(_) => {}
         }
     }

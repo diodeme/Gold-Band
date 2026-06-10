@@ -166,4 +166,3 @@ pub(crate) fn resolved_config_for_node(
     }
     config
 }
-

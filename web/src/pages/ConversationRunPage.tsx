@@ -3,14 +3,18 @@ import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Button } from '@/components/ui/button';
 import { ACPChatDialog, type ACPChatDialogHandle, type AcpExternalComposerState } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
+import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
+
+type WorkflowSheetMode = 'edit' | 'repair' | 'view';
 
 interface ConversationRunPageProps {
   run: ConversationRunVm;
@@ -22,7 +26,6 @@ interface ConversationRunPageProps {
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
   onSessionStopped: () => void;
   onContinueRun: () => void;
-  onRepairWorkflow: () => void;
   onTitleChange?: (title: string) => void;
 }
 
@@ -36,13 +39,31 @@ export function ConversationRunPage({
   onSelectSession,
   onSessionStopped,
   onContinueRun,
-  onRepairWorkflow,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
+  const translatePauseReason = (reason?: string | null) => {
+    if (!reason) return t('conversation.runtime.sessionPaused');
+    switch (reason) {
+      case 'process-interrupted': return t('conversation.runtime.pauseReasonProcessInterrupted');
+      case 'waiting-for-user-input': return t('conversation.runtime.pauseReasonWaitingForUserInput');
+      default: return t('conversation.runtime.pauseReasonFallback');
+    }
+  };
+  const translateRuntimeError = (reason?: string | null) => {
+    if (reason === 'error-blocked') return t('conversation.runtime.runtimeErrorBlocked');
+    return t('conversation.runtime.runError');
+  };
+  const translateSelectedRuntimeError = (code?: string | null, reason?: string | null) => {
+    if (code === 'error-blocked' || reason === 'error-blocked') return t('conversation.runtime.runtimeErrorBlocked');
+    if (code === 'killed') return t('conversation.runtime.runtimeSessionKilled');
+    if (code === 'failure' || code === 'invalid') return t('conversation.runtime.runtimeSessionFailed');
+    return translateRuntimeError(reason);
+  };
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
-  const [workflowSheet, setWorkflowSheet] = useState<{ open: boolean; mode: 'edit' | 'view' }>({ open: false, mode: 'view' });
+  const [workflowSheet, setWorkflowSheet] = useState<{ open: boolean; mode: WorkflowSheetMode }>({ open: false, mode: 'view' });
+  const [workflowValidationRequestId, setWorkflowValidationRequestId] = useState(0);
   const [workflowAgentRegistry, setWorkflowAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [workflowProfiles, setWorkflowProfiles] = useState<ProfileVm[] | null>(null);
   const effectiveAgentRegistry = workflowAgentRegistry ?? agentRegistry;
@@ -63,9 +84,13 @@ export function ConversationRunPage({
     return () => document.removeEventListener('mousedown', handler);
   }, [sessionSwitcherOpen]);
 
-  // Lazy-load workflow editor dependencies when opening the edit workflow sheet
-  const handleEditWorkflow = useCallback(() => {
-    const open = () => setWorkflowSheet({ open: true, mode: 'edit' });
+  // Lazy-load workflow editor dependencies when opening the workflow sheet.
+  const openWorkflowEditor = useCallback((mode: Exclude<WorkflowSheetMode, 'view'>) => {
+    onEditWorkflow();
+    const open = () => {
+      setWorkflowSheet({ open: true, mode });
+      if (mode === 'repair') setWorkflowValidationRequestId((value) => value + 1);
+    };
     const registryPromise = effectiveAgentRegistry
       ? Promise.resolve(effectiveAgentRegistry)
       : getAgentRegistry().catch(() => ({ agents: [], supportedTypes: [] }));
@@ -77,7 +102,15 @@ export function ConversationRunPage({
       setWorkflowProfiles(profiles);
       open();
     });
-  }, [effectiveAgentRegistry, workflowProfiles]);
+  }, [effectiveAgentRegistry, onEditWorkflow, workflowProfiles]);
+
+  const handleEditWorkflow = useCallback(() => {
+    openWorkflowEditor('edit');
+  }, [openWorkflowEditor]);
+
+  const handleRepairWorkflow = useCallback(() => {
+    openWorkflowEditor('repair');
+  }, [openWorkflowEditor]);
 
   const handleViewWorkflow = useCallback(() => {
     setWorkflowSheet({ open: true, mode: 'view' });
@@ -135,6 +168,7 @@ export function ConversationRunPage({
           outerAttemptId: nextActive.outerAttemptId,
           pathLabel: nextActive.pathLabel,
           status: nextActive.status,
+          runtimeDisplay: nextActive.runtimeDisplay,
           current: true,
           artifactCount: 0,
           attachmentCount: 0,
@@ -151,12 +185,22 @@ export function ConversationRunPage({
     }
   };
 
+  // Composer state is driven by the currently selected session, not the run.
+  const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
+  const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
+  const selectedSessionPaused = selectedSessionDisplay?.code === 'paused';
+  const selectedSessionFailed = selectedSessionDisplay?.tone === 'danger'
+    && selectedSessionDisplay?.terminal;
+  // Workflow invalidity only blocks runtime-continue (handled by backend); it doesn't lock
+  // an already-completed session's chat composer.
   const externalComposerState: AcpExternalComposerState | undefined =
-    !run.workflowValid
-      ? { kind: 'invalid-workflow', workflowError: t('conversation.runtime.workflowInvalid') }
-      : run.runOutcome === 'failure'
-        ? { kind: 'runtime-error', errorMessage: run.pauseReason ?? t('conversation.runtime.runError'), onRepair: onRepairWorkflow }
-        : undefined;
+    selectedSessionFailed || selectedSessionErrorBlocked
+      ? { kind: 'runtime-error', errorMessage: translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason), onRepair: handleRepairWorkflow }
+      : run.resumable && !run.workflowValid
+          ? { kind: 'invalid-workflow', workflowError: t('conversation.runtime.workflowInvalid'), onRepair: handleRepairWorkflow }
+          : selectedSessionPaused
+            ? { kind: 'paused', message: translatePauseReason(run.pauseReason), onContinue: onContinueRun }
+            : undefined;
 
   return (
     <TooltipProvider>
@@ -164,6 +208,7 @@ export function ConversationRunPage({
         <div ref={headerAreaRef} className="shrink-0 relative">
           <ConversationRunHeader
             run={run}
+            selectedSessionLeaf={selectedLeaf}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
@@ -205,13 +250,14 @@ export function ConversationRunPage({
                   outerAttemptId: session.outerAttemptId,
                   pathLabel: session.pathLabel,
                   status: session.status,
+                  runtimeDisplay: session.runtimeDisplay,
                   current: true,
                   artifactCount: 0,
                   attachmentCount: 0,
                 })}
               >
                 <span className="font-medium">{session.pathLabel}</span>
-                {session.status === 'running' ? (
+                {session.runtimeDisplay.tone === 'running' ? (
                   <span className="ml-1.5 inline-block size-1.5 rounded-full bg-primary animate-pulse" />
                 ) : null}
               </button>
@@ -282,6 +328,10 @@ export function ConversationRunPage({
         workflowGraph={run.workflowGraph}
         agentRegistry={effectiveAgentRegistry}
         profiles={effectiveProfiles}
+        workflowValid={run.workflowValid}
+        workflowErrorMessage={!run.workflowValid ? t('conversation.runtime.workflowInvalid') : translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason)}
+        validationRequestId={workflowValidationRequestId}
+        onShowValidationIssues={() => setWorkflowValidationRequestId((value) => value + 1)}
         onSave={onSaveWorkflow}
         onClose={() => setWorkflowSheet({ open: false, mode: workflowSheet.mode })}
         onNodeOpenSession={handleWorkflowNodeOpenSession}
@@ -321,19 +371,67 @@ function findSelectedLeaf(tree: ConversationRunVm['sessionTree']): ConversationS
 
 // ── Workflow sheet (edit / view) ──
 
-function WorkflowSheet({ open, mode, workflowJson, workflowGraph, agentRegistry, profiles, onSave, onClose, onNodeOpenSession, t }: { open: boolean; mode: 'edit' | 'view'; workflowJson?: string | null; workflowGraph: GraphVm; agentRegistry: AgentRegistryVm | null; profiles: ProfileVm[]; onSave?: (json: string) => Promise<void>; onClose: () => void; onNodeOpenSession?: (node: GraphNodeVm) => void; t: (key: string) => string }) {
+function WorkflowSheet({
+  open,
+  mode,
+  workflowJson,
+  workflowGraph,
+  agentRegistry,
+  profiles,
+  workflowValid,
+  workflowErrorMessage,
+  validationRequestId,
+  onShowValidationIssues,
+  onSave,
+  onClose,
+  onNodeOpenSession,
+  t,
+}: {
+  open: boolean;
+  mode: WorkflowSheetMode;
+  workflowJson?: string | null;
+  workflowGraph: GraphVm;
+  agentRegistry: AgentRegistryVm | null;
+  profiles: ProfileVm[];
+  workflowValid: boolean;
+  workflowErrorMessage?: string | null;
+  validationRequestId: number;
+  onShowValidationIssues: () => void;
+  onSave?: (json: string) => Promise<void>;
+  onClose: () => void;
+  onNodeOpenSession?: (node: GraphNodeVm) => void;
+  t: (key: string) => string;
+}) {
   const workflow = parseWorkflowJson(workflowJson);
 
-  if (mode === 'edit') {
+  if (mode === 'edit' || mode === 'repair') {
+    const repairMode = mode === 'repair';
     return (
       <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
         <SheetContent
           className="gap-0 overflow-hidden border-border bg-card p-0 sm:max-w-5xl"
-          resizeStorageKey="conversation/workflow-edit"
+          resizeStorageKey={`conversation/workflow-${mode}`}
           closeLabel={t('common.close')}
         >
-          <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
-            <SheetTitle>{t('conversation.runtime.editWorkflow')}</SheetTitle>
+          <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <SheetTitle>{repairMode ? t('workflow.repairWorkflowTitle') : t('conversation.runtime.editWorkflow')}</SheetTitle>
+              {repairMode ? <StatusBadge value={workflowValid ? 'valid' : 'invalid'} label={workflowValid ? t('status.valid') : t('status.invalid')} /> : null}
+            </div>
+            {repairMode && workflowErrorMessage ? (
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto justify-start px-0 text-sm text-primary underline-offset-4 hover:underline"
+                onClick={onShowValidationIssues}
+              >
+                {t('workflow.viewErrorReasons')}
+              </Button>
+            ) : null}
+            {repairMode && workflowErrorMessage ? (
+              <p className="text-sm text-muted-foreground">{workflowErrorMessage}</p>
+            ) : null}
           </SheetHeader>
           <div className="min-h-0 flex-1 overflow-auto">
             {workflow ? (
@@ -341,6 +439,7 @@ function WorkflowSheet({ open, mode, workflowJson, workflowGraph, agentRegistry,
                 value={workflow}
                 agentRegistry={agentRegistry}
                 profiles={profiles}
+                validationRequestId={repairMode ? validationRequestId : 0}
                 onSave={async (dsl) => {
                   if (onSave) await onSave(JSON.stringify(dsl));
                   onClose();

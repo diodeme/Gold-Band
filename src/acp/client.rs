@@ -106,13 +106,22 @@ struct AcpRuntime<'a> {
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
 }
 
-pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: bool) -> Result<Value> {
+pub fn doctor(
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
-    let mut runtime =
-        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude, None)?;
+    let mut runtime = AcpRuntime::start(
+        config,
+        cwd.clone(),
+        paths.runtime_root.join("doctor/acp"),
+        use_local_claude,
+        None,
+    )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, "", false)?;
+        runtime.setup_session(cwd, None, None, None, "", false)?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
@@ -129,19 +138,27 @@ pub fn run_prompt(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    model: Option<String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
-    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude, live_update)?;
+    let mut runtime = AcpRuntime::start(
+        config,
+        workspace_dir.clone(),
+        attempt_dir,
+        use_local_claude,
+        live_update,
+    )?;
     let capabilities = runtime.initialize()?;
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = runtime.setup_session(
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
+        model.as_deref(),
         &prompt.system_prompt,
         strict_continue,
     )?;
@@ -257,12 +274,25 @@ fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) ->
 }
 
 fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+    let mut prompt_blocks: Vec<Value> = Vec::new();
+
+    // Add attachment content blocks first (images, resources)
+    for block in &prompt.content_blocks {
+        prompt_blocks.push(serde_json::to_value(block).unwrap_or_default());
+    }
+
+    // Add the text block with user prompt
+    let text = session_prompt_text(provider_id, prompt);
+    if !text.is_empty() {
+        prompt_blocks.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+
     json!({
         "sessionId": session_id,
-        "prompt": [{
-            "type": "text",
-            "text": session_prompt_text(provider_id, prompt),
-        }]
+        "prompt": prompt_blocks,
     })
 }
 
@@ -288,7 +318,8 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude) {
+        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude)
+        {
             Ok(result) => result,
             Err(error) => {
                 append_diagnostic(
@@ -450,6 +481,7 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
+        model: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
     ) -> Result<bool> {
@@ -468,11 +500,7 @@ impl<'a> AcpRuntime<'a> {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.session_id = Some(session_id.to_string());
-                    if let Some(permission_mode) =
-                        permission_mode.filter(|value| !value.trim().is_empty())
-                    {
-                        self.apply_permission_mode(permission_mode)?;
-                    }
+                    self.apply_session_mode_options(permission_mode, model)?;
                     return Ok(true);
                 }
                 Err(err) => {
@@ -500,9 +528,7 @@ impl<'a> AcpRuntime<'a> {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.session_id = Some(session_id.to_string());
-        if let Some(permission_mode) = permission_mode.filter(|value| !value.trim().is_empty()) {
-            self.apply_permission_mode(permission_mode)?;
-        }
+        self.apply_session_mode_options(permission_mode, model)?;
         Ok(false)
     }
 
@@ -515,6 +541,76 @@ impl<'a> AcpRuntime<'a> {
         }
         if let Some(config_options) = result.get("configOptions") {
             self.config_options = Some(config_options.clone());
+        }
+    }
+
+    /// Applies the effective session mode: model takes priority, falls back to
+    /// permission_mode for backward compatibility.
+    fn apply_session_mode_options(
+        &mut self,
+        permission_mode: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
+            self.set_session_model(m)?;
+        } else if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
+            self.apply_permission_mode(pm)?;
+        }
+        Ok(())
+    }
+
+    fn set_session_model(&mut self, model: &str) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP model selection requires a session id"))?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Ok(());
+        }
+        if has_model_config_option(self.config_options.as_ref()) {
+            let result = self.request(
+                "session/set_config_option",
+                json!({
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": model,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_model(model);
+            return Ok(());
+        }
+        if self.modes.is_some() {
+            let result = self.request(
+                "session/set_mode",
+                json!({
+                    "sessionId": session_id,
+                    "modeId": model,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_model(model);
+        }
+        Ok(())
+    }
+
+    fn set_current_model(&mut self, model: &str) {
+        if let Some(models) = self.models.as_mut().and_then(Value::as_object_mut) {
+            models.insert(
+                "currentModelId".to_string(),
+                Value::String(model.to_string()),
+            );
+        }
+        if let Some(options) = self.config_options.as_mut().and_then(Value::as_array_mut) {
+            if let Some(option) = options.iter_mut().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some("model")
+                    || option.get("category").and_then(Value::as_str) == Some("model")
+            }) {
+                if let Some(object) = option.as_object_mut() {
+                    object.insert("currentValue".to_string(), Value::String(model.to_string()));
+                }
+            }
         }
     }
 
@@ -706,14 +802,20 @@ impl<'a> AcpRuntime<'a> {
             prompt.user_prompt.clone(),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
+            prompt.attachment_metas.clone(),
         );
         self.persist_event(&user_event)?;
         let result = self.request_with_progress(
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
             None,
-            acp_session_title_refresh_enabled
-                .then_some((workspace_dir, "running", restored, None, capabilities)),
+            acp_session_title_refresh_enabled.then_some((
+                workspace_dir,
+                "running",
+                restored,
+                None,
+                capabilities,
+            )),
         )?;
         // Capture session-end usage breakdown (inputTokens / outputTokens / …)
         // that the adapter returns alongside the stopReason.
@@ -842,7 +944,9 @@ impl<'a> AcpRuntime<'a> {
                     self.send_cancel_notification()?;
                     cancel_notified = true;
                 }
-                if cancel_started_at.is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD) {
+                if cancel_started_at
+                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
+                {
                     self.kill_adapter_process();
                     return Err(anyhow!(AcpCancelled));
                 }
@@ -886,11 +990,7 @@ impl<'a> AcpRuntime<'a> {
         let update = params.get("update").cloned().unwrap_or(params);
 
         // Track usage from usage_update events so we can persist them at prompt end.
-        if update
-            .get("sessionUpdate")
-            .and_then(Value::as_str)
-            == Some("usage_update")
-        {
+        if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
             let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
             if let Some(u) = used {
                 // Accumulate positive deltas so compaction-driven resets
@@ -1345,8 +1445,21 @@ fn find_mode_config_option(config_options: &Value) -> Option<&Value> {
     })
 }
 
+fn find_model_config_option(config_options: &Value) -> Option<&Value> {
+    config_options.as_array().and_then(|options| {
+        options.iter().find(|option| {
+            option.get("id").and_then(Value::as_str) == Some("model")
+                || option.get("category").and_then(Value::as_str) == Some("model")
+        })
+    })
+}
+
 fn has_mode_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_mode_config_option).is_some()
+}
+
+fn has_model_config_option(config_options: Option<&Value>) -> bool {
+    config_options.and_then(find_model_config_option).is_some()
 }
 
 fn cancel_notification_frame(session_id: &str) -> Value {
@@ -1443,6 +1556,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         let text = session_prompt_text("codex-acp", &prompt);
@@ -1461,6 +1576,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");

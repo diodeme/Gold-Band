@@ -255,7 +255,9 @@ fn current_timestamp() -> String {
 
 // ── Silent / background critical update ──
 
-const PENDING_UPDATE_DIR: &str = "/tmp/gold-band-update";
+fn pending_update_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("gold-band-update")
+}
 
 /// 简单语义版本比较：latest 是否比 current 更新
 fn version_is_newer(latest: &str, current: &str) -> bool {
@@ -303,8 +305,8 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
     let bytes = update.download(|_chunk, _total| {}, || {}).await?;
 
     // 写入 /tmp/gold-band-update/（崩溃也不丢）
-    let dir = std::path::Path::new(PENDING_UPDATE_DIR);
-    std::fs::create_dir_all(dir)?;
+    let dir = pending_update_dir();
+    std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("update-{}.pkg", update.version));
     std::fs::write(&path, &bytes)?;
 
@@ -329,13 +331,13 @@ pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino:
     update.install(bytes).context("updater.install-failed")?;
     // 安装成功，删除文件和空目录
     let _ = std::fs::remove_file(path.as_std_path());
-    let _ = std::fs::remove_dir(PENDING_UPDATE_DIR);
+    let _ = std::fs::remove_dir(pending_update_dir());
     Ok(())
 }
 
 /// 启动时检查 /tmp 是否有上次未安装成功的残留包
 pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
-    let dir = std::path::Path::new(PENDING_UPDATE_DIR);
+    let dir = pending_update_dir();
     if !dir.is_dir() {
         return;
     }

@@ -910,23 +910,22 @@ impl<'a> AcpRuntime<'a> {
         }
 
         self.seq += 1;
-        for event in normalize_session_update(self.seq, session_id, &update) {
-            if contributes_to_final_text(&event.kind) {
-                if !self.collecting_text_output {
-                    self.final_outputs.push(String::new());
-                    self.collecting_text_output = true;
-                }
-                if let Some(content) = &event.content {
-                    append_bounded(&mut self.final_text, content, 256_000);
-                    if let Some(output) = self.final_outputs.last_mut() {
-                        append_bounded(output, content, 64_000);
-                    }
-                }
-            } else {
-                self.collecting_text_output = false;
+        let event = normalize_session_update(self.seq, session_id, &update);
+        if contributes_to_final_text(&event.kind) {
+            if !self.collecting_text_output {
+                self.final_outputs.push(String::new());
+                self.collecting_text_output = true;
             }
-            self.persist_event(&event)?;
+            if let Some(content) = &event.content {
+                append_bounded(&mut self.final_text, content, 256_000);
+                if let Some(output) = self.final_outputs.last_mut() {
+                    append_bounded(output, content, 64_000);
+                }
+            }
+        } else {
+            self.collecting_text_output = false;
         }
+        self.persist_event(&event)?;
         Ok(())
     }
 
@@ -1088,6 +1087,49 @@ impl<'a> AcpRuntime<'a> {
         write_timeline_items(&self.paths.timeline, &items)
     }
 
+    /// Apply a streaming delta — get-or-create the stream, append content,
+    /// and stamp the item with stream identity + sequence bounds.
+    fn apply_streaming_delta(
+        stream: &mut Option<AcpTimelineStreamState>,
+        item: &mut crate::acp::events::AcpUiEvent,
+        stable_id: &str,
+        max_chars: usize,
+        seq: u64,
+        timestamp: &str,
+    ) {
+        let stream = stream.get_or_insert_with(|| AcpTimelineStreamState {
+            item_id: stable_id.to_string(),
+            started_seq: seq,
+            started_at: timestamp.to_string(),
+            content: String::new(),
+        });
+        if let Some(content) = item.content.as_deref() {
+            append_bounded(&mut stream.content, content, max_chars);
+        }
+        item.id = stream.item_id.clone();
+        item.content = Some(stream.content.clone());
+        item.started_seq = Some(stream.started_seq);
+        item.ended_seq = Some(seq);
+        item.started_at = Some(stream.started_at.clone());
+        item.ended_at = Some(timestamp.to_string());
+    }
+
+    /// Stamp a non-streaming event with sequence bounds and clear all streams.
+    fn finalize_non_streaming_event(
+        streams: (&mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>),
+        item: &mut crate::acp::events::AcpUiEvent,
+        seq: u64,
+        timestamp: &str,
+    ) {
+        *streams.0 = None;
+        *streams.1 = None;
+        *streams.2 = None;
+        item.started_seq = Some(item.started_seq.unwrap_or(seq));
+        item.ended_seq = Some(seq);
+        item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.to_string()));
+        item.ended_at = Some(timestamp.to_string());
+    }
+
     fn timeline_item_for_event(
         &mut self,
         event: &crate::acp::events::AcpUiEvent,
@@ -1097,89 +1139,52 @@ impl<'a> AcpRuntime<'a> {
         let seq = item.seq;
         match item.kind.as_str() {
             "textDelta" => {
-                let stream = self.active_text_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_message_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 256_000);
-                }
-                item.id = stream.item_id.clone();
-                item.content = Some(stream.content.clone());
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                let stable_id = stable_message_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_text_stream, &mut item,
+                    &stable_id, 256_000, seq, &timestamp,
+                );
             }
             "thoughtDelta" => {
-                let stream = self.active_thought_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_thought_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 256_000);
-                }
-                item.id = stream.item_id.clone();
-                item.content = Some(stream.content.clone());
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                let stable_id = stable_thought_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_thought_stream, &mut item,
+                    &stable_id, 256_000, seq, &timestamp,
+                );
+            }
+            "plan" => {
+                let stable_id = stable_plan_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_plan_stream, &mut item,
+                    &stable_id, 64_000, seq, &timestamp,
+                );
             }
             "toolCall" | "toolCallUpdate" => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
                     item.id = format!("tool-call-{tool_call_id}");
                 }
                 item.kind = "toolCall".to_string();
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
             "permissionRequest" => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
                 item.id = format!("permission-{}", item.id);
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
-            }
-            "plan" => {
-                let stream = self.active_plan_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_plan_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 64_000);
-                    item.content = Some(stream.content.clone());
-                }
-                item.id = stream.item_id.clone();
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
             _ => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
         }
+        // Clear streams whose kind no longer matches — the next delta of a
+        // different kind will create a fresh stream with a new stable id.
         if item.kind != "textDelta" {
             self.active_text_stream = None;
         }

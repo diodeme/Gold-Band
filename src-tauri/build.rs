@@ -15,10 +15,16 @@ struct ChannelConfig {
     updater_endpoint: String,
     updater_public_key: String,
     allow_http_updater: bool,
+    metrics_enabled: bool,
+    metrics_toggle_locked: bool,
+    heartbeat_endpoint: String,
+    node_metrics_endpoint: String,
+    metrics_api_key: String,
 }
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
     println!("cargo:rerun-if-changed=../configs/channels");
 
     let channel = env::var("GOLD_BAND_RELEASE_CHANNEL").unwrap_or_else(|_| "default".to_string());
@@ -51,6 +57,16 @@ fn main() {
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_ENDPOINT={}", config.updater_endpoint);
     println!("cargo:rustc-env=GOLD_BAND_UPDATER_PUBLIC_KEY={}", config.updater_public_key);
     println!("cargo:rustc-env=GOLD_BAND_ALLOW_HTTP_UPDATER={}", config.allow_http_updater);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_ENABLED={}", config.metrics_enabled);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_TOGGLE_LOCKED={}", config.metrics_toggle_locked);
+    println!("cargo:rustc-env=GOLD_BAND_HEARTBEAT_ENDPOINT={}", config.heartbeat_endpoint);
+    println!("cargo:rustc-env=GOLD_BAND_NODE_METRICS_ENDPOINT={}", config.node_metrics_endpoint);
+    // Allow env var to override JSON value — keeps secrets out of the repo.
+    let metrics_api_key = env::var("GOLD_BAND_METRICS_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(config.metrics_api_key);
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_API_KEY={}", metrics_api_key);
     println!("cargo:rustc-env=GOLD_BAND_SILENT_UPDATE_ENABLED={}", config.silent_update_enabled);
 
     tauri_build::build()

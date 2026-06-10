@@ -37,6 +37,7 @@ import type {
   UpdateBadgeStateVm,
   UpdateStatusVm,
   UpdaterSettingsVm,
+  MetricsSettingsVm,
   WorkflowDsl,
   WorkflowTemplateStore,
   WorkflowVm,
@@ -102,6 +103,8 @@ export interface RuntimeApi {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
+  getMetricsSettings(): Promise<MetricsSettingsVm>;
+  saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;

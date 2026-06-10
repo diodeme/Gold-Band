@@ -65,7 +65,8 @@ pub(crate) fn resolve_profile(
         ));
     };
     Ok(ResolvedProfileRef {
-        name: profile.id,
+        name: profile.id.clone(),
+        display_name: profile.name,
         source: match profile.scope {
             super::profiles::ProfileScope::BuiltIn => ProfileSource::BuiltIn,
             super::profiles::ProfileScope::Project => ProfileSource::Project,

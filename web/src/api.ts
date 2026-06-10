@@ -198,6 +198,13 @@ export function downloadAndInstallUpdate() {
   return getRuntimeApi().downloadAndInstallUpdate();
 }
 
+export function getMetricsSettings() {
+  return getRuntimeApi().getMetricsSettings();
+}
+
+export function saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
+  return getRuntimeApi().saveMetricsSettings(enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey);
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);

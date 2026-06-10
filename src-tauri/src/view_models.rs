@@ -19,6 +19,7 @@ use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, Worker
 
 use crate::channel::current_channel_config;
 use crate::i18n::Translator;
+use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
@@ -58,6 +59,7 @@ pub struct AppBootstrapVm {
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
     pub updater_settings: UpdaterSettingsVm,
+    pub metrics_settings: MetricsSettingsVm,
     pub update_status: UpdateStatusVm,
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
@@ -792,6 +794,7 @@ pub fn bootstrap_vm(
             app.config.use_local_claude,
         ),
         updater_settings: updater_settings(&app.config),
+        metrics_settings: metrics_settings(&app.config),
         update_status,
         update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
         persisted_available_update: persisted_available_update_vm(

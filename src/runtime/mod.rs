@@ -5,12 +5,35 @@ use crate::domain::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LastExecutedNode {
+    pub node_id: String,
+    pub uuid: String,
+    #[serde(default)]
+    pub round_uuid: String,
+    pub node_name: String,
+    #[serde(default)]
+    pub seq: Option<u32>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskState {
     pub version: String,
     pub id: String,
     pub title: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +41,8 @@ pub struct RunState {
     pub version: String,
     pub id: String,
     pub task_id: String,
+    #[serde(default)]
+    pub task_uuid: Option<String>,
     pub status: RunStatus,
     pub outcome: Option<RunOutcome>,
     pub started_at: String,
@@ -29,6 +54,10 @@ pub struct RunState {
     #[serde(default, alias = "acceptance_loops_used")]
     pub new_rounds_opened: u32,
     pub pause_reason: Option<PauseReason>,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub last_executed_node: Option<LastExecutedNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +72,8 @@ pub struct RoundState {
     pub started_at: String,
     #[serde(default)]
     pub trace: Vec<RoundTraceStep>,
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +101,8 @@ pub struct NodeState {
     #[serde(default)]
     pub manual_check_pending: bool,
     pub resolved_config: ResolvedConfig,
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +123,7 @@ impl TaskState {
             id: id.into(),
             title: None,
             description: None,
+            uuid: None,
         }
     }
 }

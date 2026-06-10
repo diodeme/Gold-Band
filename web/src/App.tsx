@@ -74,6 +74,7 @@ import type {
   DesktopLanguage,
   DesktopThemePreference,
   DesktopUiMode,
+  MetricsSettingsVm,
   PreferencesVm,
   UpdateBadgeStateVm,
   PrimaryModule,
@@ -94,6 +95,14 @@ const defaultUpdaterSettings: UpdaterSettingsVm = {
   overrideUrl: null,
   effectiveUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
   pollIntervalMinutes: 240,
+};
+
+const defaultMetricsSettings: MetricsSettingsVm = {
+  enabled: false,
+  toggleLocked: false,
+  heartbeatEndpoint: null,
+  nodeMetricsEndpoint: null,
+  apiKeySet: false,
 };
 const defaultUpdateStatus: UpdateStatusVm = {
   status: 'idle',
@@ -159,6 +168,7 @@ export function App() {
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
+  const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
   const updateBadges = bootstrap?.updateBadges ?? defaultUpdateBadges;
   const persistedAvailableUpdate = bootstrap?.persistedAvailableUpdate ?? null;
@@ -472,6 +482,7 @@ export function App() {
         updaterSettings: defaultUpdaterSettings,
         updateStatus: defaultUpdateStatus,
         updateBadges: defaultUpdateBadges,
+        metricsSettings: defaultMetricsSettings,
         clientVersion: '',
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
@@ -592,6 +603,7 @@ export function App() {
           preferences={preferences}
           appInfo={appInfo}
           updaterSettings={updaterSettings}
+          metricsSettings={metricsSettings}
           updateStatus={updateStatus}
           availableUpdate={effectiveAvailableUpdate}
           showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
@@ -783,6 +795,7 @@ export function App() {
             preferences={preferences}
             appInfo={appInfo}
             updaterSettings={updaterSettings}
+            metricsSettings={metricsSettings}
             updateStatus={updateStatus}
             availableUpdate={effectiveAvailableUpdate}
             showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}

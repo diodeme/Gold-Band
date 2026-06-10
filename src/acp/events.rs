@@ -517,11 +517,6 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
                 .pointer("/toolCall/toolCallId")
                 .and_then(Value::as_str)
         })
-        .or_else(|| {
-            value
-                .pointer("/toolCall/toolCallId")
-                .and_then(Value::as_str)
-        })
         .map(str::to_string)
 }
 

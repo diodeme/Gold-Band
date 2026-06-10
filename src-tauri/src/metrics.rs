@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use gold_band::app::{MetricsEvent, MetricsEventContext};
@@ -9,31 +10,42 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
+/// Cached log path — resolved once, avoids env-var lookup + create_dir_all on every log line.
+static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
+
+fn metrics_log_path() -> Option<&'static str> {
+    METRICS_LOG_PATH
+        .get_or_init(|| {
+            let config = current_channel_config();
+            let app_key = config.app_key;
+            let log_dir = if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                format!("{}\\{}", local_app_data, app_key)
+            } else if let Ok(home) = std::env::var("USERPROFILE") {
+                format!("{}\\.{}", home, app_key)
+            } else {
+                return None;
+            };
+            if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                eprintln!("[metrics] failed to create log dir {}: {}", log_dir, e);
+                return None;
+            }
+            Some(format!("{}\\metrics.log", log_dir))
+        })
+        .as_deref()
+}
+
 /// Write a metrics log line to the application data directory.
 /// On Windows this is `%LOCALAPPDATA%\{app_key}\metrics.log`.
 fn metrics_log(msg: &str) {
     eprintln!("{}", msg);
-    // Also write to file in app data dir
-    let config = current_channel_config();
-    let app_key = config.app_key;
-    let log_dir = if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        format!("{}\\{}", local_app_data, app_key)
-    } else if let Ok(home) = std::env::var("USERPROFILE") {
-        format!("{}\\.{}", home, app_key)
-    } else {
+    let Some(log_path) = metrics_log_path() else {
         return;
     };
-    // Best-effort: create dir and append to metrics.log
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        eprintln!("[metrics] failed to create log dir {}: {}", log_dir, e);
-        return;
-    }
-    let log_path = format!("{}\\metrics.log", log_dir);
     let line = format!("[{}] {}\n", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"), msg);
     if let Err(e) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
+        .open(log_path)
         .and_then(|mut f| f.write_all(line.as_bytes()))
     {
         eprintln!("[metrics] failed to write log {}: {}", log_path, e);

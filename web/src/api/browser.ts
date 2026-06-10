@@ -215,6 +215,18 @@ export const browserApi: RuntimeApi = {
       effectiveUrl: normalized ?? current.builtInUrl,
     }));
   },
+  getMetricsSettings() {
+    return Promise.resolve({
+      enabled: false,
+      toggleLocked: false,
+      heartbeatEndpoint: null,
+      nodeMetricsEndpoint: null,
+      apiKeySet: false,
+    });
+  },
+  saveMetricsSettings(_enabled: boolean, _heartbeatEndpoint: string | null, _nodeMetricsEndpoint: string | null, _apiKey: string | null) {
+    return this.getMetricsSettings();
+  },
   getUpdateStatus() {
     return Promise.resolve(browserPreviewState.getUpdateStatus());
   },

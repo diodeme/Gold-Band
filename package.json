@@ -5,7 +5,9 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "node scripts/dev-channel.mjs default",
+    "dev:default": "node scripts/dev-channel.mjs default",
+    "dev:wb": "node scripts/dev-channel.mjs wb",
     "build": "node scripts/build-channel.mjs default",
     "build:channel": "node scripts/build-channel.mjs",
     "build:default": "node scripts/build-channel.mjs default",

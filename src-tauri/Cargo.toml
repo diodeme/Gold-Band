@@ -17,6 +17,7 @@ gold-band = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fontdb = "0.23"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls-vendored"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 open = "5"
@@ -24,3 +25,5 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["time"] }
 url = "2"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, PreferencesVm, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, MetricsSettingsVm, PreferencesVm, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -23,7 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
-import { checkLocalClaude, getSystemFonts } from '../api';
+import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
@@ -42,6 +42,8 @@ interface SettingsPageProps {
   clientVersion: string;
   busy: boolean;
   onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => void;
+  metricsSettings?: MetricsSettingsVm | null;
+  onSaveMetricsSettings?: (enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
@@ -49,7 +51,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -68,6 +70,54 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
   useEffect(() => setFont(preferences.font), [preferences.font]);
   useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
+
+  // ── Metrics ──
+  const [metricsEnabled, setMetricsEnabled] = useState(metricsSettings?.enabled ?? false);
+  const [metricsHeartbeatEndpoint, setMetricsHeartbeatEndpoint] = useState(metricsSettings?.heartbeatEndpoint ?? '');
+  const [metricsNodeEndpoint, setMetricsNodeEndpoint] = useState(metricsSettings?.nodeMetricsEndpoint ?? '');
+  const [metricsApiKey, setMetricsApiKey] = useState('');
+  const [metricsSaving, setMetricsSaving] = useState(false);
+  useEffect(() => {
+    setMetricsEnabled(metricsSettings?.enabled ?? false);
+    setMetricsHeartbeatEndpoint(metricsSettings?.heartbeatEndpoint ?? '');
+    setMetricsNodeEndpoint(metricsSettings?.nodeMetricsEndpoint ?? '');
+  }, [metricsSettings?.enabled, metricsSettings?.heartbeatEndpoint, metricsSettings?.nodeMetricsEndpoint]);
+
+  async function handleSaveMetrics() {
+    setMetricsSaving(true);
+    try {
+      if (onSaveMetricsSettings) {
+        const saved = await onSaveMetricsSettings(metricsEnabled, metricsHeartbeatEndpoint || null, metricsNodeEndpoint || null, metricsApiKey || null);
+        if (saved) {
+          setMetricsEnabled(saved.enabled);
+          setMetricsHeartbeatEndpoint(saved.heartbeatEndpoint ?? '');
+          setMetricsNodeEndpoint(saved.nodeMetricsEndpoint ?? '');
+        }
+      } else {
+        // Fallback: save directly via barrel API
+        const saved = await saveMetricsSettings(metricsEnabled, metricsHeartbeatEndpoint || null, metricsNodeEndpoint || null, metricsApiKey || null);
+        if (saved) {
+          setMetricsEnabled(saved.enabled);
+          setMetricsHeartbeatEndpoint(saved.heartbeatEndpoint ?? '');
+          setMetricsNodeEndpoint(saved.nodeMetricsEndpoint ?? '');
+        }
+      }
+    } finally {
+      setMetricsSaving(false);
+    }
+  }
+
+  // Load metrics settings if not provided via props
+  useEffect(() => {
+    if (metricsSettings) return;
+    getMetricsSettings().then((s) => {
+      if (s) {
+        setMetricsEnabled(s.enabled);
+        setMetricsHeartbeatEndpoint(s.heartbeatEndpoint ?? '');
+        setMetricsNodeEndpoint(s.nodeMetricsEndpoint ?? '');
+      }
+    }).catch(() => {});
+  }, [metricsSettings]);
 
   const [localClaudeStatus, setLocalClaudeStatus] = useState<LocalClaudeStatusVm | null>(null);
 
@@ -405,6 +455,50 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, updateStat
                 </div>
               </div>
             </SettingsSection>
+            {/* Metrics reporting section — always visible from desktop API */}
+              <SettingsSection title={t('settings.metrics.title')} divided>
+                <div className="max-w-4xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">{t('settings.metrics.enable')}</p>
+                      <p className="text-xs text-muted-foreground">{t('settings.metrics.enableDescription')}</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={metricsEnabled}
+                      disabled={metricsSettings?.toggleLocked}
+                      className={cn(
+                        'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                        metricsEnabled ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
+                        metricsSettings?.toggleLocked && 'cursor-not-allowed opacity-60',
+                      )}
+                      onClick={() => setMetricsEnabled(!metricsEnabled)}
+                    >
+                      <span className={cn('block size-5 rounded-full bg-background shadow-sm transition-transform', metricsEnabled && 'translate-x-5')} />
+                    </button>
+                  </div>
+                  {metricsEnabled && (
+                    <>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.heartbeatEndpoint')}</div>
+                        <Input value={metricsHeartbeatEndpoint} placeholder="http://..." disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsHeartbeatEndpoint(event.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.nodeMetricsEndpoint')}</div>
+                        <Input value={metricsNodeEndpoint} placeholder="http://..." disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsNodeEndpoint(event.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.apiKey')}</div>
+                        <Input type="password" value={metricsApiKey} placeholder={metricsSettings?.apiKeySet ? t('settings.metrics.apiKeySet') : 'API Key'} disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsApiKey(event.target.value)} />
+                      </div>
+                      <div className="flex justify-end">
+                        <Button size="sm" onClick={() => void handleSaveMetrics()} disabled={metricsSaving}>{metricsSaving ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}{t('settings.metrics.save')}</Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </SettingsSection>
           </AppCard>
         </TabsContent>
       </Tabs>

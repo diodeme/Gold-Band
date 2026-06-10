@@ -41,7 +41,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use self::ids::{next_task_id, next_workflow_id, now_rfc3339_like};
+use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
     build_dynamic_prompt_bundle, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
@@ -341,11 +341,53 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
+/// Context provided to the metrics callback when a node starts or completes execution.
+#[derive(Debug, Clone)]
+pub struct MetricsEventContext {
+    pub repo_root: String,
+    // Display IDs
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    // UUIDs (for metrics reporting)
+    pub task_uuid: Option<String>,
+    pub run_uuid: Option<String>,
+    pub round_uuid: Option<String>,
+    pub node_uuid: Option<String>,
+    // Node metadata
+    pub seq: Option<u32>,
+    pub node_name: Option<String>,
+    pub agent_type: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
+    // Used by NodeCompleted to report the real status instead of hardcoding.
+    pub outcome: Option<String>,
+}
+
+/// Event types emitted by the orchestrator for metrics reporting.
+#[derive(Debug, Clone)]
+pub enum MetricsEvent {
+    /// A node has started executing. Includes the predecessor node's last-executed data if available.
+    NodeStarted {
+        predecessor: Option<crate::runtime::LastExecutedNode>,
+    },
+    /// A node has completed execution. The orchestrator updates `run.last_executed_node`.
+    NodeCompleted,
+}
+
 pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +542,7 @@ impl App {
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
+            metrics_callback: self.metrics_callback.clone(),
         }
     }
 
@@ -508,6 +551,14 @@ impl App {
         live_update: Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_live_update = Some(live_update);
+        self
+    }
+
+    pub fn with_metrics_callback(
+        mut self,
+        callback: Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>,
+    ) -> Self {
+        self.metrics_callback = Some(callback);
         self
     }
 
@@ -928,6 +979,7 @@ impl App {
             config,
             provider_override: None,
             acp_live_update: None,
+            metrics_callback: None,
         }
     }
 
@@ -948,6 +1000,7 @@ impl App {
             config,
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
+            metrics_callback: None,
         }
     }
 
@@ -1000,6 +1053,7 @@ impl App {
             id: task_id.clone(),
             title: input.title.filter(|value| !value.trim().is_empty()),
             description: input.description.filter(|value| !value.trim().is_empty()),
+            uuid: Some(generate_uuid()),
         };
         validate_task_state(&task)?;
         fs::create_dir_all(

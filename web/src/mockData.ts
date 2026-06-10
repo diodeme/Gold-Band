@@ -292,6 +292,7 @@ export const mockBootstrap: AppBootstrapVm = {
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
   updaterSettings: mockUpdaterSettings,
+  metricsSettings: { enabled: false, toggleLocked: false, heartbeatEndpoint: null, nodeMetricsEndpoint: null, apiKeySet: false },
   updateStatus: mockUpdateStatus,
   updateBadges: mockUpdateBadges,
   persistedAvailableUpdate: null,

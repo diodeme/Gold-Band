@@ -12,5 +12,10 @@
   "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjQyQ0JEQUUxMUNFOApSV1RvSE9IYXkwS0NDeS9mS0hhblROeC9yVFNaR01HVUpvTVBQamg4NWVESjI2U3I0OUNzcjRlLwo=",
   "allowHttpUpdater": true,
   "bundleTargets": ["nsis"],
-  "releaseBaseUrl": "http://maling.weoa.com/api/file/download"
+  "releaseBaseUrl": "http://maling.weoa.com/api/file/download",
+  "metricsEnabled": true,
+  "metricsToggleLocked": true,
+  "heartbeatEndpoint": "http://maling.weoa.com/api/client-report/heartbeat",
+  "nodeMetricsEndpoint": "http://maling.weoa.com/api/client-report/metrics/batch",
+  "metricsApiKey": ""
 }

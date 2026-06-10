@@ -4,7 +4,8 @@
 
 # Gold Band
 
-> 本地化 · 工作流驱动 · AI Agent 编排工具
+> 本地化 · 工作流驱动 · AI Agent 编排工具 
+> Harness Engineering | Loop Engineering
 >
 > 让长程 AI Coding 任务更可控、可观测、更可靠
 

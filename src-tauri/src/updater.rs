@@ -451,11 +451,6 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
         return Ok(());
     };
 
-    let current = app.package_info().version.to_string();
-    if !version_is_newer(&update.version, &current) {
-        return Ok(());
-    }
-
     let is_critical = update
         .raw_json
         .get("critical")

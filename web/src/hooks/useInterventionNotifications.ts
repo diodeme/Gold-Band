@@ -13,6 +13,14 @@ interface ResolvedEvent {
   attemptId?: string;
 }
 
+interface NavigateEvent {
+  taskId: string;
+  runId: string;
+  roundId: string;
+}
+
+export type InterventionNavigateHandler = (taskId: string, runId: string, roundId: string) => void;
+
 /**
  * 监听工作流干预事件，管理前端通知队列。
  *
@@ -21,13 +29,15 @@ interface ResolvedEvent {
  * - 去重：同一 dedup_key 只保留最新一条
  * - 清除：收到 intervention-resolved 事件时移除对应通知
  * - 超时：1 分钟后自动移除
+ * - 导航：收到 intervention-navigate 事件时调用 onNavigate 回调
  */
-export function useInterventionNotifications() {
+export function useInterventionNotifications(onNavigate?: InterventionNavigateHandler) {
   const [queue, setQueue] = useState<QueuedNotification[]>([]);
 
   useEffect(() => {
     let unlistenRequired: (() => void) | undefined;
     let unlistenResolved: (() => void) | undefined;
+    let unlistenNavigate: (() => void) | undefined;
     let active = true;
 
     const setup = async () => {
@@ -68,6 +78,16 @@ export function useInterventionNotifications() {
           );
         },
       );
+
+      // 监听 OS 通知"查看详情"按钮触发的导航事件
+      unlistenNavigate = await listen<NavigateEvent>(
+        'gold-band://intervention-navigate',
+        (event) => {
+          if (!active) return;
+          const { taskId, runId, roundId } = event.payload;
+          onNavigate?.(taskId, runId, roundId);
+        },
+      );
     };
 
     setup();
@@ -76,8 +96,9 @@ export function useInterventionNotifications() {
       active = false;
       unlistenRequired?.();
       unlistenResolved?.();
+      unlistenNavigate?.();
     };
-  }, []);
+  }, [onNavigate]);
 
   // 1 分钟后自动移除过期通知
   useEffect(() => {

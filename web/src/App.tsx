@@ -181,8 +181,16 @@ export function App() {
   );
   const { t } = useTranslation();
 
-  // 工作流干预通知队列
-  const { queue: interventionQueue } = useInterventionNotifications();
+  // 工作流干预通知队列（OS 通知"查看详情"按钮触发时导航到对应任务）
+  const handleInterventionNavigate = useCallback((taskId: string, runId: string, roundId: string) => {
+    if (uiMode === 'conversation') {
+      setConversationPage({ kind: 'conversation-run', projectId: defaultProjectId, taskId, runId });
+    } else {
+      setTaskPage({ kind: 'round-detail', taskId, runId, roundId });
+      setPrimaryModule('task-orchestration');
+    }
+  }, [uiMode, defaultProjectId]);
+  const { queue: interventionQueue } = useInterventionNotifications(handleInterventionNavigate);
 
   useEffect(() => {
     applyTheme(preferences.theme);

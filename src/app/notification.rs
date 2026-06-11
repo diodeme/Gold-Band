@@ -50,29 +50,23 @@ impl InterventionNotification {
         let task_label = task_title.unwrap_or(task_id);
         let (title, body, intervention_type) = match pause_reason {
             PauseReason::WaitingForUserInput => (
-                "工作流需要人工确认".to_string(),
-                format!(
-                    "任务 \"{task_label}\" 的节点 \"{node_label}\" 已完成执行，等待确认结果"
-                ),
+                "码灵 - 人工确认".to_string(),
+                format!("任务 \"{task_label}\" 节点 [{node_id}] 等待确认"),
                 InterventionType::ManualCheck,
             ),
             PauseReason::PermissionRequested => (
-                "权限请求".to_string(),
-                format!("任务 \"{task_label}\" 的节点 \"{node_label}\" 需要授权确认"),
+                "码灵 - 权限请求".to_string(),
+                format!("任务 \"{task_label}\" 节点 [{node_id}] 需要授权"),
                 InterventionType::PermissionRequest,
             ),
             PauseReason::ErrorBlocked => (
-                "工作流执行错误".to_string(),
-                format!(
-                    "任务 \"{task_label}\" 的节点 \"{node_label}\" 因错误被阻塞，需要手动处理"
-                ),
+                "码灵 - 执行错误".to_string(),
+                format!("任务 \"{task_label}\" 节点 [{node_id}] 错误阻塞"),
                 InterventionType::ErrorBlocked,
             ),
             PauseReason::ProcessInterrupted => (
-                "工作流进程中断".to_string(),
-                format!(
-                    "任务 \"{task_label}\" 的节点 \"{node_label}\" 进程中断，需要手动处理"
-                ),
+                "码灵 - 进程中断".to_string(),
+                format!("任务 \"{task_label}\" 节点 [{node_id}] 进程中断"),
                 InterventionType::ErrorBlocked,
             ),
         };

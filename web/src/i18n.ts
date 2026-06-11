@@ -906,14 +906,15 @@ const resources = {
       },
       notification: {
         intervention: {
-          manualCheckTitle: '工作流需要人工确认',
-          permissionTitle: '权限请求',
-          errorBlockedTitle: '工作流执行错误',
-          processInterruptedTitle: '工作流进程中断',
+          manualCheckTitle: '码灵 - 人工确认',
+          permissionTitle: '码灵 - 权限请求',
+          errorBlockedTitle: '码灵 - 执行错误',
+          processInterruptedTitle: '码灵 - 进程中断',
           actions: {
             approve: '通过',
             reject: '拒绝',
             viewDetail: '查看详情',
+            dismiss: '忽略',
           },
         },
       },
@@ -1822,14 +1823,15 @@ const resources = {
       },
       notification: {
         intervention: {
-          manualCheckTitle: 'Workflow Needs Manual Check',
-          permissionTitle: 'Permission Request',
-          errorBlockedTitle: 'Workflow Error',
-          processInterruptedTitle: 'Workflow Interrupted',
+          manualCheckTitle: 'Maling - Manual Check',
+          permissionTitle: 'Maling - Permission Request',
+          errorBlockedTitle: 'Maling - Error',
+          processInterruptedTitle: 'Maling - Interrupted',
           actions: {
             approve: 'Approve',
             reject: 'Reject',
             viewDetail: 'View Details',
+            dismiss: 'Dismiss',
           },
         },
       },

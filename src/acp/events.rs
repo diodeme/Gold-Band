@@ -226,7 +226,7 @@ pub fn current_timestamp() -> String {
     format!("{secs}Z")
 }
 
-pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value) -> Result<()> {
+pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value, max_size: u64, target_size: u64) -> Result<()> {
     append_jsonl(
         path,
         &AcpRawFrame {
@@ -234,7 +234,58 @@ pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value) -> Resul
             direction: direction.to_string(),
             frame,
         },
-    )
+    )?;
+    let _ = roll_raw_log(path, max_size, target_size);
+    Ok(())
+}
+
+/// Roll the raw log file, preserving init handshake frames (everything before the first
+/// `session/update`) and only trimming the streaming update section.
+fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+    use std::io::Write;
+    let meta = match std::fs::metadata(path.as_std_path()) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if meta.len() <= max_size {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(path.as_std_path())?;
+
+    // Find byte offset of the first session/update line — only trim from there onward.
+    let mut pinned_bytes = 0usize;
+    for line in content.lines() {
+        if line.contains("\"method\":\"session/update\"") {
+            break;
+        }
+        pinned_bytes += line.len() + 1; // +1 for newline
+    }
+
+    let updatable_start = pinned_bytes;
+    let updatable_len = content.len().saturating_sub(updatable_start) as u64;
+    let pinned_len = pinned_bytes as u64;
+    let effective_target = target_size.saturating_sub(pinned_len);
+    if updatable_len <= effective_target {
+        return Ok(());
+    }
+    let excess = updatable_len.saturating_sub(effective_target);
+
+    let updatable = &content[updatable_start..];
+    let mut cumulative = 0u64;
+    let mut drop_bytes = 0usize;
+    for line in updatable.lines() {
+        if cumulative >= excess {
+            break;
+        }
+        let line_len = line.len() + 1;
+        cumulative += line_len as u64;
+        drop_bytes += line_len;
+    }
+
+    let mut file = std::fs::File::create(path.as_std_path())?;
+    file.write_all(content[..updatable_start].as_bytes())?;
+    file.write_all(updatable[drop_bytes..].as_bytes())?;
+    Ok(())
 }
 
 pub fn append_diagnostic(

@@ -443,6 +443,83 @@ fn enum_label<T: Serialize>(value: &T) -> String {
     }
 }
 
+fn display_pause_reason_for_attempt(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    run_pause_reason: Option<&str>,
+) -> Option<String> {
+    if run_pause_reason == Some("error-blocked") {
+        let snapshot_path = app
+            .paths
+            .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
+        let session_path = app
+            .paths
+            .acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
+        if acp_session_file_is_cancelled(&snapshot_path)
+            || acp_session_file_is_cancelled(&session_path)
+        {
+            return Some("process-interrupted".to_string());
+        }
+    }
+    run_pause_reason.map(str::to_string)
+}
+
+fn display_pause_reason_for_dynamic_attempt(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    run_pause_reason: Option<&str>,
+) -> Option<String> {
+    if run_pause_reason == Some("error-blocked") {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
+        );
+        if acp_session_file_is_cancelled(&attempt_dir.join("acp.snapshot.json"))
+            || acp_session_file_is_cancelled(&attempt_dir.join("acp.session.json"))
+        {
+            return Some("process-interrupted".to_string());
+        }
+    }
+    run_pause_reason.map(str::to_string)
+}
+
+fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
+    read_json::<serde_json::Value>(path)
+        .ok()
+        .and_then(|session| {
+            let status = session
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let stop_reason = session
+                .get("stopReason")
+                .or_else(|| session.get("stop_reason"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            (status.eq_ignore_ascii_case("cancelled")
+                || status.eq_ignore_ascii_case("canceled")
+                || stop_reason.eq_ignore_ascii_case("cancelled")
+                || stop_reason.eq_ignore_ascii_case("canceled"))
+                .then_some(())
+        })
+        .is_some()
+}
+
 fn asset_item_vm(
     kind: &str,
     round_id: &str,
@@ -645,15 +722,26 @@ pub fn conversation_run_vm(
                                 .current_node_ids
                                 .iter()
                                 .any(|id| id == &dyn_node.id);
-                            let dyn_runtime_display = runtime_display_vm(
-                                Some(&dyn_status),
-                                dyn_outcome.as_deref(),
-                                dyn_current,
-                                run_pause_reason.as_deref(),
-                                run_resumable,
-                            );
                             for dyn_attempt_id in &dyn_attempt_ids {
                                 let is_active = dyn_status == "running";
+                                let dyn_pause_reason = display_pause_reason_for_dynamic_attempt(
+                                    app,
+                                    task_id,
+                                    run_id,
+                                    &round.id,
+                                    &node.node_id,
+                                    &latest_attempt.attempt_id,
+                                    &dyn_node.id,
+                                    dyn_attempt_id,
+                                    run_pause_reason.as_deref(),
+                                );
+                                let dyn_runtime_display = runtime_display_vm(
+                                    Some(&dyn_status),
+                                    dyn_outcome.as_deref(),
+                                    dyn_current,
+                                    dyn_pause_reason.as_deref(),
+                                    run_resumable,
+                                );
 
                                 dyn_leafs.push(ConversationSessionLeafVm {
                                     round_id: round.id.clone(),
@@ -696,7 +784,15 @@ pub fn conversation_run_vm(
                             let dyn_node_runtime_display = dyn_leafs
                                 .last()
                                 .map(|l| l.runtime_display.clone())
-                                .unwrap_or_else(|| dyn_runtime_display.clone());
+                                .unwrap_or_else(|| {
+                                    runtime_display_vm(
+                                        Some(&dyn_status),
+                                        dyn_outcome.as_deref(),
+                                        dyn_current,
+                                        run_pause_reason.as_deref(),
+                                        run_resumable,
+                                    )
+                                });
 
                             dynamic_tree_nodes.push(ConversationTreeNodeVm {
                                 node_id: dyn_node.id.clone(),
@@ -723,11 +819,20 @@ pub fn conversation_run_vm(
                     let current = run.current_round.as_deref() == Some(&round.id)
                         && run.current_node.as_deref() == Some(&node.node_id)
                         && run.current_attempt.as_deref() == Some(&attempt.attempt_id);
+                    let display_pause_reason = display_pause_reason_for_attempt(
+                        app,
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                        run_pause_reason.as_deref(),
+                    );
                     let runtime_display = runtime_display_vm(
                         Some(&status),
                         outcome.as_deref(),
                         current,
-                        run_pause_reason.as_deref(),
+                        display_pause_reason.as_deref(),
                         run_resumable,
                     );
                     let is_active = attempt.status == RunStatus::Running;

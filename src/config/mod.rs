@@ -326,6 +326,8 @@ pub struct StateConfig {
 pub struct ProjectAppConfig {
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    pub acp_raw_max_size_bytes: Option<u64>,
+    pub acp_raw_target_size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
@@ -352,6 +354,8 @@ pub struct RuntimeConfig {
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_raw_max_size_bytes: u64,
+    pub acp_raw_target_size_bytes: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -383,6 +387,8 @@ impl Default for RuntimeConfig {
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
+            acp_raw_max_size_bytes: 5 * 1024 * 1024,
+            acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
         }
     }
@@ -438,6 +444,12 @@ impl RuntimeConfig {
         }
         if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
+            self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
+        }
+        if let Some(acp_raw_target_size_bytes) = app_config.acp_raw_target_size_bytes {
+            self.acp_raw_target_size_bytes = acp_raw_target_size_bytes;
         }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();

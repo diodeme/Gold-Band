@@ -1033,6 +1033,8 @@ pub async fn send_acp_prompt(
                 continue_ref,
                 app.config.use_local_claude,
                 app.config.acp_session_title_refresh_enabled,
+                app.config.acp_raw_max_size_bytes,
+                app.config.acp_raw_target_size_bytes,
                 Some(&|event| {
                     emit_acp_event_update(
                         &app_handle_for_live,
@@ -1141,6 +1143,8 @@ pub async fn send_acp_prompt(
             continue_ref,
             app.config.use_local_claude,
             app.config.acp_session_title_refresh_enabled,
+            app.config.acp_raw_max_size_bytes,
+            app.config.acp_raw_target_size_bytes,
             Some(&|event| {
                 emit_acp_event_update(
                     &app_handle_for_live,

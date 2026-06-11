@@ -52,6 +52,28 @@ impl std::fmt::Display for AcpCancelled {
 
 impl std::error::Error for AcpCancelled {}
 
+fn session_file_is_cancelled(path: &Utf8Path) -> bool {
+    read_json::<Value>(path)
+        .ok()
+        .and_then(|session| {
+            let status = session
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let stop_reason = session
+                .get("stopReason")
+                .or_else(|| session.get("stop_reason"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (status.eq_ignore_ascii_case("cancelled")
+                || status.eq_ignore_ascii_case("canceled")
+                || stop_reason.eq_ignore_ascii_case("cancelled")
+                || stop_reason.eq_ignore_ascii_case("canceled"))
+                .then_some(())
+        })
+        .is_some()
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
     pub session_id: String,
@@ -104,6 +126,8 @@ struct AcpRuntime<'a> {
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+    raw_max_size: u64,
+    raw_target_size: u64,
 }
 
 pub fn doctor(
@@ -117,6 +141,8 @@ pub fn doctor(
         cwd.clone(),
         paths.runtime_root.join("doctor/acp"),
         use_local_claude,
+        5 * 1024 * 1024,
+        4 * 1024 * 1024,
         None,
     )?;
     let result = (|| {
@@ -142,6 +168,8 @@ pub fn run_prompt(
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
@@ -150,6 +178,8 @@ pub fn run_prompt(
         workspace_dir.clone(),
         attempt_dir,
         use_local_claude,
+        acp_raw_max_size_bytes,
+        acp_raw_target_size_bytes,
         live_update,
     )?;
     let capabilities = runtime.initialize()?;
@@ -313,6 +343,8 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
         use_local_claude: bool,
+        raw_max_size: u64,
+        raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -352,6 +384,8 @@ impl<'a> AcpRuntime<'a> {
         let (tx, rx) = mpsc::sync_channel(1024);
         let raw_path = paths.raw.clone();
         let diagnostics_path = paths.diagnostics.clone();
+        let raw_max = raw_max_size;
+        let raw_target = raw_target_size;
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -359,7 +393,7 @@ impl<'a> AcpRuntime<'a> {
                     Ok(line) if line.trim().is_empty() => {}
                     Ok(line) => match serde_json::from_str::<Value>(&line) {
                         Ok(value) => {
-                            let _ = append_raw_frame(&raw_path, "inbound", value.clone());
+                            let _ = append_raw_frame(&raw_path, "inbound", value.clone(), raw_max, raw_target);
                             if tx.send(value).is_err() {
                                 break;
                             }
@@ -449,6 +483,8 @@ impl<'a> AcpRuntime<'a> {
             active_thought_stream: None,
             active_plan_stream: None,
             live_update,
+            raw_max_size,
+            raw_target_size,
         })
     }
 
@@ -897,7 +933,7 @@ impl<'a> AcpRuntime<'a> {
 
                     if response_matches_request(&value, id) {
                         if let Some(error) = value.get("error") {
-                            if is_cancel_requested(&self.paths.attempt_dir) {
+                            if self.is_cancellation_observed() {
                                 return Err(anyhow!(AcpCancelled));
                             }
                             bail!("ACP `{method}` failed: {error}");
@@ -923,7 +959,7 @@ impl<'a> AcpRuntime<'a> {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    if is_cancel_requested(&self.paths.attempt_dir) {
+                    if self.is_cancellation_observed() {
                         return Err(anyhow!(AcpCancelled));
                     }
                     bail!("ACP adapter closed before `{method}` response");
@@ -953,7 +989,7 @@ impl<'a> AcpRuntime<'a> {
             }
 
             if let Some(status) = self.child.try_wait()? {
-                if is_cancel_requested(&self.paths.attempt_dir) {
+                if self.is_cancellation_observed() {
                     return Err(anyhow!(AcpCancelled));
                 }
                 bail!("ACP adapter exited before `{method}` response with status {status}");
@@ -1069,8 +1105,14 @@ impl<'a> AcpRuntime<'a> {
         let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
     }
 
+    fn is_cancellation_observed(&self) -> bool {
+        is_cancel_requested(&self.paths.attempt_dir)
+            || session_file_is_cancelled(&self.paths.snapshot)
+            || session_file_is_cancelled(&self.paths.session)
+    }
+
     fn send_frame(&mut self, frame: &Value) -> Result<()> {
-        append_raw_frame(&self.paths.raw, "outbound", frame.clone())?;
+        append_raw_frame(&self.paths.raw, "outbound", frame.clone(), self.raw_max_size, self.raw_target_size)?;
         let line = serde_json::to_string(frame)?;
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.write_all(b"\n")?;
@@ -1263,6 +1305,13 @@ impl<'a> AcpRuntime<'a> {
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
                     item.id = format!("tool-call-{tool_call_id}");
                 }
+                // Merge rawInput from the previous event for this tool call
+                // if the new event doesn't carry it. The adapter typically sends
+                // rawInput on an intermediate toolCallUpdate but not on the
+                // final completed event, so without merging the input is lost.
+                if let Some(prev) = self.timeline_items.get(&item.id) {
+                    merge_tool_raw_input(&mut item, prev);
+                }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
                     (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
@@ -1308,6 +1357,64 @@ impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
             self.kill_adapter_process();
+        }
+    }
+}
+
+fn is_non_empty_object(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => !map.is_empty(),
+        _ => false,
+    }
+}
+
+/// Merge `raw.rawInput` and `raw.title` from a previous tool-call timeline
+/// item into the current one when the current item doesn't have a non-empty
+/// value. This preserves tool input across adapter updates that overwrite the
+/// timeline slot — the final "completed" event often carries the output
+/// but no longer carries the input or title.
+fn merge_tool_raw_input(new_item: &mut crate::acp::events::AcpUiEvent, prev: &crate::acp::events::AcpUiEvent) {
+    let new_raw = match &new_item.raw {
+        Some(v) => v,
+        None => return,
+    };
+    let prev_raw = match &prev.raw {
+        Some(v) => v,
+        None => return,
+    };
+    // Merge title if new event lacks one.
+    if new_item.title.is_none() {
+        if let Some(prev_title) = &prev.title {
+            new_item.title = Some(prev_title.clone());
+        }
+    }
+    // Merge rawInput.
+    let new_direct = new_raw.get("rawInput");
+    let new_nested = new_raw.get("toolCall").and_then(|tc| tc.get("rawInput"));
+    if new_direct.map_or(false, |v| is_non_empty_object(v))
+        || new_nested.map_or(false, |v| is_non_empty_object(v))
+    {
+        return;
+    }
+    if let Some(prev_direct) = prev_raw.get("rawInput") {
+        if is_non_empty_object(prev_direct) {
+            if let Some(raw_mut) = new_item.raw.as_mut() {
+                raw_mut["rawInput"] = prev_direct.clone();
+            }
+            return;
+        }
+    }
+    if let Some(prev_nested) = prev_raw.get("toolCall").and_then(|tc| tc.get("rawInput")) {
+        if is_non_empty_object(prev_nested) {
+            if let Some(raw_mut) = new_item.raw.as_mut() {
+                if let Some(tc_mut) = raw_mut.get_mut("toolCall") {
+                    tc_mut["rawInput"] = prev_nested.clone();
+                } else {
+                    let mut tc = serde_json::Map::new();
+                    tc.insert("rawInput".to_string(), prev_nested.clone());
+                    raw_mut["toolCall"] = serde_json::Value::Object(tc);
+                }
+            }
         }
     }
 }

@@ -1190,6 +1190,8 @@ impl App {
             config,
             self.config.use_local_claude,
             self.config.acp_session_title_refresh_enabled,
+            self.config.acp_raw_max_size_bytes,
+            self.config.acp_raw_target_size_bytes,
         )?))
     }
 

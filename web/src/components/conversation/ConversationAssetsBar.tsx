@@ -21,6 +21,7 @@ export function ConversationAssetsBar({
   onOpenInputAttachment,
 }: ConversationAssetsBarProps) {
   const { t } = useTranslation();
+  console.log('[AssetsBar] render', { artifacts: artifacts.length, attachments: attachments.length, inputAttachments: inputAttachments?.length });
 
   if (artifacts.length === 0 && attachments.length === 0 && (!inputAttachments || inputAttachments.length === 0)) return null;
 
@@ -51,7 +52,7 @@ export function ConversationAssetsBar({
           variant="ghost"
           size="sm"
           className="h-6 gap-1 rounded-full px-2 text-[11px]"
-          onClick={() => onOpenArtifact?.(artifact)}
+          onClick={() => { console.log('[AssetsBar] artifact clicked', artifact.name, artifact.kind, 'roundId=', artifact.roundId, 'nodeId=', artifact.nodeId); onOpenArtifact?.(artifact); }}
         >
           <FileText className="size-3 text-emerald-500" />
           <span className="max-w-[112px] truncate">{artifact.title || artifact.name}</span>
@@ -63,7 +64,7 @@ export function ConversationAssetsBar({
           variant="ghost"
           size="sm"
           className="h-6 gap-1 rounded-full px-2 text-[11px]"
-          onClick={() => onOpenAttachment?.(attachment)}
+          onClick={() => { console.log('[AssetsBar] attachment clicked', attachment.name, attachment.kind, 'roundId=', attachment.roundId, 'nodeId=', attachment.nodeId); onOpenAttachment?.(attachment); }}
         >
           <Paperclip className="size-3 text-muted-foreground" />
           <span className="max-w-[112px] truncate">{attachment.title || attachment.name}</span>

@@ -199,7 +199,7 @@ export function ConversationRunPage({
       : run.resumable && !run.workflowValid
           ? { kind: 'invalid-workflow', workflowError: t('conversation.runtime.workflowInvalid'), onRepair: handleRepairWorkflow }
           : selectedSessionPaused
-            ? { kind: 'paused', message: translatePauseReason(run.pauseReason), onContinue: onContinueRun }
+            ? { kind: 'paused', message: translatePauseReason(selectedSessionDisplay?.reasonCode ?? run.pauseReason), onContinue: onContinueRun }
             : undefined;
 
   return (
@@ -295,13 +295,12 @@ export function ConversationRunPage({
         )}
       </div>
 
-      {/* Assets bar */}
+      {/* Assets bar — inside flex container so it's visible */}
       <ConversationAssetsBar
         artifacts={run.artifacts}
         attachments={run.attachments}
-        inputAttachments={run.inputAttachments}
-        onOpenArtifact={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
-        onOpenAttachment={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
+        onOpenArtifact={(a) => { console.log('[AssetsBar] onOpenArtifact clicked', a.name, a.kind, 'ref=', !!chatDialogRef.current); chatDialogRef.current?.openArtifactsDialog(a); }}
+        onOpenAttachment={(a) => { console.log('[AssetsBar] onOpenAttachment clicked', a.name, a.kind, 'ref=', !!chatDialogRef.current); chatDialogRef.current?.openArtifactsDialog(a); }}
       />
 
       {/* Rerun confirmation dialog */}

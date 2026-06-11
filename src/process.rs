@@ -12,26 +12,29 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub fn find_executable_in_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var("PATH").ok()?;
     for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
         #[cfg(windows)]
         {
+            // On Windows, npm global installs create a shell-script shim with no
+            // extension (e.g. `%APPDATA%/npm/claude`), a `.cmd` wrapper, and a
+            // `.ps1` wrapper — all in the same directory.  The extensionless file
+            // is a POSIX shell script that cannot be spawned by Windows or by
+            // Node.js child_process.  Prefer `.exe`, then resolve `.cmd` → the
+            // real `.exe`, and only fall back to the bare name as a last resort.
             let candidate_exe = dir.join(format!("{name}.exe"));
             if candidate_exe.is_file() {
                 return Some(candidate_exe);
             }
             let candidate_cmd = dir.join(format!("{name}.cmd"));
             if candidate_cmd.is_file() {
-                // On Windows, .cmd files cannot be spawned directly by Node.js
-                // child_process.spawn() — they need to go through cmd.exe.
-                // Resolve to the underlying .exe so ACP adapters can spawn it.
                 if let Some(resolved) = resolve_cmd_to_exe(&candidate_cmd) {
                     return Some(resolved);
                 }
                 return Some(candidate_cmd);
             }
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     None

@@ -10,7 +10,7 @@ use std::path::Path;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::commands::{CommandErrorVm, CommandResult, command_error};
+use crate::commands::{CommandErrorVm, CommandResult, acp_live_update_emitter, command_error};
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
 
@@ -77,10 +77,15 @@ pub fn validate_conversation_create(
 
 #[tauri::command]
 pub async fn create_conversation_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    let app = state.app().map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -91,11 +96,16 @@ pub async fn create_conversation_run(
 
 #[tauri::command]
 pub fn rerun_conversation_task(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    let app = state.app().map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
         .map_err(command_error)
 }

@@ -515,7 +515,7 @@ fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
                 || status.eq_ignore_ascii_case("canceled")
                 || stop_reason.eq_ignore_ascii_case("cancelled")
                 || stop_reason.eq_ignore_ascii_case("canceled"))
-                .then_some(())
+            .then_some(())
         })
         .is_some()
 }
@@ -1595,8 +1595,9 @@ pub fn create_conversation_run_vm(
         }
     }
 
-    // Start run
-    let run = app.run_start(&task_id, None)?;
+    // Start the workflow in the background so the conversation surface can
+    // display the session as soon as the first ACP events arrive.
+    let run = app.run_start_background(&task_id, None)?;
 
     // Return early VM from the run
     conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
@@ -1648,8 +1649,8 @@ pub fn rerun_conversation_task_vm(
             }
         }
     }
-    // Start new run
-    let run = app.run_start(task_id, None)?;
+    // Start new run in the background; live ACP events drive the UI refresh.
+    let run = app.run_start_background(task_id, None)?;
     conversation_run_vm(app, project_id, task_id, &run.id, None).or_else(|_| {
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),

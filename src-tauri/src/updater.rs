@@ -476,7 +476,8 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
 
     if let Some(state) = app.try_state::<DesktopState>() {
         let _ = state.store_pending_update(
-            camino::Utf8PathBuf::from_path_buf(path).map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?,
+            camino::Utf8PathBuf::from_path_buf(path)
+                .map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?,
         );
     }
 
@@ -484,7 +485,10 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
 }
 
 /// 从文件路径安装更新包，成功则删除文件
-pub async fn install_pending_file<R: Runtime>(app: &AppHandle<R>, path: &camino::Utf8Path) -> Result<()> {
+pub async fn install_pending_file<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &camino::Utf8Path,
+) -> Result<()> {
     let bytes = std::fs::read(path.as_std_path()).context("failed to read pending update file")?;
     let updater = build_updater(app)?;
     let Some(update) = updater.check().await.context("updater.check-failed")? else {

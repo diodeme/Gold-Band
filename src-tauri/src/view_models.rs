@@ -828,7 +828,10 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     }
 }
 
-fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>, current_version: &str) -> Option<UpdateInfoVm> {
+fn persisted_available_update_vm(
+    update: Option<&DesktopAvailableUpdate>,
+    current_version: &str,
+) -> Option<UpdateInfoVm> {
     let update = update?;
     // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
     if update.current_version != current_version {

@@ -1063,7 +1063,14 @@ pub fn provider_from_id(
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
-    provider_from_id(DEFAULT_PROVIDER, false, false, 5 * 1024 * 1024, 4 * 1024 * 1024).expect("default provider must be supported")
+    provider_from_id(
+        DEFAULT_PROVIDER,
+        false,
+        false,
+        5 * 1024 * 1024,
+        4 * 1024 * 1024,
+    )
+    .expect("default provider must be supported")
 }
 
 #[cfg(test)]

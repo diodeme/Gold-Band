@@ -93,12 +93,14 @@ fn run() -> anyhow::Result<()> {
                     let _ = app.pause_all_running_sessions();
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
-                // 关键更新：退出前安装已下载的包，成功自动删文件
+                // 关键更新：退出前安装已下载的包
                 if let Some(path) = state.take_pending_update() {
                     let handle = window.app_handle().clone();
                     tauri::async_runtime::block_on(async move {
                         let _ = crate::updater::install_pending_file(&handle, &path).await;
                     });
+                    // NSIS 安装器可能重启 App，强制退出防止"关闭后重开"
+                    std::process::exit(0);
                 }
             }
         })

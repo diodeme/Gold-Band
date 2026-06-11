@@ -119,8 +119,14 @@ export const desktopApi: RuntimeApi = {
   startRun(taskId: string) {
     return invokeCommand('start_run', { taskId });
   },
-  continueRun(taskId: string, runId: string, promptId?: string | null) {
-    return invokeCommand('continue_run', { taskId, runId, promptId });
+  continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
+    return invokeCommand('continue_run', { taskId, runId, promptId, prompt });
+  },
+  pauseRun(taskId: string, runId: string) {
+    return invokeCommand('pause_run', { taskId, runId });
+  },
+  stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('stop_active_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
     return invokeCommand('submit_manual_check', { taskId, runId, roundId, nodeId, attemptId, outcome });
@@ -223,6 +229,9 @@ export const desktopApi: RuntimeApi = {
   updateTaskMetadata(projectId, taskId, title, description) {
     return invokeCommand('update_task_metadata', { projectId, taskId, title, description });
   },
+  deleteConversationTask(projectId, taskId) {
+    return invokeCommand<ConversationSidebarVm>('delete_conversation_task', { projectId, taskId });
+  },
   pinConversation(projectId, taskId) {
     return invokeCommand<ConversationSidebarVm>('pin_conversation', { projectId, taskId });
   },
@@ -255,6 +264,9 @@ export const desktopApi: RuntimeApi = {
   },
   saveConversationPreference(key, value) {
     return invokeCommand('save_conversation_preference', { key, value });
+  },
+  saveLastConversationWorkspace(projectId) {
+    return invokeCommand('save_last_conversation_workspace', { projectId });
   },
   pickAttachmentFiles() {
     return invokeCommand<Array<{ path: string; name: string; size: number }>>('pick_attachment_files');

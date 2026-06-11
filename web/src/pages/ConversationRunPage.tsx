@@ -17,6 +17,29 @@ import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
 type WorkflowSheetMode = 'edit' | 'repair' | 'view';
 
+function debugConversationRunPage(message: string, payload?: Record<string, unknown>) {
+  if (localStorage.getItem('gold-band-session-follow-debug') !== 'true') return;
+  const timestamp = new Date().toISOString();
+  if (payload) {
+    console.log(`[gb-session-follow] ${timestamp} ${message}`, payload);
+    return;
+  }
+  console.log(`[gb-session-follow] ${timestamp} ${message}`);
+}
+
+function activeSessionKey(session: {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}) {
+  if (session.outerNodeId && session.outerAttemptId) {
+    return `${session.roundId}/${session.outerNodeId}/${session.outerAttemptId}/${session.nodeId}/${session.attemptId}`;
+  }
+  return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
+}
+
 interface ConversationRunPageProps {
   run: ConversationRunVm;
   appConfig: AppConfigVm;
@@ -27,7 +50,7 @@ interface ConversationRunPageProps {
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
   onSessionStopped: () => void;
   onAutoFollowChange?: (enabled: boolean) => void;
-  onContinueRun: () => void;
+  onContinueRun: (promptId?: string | null, prompt?: string | null) => Promise<void>;
   onTitleChange?: (title: string) => void;
 }
 
@@ -75,9 +98,14 @@ export function ConversationRunPage({
   const manualAutoFollowDisabledRef = useRef(false);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const chatDialogRef = useRef<ACPChatDialogHandle>(null);
+  const activeSessionKeys = run.activeSessions.map((session) => activeSessionKey(session));
 
   useEffect(() => {
     manualAutoFollowDisabledRef.current = false;
+    debugConversationRunPage('run page reset manual auto-follow flag', {
+      runId: run.runId,
+      selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+    });
     onAutoFollowChange?.(true);
   }, [onAutoFollowChange, run.runId]);
 
@@ -133,11 +161,20 @@ export function ConversationRunPage({
       for (const node of round.nodes) {
         if (node.nodeId === nodeId && node.attempts.length > 0) {
           const leaf = node.attempts[node.attempts.length - 1];
+          const isActive = activeSessionKeys.includes(leafKey(leaf));
           const shouldFollow = shouldEnableConversationAutoFollow(
-            leaf.runtimeDisplay?.tone,
+            isActive,
             isAtBottomRef.current,
           );
           manualAutoFollowDisabledRef.current = !shouldFollow;
+          debugConversationRunPage('workflow graph requested session switch', {
+            runId: run.runId,
+            nextSelectedSessionKey: leafKey(leaf),
+            nextSessionTone: leaf.runtimeDisplay?.tone,
+            isActiveSession: isActive,
+            atBottom: isAtBottomRef.current,
+            shouldFollow,
+          });
           onAutoFollowChange?.(shouldFollow);
           onSelectSession(leaf);
           setWorkflowSheet({ open: false, mode: workflowSheet.mode });
@@ -145,7 +182,7 @@ export function ConversationRunPage({
         }
       }
     }
-  }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
+  }, [activeSessionKeys, run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';
   const selectedLeaf = findSelectedLeaf(run.sessionTree);
@@ -166,48 +203,40 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    debugConversationRunPage('chat bottom state changed', {
+      runId: run.runId,
+      atBottom,
+      manualAutoFollowDisabled: manualAutoFollowDisabledRef.current,
+      selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+    });
     if (!manualAutoFollowDisabledRef.current) {
       onAutoFollowChange?.(atBottom);
     }
-  }, [onAutoFollowChange]);
+  }, [onAutoFollowChange, run.runId, run.sessionTree.selectedSessionKey]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm) => {
+    const isActive = activeSessionKeys.includes(leafKey(leaf));
     const shouldFollow = shouldEnableConversationAutoFollow(
-      leaf.runtimeDisplay?.tone,
+      isActive,
       isAtBottomRef.current,
     );
     manualAutoFollowDisabledRef.current = !shouldFollow;
+    debugConversationRunPage('session selection requested from run page', {
+      runId: run.runId,
+      previousSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+      nextSelectedSessionKey: leafKey(leaf),
+      nextSessionTone: leaf.runtimeDisplay?.tone,
+      isActiveSession: isActive,
+      atBottom: isAtBottomRef.current,
+      shouldFollow,
+    });
     onAutoFollowChange?.(shouldFollow);
     onSelectSession(leaf);
-  }, [onAutoFollowChange, onSelectSession]);
+  }, [activeSessionKeys, onAutoFollowChange, onSelectSession, run.runId, run.sessionTree.selectedSessionKey]);
 
   const handleSessionStopped = useCallback(() => {
     onSessionStopped();
-    if (isAtBottomRef.current && !manualAutoFollowDisabledRef.current && run.activeSessions.length > 1) {
-      // Find the next running session to auto-switch
-      const currentKey = run.sessionTree.selectedSessionKey;
-      const nextActive = run.activeSessions.find(
-        (s) => `${s.roundId}/${s.nodeId}/${s.attemptId}` !== currentKey,
-      );
-      if (nextActive) {
-        manualAutoFollowDisabledRef.current = false;
-        onAutoFollowChange?.(true);
-        onSelectSession({
-          roundId: nextActive.roundId,
-          nodeId: nextActive.nodeId,
-          attemptId: nextActive.attemptId,
-          outerNodeId: nextActive.outerNodeId,
-          outerAttemptId: nextActive.outerAttemptId,
-          pathLabel: nextActive.pathLabel,
-          status: nextActive.status,
-          runtimeDisplay: nextActive.runtimeDisplay,
-          current: true,
-          artifactCount: 0,
-          attachmentCount: 0,
-        });
-      }
-    }
-  }, [onAutoFollowChange, onSessionStopped, run.activeSessions, run.sessionTree.selectedSessionKey, onSelectSession]);
+  }, [onSessionStopped]);
 
   const handleRerun = () => {
     if (isRunning) {
@@ -221,8 +250,18 @@ export function ConversationRunPage({
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedSessionPaused = selectedSessionDisplay?.code === 'paused';
+  const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
+  const selectedSessionInterrupted = selectedSessionPauseReason === 'process-interrupted';
+  const selectedSessionWaitingForUserInput = selectedSessionPauseReason === 'waiting-for-user-input';
+  const selectedSessionResumable = Boolean(selectedSessionDisplay?.resumable || run.resumable);
   const selectedSessionFailed = selectedSessionDisplay?.tone === 'danger'
     && selectedSessionDisplay?.terminal;
+  const allowPausedPromptInput = selectedSessionPaused
+    && selectedSessionResumable
+    && selectedSessionInterrupted;
+  const shouldShowContinue = selectedSessionPaused
+    && selectedSessionResumable
+    && !selectedSessionInterrupted;
   // Workflow invalidity only blocks runtime-continue (handled by backend); it doesn't lock
   // an already-completed session's chat composer.
   const externalComposerState: AcpExternalComposerState | undefined =
@@ -230,8 +269,16 @@ export function ConversationRunPage({
       ? { kind: 'runtime-error', errorMessage: translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason), onRepair: handleRepairWorkflow }
       : run.resumable && !run.workflowValid
           ? { kind: 'invalid-workflow', workflowError: t('conversation.runtime.workflowInvalid'), onRepair: handleRepairWorkflow }
-          : selectedSessionPaused
-            ? { kind: 'paused', message: translatePauseReason(selectedSessionDisplay?.reasonCode ?? run.pauseReason), onContinue: onContinueRun }
+          : selectedSessionPaused && selectedSessionResumable
+            ? {
+                kind: 'paused',
+                message: translatePauseReason(selectedSessionPauseReason),
+                onContinue: (promptId, prompt) => { void onContinueRun(promptId, prompt); },
+                continueLabel: shouldShowContinue && selectedSessionWaitingForUserInput
+                  ? t('conversation.runtime.composerContinue')
+                  : undefined,
+                allowPromptInput: allowPausedPromptInput,
+              }
             : undefined;
 
   return (

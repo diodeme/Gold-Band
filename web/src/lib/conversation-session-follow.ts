@@ -8,9 +8,19 @@ export function resolveConversationEventSelectedSessionKey(args: {
   return currentSelectedKey;
 }
 
+export function resolveConversationRefreshSelectedSessionKey(args: {
+  autoFollow: boolean;
+  pendingEventSessionKey?: string | null;
+  currentSelectedKey?: string | null;
+}) {
+  const { autoFollow, pendingEventSessionKey, currentSelectedKey } = args;
+  if (autoFollow && pendingEventSessionKey) return pendingEventSessionKey;
+  return currentSelectedKey ?? pendingEventSessionKey ?? null;
+}
+
 export function shouldEnableConversationAutoFollow(
-  sessionTone: string | null | undefined,
+  isActiveSession: boolean,
   atBottom: boolean,
 ) {
-  return sessionTone === 'running' && atBottom;
+  return isActiveSession && atBottom;
 }

@@ -1,4 +1,5 @@
 use camino::Utf8PathBuf;
+use gold_band::app::App;
 use gold_band::config::{
     ConversationAllowedWorkflowRef, ConversationAutoConfig, ConversationDynamicAgentRef,
     ConversationDynamicControl, ConversationPin, ConversationRunModeEntry,
@@ -11,6 +12,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::{CommandErrorVm, CommandResult, acp_live_update_emitter, command_error};
+use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
 
@@ -285,6 +287,30 @@ fn extract_project_from_task_path(
     (project_id, workspace_name)
 }
 
+fn workspace_entry_for_project(
+    app: &App,
+    state: &gold_band::config::StateConfig,
+    project_id: &str,
+) -> Option<(String, String)> {
+    let default_repo = app.paths.repo_root.to_string();
+    let default_project_id = default_repo
+        .to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
+    if project_id == default_project_id {
+        return Some((default_repo, project_id.to_string()));
+    }
+    state
+        .conversation_workspaces
+        .iter()
+        .find(|w| w.project_id == project_id)
+        .map(|w| (w.workspace_path.clone(), w.project_id.clone()))
+}
+
+fn app_for_workspace(context: &DesktopContext, workspace_path: &str) -> anyhow::Result<App> {
+    let repo_root = Utf8PathBuf::from(workspace_path);
+    Ok(App::with_config(repo_root, context.config.clone()))
+}
+
 #[tauri::command]
 pub fn get_conversation_run_mode(
     state: State<'_, DesktopState>,
@@ -524,6 +550,18 @@ pub fn save_conversation_preference(
 }
 
 #[tauri::command]
+pub fn save_last_conversation_workspace(
+    state: State<'_, DesktopState>,
+    project_id: String,
+) -> CommandResult<()> {
+    let app = state.app().map_err(command_error)?;
+    let mut app_state = app.load_state().map_err(command_error)?;
+    app_state.last_conversation_workspace = Some(project_id);
+    app.save_state(&app_state).map_err(command_error)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn sync_conversation_workspace(
     state: State<'_, DesktopState>,
     workspace_path: String,
@@ -558,6 +596,58 @@ pub fn sync_conversation_workspace(
 
     Ok(crate::view_models_conversation::conversation_sidebar_vm(
         &app, &state,
+    ))
+}
+
+#[tauri::command]
+pub fn delete_conversation_task(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut app_state = app.load_state().map_err(command_error)?;
+    let Some((workspace_path, normalized_project_id)) =
+        workspace_entry_for_project(&app, &app_state, &project_id)
+    else {
+        return Err(CommandErrorVm::new(
+            "workspace.not-found",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    };
+    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let task_dir = workspace_app.paths.task_dir(&task_id);
+    if !task_dir.exists() {
+        return Err(CommandErrorVm::new(
+            "conversation.task-not-found",
+            serde_json::json!({ "taskId": task_id }),
+        ));
+    }
+    if let Ok(runs) = workspace_app.run_list(&task_id) {
+        if runs
+            .iter()
+            .any(|run| run.status == gold_band::domain::RunStatus::Running)
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.task-running",
+                serde_json::json!({ "taskId": task_id }),
+            ));
+        }
+    }
+    trash::delete(task_dir.as_std_path()).map_err(|error| {
+        CommandErrorVm::new(
+            "conversation.task-delete-failed",
+            serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+        )
+    })?;
+    gold_band::storage::sqlite::delete_task(&task_id);
+    app_state
+        .conversation_pins
+        .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
+    app.save_state(&app_state).map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &app_state,
     ))
 }
 

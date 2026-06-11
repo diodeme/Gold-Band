@@ -81,13 +81,13 @@ import {
 } from "@/lib/acp-event-normalization";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
-  cancelAcpSession,
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
   sendAcpPrompt,
   setAcpSessionModel,
   setAcpSessionPermissionMode,
+  stopActiveSession,
   showArtifact,
   showAttachment,
   showConversationAttachment,
@@ -110,7 +110,7 @@ import type {
 
 export type AcpExternalComposerState =
   | { kind: "normal" }
-  | { kind: "paused"; message: string; onContinue?: () => void }
+  | { kind: "paused"; message: string; onContinue?: (promptId?: string | null, prompt?: string | null) => void | Promise<unknown>; continueLabel?: string; allowPromptInput?: boolean }
   | { kind: "invalid-workflow"; workflowError: string; onRepair?: () => void }
   | { kind: "runtime-error"; errorMessage: string; onRepair?: () => void };
 
@@ -750,6 +750,11 @@ export const ACPChatDialog = forwardRef<
   }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
+  const externalState = externalComposerState?.kind === "normal" ? undefined : externalComposerState;
+  const pausedComposerState = externalState?.kind === "paused" ? externalState : undefined;
+  const allowPausedPromptInput = pausedComposerState?.allowPromptInput === true;
+  const runtimeErrorComposerState = externalState?.kind === "runtime-error" ? externalState : undefined;
+  const invalidWorkflowComposerState = externalState?.kind === "invalid-workflow" ? externalState : undefined;
   const composerLocked = waitingForPermission && !planInterventionOption;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const submittingPrompt =
@@ -800,17 +805,28 @@ export const ACPChatDialog = forwardRef<
     ? t("acp.permissionPending")
     : cancelling
       ? t("acp.stopping")
-      : submittingPrompt
-        ? t("acp.sending")
-        : composerStatusActive
-          ? composerStatusLabel
-          : t("acp.promptInputHint");
+      : pausedComposerState && !allowPausedPromptInput
+        ? pausedComposerState.message
+        : submittingPrompt
+          ? t("acp.sending")
+          : composerStatusActive
+            ? composerStatusLabel
+            : t("acp.promptInputHint");
   const composerPlaceholder = planInterventionOption
     ? t("acp.planInterventionHint")
-    : t("acp.composerPlaceholder");
+    : cancelling
+      ? t("conversation.runtime.composerStoppingPlaceholder")
+      : pausedComposerState
+        ? allowPausedPromptInput
+          ? t("conversation.runtime.composerStoppedPlaceholder")
+          : pausedComposerState.message
+        : t("conversation.runtime.composerRuntimeControlledPlaceholder");
   const canSubmitPrompt =
     Boolean(prompt.trim()) &&
     !cancelling &&
+    !(pausedComposerState && !allowPausedPromptInput) &&
+    !runtimeErrorComposerState &&
+    !invalidWorkflowComposerState &&
     (planInterventionOption ? !sending : !activePromptLocked);
   const canStopSession =
     sessionActive ||
@@ -1269,6 +1285,39 @@ export const ACPChatDialog = forwardRef<
       );
       return;
     }
+    if (pausedComposerState && pausedComposerState.onContinue) {
+      const promptId = createAcpPromptId();
+      const optimisticEvent = optimisticUserEvent(trimmed, promptId);
+      setPrompt("");
+      clearAttachments();
+      setSendError(null);
+      pinToBottomRef.current = true;
+      setActiveTurnPrompt(trimmed);
+      setActiveTurnPromptId(promptId);
+      setActiveTurnStartedAt(null);
+      setAwaitingResponse(true);
+      updateOptimisticEvents((current) => [...current, optimisticEvent]);
+      setSending(true);
+      try {
+        await pausedComposerState.onContinue?.(promptId, trimmed);
+      } catch (error) {
+        setSendError(displayAppError(t, error));
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
+          ),
+        );
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     await submitPrompt(trimmed);
   };
 
@@ -1279,7 +1328,7 @@ export const ACPChatDialog = forwardRef<
     setCancelError(null);
     setAwaitingResponse(true);
     try {
-      const updated = await cancelAcpSession(
+      const result = await stopActiveSession(
         taskId,
         runId,
         roundId,
@@ -1289,7 +1338,14 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(updated);
+      applySessionUpdate(result.session ?? null);
+      setSending(false);
+      setAwaitingResponse(false);
+      setActiveTurnPrompt(null);
+      setActiveTurnPromptId(null);
+      setActiveTurnStartedAt(null);
+      setCancelling(false);
+      cancelRequestedRef.current = false;
       onSessionStopped?.();
     } catch (error) {
       setCancelError(displayAppError(t, error));
@@ -1605,23 +1661,24 @@ export const ACPChatDialog = forwardRef<
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
-            {externalComposerState?.kind === "invalid-workflow" ? (
+            {invalidWorkflowComposerState ? (
               <AcpExternalComposerState
                 kind="invalid-workflow"
-                message={externalComposerState.workflowError}
-                onAction={externalComposerState.onRepair}
+                message={invalidWorkflowComposerState.workflowError}
+                onAction={invalidWorkflowComposerState.onRepair}
               />
-            ) : externalComposerState?.kind === "paused" ? (
+            ) : pausedComposerState && !allowPausedPromptInput ? (
               <AcpExternalComposerState
                 kind="paused"
-                message={externalComposerState.message}
-                onAction={externalComposerState.onContinue}
+                message={pausedComposerState.message}
+                onAction={pausedComposerState.onContinue}
+                actionLabel={pausedComposerState.continueLabel}
               />
-            ) : externalComposerState?.kind === "runtime-error" ? (
+            ) : runtimeErrorComposerState ? (
               <AcpExternalComposerState
                 kind="runtime-error"
-                message={externalComposerState.errorMessage}
-                onAction={externalComposerState.onRepair}
+                message={runtimeErrorComposerState.errorMessage}
+                onAction={runtimeErrorComposerState.onRepair}
               />
             ) : (
               <>
@@ -1902,10 +1959,12 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
+  actionLabel,
 }: {
   kind: "invalid-workflow" | "runtime-error" | "paused";
   message: string;
   onAction?: () => void;
+  actionLabel?: string;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
@@ -1948,11 +2007,11 @@ function AcpExternalComposerState({
           className="h-9 shrink-0 rounded-full px-4 text-sm"
           onClick={onAction}
         >
-          {isPaused
+          {actionLabel ?? (isPaused
             ? t("conversation.runtime.composerContinue")
             : isError
               ? t("conversation.runtime.repairAction")
-              : t("conversation.runtime.repairWorkflow")}
+              : t("conversation.runtime.repairWorkflow"))}
         </Button>
       ) : null}
     </div>

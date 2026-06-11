@@ -91,6 +91,11 @@ const resources = {
         'manual-check': {
           'invalid-outcome': '人工 check 结果无效。',
         },
+        conversation: {
+          'task-not-found': '找不到该会话。',
+          'task-running': '该会话仍在运行，请先停止后再删除。',
+          'task-delete-failed': '删除会话失败：{{message}}',
+        },
         workflow: {
           'agent-doctor-failed': 'Agent {{agentType}} 未通过 doctor。',
           'agent-doctor-required': 'Agent {{agentType}} 需要先通过 doctor。',
@@ -111,6 +116,7 @@ const resources = {
         workspace: {
           'path-invalid-utf8': '选择的工作空间路径不是有效 UTF-8。',
           'path-resolve-failed': '无法解析选择的工作空间路径。',
+          'not-found': '找不到对应的工作空间。',
         },
         updater: {
           'invalid-url': '更新地址无效。',
@@ -876,6 +882,10 @@ const resources = {
           dragToReorder: '拖拽排序',
           unpin: '取消置顶',
           pinToTop: '置顶',
+          delete: '删除',
+          deleteConfirmTitle: '删除会话？',
+          deleteConfirmDescription: '会话“{{title}}”将从 ~/.gold-band 对应 task 目录移除，此操作不可撤销。若系统支持，将优先移入回收站。是否继续？',
+          deleteConfirmAction: '确认删除',
           addWorkspace: '添加工作空间',
           removeWorkspace: '移除工作空间',
           settings: '设置',
@@ -931,6 +941,9 @@ const resources = {
           runtimeErrorBlocked: '当前运行因错误阻塞，请查看错误原因并修复工作流',
           pauseReasonWaitingForUserInput: '等待用户输入',
           pauseReasonFallback: '已暂停',
+          composerRuntimeControlledPlaceholder: '当前会话由 runtime 运行中，暂不可输入',
+          composerStoppingPlaceholder: '正在停止当前会话…',
+          composerStoppedPlaceholder: '当前会话已停止，你可以输入任何内容继续运行',
         },
         search: { title: '搜索会话', placeholder: '输入关键词搜索…', noResults: '没有找到匹配的会话', resultCount: '{{count}} 个结果', openLatestRun: '打开最近 Run' },
         rerun: { started: '已创建新 Run', stoppedAndStarted: '已停止当前 Run 并创建新 Run' },
@@ -1062,6 +1075,11 @@ const resources = {
         'manual-check': {
           'invalid-outcome': 'Manual check outcome is invalid.',
         },
+        conversation: {
+          'task-not-found': 'This conversation could not be found.',
+          'task-running': 'This conversation is still running. Stop it before deleting.',
+          'task-delete-failed': 'Failed to delete conversation: {{message}}',
+        },
         workflow: {
           'agent-doctor-failed': 'Agent {{agentType}} has not passed doctor.',
           'agent-doctor-required': 'Agent {{agentType}} must pass doctor first.',
@@ -1082,6 +1100,7 @@ const resources = {
         workspace: {
           'path-invalid-utf8': 'Selected workspace path is not valid UTF-8.',
           'path-resolve-failed': 'Failed to resolve selected workspace path.',
+          'not-found': 'The workspace could not be found.',
         },
         updater: {
           'invalid-url': 'Invalid update URL.',
@@ -1847,6 +1866,10 @@ const resources = {
           dragToReorder: 'Drag to reorder',
           unpin: 'Unpin',
           pinToTop: 'Pin to top',
+          delete: 'Delete',
+          deleteConfirmTitle: 'Delete conversation?',
+          deleteConfirmDescription: 'Conversation “{{title}}” will be removed from its task directory under ~/.gold-band. This cannot be undone. When supported, it will be moved to the recycle bin first. Continue?',
+          deleteConfirmAction: 'Delete',
           addWorkspace: 'Add Workspace',
           removeWorkspace: 'Remove Workspace',
           settings: 'Settings',
@@ -1902,6 +1925,9 @@ const resources = {
           runtimeErrorBlocked: 'The current run is blocked by an error. Review the reason and repair the workflow.',
           pauseReasonWaitingForUserInput: 'Waiting for user input',
           pauseReasonFallback: 'Paused',
+          composerRuntimeControlledPlaceholder: 'This session is being controlled by the runtime, so input is temporarily unavailable',
+          composerStoppingPlaceholder: 'Stopping current session…',
+          composerStoppedPlaceholder: 'This session has stopped. You can enter any message to continue the run',
         },
         search: { title: 'Search Conversations', placeholder: 'Type to search…', noResults: 'No matching conversations', resultCount: '{{count}} results', openLatestRun: 'Open latest run' },
         rerun: { started: 'New run created', stoppedAndStarted: 'Stopped current run and created new run' },

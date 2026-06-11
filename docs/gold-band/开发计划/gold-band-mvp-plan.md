@@ -82,6 +82,7 @@
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。
 - 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。
+- 2026-06-12：新会话 UI 侧边栏会话行新增删除能力；hover 操作区补齐删除按钮，删除前弹出不可撤销确认，确认后删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站；若存在运行中的 run，则拒绝删除并提示先停止。
 - 2026-05-07：统一压缩桌面端卡片 header 与内容之间的过大空白；Round 详情左下信息流、Workflow 运行记录、Workspace 最近列表、Settings 表单卡片和遗留 Task/Run 详情页均移除 Card 默认 gap、覆盖 border header 大底部 padding，并降低内容区内边距。
 - 2026-05-07：Settings 页面移除标题副文案、范围提示块，以及外观/语言卡片的辅助说明文案，保留主题切换与语言选择两组本地偏好控件。
 - 2026-05-07：Settings 主题选择器升级为 `Sync with OS` 开关 + 条件化主题摘要 + 抽屉式主题选择；`desktopTheme` 扩展为 `system`、`light`、`light-warm`、`dark`、`black`，默认浅色调整为白蓝配色，Gold Band 深色升级为石墨香槟方向，保留暖金浅色并新增终端黑主题；`system` 会保留用户最近选择的浅色/深色变体；新增 `desktopFont` 偏好，浏览器调试模式优先使用 `queryLocalFonts()`，桌面端通过 Tauri `get_system_fonts` 枚举系统字体；前端验证继续通过 `/settings` deep link 使用 agent-browser 完成。
@@ -129,7 +130,10 @@
 - 2026-05-26：Windows release 桌面包使用 GUI subsystem，安装后双击启动不再附带 cmd 窗口；debug/dev 构建仍保留控制台输出。后台子进程统一通过 process helper 设置隐藏窗口，Windows 进程树清理丢弃 `taskkill` stdout/stderr，ACP provider 的 npx/codex 等子进程同样不弹控制台窗口。
 - 2026-06-04：桌面端左右侧 Sheet 抽屉统一支持边缘拖拽调宽与本地宽度记忆；`SheetContent` 负责默认调宽能力、视口边界约束和 localStorage 持久化，各页面只补稳定 `resizeStorageKey` 与宽度上下限；修正首次打开任务预览时拖拽手柄抢占焦点导致的蓝色高亮，要求手柄默认隐藏、悬停弱提示、拖拽中再高亮。
 - 2026-06-11：会话式运行页 compact composer 用量栏恢复具体处理状态标签，运行中必须展示“思考中...”/“工具调用中...”等当前步骤文案；后端工作流在节点完成后立即持久化下一节点或新 round 的 `run.current* / round.trace / node.json`，并隔离 metrics 回调 panic，避免出现当前节点已 completed 但工作流长期停在 running 旧节点的状态裂缝。
-- 2026-06-11：修复新 UI ACP 会话的跨节点自动跳转策略；前端把“是否允许自动跟随 running session”提升为显式状态，只有当前消息窗口贴底且用户仍在跟随当前运行会话时，新的 ACP live event 才会把选中会话切到下一运行节点。用户手动切到其他 session 或滚离底部后，后台节点继续运行，但不会再抢占当前会话视图；run VM 刷新若未命中自动跟随条件，必须保留既有 `selectedSessionKey`。
+- 2026-06-11：修复新 UI ACP 会话的跨节点自动跳转策略；前端把“是否允许自动跟随 running session”提升为显式状态，只有当前消息窗口贴底且用户仍在跟随当前运行会话时，新的 ACP live event 才会把选中会话切到下一运行节点。用户手动切到其他 session 或滚离底部后，后台节点继续运行，但不会再抢占当前会话视图；run VM 刷新若未命中自动跟随条件，必须保留既有 `selectedSessionKey`，并且手动切换与已排队的 live refresh 冲突时，手动选择优先。
+- 2026-06-12：会话页手动切换后的 auto-follow 判定改为基于 `run.activeSessions` 是否包含当前选中 session，而不是依赖叶子节点自身的 `runtimeDisplay.tone`；这样已完成节点在树状态短暂滞后时，也不会被误判为仍应跟随并再次跳回后台运行节点。
+- 2026-06-12：修复新 UI 默认选错 session 的问题。run VM 无显式 `selectedSessionKey` 时默认按 attempt 开始时间选择最新 session，避免 task-040 这类最新 `开发/attempt-002` 被 workflow 顺序最后的 `测试/attempt-001` 抢占；`process-interrupted` 可继续态仍保留 composer 输入触发 workflow runtime continue 的既有设计。
+- 2026-06-12：补齐会话页运行中停止链路并收敛为统一入口。新 UI composer 不再在前端区分普通 ACP prompt 与 workflow runtime continue，而是统一调用桌面 `stop_active_session`；后端内部判定 run running 时复用既有 `App::run_pause` 完成 run 暂停、当前 attempt cancel、provider pid 清理和 dynamic descendants 暂停，run 已非 running 但 ACP 追问仍活跃时复用 `cancel_acp_session` 停止该 ACP session，避免前端和 Tauri command 层复制第二套停止逻辑。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 
 ---

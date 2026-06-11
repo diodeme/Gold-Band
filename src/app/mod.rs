@@ -2315,8 +2315,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn run_continue_background(
@@ -2324,8 +2325,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn submit_manual_check(

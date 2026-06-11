@@ -7,6 +7,7 @@ import {
   continueRun,
   createConversationRun,
   createTask,
+  deleteConversationTask,
   dismissUpdateAnnouncement,
   downloadAndInstallUpdate,
   getAgentRegistry,
@@ -37,6 +38,7 @@ import {
   syncConversationWorkspace,
   saveDesktopUiMode,
   saveConversationRunMode,
+  saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
 } from './api';
 import { isTauriRuntime } from './api/shared';
@@ -49,7 +51,10 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
-import { resolveConversationEventSelectedSessionKey } from '@/lib/conversation-session-follow';
+import {
+  resolveConversationEventSelectedSessionKey,
+  resolveConversationRefreshSelectedSessionKey,
+} from '@/lib/conversation-session-follow';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
@@ -134,6 +139,16 @@ const defaultAppConfig: AppConfigVm = {
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
+function debugConversationSession(message: string, payload?: Record<string, unknown>) {
+  if (localStorage.getItem('gold-band-session-follow-debug') !== 'true') return;
+  const timestamp = new Date().toISOString();
+  if (payload) {
+    console.log(`[gb-session-follow] ${timestamp} ${message}`, payload);
+    return;
+  }
+  console.log(`[gb-session-follow] ${timestamp} ${message}`);
+}
+
 function conversationSessionKeyFromParts(parts: {
   roundId: string;
   nodeId: string;
@@ -178,6 +193,7 @@ export function App() {
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationSessionAutoFollowRef = useRef(true);
+  const conversationSelectedSessionKeyRef = useRef<string | null>(null);
   const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
@@ -208,11 +224,28 @@ export function App() {
 
   useEffect(() => {
     conversationRunRef.current = conversationRun;
+    conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
+    if (conversationRun) {
+      debugConversationSession('conversationRun state synced', {
+        runId: conversationRun.runId,
+        selectedSessionKey: conversationRun.sessionTree.selectedSessionKey ?? null,
+        runStatus: conversationRun.runStatus,
+        activeSessions: conversationRun.activeSessions.map((session) =>
+          conversationSessionKeyFromParts(session),
+        ),
+      });
+    }
   }, [conversationRun]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
     conversationSessionAutoFollowRef.current = true;
+    conversationSelectedSessionKeyRef.current = null;
+    debugConversationSession('conversation page entered, reset follow state', {
+      projectId: conversationPage.projectId,
+      taskId: conversationPage.taskId,
+      runId: conversationPage.runId,
+    });
   }, [conversationPage]);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
@@ -321,8 +354,20 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId } = conversationPage;
+    debugConversationSession('initial conversation run load start', {
+      projectId,
+      taskId,
+      runId,
+    });
     getConversationRun(projectId, taskId, runId)
-      .then(setConversationRun)
+      .then((run) => {
+        debugConversationSession('initial conversation run load resolved', {
+          runId,
+          requestedSelectedSessionKey: null,
+          returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+        });
+        setConversationRun(run);
+      })
       .catch(() => setConversationRun(null));
   }, [bootstrap, uiMode, conversationPage]);
 
@@ -330,21 +375,42 @@ export function App() {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
     let active = true;
     let refreshTimer: number | null = null;
-    let pendingSelectedKey: string | null = null;
+    let pendingEventSessionKey: string | null = null;
     let stopListening: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
       refreshTimer = null;
-      const selectedKey = pendingSelectedKey
-        ?? conversationRunRef.current?.sessionTree.selectedSessionKey
-        ?? null;
-      pendingSelectedKey = null;
+      const selectedKey = resolveConversationRefreshSelectedSessionKey({
+        autoFollow: conversationSessionAutoFollowRef.current,
+        pendingEventSessionKey,
+        currentSelectedKey:
+          conversationSelectedSessionKeyRef.current
+          ?? conversationRunRef.current?.sessionTree.selectedSessionKey
+          ?? null,
+      });
+      debugConversationSession('live refresh scheduled fetch', {
+        runId,
+        autoFollow: conversationSessionAutoFollowRef.current,
+        pendingEventSessionKey,
+        currentSelectedSessionKey:
+          conversationSelectedSessionKeyRef.current
+          ?? conversationRunRef.current?.sessionTree.selectedSessionKey
+          ?? null,
+        requestedSelectedSessionKey: selectedKey,
+      });
+      pendingEventSessionKey = null;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
           if (!active) return;
+          debugConversationSession('live refresh resolved', {
+            runId,
+            requestedSelectedSessionKey: selectedKey,
+            returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+          });
           setConversationRun(run);
           conversationRunRef.current = run;
+          conversationSelectedSessionKeyRef.current = run.sessionTree.selectedSessionKey ?? null;
         })
         .catch(() => {});
       getConversationSidebar()
@@ -364,11 +430,25 @@ export function App() {
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
       const alreadySelected = currentSelectedKey === sessionKey;
-      if (treeHasSession && alreadySelected) return;
-      pendingSelectedKey = resolveConversationEventSelectedSessionKey({
+      if (treeHasSession && alreadySelected) {
+        debugConversationSession('live event ignored because session already selected', {
+          runId,
+          sessionKey,
+        });
+        return;
+      }
+      pendingEventSessionKey = resolveConversationEventSelectedSessionKey({
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         autoFollow: conversationSessionAutoFollowRef.current,
+      });
+      debugConversationSession('live event queued', {
+        runId,
+        eventSessionKey: sessionKey,
+        currentSelectedSessionKey: currentSelectedKey,
+        treeHasSession,
+        autoFollow: conversationSessionAutoFollowRef.current,
+        queuedSelectedSessionKey: pendingEventSessionKey,
       });
       if (refreshTimer !== null) return;
       refreshTimer = window.setTimeout(refreshConversationRun, 120);
@@ -828,11 +908,15 @@ export function App() {
         const tasks = conversationSidebar.tasksByWorkspace[projectId] ?? [];
         const task = tasks.find((t) => t.taskId === taskId);
         const runId = task?.latestRun?.runId;
+        setActiveWorkspaceId(projectId);
+        saveLastConversationWorkspace(projectId).catch(() => {});
         if (runId) {
           setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
         }
       }}
       onConversationSelectRun={(projectId, taskId, runId) => {
+        setActiveWorkspaceId(projectId);
+        saveLastConversationWorkspace(projectId).catch(() => {});
         setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
       }}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -844,6 +928,17 @@ export function App() {
           setConversationRun((prev) => prev ? { ...prev, title } : prev);
         }
       }}
+      onConversationDeleteTask={(projectId, taskId) => {
+        deleteConversationTask(projectId, taskId)
+          .then((sidebar) => {
+            setConversationSidebar(sidebar);
+            if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
+              setConversationRun(null);
+              setConversationPage({ kind: 'conversation-home' });
+            }
+          })
+          .catch((err) => setError(displayAppError(t, err)));
+      }}
       onConversationPinTask={(projectId, taskId) => {
         pinConversation(projectId, taskId).then(setConversationSidebar).catch(() => {});
       }}
@@ -852,6 +947,7 @@ export function App() {
       }}
       onConversationNewInWorkspace={(projectId) => {
         setActiveWorkspaceId(projectId);
+        saveLastConversationWorkspace(projectId).catch(() => {});
         setConversationPage({ kind: 'conversation-home' });
       }}
       onConversationAddWorkspace={() => {
@@ -984,6 +1080,8 @@ export function App() {
                   return;
                 }
                 const run = await createConversationRun(input);
+                setActiveWorkspaceId(run.projectId);
+                saveLastConversationWorkspace(run.projectId).catch(() => {});
                 setConversationRun(run);
                 setConversationPage({
                   kind: 'conversation-run',
@@ -1005,6 +1103,7 @@ export function App() {
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
             setActiveWorkspaceId(projectId);
+            saveLastConversationWorkspace(projectId).catch(() => {});
             getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
           }}
         />
@@ -1054,12 +1153,22 @@ export function App() {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
             await saveTaskWorkflow(conversationPage.taskId, dsl);
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
+            debugConversationSession('workflow save refreshed conversation run', {
+              runId: conversationPage.runId,
+              returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
+            });
             setConversationRun(refreshed);
           }}
           onSelectSession={(leaf) => {
             const key = leaf.outerNodeId
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
+            debugConversationSession('manual session switch requested', {
+              runId: conversationPage.runId,
+              previousSelectedSessionKey: conversationSelectedSessionKeyRef.current,
+              nextSelectedSessionKey: key,
+            });
+            conversationSelectedSessionKeyRef.current = key;
             switchConversationSession(
               conversationPage.taskId,
               conversationPage.runId,
@@ -1069,6 +1178,11 @@ export function App() {
               leaf.outerNodeId,
               leaf.outerAttemptId,
             ).then((switched) => {
+              debugConversationSession('manual session switch resolved', {
+                runId: conversationPage.runId,
+                selectedSessionKey: key,
+                switchedSessionId: switched.selectedSession?.sessionId ?? null,
+              });
               startTransition(() => {
                 setConversationRun((prev) => prev ? {
                   ...prev,
@@ -1078,17 +1192,68 @@ export function App() {
                   sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
                 } : prev);
               });
+              if (conversationRunRef.current) {
+                conversationRunRef.current = {
+                  ...conversationRunRef.current,
+                  selectedSession: switched.selectedSession,
+                  artifacts: switched.artifacts,
+                  attachments: switched.attachments,
+                  sessionTree: {
+                    ...conversationRunRef.current.sessionTree,
+                    selectedSessionKey: key,
+                  },
+                };
+              }
             }).catch(() => {});
           }}
-          onSessionStopped={() => {}}
+          onSessionStopped={() => {
+            const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
+            debugConversationSession('session stopped refresh requested', {
+              runId: conversationPage.runId,
+              selectedSessionKey: selectedKey,
+            });
+            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
+              .then((refreshed) => {
+                debugConversationSession('session stopped refresh resolved', {
+                  runId: conversationPage.runId,
+                  requestedSelectedSessionKey: selectedKey,
+                  returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
+                });
+                setConversationRun(refreshed);
+                conversationRunRef.current = refreshed;
+                return getConversationSidebar();
+              })
+              .then(setConversationSidebar)
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onAutoFollowChange={(enabled) => {
+            debugConversationSession('auto follow changed', {
+              runId: conversationPage.runId,
+              enabled,
+              selectedSessionKey: conversationSelectedSessionKeyRef.current,
+            });
             conversationSessionAutoFollowRef.current = enabled;
           }}
-          onContinueRun={() => {
-            continueRun(conversationPage.taskId, conversationPage.runId)
-              .then(() => getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId))
-              .then(setConversationRun)
-              .catch((err) => setError(displayAppError(t, err)));
+          onContinueRun={async (promptId, prompt) => {
+            try {
+              await continueRun(conversationPage.taskId, conversationPage.runId, promptId, prompt);
+              const selectedKey =
+                conversationSelectedSessionKeyRef.current
+                ?? conversationRunRef.current?.sessionTree.selectedSessionKey
+                ?? null;
+              const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey);
+              debugConversationSession('continue run refreshed conversation run', {
+                runId: conversationPage.runId,
+                requestedSelectedSessionKey: selectedKey,
+                returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
+              });
+              setConversationRun(refreshed);
+              conversationRunRef.current = refreshed;
+              conversationSelectedSessionKeyRef.current = refreshed.sessionTree.selectedSessionKey ?? null;
+            } catch (err) {
+              setError(displayAppError(t, err));
+              throw err;
+            }
           }}
           onTitleChange={(title) => {
             setConversationRun((prev) => prev ? { ...prev, title } : prev);
@@ -1113,6 +1278,7 @@ export function App() {
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {
         setActiveWorkspaceId(projectId);
+        saveLastConversationWorkspace(projectId).catch(() => {});
         getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
       }}
     />;

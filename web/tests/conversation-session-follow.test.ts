@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveConversationEventSelectedSessionKey,
+  resolveConversationRefreshSelectedSessionKey,
   shouldEnableConversationAutoFollow,
 } from '@/lib/conversation-session-follow';
 
@@ -30,8 +31,24 @@ describe('conversation session follow helpers', () => {
   });
 
   it('enables auto-follow only for a running session at the bottom', () => {
-    expect(shouldEnableConversationAutoFollow('running', true)).toBe(true);
-    expect(shouldEnableConversationAutoFollow('running', false)).toBe(false);
-    expect(shouldEnableConversationAutoFollow('success', true)).toBe(false);
+    expect(shouldEnableConversationAutoFollow(true, true)).toBe(true);
+    expect(shouldEnableConversationAutoFollow(true, false)).toBe(false);
+    expect(shouldEnableConversationAutoFollow(false, true)).toBe(false);
+  });
+
+  it('keeps the manual selection when a queued live refresh runs after auto-follow is disabled', () => {
+    expect(resolveConversationRefreshSelectedSessionKey({
+      autoFollow: false,
+      pendingEventSessionKey: 'round-001/node-b/attempt-001',
+      currentSelectedKey: 'round-001/node-a/attempt-001',
+    })).toBe('round-001/node-a/attempt-001');
+  });
+
+  it('still switches to the pending running session while auto-follow remains enabled', () => {
+    expect(resolveConversationRefreshSelectedSessionKey({
+      autoFollow: true,
+      pendingEventSessionKey: 'round-001/node-b/attempt-001',
+      currentSelectedKey: 'round-001/node-a/attempt-001',
+    })).toBe('round-001/node-b/attempt-001');
   });
 });

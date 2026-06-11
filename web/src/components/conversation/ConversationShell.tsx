@@ -20,6 +20,7 @@ interface ConversationShellProps {
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
@@ -63,6 +64,7 @@ export function ConversationShell({
   onPinTask,
   onUnpinTask,
   onRenameTask,
+  onDeleteTask,
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
@@ -154,6 +156,7 @@ export function ConversationShell({
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}
               onRenameTask={onRenameTask}
+              onDeleteTask={onDeleteTask}
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
               onRemoveWorkspace={onRemoveWorkspace}

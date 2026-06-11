@@ -98,6 +98,13 @@ fn localized_continue_prompt(language: DesktopLanguage) -> String {
     }
 }
 
+fn continue_prompt_or_default(language: DesktopLanguage, prompt: Option<String>) -> String {
+    prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| localized_continue_prompt(language))
+}
+
 fn output_schema_for_node<'a>(
     workflow: &'a ValidatedWorkflow,
     node_id: &str,
@@ -333,6 +340,7 @@ pub(crate) fn run_continue(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -416,7 +424,10 @@ pub(crate) fn run_continue(
                     (
                         SessionMode::Continue,
                         Some(continue_ref),
-                        Some(localized_continue_prompt(app.config.desktop_language)),
+                        Some(continue_prompt_or_default(
+                            app.config.desktop_language,
+                            prompt,
+                        )),
                         prompt_id,
                     )
                 }
@@ -450,6 +461,7 @@ pub(crate) fn run_continue_background(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
@@ -463,10 +475,11 @@ pub(crate) fn run_continue_background(
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
+    let prompt = prompt.clone();
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id) {
+        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -2320,7 +2333,9 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     let child_run = match node.child_run_id.as_deref() {
-        Some(child_run_id) => ctx.app.run_continue(ctx.task_id, child_run_id, None)?,
+        Some(child_run_id) => ctx
+            .app
+            .run_continue(ctx.task_id, child_run_id, None, None)?,
         None => ctx
             .app
             .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,

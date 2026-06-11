@@ -602,6 +602,12 @@ export interface AcpSessionVm {
   diagnostics: AcpDiagnosticsVm;
 }
 
+export interface ActiveSessionStopVm {
+  kind: 'run-paused' | 'session-cancelled' | string;
+  run?: RunSummaryVm | null;
+  session?: AcpSessionVm | null;
+}
+
 export interface AcpSessionQueryInput {
   beforeSeq?: number;
   afterSeq?: number;

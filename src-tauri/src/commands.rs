@@ -10,7 +10,7 @@ use gold_band::app::{
     AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
     ProfileInput, ProfileList, WorkflowTemplateStore,
 };
-use gold_band::domain::{NodeOutcome, PauseReason, SessionMode};
+use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, WorkerRefState};
@@ -96,6 +96,14 @@ struct AcpSessionUpdatedEventVm {
 pub struct CommandErrorVm {
     pub code: String,
     pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveSessionStopVm {
+    pub kind: String,
+    pub run: Option<RunSummaryVm>,
+    pub session: Option<AcpSessionVm>,
 }
 
 impl CommandErrorVm {
@@ -622,15 +630,100 @@ pub fn continue_run(
     task_id: String,
     run_id: String,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
         crate::metrics::create_metrics_callback(app_handle),
     );
-    app.run_continue_background(&task_id, &run_id, prompt_id)
+    app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
         .map(run_summary_vm)
         .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn pause_run(
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+) -> CommandResult<RunSummaryVm> {
+    let app = state.app().map_err(command_error)?;
+    app.run_pause(&task_id, &run_id, PauseReason::ProcessInterrupted)
+        .map(run_summary_vm)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn stop_active_session(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ActiveSessionStopVm> {
+    let app = state.app().map_err(command_error)?;
+    let run = app.run_status(&task_id, &run_id).map_err(command_error)?;
+    if run.status == RunStatus::Running {
+        let paused = app
+            .run_pause(&task_id, &run_id, PauseReason::ProcessInterrupted)
+            .map_err(command_error)?;
+        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+        {
+            dynamic_acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .map_err(command_error)?
+        } else {
+            acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .map_err(command_error)?
+        };
+        return Ok(ActiveSessionStopVm {
+            kind: "run-paused".to_string(),
+            run: Some(run_summary_vm(paused)),
+            session,
+        });
+    }
+
+    let session = cancel_acp_session(
+        app_handle,
+        state,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    )?;
+    Ok(ActiveSessionStopVm {
+        kind: "session-cancelled".to_string(),
+        run: None,
+        session,
+    })
 }
 
 #[tauri::command]
@@ -1357,6 +1450,7 @@ fn spawn_index_attempt(
 }
 
 fn spawn_acp_cancel_shutdown(
+    app_handle: AppHandle,
     app: gold_band::app::App,
     task_id: String,
     run_id: String,
@@ -1378,6 +1472,69 @@ fn spawn_acp_cancel_shutdown(
             outer_attempt_id.as_deref(),
         );
         graceful_stop_provider(&attempt_dir.join("provider.pid"));
+
+        // Provider has fully stopped — now write the cancelled snapshot and
+        // emit a live update so the UI transitions from "cancelling" → "cancelled".
+        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+        {
+            let _ = persist_cancelled_dynamic_session_snapshot(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+            );
+            dynamic_acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .ok()
+            .flatten()
+        } else {
+            let _ = persist_cancelled_session_snapshot(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+            );
+            acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .ok()
+            .flatten()
+        };
+        emit_acp_session_update(
+            &app_handle,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            outer_node_id,
+            outer_attempt_id,
+            session,
+        );
     });
 }
 
@@ -1566,18 +1723,8 @@ pub fn cancel_acp_session(
                 PauseReason::ProcessInterrupted,
             )
             .map_err(command_error)?;
-        persist_cancelled_dynamic_session_snapshot(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-        )
-        .map_err(command_error)?;
         spawn_acp_cancel_shutdown(
+            app_handle.clone(),
             background_app,
             task_id_for_shutdown,
             run_id_for_shutdown,
@@ -1616,16 +1763,8 @@ pub fn cancel_acp_session(
                 PauseReason::ProcessInterrupted,
             )
             .map_err(command_error)?;
-        persist_cancelled_session_snapshot(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-        )
-        .map_err(command_error)?;
         spawn_acp_cancel_shutdown(
+            app_handle.clone(),
             background_app,
             task_id_for_shutdown,
             run_id_for_shutdown,

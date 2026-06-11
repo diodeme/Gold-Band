@@ -131,8 +131,16 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(taskId: string, runId: string, promptId?: string | null) {
-  return getRuntimeApi().continueRun(taskId, runId, promptId);
+export function continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
+  return getRuntimeApi().continueRun(taskId, runId, promptId, prompt);
+}
+
+export function pauseRun(taskId: string, runId: string) {
+  return getRuntimeApi().pauseRun(taskId, runId);
+}
+
+export function stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().stopActiveSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
 export function submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
@@ -271,6 +279,10 @@ export function updateTaskMetadata(projectId: string, taskId: string, title: str
   return getRuntimeApi().updateTaskMetadata(projectId, taskId, title, description);
 }
 
+export function deleteConversationTask(projectId: string, taskId: string) {
+  return getRuntimeApi().deleteConversationTask(projectId, taskId);
+}
+
 export function pinConversation(projectId: string, taskId: string) {
   return getRuntimeApi().pinConversation(projectId, taskId);
 }
@@ -313,6 +325,10 @@ export function syncConversationWorkspace(workspacePath: string) {
 
 export function saveConversationPreference(key: string, value: unknown) {
   return getRuntimeApi().saveConversationPreference(key, value);
+}
+
+export function saveLastConversationWorkspace(projectId: string) {
+  return getRuntimeApi().saveLastConversationWorkspace(projectId);
 }
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {

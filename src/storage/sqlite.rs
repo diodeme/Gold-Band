@@ -70,6 +70,15 @@ pub fn index_task_with_retry(task_dir: &Utf8Path, task_id: &str) {
     index.index_task_with_retry(task_dir, task_id);
 }
 
+pub fn delete_task(task_id: &str) {
+    let Some(index) = search_index() else {
+        return;
+    };
+    if let Err(error) = index.delete_task(task_id) {
+        warn!("sqlite delete_task failed for {}: {:#}", task_id, error);
+    }
+}
+
 // ── SearchIndex ──────────────────────────────────────────────────────
 
 const MAX_RETRIES: u32 = 3;
@@ -520,6 +529,16 @@ impl SearchIndex {
     }
 
     // ── task search ────────────────────────────────────────────
+
+    pub fn delete_task(&self, task_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM session_prompts WHERE attempt_path IN (SELECT attempt_path FROM sessions WHERE task_id = ?1)", params![task_id])?;
+        tx.execute("DELETE FROM sessions WHERE task_id = ?1", params![task_id])?;
+        tx.execute("DELETE FROM tasks WHERE task_id = ?1", params![task_id])?;
+        tx.commit()?;
+        Ok(())
+    }
 
     pub fn search_tasks(
         &self,

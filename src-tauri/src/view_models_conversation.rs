@@ -601,6 +601,52 @@ fn find_leaf_by_key(
     None
 }
 
+fn latest_session_leaf(rounds: &[ConversationRoundNodeVm]) -> Option<ConversationSessionLeafVm> {
+    let mut latest: Option<ConversationSessionLeafVm> = None;
+    for round in rounds {
+        for node in &round.nodes {
+            for leaf in &node.attempts {
+                if is_leaf_newer(leaf, latest.as_ref()) {
+                    latest = Some(leaf.clone());
+                }
+            }
+            if let Some(ref outer_nodes) = node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &outer_node.attempts {
+                        if is_leaf_newer(leaf, latest.as_ref()) {
+                            latest = Some(leaf.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn is_leaf_newer(
+    candidate: &ConversationSessionLeafVm,
+    current: Option<&ConversationSessionLeafVm>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    leaf_order_key(candidate) > leaf_order_key(current)
+}
+
+fn leaf_order_key(leaf: &ConversationSessionLeafVm) -> (&str, &str, &str, &str, &str) {
+    (
+        leaf.started_at
+            .as_deref()
+            .or(leaf.finished_at.as_deref())
+            .unwrap_or(""),
+        leaf.round_id.as_str(),
+        leaf.outer_node_id.as_deref().unwrap_or(""),
+        leaf.node_id.as_str(),
+        leaf.attempt_id.as_str(),
+    )
+}
+
 pub fn conversation_run_vm(
     app: &App,
     project_id: &str,
@@ -942,22 +988,13 @@ pub fn conversation_run_vm(
         });
     }
 
-    // Determine which session leaf to load (prefer last attempt of last dynamic child, then last top-level attempt)
+    // Determine which session leaf to load.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
         // Find the leaf matching the key by searching the tree
         find_leaf_by_key(&tree_rounds, key)
     } else {
-        // Default: last attempt of last dynamic child of last node, or last top-level attempt
-        tree_rounds.last().and_then(|r| {
-            r.nodes.last().and_then(|n| {
-                n.outer_nodes
-                    .as_ref()
-                    .and_then(|o| o.last())
-                    .and_then(|on| on.attempts.last())
-                    .or_else(|| n.attempts.last())
-                    .cloned()
-            })
-        })
+        // Default to the newest conversation, not the last workflow node.
+        latest_session_leaf(&tree_rounds)
     };
 
     let effective_key: Option<String> = selected_leaf.as_ref().map(|leaf| {

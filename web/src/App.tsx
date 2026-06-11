@@ -99,7 +99,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -687,10 +687,10 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => {
+  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => {
     setBusy(true);
     try {
-      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude);
+      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
       setBootstrap((current) => current ? { ...current, preferences: saved } : {
         repoRoot: '',
         recentWorkspaces: [],
@@ -1138,7 +1138,16 @@ export function App() {
             if (!conversationRun) return;
             rerunConversationTask(conversationRun.projectId, conversationRun.taskId)
               .then((run) => {
+                setActiveWorkspaceId(run.projectId);
+                saveLastConversationWorkspace(run.projectId).catch(() => {});
                 setConversationRun(run);
+                setConversationPage({
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
+                getConversationSidebar().then(setConversationSidebar).catch(() => {});
                 pushRoute('task-orchestration', taskListPage, {
                   kind: 'conversation-run',
                   projectId: run.projectId,

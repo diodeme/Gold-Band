@@ -1,17 +1,18 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use camino::Utf8Path;
 use serde::Serialize;
 use tracing::warn;
+use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 
-use crate::config::RuntimeConfig;
+use crate::config::{RuntimeConfig, RuntimeLogLevel};
 use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
 use crate::inspect::render_run_status;
 use crate::runtime::RunState;
@@ -20,6 +21,7 @@ use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json}
 const PROGRESS_TARGET: &str = "gold_band.progress";
 static TRACE_ID: OnceLock<String> = OnceLock::new();
 static TRACING_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static RUNTIME_LOG_LEVEL: AtomicU8 = AtomicU8::new(RuntimeLogLevel::Info.as_u8());
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +157,7 @@ pub struct RunEventData {
 pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
     let _ = TRACE_ID.get_or_init(trace_id_seed);
     cleanup_old_logs(paths, config.log_retention_days);
+    set_runtime_log_level(config.log_level);
     if TRACING_INITIALIZED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -170,8 +173,6 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     let stderr_writer = BoxMakeWriter::new(std::io::stderr);
 
     let progress_filter = EnvFilter::new(format!("{PROGRESS_TARGET}=info"));
-    let level = config.log_level.as_directive();
-    let debug_filter = EnvFilter::new(format!("gold_band={level},gold_band_desktop={level}"));
 
     let file_layer = fmt::layer()
         .with_ansi(false)
@@ -183,7 +184,7 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
                 .expect("open runtime log")
         })
         .with_target(true)
-        .with_filter(debug_filter);
+        .with_filter(FilterFn::new(runtime_log_filter));
 
     let stderr_layer = fmt::layer()
         .compact()
@@ -197,6 +198,24 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     } else {
         registry.init();
     }
+}
+
+pub fn set_runtime_log_level(level: RuntimeLogLevel) {
+    RUNTIME_LOG_LEVEL.store(level.as_u8(), Ordering::SeqCst);
+}
+
+pub fn runtime_log_level() -> RuntimeLogLevel {
+    RuntimeLogLevel::from_u8(RUNTIME_LOG_LEVEL.load(Ordering::SeqCst))
+}
+
+pub fn runtime_log_filter(metadata: &tracing::Metadata<'_>) -> bool {
+    if metadata.target() == PROGRESS_TARGET {
+        return false;
+    }
+    if !matches!(metadata.target(), target if target.starts_with("gold_band") || target.starts_with("gold_band_desktop")) {
+        return false;
+    }
+    runtime_log_level().allows(metadata.level())
 }
 
 pub fn progress(run_summary: &str) {

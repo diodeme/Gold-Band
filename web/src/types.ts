@@ -10,6 +10,7 @@ export interface PreferencesVm {
   language: DesktopLanguage;
   font: DesktopFontPreference;
   useLocalClaude: boolean;
+  verboseLogging: boolean;
 }
 
 export interface LocalClaudeStatusVm {

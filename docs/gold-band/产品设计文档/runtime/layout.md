@@ -382,6 +382,8 @@ runtime debug 日志位于：
 ~/.gold-band/projects/{project-id}/logs/runtime.log
 ```
 
+桌面端默认仅记录 INFO 级常规运行日志；用户可在「设置 → 高级 → 记录详细日志」中切换为 DEBUG 级，以便排障时即时放大日志粒度，无需重启客户端。
+
 日志只用于 debug / 排障 / 运行分析，不属于 canonical state，不作为 UI 主数据源或控制流输入。
 
 ---

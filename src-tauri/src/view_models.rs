@@ -11,6 +11,7 @@ use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
+    RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -36,6 +37,7 @@ pub struct PreferencesVm {
     pub language: DesktopLanguage,
     pub font: DesktopFontPreference,
     pub use_local_claude: bool,
+    pub verbose_logging: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -811,12 +813,14 @@ pub fn preferences_vm(
     language: DesktopLanguage,
     font: DesktopFontPreference,
     use_local_claude: bool,
+    log_level: RuntimeLogLevel,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
         language,
         font,
         use_local_claude,
+        verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
     }
 }
 
@@ -869,6 +873,7 @@ pub fn bootstrap_vm(
             app.config.desktop_language,
             app.config.desktop_font.clone(),
             app.config.use_local_claude,
+            app.config.log_level,
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),

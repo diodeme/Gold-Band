@@ -42,7 +42,7 @@ interface SettingsPageProps {
   clientVersion: string;
   busy: boolean;
   initialTab?: 'general' | 'appearance' | 'advanced';
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => void;
+  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => void;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -58,6 +58,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [language, setLanguage] = useState(preferences.language);
   const [font, setFont] = useState(preferences.font);
   const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
+  const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
@@ -70,6 +71,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setFont(preferences.font), [preferences.font]);
   useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
+  useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
   // ── Metrics ──
@@ -142,7 +144,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
     setTheme(value);
-    onSave(value, language, font, useLocalClaude);
+    onSave(value, language, font, useLocalClaude, verboseLogging);
   };
 
   const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
@@ -151,23 +153,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     if (theme === 'system') {
       applyTheme('system');
       setTheme('system');
-      onSave('system', language, font, useLocalClaude);
+      onSave('system', language, font, useLocalClaude, verboseLogging);
     } else {
       setTheme(value);
-      onSave(value, language, font, useLocalClaude);
+      onSave(value, language, font, useLocalClaude, verboseLogging);
     }
     setThemeSheetOpen(false);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font, useLocalClaude);
+    onSave(theme, value, font, useLocalClaude, verboseLogging);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
     setFont(value);
     applyFont(value);
-    onSave(theme, language, value, useLocalClaude);
+    onSave(theme, language, value, useLocalClaude, verboseLogging);
   };
 
   const openThemeDrawer = (mode: ThemeDrawerMode) => {
@@ -386,7 +388,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !useLocalClaude;
                     setUseLocalClaude(next);
-                    onSave(theme, language, font, next);
+                    onSave(theme, language, font, next, verboseLogging);
                   }}
                 >
                   <span
@@ -399,6 +401,33 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
                   <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
                 ) : null}
+              </div>
+              <div className="flex items-center justify-between gap-4 py-2">
+                <div className="min-w-0 space-y-1">
+                  <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
+                  <div className="text-xs text-muted-foreground">{t('settings.verboseLogging.description')}</div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={verboseLogging}
+                  className={cn(
+                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                    verboseLogging ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
+                  )}
+                  onClick={() => {
+                    const next = !verboseLogging;
+                    setVerboseLogging(next);
+                    onSave(theme, language, font, useLocalClaude, next);
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
+                      verboseLogging && 'translate-x-5',
+                    )}
+                  />
+                </button>
               </div>
             </SettingsSection>
             <SettingsSection title={<span className="inline-flex items-center gap-2">{t('settings.updater.title')}{showUpdatesSectionDot ? <UpdateDot /> : null}</span>}>

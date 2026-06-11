@@ -31,6 +31,7 @@ use gold_band::config::{
     AcpAdapterConfig, ConversationAutoConfig, DesktopFontPreference, DesktopLanguage,
     DesktopThemePreference, ManagedAgentConfig, ManagedAgentType,
 };
+use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
@@ -1967,18 +1968,29 @@ pub fn save_desktop_preferences(
     language: DesktopLanguage,
     font: DesktopFontPreference,
     use_local_claude: bool,
+    verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     app.set_user_desktop_preferences(theme, language, font.clone())
         .map_err(command_error)?;
+    app.set_user_use_local_claude(use_local_claude)
+        .map_err(command_error)?;
     let settings = app
-        .set_user_use_local_claude(use_local_claude)
+        .set_user_verbose_logging(verbose_logging)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
-    Ok(preferences_vm(theme, language, font, use_local_claude))
+    let log_level = settings.log_level.unwrap_or(context.config.log_level);
+    set_runtime_log_level(log_level);
+    Ok(preferences_vm(
+        theme,
+        language,
+        font,
+        use_local_claude,
+        log_level,
+    ))
 }
 
 #[tauri::command]

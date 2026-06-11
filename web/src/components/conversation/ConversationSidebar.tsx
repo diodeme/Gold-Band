@@ -384,7 +384,7 @@ function TaskRow({
         onClick={handleRowClick}
       >
         <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-11">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
           {editing ? (
             <input
               ref={editInputRef}
@@ -402,7 +402,7 @@ function TaskRow({
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
           ) : null}
         </div>
-        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex group-hover:pointer-events-auto">
+        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
           {onRename ? (
             <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
               <Pencil className="size-3" />

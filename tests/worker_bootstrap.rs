@@ -509,7 +509,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     );
 
     let completed = app
-        .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()))
+        .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()), None)
         .unwrap();
     assert_eq!(completed.outcome, Some(RunOutcome::Success));
 

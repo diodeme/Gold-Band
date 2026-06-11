@@ -12,7 +12,8 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+    ManagedAgentType, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+    StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -740,6 +741,21 @@ impl App {
         settings.use_local_claude = Some(use_local_claude);
         self.save_settings(&settings)?;
         Ok(settings)
+    }
+
+    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.log_level = Some(log_level);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
+        self.set_user_log_level(if enabled {
+            RuntimeLogLevel::Debug
+        } else {
+            RuntimeLogLevel::Info
+        })
     }
 
     pub fn set_user_desktop_updater_url_override(

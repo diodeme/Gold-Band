@@ -2,8 +2,10 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
+use tracing::Level;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeLogLevel {
     Error,
@@ -14,13 +16,40 @@ pub enum RuntimeLogLevel {
 }
 
 impl RuntimeLogLevel {
-    pub fn as_directive(self) -> &'static str {
+    pub const fn as_directive(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
             Self::Info => "info",
             Self::Debug => "debug",
             Self::Trace => "trace",
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Error,
+            1 => Self::Warn,
+            2 => Self::Info,
+            3 => Self::Debug,
+            4 => Self::Trace,
+            _ => Self::Info,
+        }
+    }
+
+    pub const fn allows(self, level: &Level) -> bool {
+        match self {
+            Self::Error => matches!(*level, Level::ERROR),
+            Self::Warn => matches!(*level, Level::ERROR | Level::WARN),
+            Self::Info => matches!(*level, Level::ERROR | Level::WARN | Level::INFO),
+            Self::Debug => {
+                matches!(*level, Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG)
+            }
+            Self::Trace => true,
         }
     }
 }
@@ -367,7 +396,7 @@ impl Default for RuntimeConfig {
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
         Self {
-            log_level: RuntimeLogLevel::Debug,
+            log_level: RuntimeLogLevel::Info,
             log_prompts: true,
             log_provider_command: true,
             log_retention_days: 30,
@@ -707,7 +736,7 @@ mod tests {
         assert_eq!(config.desktop_theme, DesktopThemePreference::System);
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
-        assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+        assert!(matches!(config.log_level, RuntimeLogLevel::Info));
     }
 
     #[test]

@@ -801,6 +801,10 @@ const resources = {
           tooltip: '如果打开，优先本地查找 Claude，可能会有兼容性问题，如果关闭，使用 SDK 携带的 Claude',
           notFound: '未找到本地 Claude，将使用 SDK 内置版本',
         },
+        verboseLogging: {
+          label: '记录详细日志',
+          description: '开启后 runtime.log 会记录 DEBUG 级别日志，关闭后仅记录常规信息级日志。',
+        },
         metrics: {
           title: '指标上报',
           enable: '开启指标上报',
@@ -1784,6 +1788,10 @@ const resources = {
           label: 'Use local Claude',
           tooltip: 'If enabled, prioritizes the locally installed Claude executable. May have compatibility issues. If disabled, uses the Claude bundled with the SDK.',
           notFound: 'Local Claude not found, using SDK bundled version',
+        },
+        verboseLogging: {
+          label: 'Verbose runtime logging',
+          description: 'When enabled, runtime.log records DEBUG-level diagnostics. When disabled, it only records normal INFO-level runtime logs.',
         },
         metrics: {
           title: 'Metrics Reporting',

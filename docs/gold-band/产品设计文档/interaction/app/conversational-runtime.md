@@ -46,6 +46,7 @@
 - 用户已有选中 session 且仍有效时保持
 - 多个 session 默认最近 session
 - run 结束时显示到达 end 状态的 session
+- 新会话从会话式主页发起后，run 创建命令只负责落盘 task/run 初始状态并后台启动执行；前端收到该 run 的第一个 ACP live event 后必须立即刷新 session tree，插入对应 attempt，选中该 session，并把右侧详情切到该 session。后续同一 attempt 的流式消息由 ACP 会话详情订阅直接合并，不依赖整页轮询。
 
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史
@@ -130,7 +131,8 @@
 
 - composer 底部模型与权限配置统一使用胶囊式控件外观，模型选择器需要明确表现出“可展开下拉”的交互心智，不能像纯文本标签
 - 模型下拉列表默认向上弹出，并受当前窗口可用高度约束；超出时内部滚动，不允许选项直接溢出会话窗口外
-- 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话
+- 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
+- 后续同一 ACP session 的每次追问都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 必须继续带上最新选择，而不是回退到节点初始配置。
 - 模型选中态只在触发器展示模型名称，长描述只在下拉项中换行展示，不允许撑破触发器或越出窗口边界
 
 ## 工具调用参数展示

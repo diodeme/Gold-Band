@@ -69,7 +69,7 @@ fn session_file_is_cancelled(path: &Utf8Path) -> bool {
                 || status.eq_ignore_ascii_case("canceled")
                 || stop_reason.eq_ignore_ascii_case("cancelled")
                 || stop_reason.eq_ignore_ascii_case("canceled"))
-                .then_some(())
+            .then_some(())
         })
         .is_some()
 }
@@ -393,7 +393,13 @@ impl<'a> AcpRuntime<'a> {
                     Ok(line) if line.trim().is_empty() => {}
                     Ok(line) => match serde_json::from_str::<Value>(&line) {
                         Ok(value) => {
-                            let _ = append_raw_frame(&raw_path, "inbound", value.clone(), raw_max, raw_target);
+                            let _ = append_raw_frame(
+                                &raw_path,
+                                "inbound",
+                                value.clone(),
+                                raw_max,
+                                raw_target,
+                            );
                             if tx.send(value).is_err() {
                                 break;
                             }
@@ -580,8 +586,7 @@ impl<'a> AcpRuntime<'a> {
         }
     }
 
-    /// Applies the effective session mode: model takes priority, falls back to
-    /// permission_mode for backward compatibility.
+    /// Applies the effective session configuration for the ACP session.
     fn apply_session_mode_options(
         &mut self,
         permission_mode: Option<&str>,
@@ -589,7 +594,8 @@ impl<'a> AcpRuntime<'a> {
     ) -> Result<()> {
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
             self.set_session_model(m)?;
-        } else if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
+        }
+        if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
             self.apply_permission_mode(pm)?;
         }
         Ok(())
@@ -1112,7 +1118,13 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn send_frame(&mut self, frame: &Value) -> Result<()> {
-        append_raw_frame(&self.paths.raw, "outbound", frame.clone(), self.raw_max_size, self.raw_target_size)?;
+        append_raw_frame(
+            &self.paths.raw,
+            "outbound",
+            frame.clone(),
+            self.raw_max_size,
+            self.raw_target_size,
+        )?;
         let line = serde_json::to_string(frame)?;
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.write_all(b"\n")?;
@@ -1258,7 +1270,11 @@ impl<'a> AcpRuntime<'a> {
 
     /// Stamp a non-streaming event with sequence bounds and clear all streams.
     fn finalize_non_streaming_event(
-        streams: (&mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>),
+        streams: (
+            &mut Option<AcpTimelineStreamState>,
+            &mut Option<AcpTimelineStreamState>,
+            &mut Option<AcpTimelineStreamState>,
+        ),
         item: &mut crate::acp::events::AcpUiEvent,
         seq: u64,
         timestamp: &str,
@@ -1268,7 +1284,11 @@ impl<'a> AcpRuntime<'a> {
         *streams.2 = None;
         item.started_seq = Some(item.started_seq.unwrap_or(seq));
         item.ended_seq = Some(seq);
-        item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.to_string()));
+        item.started_at = Some(
+            item.started_at
+                .clone()
+                .unwrap_or_else(|| timestamp.to_string()),
+        );
         item.ended_at = Some(timestamp.to_string());
     }
 
@@ -1283,22 +1303,34 @@ impl<'a> AcpRuntime<'a> {
             "textDelta" => {
                 let stable_id = stable_message_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_text_stream, &mut item,
-                    &stable_id, 256_000, seq, &timestamp,
+                    &mut self.active_text_stream,
+                    &mut item,
+                    &stable_id,
+                    256_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "thoughtDelta" => {
                 let stable_id = stable_thought_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_thought_stream, &mut item,
-                    &stable_id, 256_000, seq, &timestamp,
+                    &mut self.active_thought_stream,
+                    &mut item,
+                    &stable_id,
+                    256_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "plan" => {
                 let stable_id = stable_plan_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_plan_stream, &mut item,
-                    &stable_id, 64_000, seq, &timestamp,
+                    &mut self.active_plan_stream,
+                    &mut item,
+                    &stable_id,
+                    64_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "toolCall" | "toolCallUpdate" => {
@@ -1314,21 +1346,39 @@ impl<'a> AcpRuntime<'a> {
                 }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
             "permissionRequest" => {
                 item.id = format!("permission-{}", item.id);
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
             _ => {
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
         }
@@ -1373,7 +1423,10 @@ fn is_non_empty_object(value: &serde_json::Value) -> bool {
 /// value. This preserves tool input across adapter updates that overwrite the
 /// timeline slot — the final "completed" event often carries the output
 /// but no longer carries the input or title.
-fn merge_tool_raw_input(new_item: &mut crate::acp::events::AcpUiEvent, prev: &crate::acp::events::AcpUiEvent) {
+fn merge_tool_raw_input(
+    new_item: &mut crate::acp::events::AcpUiEvent,
+    prev: &crate::acp::events::AcpUiEvent,
+) {
     let new_raw = match &new_item.raw {
         Some(v) => v,
         None => return,

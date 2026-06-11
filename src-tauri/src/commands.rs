@@ -606,7 +606,10 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -621,7 +624,10 @@ pub fn continue_run(
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -639,7 +645,10 @@ pub fn submit_manual_check(
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -663,7 +672,10 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let app = context.app_with_metrics(
+        acp_live_update_emitter(app_handle.clone()),
+        crate::metrics::create_metrics_callback(app_handle),
+    );
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -738,7 +750,11 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
     let vm = metrics_settings(&context.config);
     eprintln!(
         "[metrics] enabled={} toggle_locked={} heartbeat={:?} node_metrics={:?} api_key_set={}",
-        vm.enabled, vm.toggle_locked, vm.heartbeat_endpoint, vm.node_metrics_endpoint, vm.api_key_set,
+        vm.enabled,
+        vm.toggle_locked,
+        vm.heartbeat_endpoint,
+        vm.node_metrics_endpoint,
+        vm.api_key_set,
     );
     Ok(vm)
 }
@@ -759,12 +775,14 @@ pub fn save_metrics_settings(
     existing.desktop_node_metrics_endpoint = node_metrics_endpoint.filter(|s| !s.trim().is_empty());
     existing.desktop_metrics_api_key = api_key.filter(|s| !s.trim().is_empty());
     app.save_settings(&existing).map_err(command_error)?;
-    state.update_settings_config(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
     Ok(metrics_settings(&updated_context.config))
 }
 
-fn acp_live_update_emitter(
+pub(crate) fn acp_live_update_emitter(
     app_handle: AppHandle,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
@@ -966,10 +984,8 @@ pub async fn send_acp_prompt(
                 CommandErrorVm::new("acp.missing-provider", serde_json::json!({}))
             })?;
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-            let permission_mode = node
-                .permission_mode
-                .as_deref()
-                .map(|normative| app.config.resolve_permission_mode(provider, normative));
+            let permission_mode = current_acp_session_permission_mode(&attempt_dir)
+                .or_else(|| node.permission_mode.clone());
             let model = current_acp_session_model(&attempt_dir).or_else(|| node.model.clone());
             let (session_mode, continue_ref) = if worker_ref_path.exists() {
                 let worker_ref =
@@ -1081,11 +1097,12 @@ pub async fn send_acp_prompt(
             .and_then(|value| value.as_str())
             .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-        let permission_mode = node
-            .resolved_config
-            .get("permissionMode")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
+        let permission_mode = current_acp_session_permission_mode(&attempt_dir).or_else(|| {
+            node.resolved_config
+                .get("permissionMode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
         let (session_mode, continue_ref) = if worker_ref_path.exists() {
             let worker_ref =
                 read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
@@ -2130,7 +2147,12 @@ fn set_acp_config_option_current_value(
     }
 }
 
-fn current_acp_session_model(attempt_dir: &Utf8PathBuf) -> Option<String> {
+fn current_acp_session_value(
+    attempt_dir: &Utf8PathBuf,
+    top_level_key: &str,
+    current_key: &str,
+    config_category: &str,
+) -> Option<String> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
     let path = if snapshot_path.exists() {
@@ -2144,26 +2166,34 @@ fn current_acp_session_model(attempt_dir: &Utf8PathBuf) -> Option<String> {
         .ok()
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())?;
     value
-        .get("models")
-        .and_then(|models| models.get("currentModelId"))
-        .and_then(|model| model.as_str())
+        .get(top_level_key)
+        .and_then(|section| section.get(current_key))
+        .and_then(|item| item.as_str())
         .or_else(|| {
             value
                 .get("configOptions")
                 .and_then(|options| options.as_array())
                 .and_then(|options| {
                     options.iter().find(|option| {
-                        option.get("id").and_then(|item| item.as_str()) == Some("model")
+                        option.get("id").and_then(|item| item.as_str()) == Some(config_category)
                             || option.get("category").and_then(|item| item.as_str())
-                                == Some("model")
+                                == Some(config_category)
                     })
                 })
                 .and_then(|option| option.get("currentValue"))
-                .and_then(|model| model.as_str())
+                .and_then(|item| item.as_str())
         })
         .map(str::trim)
-        .filter(|model| !model.is_empty())
+        .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn current_acp_session_model(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    current_acp_session_value(attempt_dir, "models", "currentModelId", "model")
+}
+
+fn current_acp_session_permission_mode(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    current_acp_session_value(attempt_dir, "modes", "currentModeId", "mode")
 }
 
 #[derive(Debug, Deserialize)]

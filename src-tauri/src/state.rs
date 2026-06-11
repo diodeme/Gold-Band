@@ -3,13 +3,16 @@ use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
+use gold_band::app::notification::InterventionNotification;
 use gold_band::app::App;
 use gold_band::config::{ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
+use crate::notifications::{NotificationDedup, send_intervention_notification};
 use crate::updater::{StartupCheckResult, UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
@@ -88,9 +91,22 @@ pub struct DesktopState {
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
     startup_check: Mutex<Option<StartupCheckResult>>,
+    pub notification_dedup: Arc<NotificationDedup>,
 }
 
 impl DesktopState {
+    /// 创建干预通知回调，注入到 App 中。
+    /// 回调捕获 AppHandle（用于 emit 前端事件）和 NotificationDedup（用于去重）。
+    pub fn create_intervention_notifier(
+        &self,
+        app_handle: AppHandle,
+    ) -> Arc<dyn Fn(InterventionNotification) + Send + Sync> {
+        let dedup = Arc::clone(&self.notification_dedup);
+        Arc::new(move |notification: InterventionNotification| {
+            send_intervention_notification(&app_handle, &dedup, &notification);
+        })
+    }
+
     pub fn new(context: DesktopContext) -> Self {
         let persisted_diagnostics = load_persisted_agent_diagnostics(&context);
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
@@ -99,6 +115,7 @@ impl DesktopState {
             agent_diagnostics: Mutex::new(persisted_diagnostics),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             startup_check: Mutex::new(None),
+            notification_dedup: Arc::new(NotificationDedup::new()),
         }
     }
 

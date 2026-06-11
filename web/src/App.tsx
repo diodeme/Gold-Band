@@ -47,6 +47,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
+import { useInterventionNotifications } from './hooks/useInterventionNotifications';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
 import { ConversationHomePage } from './pages/ConversationHomePage';
@@ -179,6 +180,9 @@ export function App() {
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
   );
   const { t } = useTranslation();
+
+  // 工作流干预通知队列
+  const { queue: interventionQueue } = useInterventionNotifications();
 
   useEffect(() => {
     applyTheme(preferences.theme);

@@ -776,6 +776,37 @@ fn edge_outcome_label(outcome: NodeOutcome) -> String {
     }
 }
 
+fn notify_intervention(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+    pause_reason: PauseReason,
+    workflow: &ValidatedWorkflow,
+) {
+    if let Some(notifier) = &app.intervention_notifier {
+        let node_label = workflow
+            .get_node(&node.node_id)
+            .map(|dsl| dsl.label().to_string())
+            .unwrap_or_else(|| node.node_id.clone());
+        let task_title = app
+            .task_show(task_id)
+            .ok()
+            .and_then(|t| t.title);
+        notifier(crate::app::notification::InterventionNotification::new(
+            task_id,
+            task_title.as_deref(),
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+            &node_label,
+            pause_reason,
+        ));
+    }
+}
+
 fn is_repair_outcome(outcome: &str) -> bool {
     outcome == "failure"
 }
@@ -1153,6 +1184,7 @@ fn apply_control_decision(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, node)?;
+            notify_intervention(app, task_id, run, round, node, reason, workflow);
             Ok(None)
         }
         ControlDecision::CompleteRun(outcome) => {
@@ -4612,6 +4644,7 @@ fn drive_from_node_with_initial_session(
                     &ctx,
                 );
                 persist_runtime_state(app, task_id, run, round, &failed_node)?;
+                notify_intervention(app, task_id, run, round, &failed_node, PauseReason::ErrorBlocked, workflow);
                 return Ok(());
             }
         };
@@ -4676,6 +4709,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
+            notify_intervention(app, task_id, run, round, &node, pause_reason, workflow);
             return Ok(());
         }
 
@@ -4817,6 +4851,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
+            notify_intervention(app, task_id, run, round, &node, PauseReason::WaitingForUserInput, workflow);
             return Ok(());
         }
 

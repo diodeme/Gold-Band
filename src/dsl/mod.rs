@@ -479,6 +479,16 @@ pub fn workflow_contains_ai_dynamic(workflow: &WorkflowDsl) -> bool {
         .any(|node| matches!(node, NodeDsl::AiDynamic(_)))
 }
 
+impl NodeDsl {
+    /// 节点的对外展示名，优先使用 goal，不存在时回退到 id
+    pub fn label(&self) -> &str {
+        match self {
+            NodeDsl::Worker(node) => node.goal.as_deref().unwrap_or(&node.id),
+            NodeDsl::AiDynamic(node) => &node.id,
+        }
+    }
+}
+
 impl ValidatedWorkflow {
     pub fn get_node(&self, id: &str) -> Option<&NodeDsl> {
         self.nodes_by_id.get(id)

@@ -1,5 +1,6 @@
 mod ids;
 mod node_executor;
+pub mod notification;
 mod orchestrator;
 mod profile_resolver;
 mod profiles;
@@ -346,6 +347,7 @@ pub struct App {
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    intervention_notifier: Option<Arc<dyn Fn(notification::InterventionNotification) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +502,7 @@ impl App {
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
+            intervention_notifier: self.intervention_notifier.clone(),
         }
     }
 
@@ -508,6 +511,14 @@ impl App {
         live_update: Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_live_update = Some(live_update);
+        self
+    }
+
+    pub fn with_intervention_notifier(
+        mut self,
+        notifier: Arc<dyn Fn(notification::InterventionNotification) + Send + Sync>,
+    ) -> Self {
+        self.intervention_notifier = Some(notifier);
         self
     }
 
@@ -928,6 +939,7 @@ impl App {
             config,
             provider_override: None,
             acp_live_update: None,
+            intervention_notifier: None,
         }
     }
 
@@ -948,6 +960,7 @@ impl App {
             config,
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
+            intervention_notifier: None,
         }
     }
 

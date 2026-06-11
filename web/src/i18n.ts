@@ -904,6 +904,19 @@ const resources = {
         noAgentConfigured: '请先在 Agent 管理中添加并诊断 Agent',
         saved: '已保存',
       },
+      notification: {
+        intervention: {
+          manualCheckTitle: '工作流需要人工确认',
+          permissionTitle: '权限请求',
+          errorBlockedTitle: '工作流执行错误',
+          processInterruptedTitle: '工作流进程中断',
+          actions: {
+            approve: '通过',
+            reject: '拒绝',
+            viewDetail: '查看详情',
+          },
+        },
+      },
     },
   },
   en: {
@@ -1806,6 +1819,19 @@ const resources = {
         globalGoalPlaceholder: 'Enter a shared goal appended to every internal node',
         noAgentConfigured: 'Add and diagnose an agent in Agent Management first',
         saved: 'Saved',
+      },
+      notification: {
+        intervention: {
+          manualCheckTitle: 'Workflow Needs Manual Check',
+          permissionTitle: 'Permission Request',
+          errorBlockedTitle: 'Workflow Error',
+          processInterruptedTitle: 'Workflow Interrupted',
+          actions: {
+            approve: 'Approve',
+            reject: 'Reject',
+            viewDetail: 'View Details',
+          },
+        },
       },
     },
   },

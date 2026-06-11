@@ -133,6 +133,7 @@ export function ConversationRunPage({
 
   const isRunning = run.runStatus === 'running';
   const selectedLeaf = findSelectedLeaf(run.sessionTree);
+  const showLaunchingSession = isRunning && !selectedLeaf;
 
   const handleOpenInFileManager = useCallback(() => {
     if (!selectedLeaf) return;
@@ -289,9 +290,10 @@ export function ConversationRunPage({
             usageCompact
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t('conversation.runtime.noActiveSession')}
-          </div>
+          <ConversationEmptySessionState
+            label={showLaunchingSession ? t('acp.launchingClaude') : t('conversation.runtime.noActiveSession')}
+            active={showLaunchingSession}
+          />
         )}
       </div>
 
@@ -338,6 +340,22 @@ export function ConversationRunPage({
       />
     </div>
     </TooltipProvider>
+  );
+}
+
+function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        {active ? (
+          <span
+            aria-hidden="true"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+          />
+        ) : null}
+        <span>{label}</span>
+      </div>
+    </div>
   );
 }
 

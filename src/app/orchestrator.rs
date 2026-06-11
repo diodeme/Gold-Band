@@ -890,6 +890,58 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
         )
 }
 
+fn completed_node_snapshot(
+    round: &RoundState,
+    node: &NodeState,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    total_tokens: u64,
+) -> crate::runtime::LastExecutedNode {
+    let status = match node.outcome {
+        Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
+        Some(crate::domain::NodeOutcome::Failure)
+        | Some(crate::domain::NodeOutcome::Killed)
+        | Some(crate::domain::NodeOutcome::Invalid)
+        | None => "FAILED",
+    };
+    let node_name = node
+        .resolved_config
+        .get("profileName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let seq = round
+        .trace
+        .iter()
+        .filter(|t| t.node_id == node.node_id)
+        .map(|t| t.sequence)
+        .last();
+    let agent_type = node
+        .resolved_config
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    crate::runtime::LastExecutedNode {
+        node_id: node.node_id.clone(),
+        uuid: node.uuid.clone().unwrap_or_default(),
+        round_uuid: round.uuid.clone().unwrap_or_default(),
+        node_name,
+        seq,
+        agent_type,
+        status: status.to_string(),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        total_tokens,
+    }
+}
+
 fn apply_control_decision(
     app: &App,
     task_id: &str,
@@ -1011,6 +1063,7 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: session,
@@ -1125,6 +1178,7 @@ fn apply_control_decision(
                 ),
             );
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: SessionMode::New,
@@ -4908,14 +4962,17 @@ fn drive_from_node_with_initial_session(
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 total_tokens: 0,
+                acp_session_path: None,
                 outcome: None,
             };
-            metrics_cb(
-                metrics_ctx,
-                super::MetricsEvent::NodeStarted {
-                    predecessor: run.last_executed_node.clone(),
-                },
-            );
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(
+                    metrics_ctx,
+                    super::MetricsEvent::NodeStarted {
+                        predecessor: run.last_executed_node.clone(),
+                    },
+                );
+            }));
         }
 
         let current_node_dsl = workflow
@@ -5242,58 +5299,7 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // ── Metrics: update last_executed_node and notify node completed ──
-        {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                Some(crate::domain::NodeOutcome::Failure) => "FAILED",
-                Some(crate::domain::NodeOutcome::Killed) => "FAILED",
-                Some(crate::domain::NodeOutcome::Invalid) => "FAILED",
-                None => "FAILED",
-            };
-            let node_name = node
-                .resolved_config
-                .get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            // Read real token data from ACP session metadata
-            let attempt_dir =
-                app.paths
-                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
-            let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                crate::acp::events::read_session_tokens(&session_paths.session);
-            let seq = round
-                .trace
-                .iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            let agent_type = node
-                .resolved_config
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name,
-                seq,
-                agent_type,
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                total_tokens,
-            });
-        }
-
+        let completed_snapshot = completed_node_snapshot(round, &node, 0, 0, 0, 0);
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -5306,6 +5312,7 @@ fn drive_from_node_with_initial_session(
             &node,
             decision,
         )? {
+            run.last_executed_node = Some(completed_snapshot);
             node = next.node;
             session_mode = next.session_mode;
             continue_ref = next.continue_ref;
@@ -5316,51 +5323,12 @@ fn drive_from_node_with_initial_session(
             continue;
         }
         // Workflow ended — send final metrics for the last completed node
+        run.last_executed_node = Some(completed_snapshot.clone());
         if let Some(metrics_cb) = &app.metrics_callback {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                _ => "FAILED",
-            };
-            let node_name = node
-                .resolved_config
-                .get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            let agent_type = node
-                .resolved_config
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let seq = round
-                .trace
-                .iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            // Update last_executed_node with final state (read real token data from ACP session)
-            let ad =
+            let attempt_dir =
                 app.paths
                     .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let sp = crate::acp::events::AcpAttemptPaths::from_attempt_dir(ad);
-            let (it, ot, cr, tt) = crate::acp::events::read_session_tokens(&sp.session);
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name: node_name.clone(),
-                seq,
-                agent_type: agent_type.clone(),
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-            });
+            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
             let metrics_ctx = super::MetricsEventContext {
                 repo_root: app.paths.repo_root.to_string(),
                 task_id: task_id.to_string(),
@@ -5372,19 +5340,22 @@ fn drive_from_node_with_initial_session(
                 run_uuid: run.uuid.clone(),
                 round_uuid: round.uuid.clone(),
                 node_uuid: node.uuid.clone(),
-                seq,
-                node_name: Some(node_name),
-                agent_type,
+                seq: completed_snapshot.seq,
+                node_name: Some(completed_snapshot.node_name.clone()),
+                agent_type: completed_snapshot.agent_type.clone(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-                outcome: Some(status_str.to_string()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 0,
+                acp_session_path: Some(session_paths.session.to_string()),
+                outcome: Some(completed_snapshot.status.clone()),
             };
             // Send with predecessor = this node's final state
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            }));
         }
         return Ok(());
     }

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use camino::Utf8PathBuf;
 use gold_band::app::{MetricsEvent, MetricsEventContext};
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
@@ -41,7 +42,11 @@ fn metrics_log(msg: &str) {
     let Some(log_path) = metrics_log_path() else {
         return;
     };
-    let line = format!("[{}] {}\n", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"), msg);
+    let line = format!(
+        "[{}] {}\n",
+        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"),
+        msg
+    );
     if let Err(e) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -66,6 +71,17 @@ fn to_iso8601(ts: &str) -> String {
     }
 }
 
+fn read_tokens_best_effort(session_path: Option<String>) -> (u64, u64, u64, u64) {
+    let Some(session_path) = session_path else {
+        return (0, 0, 0, 0);
+    };
+    let session_path = Utf8PathBuf::from(session_path);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gold_band::acp::events::read_session_tokens(&session_path)
+    }))
+    .unwrap_or((0, 0, 0, 0))
+}
+
 // ── Settings VM ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,7 +91,7 @@ pub struct MetricsSettingsVm {
     pub toggle_locked: bool,
     pub heartbeat_endpoint: Option<String>,
     pub node_metrics_endpoint: Option<String>,
-    pub api_key_set: bool,         // true if api_key is non-empty (never expose the key itself)
+    pub api_key_set: bool, // true if api_key is non-empty (never expose the key itself)
 }
 
 pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
@@ -95,7 +111,11 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let ep = channel_config.heartbeat_endpoint;
-            if ep.is_empty() { None } else { Some(ep.to_string()) }
+            if ep.is_empty() {
+                None
+            } else {
+                Some(ep.to_string())
+            }
         });
     let node_metrics_endpoint = config
         .desktop_node_metrics_endpoint
@@ -103,7 +123,11 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let ep = channel_config.node_metrics_endpoint;
-            if ep.is_empty() { None } else { Some(ep.to_string()) }
+            if ep.is_empty() {
+                None
+            } else {
+                Some(ep.to_string())
+            }
         });
     let api_key = config
         .desktop_metrics_api_key
@@ -111,7 +135,11 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let k = channel_config.metrics_api_key;
-            if k.is_empty() { None } else { Some(k.to_string()) }
+            if k.is_empty() {
+                None
+            } else {
+                Some(k.to_string())
+            }
         });
     MetricsSettingsVm {
         enabled: enabled && heartbeat_endpoint.is_some(),
@@ -182,7 +210,10 @@ pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
                             if let Some(api_key) = get_api_key(&ctx.config) {
                                 let workspace = ctx.repo_root.to_string();
                                 let version = env!("CARGO_PKG_VERSION").to_string();
-                                metrics_log(&format!("[heartbeat] timer fired, sending to {}", endpoint));
+                                metrics_log(&format!(
+                                    "[heartbeat] timer fired, sending to {}",
+                                    endpoint
+                                ));
                                 send_heartbeat(endpoint, &api_key, &workspace, &version).await;
                             }
                         }
@@ -202,7 +233,11 @@ fn get_api_key(config: &RuntimeConfig) -> Option<String> {
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let k = channel_config.metrics_api_key;
-            if k.is_empty() { None } else { Some(k.to_string()) }
+            if k.is_empty() {
+                None
+            } else {
+                Some(k.to_string())
+            }
         })
 }
 
@@ -257,7 +292,11 @@ pub async fn send_node_metrics_batch(endpoint: &str, api_key: &str, batch: NodeM
         .await;
     match result {
         Ok(resp) => {
-            metrics_log(&format!("[node-metrics] response status={} count={}", resp.status(), batch.metrics.len()));
+            metrics_log(&format!(
+                "[node-metrics] response status={} count={}",
+                resp.status(),
+                batch.metrics.len()
+            ));
         }
         Err(err) => {
             metrics_log(&format!("[node-metrics] FAILED (ignored): {}", err));
@@ -302,12 +341,19 @@ pub fn start_sentinel_metric(
 
 /// Create a metrics callback that can be passed to `App::with_metrics_callback`.
 /// This bridges the library-crate orchestrator events to the src-tauri metrics module.
-pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync> {
+pub fn create_metrics_callback<R: Runtime>(
+    app: AppHandle<R>,
+) -> Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync> {
     Arc::new(move |ctx: MetricsEventContext, event: MetricsEvent| {
         match event {
             MetricsEvent::NodeStarted { predecessor } => {
-                metrics_log(&format!("[node-metrics] NodeStarted task={} run={} node={} has_predecessor={}",
-                    ctx.task_id, ctx.run_id, ctx.node_id, predecessor.is_some()));
+                metrics_log(&format!(
+                    "[node-metrics] NodeStarted task={} run={} node={} has_predecessor={}",
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.node_id,
+                    predecessor.is_some()
+                ));
                 let settings = if let Some(state) = app.try_state::<DesktopState>() {
                     if let Ok(desktop_ctx) = state.context() {
                         metrics_settings(&desktop_ctx.config)
@@ -342,7 +388,8 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                 let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
                 // Determine reentrancy: parse attempt number from attempt_id
-                let attempt_count = ctx.attempt_id
+                let attempt_count = ctx
+                    .attempt_id
                     .strip_prefix("attempt-")
                     .and_then(|n| n.parse::<u32>().ok())
                     .unwrap_or(0)
@@ -413,10 +460,20 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                     metrics: vec![predecessor_item, current],
                 };
 
-                metrics_log(&format!("[node-metrics] sending batch to {} (pred_status={}, cur_status={})",
+                metrics_log(&format!(
+                    "[node-metrics] sending batch to {} (pred_status={}, cur_status={})",
                     node_metrics_endpoint,
-                    batch.metrics.first().map(|m| m.status.as_str()).unwrap_or("?"),
-                    batch.metrics.get(1).map(|m| m.status.as_str()).unwrap_or("?")));
+                    batch
+                        .metrics
+                        .first()
+                        .map(|m| m.status.as_str())
+                        .unwrap_or("?"),
+                    batch
+                        .metrics
+                        .get(1)
+                        .map(|m| m.status.as_str())
+                        .unwrap_or("?")
+                ));
                 // Fire-and-forget: spawn async task
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -426,15 +483,23 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
             }
             MetricsEvent::NodeCompleted => {
                 // Workflow ended — send last completed node + end sentinel.
-                metrics_log(&format!("[node-metrics] WorkflowEnded: task={} run={} node={}",
-                    ctx.task_id, ctx.run_id, ctx.node_id));
+                metrics_log(&format!(
+                    "[node-metrics] WorkflowEnded: task={} run={} node={}",
+                    ctx.task_id, ctx.run_id, ctx.node_id
+                ));
                 let settings = if let Some(state) = app.try_state::<DesktopState>() {
                     if let Ok(desktop_ctx) = state.context() {
                         metrics_settings(&desktop_ctx.config)
-                    } else { return; }
-                } else { return; };
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                };
 
-                if !settings.enabled { return; }
+                if !settings.enabled {
+                    return;
+                }
                 let node_metrics_endpoint = match &settings.node_metrics_endpoint {
                     Some(ep) => ep.clone(),
                     None => return,
@@ -442,63 +507,75 @@ pub fn create_metrics_callback<R: Runtime>(app: AppHandle<R>) -> Arc<dyn Fn(Metr
                 let api_key = if let Some(state) = app.try_state::<DesktopState>() {
                     if let Ok(desktop_ctx) = state.context() {
                         match get_api_key(&desktop_ctx.config) {
-                            Some(k) => k, None => return,
+                            Some(k) => k,
+                            None => return,
                         }
-                    } else { return; }
-                } else { return; };
-
-                let user_id = get_system_username();
-                let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-
-                // Last completed node — use actual outcome from orchestrator
-                let last_node_status = ctx.outcome.clone().unwrap_or_else(|| "SUCCESS".to_string());
-                let last_node = NodeMetricItem {
-                    workspace: ctx.repo_root.clone(),
-                    user_id: user_id.clone(),
-                    task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                    run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                    round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
-                    node_id: ctx.node_uuid.clone().unwrap_or(ctx.node_id.clone()),
-                    seq: ctx.seq,
-                    node_name: ctx.node_name.clone(),
-                    agent_type: ctx.agent_type.clone(),
-                    attempt_count: 0,
-                    started_at: Some(to_iso8601(&ctx.started_at)),
-                    ended_at: ctx.finished_at.as_ref().map(|s| to_iso8601(s)),
-                    input_tokens: ctx.input_tokens,
-                    output_tokens: ctx.output_tokens,
-                    cache_read_tokens: ctx.cache_read_tokens,
-                    total_tokens: ctx.total_tokens,
-                    status: last_node_status.clone(),
-                    reported_at: Some(reported_at.clone()),
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
                 };
-                let end_started = ctx.finished_at.as_ref()
-                    .map(|s| to_iso8601(s))
-                    .unwrap_or_else(|| reported_at.clone());
-                // End sentinel inherits the last node's outcome
-                let end_sentinel = NodeMetricItem {
-                    workspace: ctx.repo_root.clone(),
-                    user_id: user_id.clone(),
-                    task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                    run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                    round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
-                    node_id: uuid::Uuid::new_v4().simple().to_string(),
-                    seq: None,
-                    node_name: Some("结束".to_string()),
-                    agent_type: None,
-                    attempt_count: 0,
-                    started_at: Some(end_started),
-                    ended_at: Some(reported_at.clone()),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_tokens: 0,
-                    total_tokens: 0,
-                    status: last_node_status,
-                    reported_at: Some(reported_at.clone()),
-                };
-                let batch = NodeMetricBatch { metrics: vec![last_node, end_sentinel] };
+
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    let user_id = get_system_username();
+                    let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                    let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+                        read_tokens_best_effort(ctx.acp_session_path.clone());
+
+                    // Last completed node — use actual outcome from orchestrator
+                    let last_node_status =
+                        ctx.outcome.clone().unwrap_or_else(|| "SUCCESS".to_string());
+                    let last_node = NodeMetricItem {
+                        workspace: ctx.repo_root.clone(),
+                        user_id: user_id.clone(),
+                        task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
+                        run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
+                        round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
+                        node_id: ctx.node_uuid.clone().unwrap_or(ctx.node_id.clone()),
+                        seq: ctx.seq,
+                        node_name: ctx.node_name.clone(),
+                        agent_type: ctx.agent_type.clone(),
+                        attempt_count: 0,
+                        started_at: Some(to_iso8601(&ctx.started_at)),
+                        ended_at: ctx.finished_at.as_ref().map(|s| to_iso8601(s)),
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        total_tokens,
+                        status: last_node_status.clone(),
+                        reported_at: Some(reported_at.clone()),
+                    };
+                    let end_started = ctx
+                        .finished_at
+                        .as_ref()
+                        .map(|s| to_iso8601(s))
+                        .unwrap_or_else(|| reported_at.clone());
+                    // End sentinel inherits the last node's outcome
+                    let end_sentinel = NodeMetricItem {
+                        workspace: ctx.repo_root.clone(),
+                        user_id: user_id.clone(),
+                        task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
+                        run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
+                        round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
+                        node_id: uuid::Uuid::new_v4().simple().to_string(),
+                        seq: None,
+                        node_name: Some("结束".to_string()),
+                        agent_type: None,
+                        attempt_count: 0,
+                        started_at: Some(end_started),
+                        ended_at: Some(reported_at.clone()),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_read_tokens: 0,
+                        total_tokens: 0,
+                        status: last_node_status,
+                        reported_at: Some(reported_at.clone()),
+                    };
+                    let batch = NodeMetricBatch {
+                        metrics: vec![last_node, end_sentinel],
+                    };
                     send_node_metrics_batch(&node_metrics_endpoint, &api_key, batch).await;
                     let _ = app_handle;
                 });

@@ -11,6 +11,7 @@ import { ConversationAssetsBar } from '@/components/conversation/ConversationAss
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
+import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
@@ -25,6 +26,7 @@ interface ConversationRunPageProps {
   onSaveWorkflow?: (json: string) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
   onSessionStopped: () => void;
+  onAutoFollowChange?: (enabled: boolean) => void;
   onContinueRun: () => void;
   onTitleChange?: (title: string) => void;
 }
@@ -38,6 +40,7 @@ export function ConversationRunPage({
   onSaveWorkflow,
   onSelectSession,
   onSessionStopped,
+  onAutoFollowChange,
   onContinueRun,
   onTitleChange,
 }: ConversationRunPageProps) {
@@ -69,8 +72,14 @@ export function ConversationRunPage({
   const effectiveAgentRegistry = workflowAgentRegistry ?? agentRegistry;
   const effectiveProfiles = workflowProfiles ?? [];
   const isAtBottomRef = useRef(true);
+  const manualAutoFollowDisabledRef = useRef(false);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const chatDialogRef = useRef<ACPChatDialogHandle>(null);
+
+  useEffect(() => {
+    manualAutoFollowDisabledRef.current = false;
+    onAutoFollowChange?.(true);
+  }, [onAutoFollowChange, run.runId]);
 
   // Close session switcher on outside click
   useEffect(() => {
@@ -123,13 +132,20 @@ export function ConversationRunPage({
       const round = run.sessionTree.rounds[r];
       for (const node of round.nodes) {
         if (node.nodeId === nodeId && node.attempts.length > 0) {
-          onSelectSession(node.attempts[node.attempts.length - 1]);
+          const leaf = node.attempts[node.attempts.length - 1];
+          const shouldFollow = shouldEnableConversationAutoFollow(
+            leaf.runtimeDisplay?.tone,
+            isAtBottomRef.current,
+          );
+          manualAutoFollowDisabledRef.current = !shouldFollow;
+          onAutoFollowChange?.(shouldFollow);
+          onSelectSession(leaf);
           setWorkflowSheet({ open: false, mode: workflowSheet.mode });
           return;
         }
       }
     }
-  }, [run.sessionTree, onSelectSession, workflowSheet.mode]);
+  }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';
   const selectedLeaf = findSelectedLeaf(run.sessionTree);
@@ -150,17 +166,32 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
-  }, []);
+    if (!manualAutoFollowDisabledRef.current) {
+      onAutoFollowChange?.(atBottom);
+    }
+  }, [onAutoFollowChange]);
+
+  const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm) => {
+    const shouldFollow = shouldEnableConversationAutoFollow(
+      leaf.runtimeDisplay?.tone,
+      isAtBottomRef.current,
+    );
+    manualAutoFollowDisabledRef.current = !shouldFollow;
+    onAutoFollowChange?.(shouldFollow);
+    onSelectSession(leaf);
+  }, [onAutoFollowChange, onSelectSession]);
 
   const handleSessionStopped = useCallback(() => {
     onSessionStopped();
-    if (isAtBottomRef.current && run.activeSessions.length > 1) {
+    if (isAtBottomRef.current && !manualAutoFollowDisabledRef.current && run.activeSessions.length > 1) {
       // Find the next running session to auto-switch
       const currentKey = run.sessionTree.selectedSessionKey;
       const nextActive = run.activeSessions.find(
         (s) => `${s.roundId}/${s.nodeId}/${s.attemptId}` !== currentKey,
       );
       if (nextActive) {
+        manualAutoFollowDisabledRef.current = false;
+        onAutoFollowChange?.(true);
         onSelectSession({
           roundId: nextActive.roundId,
           nodeId: nextActive.nodeId,
@@ -176,7 +207,7 @@ export function ConversationRunPage({
         });
       }
     }
-  }, [onSessionStopped, run.activeSessions, run.sessionTree.selectedSessionKey, onSelectSession]);
+  }, [onAutoFollowChange, onSessionStopped, run.activeSessions, run.sessionTree.selectedSessionKey, onSelectSession]);
 
   const handleRerun = () => {
     if (isRunning) {
@@ -226,7 +257,7 @@ export function ConversationRunPage({
                 tree={run.sessionTree}
                 selectedKey={run.sessionTree.selectedSessionKey}
                 onSelectSession={(leaf) => {
-                  onSelectSession(leaf);
+                  handleSessionSelection(leaf);
                   setSessionSwitcherOpen(false);
                 }}
               />
@@ -243,7 +274,7 @@ export function ConversationRunPage({
                 key={`${session.roundId}/${session.nodeId}/${session.attemptId}`}
                 type="button"
                 className="rounded-full border border-border/60 bg-card px-3 py-0.5 text-xs hover:bg-sidebar-accent"
-                onClick={() => onSelectSession({
+                onClick={() => handleSessionSelection({
                   roundId: session.roundId,
                   nodeId: session.nodeId,
                   attemptId: session.attemptId,

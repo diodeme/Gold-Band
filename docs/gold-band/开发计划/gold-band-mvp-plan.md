@@ -129,6 +129,7 @@
 - 2026-05-26：Windows release 桌面包使用 GUI subsystem，安装后双击启动不再附带 cmd 窗口；debug/dev 构建仍保留控制台输出。后台子进程统一通过 process helper 设置隐藏窗口，Windows 进程树清理丢弃 `taskkill` stdout/stderr，ACP provider 的 npx/codex 等子进程同样不弹控制台窗口。
 - 2026-06-04：桌面端左右侧 Sheet 抽屉统一支持边缘拖拽调宽与本地宽度记忆；`SheetContent` 负责默认调宽能力、视口边界约束和 localStorage 持久化，各页面只补稳定 `resizeStorageKey` 与宽度上下限；修正首次打开任务预览时拖拽手柄抢占焦点导致的蓝色高亮，要求手柄默认隐藏、悬停弱提示、拖拽中再高亮。
 - 2026-06-11：会话式运行页 compact composer 用量栏恢复具体处理状态标签，运行中必须展示“思考中...”/“工具调用中...”等当前步骤文案；后端工作流在节点完成后立即持久化下一节点或新 round 的 `run.current* / round.trace / node.json`，并隔离 metrics 回调 panic，避免出现当前节点已 completed 但工作流长期停在 running 旧节点的状态裂缝。
+- 2026-06-11：修复新 UI ACP 会话的跨节点自动跳转策略；前端把“是否允许自动跟随 running session”提升为显式状态，只有当前消息窗口贴底且用户仍在跟随当前运行会话时，新的 ACP live event 才会把选中会话切到下一运行节点。用户手动切到其他 session 或滚离底部后，后台节点继续运行，但不会再抢占当前会话视图；run VM 刷新若未命中自动跟随条件，必须保留既有 `selectedSessionKey`。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 
 ---

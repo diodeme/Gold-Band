@@ -49,6 +49,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
+import { resolveConversationEventSelectedSessionKey } from '@/lib/conversation-session-follow';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
@@ -176,6 +177,7 @@ export function App() {
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const conversationSessionAutoFollowRef = useRef(true);
   const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
@@ -207,6 +209,11 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
   }, [conversationRun]);
+
+  useEffect(() => {
+    if (conversationPage.kind !== 'conversation-run') return;
+    conversationSessionAutoFollowRef.current = true;
+  }, [conversationPage]);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
@@ -329,7 +336,9 @@ export function App() {
 
     const refreshConversationRun = () => {
       refreshTimer = null;
-      const selectedKey = pendingSelectedKey;
+      const selectedKey = pendingSelectedKey
+        ?? conversationRunRef.current?.sessionTree.selectedSessionKey
+        ?? null;
       pendingSelectedKey = null;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
@@ -350,12 +359,17 @@ export function App() {
       if (event.taskId !== taskId || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
+      const currentSelectedKey = currentRun?.sessionTree.selectedSessionKey ?? null;
       const treeHasSession = currentRun
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
-      const alreadySelected = currentRun?.sessionTree.selectedSessionKey === sessionKey;
+      const alreadySelected = currentSelectedKey === sessionKey;
       if (treeHasSession && alreadySelected) return;
-      pendingSelectedKey = sessionKey;
+      pendingSelectedKey = resolveConversationEventSelectedSessionKey({
+        currentSelectedKey,
+        incomingSessionKey: sessionKey,
+        autoFollow: conversationSessionAutoFollowRef.current,
+      });
       if (refreshTimer !== null) return;
       refreshTimer = window.setTimeout(refreshConversationRun, 120);
     })
@@ -1067,6 +1081,9 @@ export function App() {
             }).catch(() => {});
           }}
           onSessionStopped={() => {}}
+          onAutoFollowChange={(enabled) => {
+            conversationSessionAutoFollowRef.current = enabled;
+          }}
           onContinueRun={() => {
             continueRun(conversationPage.taskId, conversationPage.runId)
               .then(() => getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId))

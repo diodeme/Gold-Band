@@ -52,6 +52,8 @@
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史
 - 用户不在底部（正在看历史）→ 不自动切换、不折叠
+- 用户手动切到其他 session（无论通过 session tree、顶部运行中节点 chip，还是工作流图入口）后，自动跟随立即解除；后续新 running session 只在后台推进，不抢占当前查看中的会话
+- 用户显式切回某个 running session 且消息窗口位于底部时，才重新进入自动跟随；刷新 run VM 时若未满足自动跟随条件，前端必须继续保留当前 `selectedSessionKey`，不能因为其他 session 的 live event 回退到最新 running attempt
 - 只有一个 session 运行中 → 自动展开该 session
 - 多个 session 运行中 → 显示折叠行（session 名 + 实时状态），用户点击进入
 

@@ -144,6 +144,7 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
 
@@ -219,6 +220,12 @@ export function App() {
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
   }, [preferences.language]);
+
+  useEffect(() => {
+    if (primaryModule !== 'settings' && conversationPage.kind !== 'settings') {
+      setForceSettingsTab(null);
+    }
+  }, [primaryModule, conversationPage.kind]);
 
   useEffect(() => {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
@@ -589,8 +596,14 @@ export function App() {
   const onGoToSettingsUpdate = () => {
     setUpdateAnnouncementOpen(false);
     setWorkspacePickerOpen(false);
-    setPrimaryModule('settings');
-    pushRoute('settings', taskPage);
+    setForceSettingsTab('advanced');
+    if (uiMode === 'conversation') {
+      setConversationPage({ kind: 'settings' });
+      pushRoute(primaryModule, taskPage, { kind: 'settings' });
+    } else {
+      setPrimaryModule('settings');
+      pushRoute('settings', taskPage);
+    }
   };
 
   const onInstallUpdate = async () => {
@@ -623,6 +636,8 @@ export function App() {
     : primaryModule === 'settings'
       ? (
         <SettingsPage
+          key={forceSettingsTab ? 'settings-advanced' : 'settings-default'}
+          initialTab={forceSettingsTab ?? undefined}
           preferences={preferences}
           appInfo={appInfo}
           updaterSettings={updaterSettings}
@@ -747,7 +762,7 @@ export function App() {
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       {shouldShowUpdateAnnouncement ? (
-        <div className="pointer-events-none fixed left-1/2 top-13 z-50 -translate-x-1/2">
+        <div className="pointer-events-none fixed left-1/2 top-13 z-10 -translate-x-1/2">
           <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
             <AlertDescription className="flex items-center justify-between gap-4 text-sm">
               <button type="button" className="inline-flex min-w-0 items-center gap-2 font-medium text-foreground hover:text-primary" onClick={onOpenUpdateAnnouncement}>
@@ -815,6 +830,8 @@ export function App() {
       return (
         <TooltipProvider>
           <SettingsPage
+            key={forceSettingsTab ? 'settings-advanced' : 'settings-default'}
+            initialTab={forceSettingsTab ?? undefined}
             preferences={preferences}
             appInfo={appInfo}
             updaterSettings={updaterSettings}

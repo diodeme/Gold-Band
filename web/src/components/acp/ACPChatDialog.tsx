@@ -4361,6 +4361,7 @@ function sessionsEquivalent(
   if (!previous || !next) return previous === next;
   if (previous.status !== next.status) return false;
   if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
+  if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
   if (previous.events.length !== next.events.length) return false;
   const previousLast = previous.events.at(-1);
   const nextLast = next.events.at(-1);

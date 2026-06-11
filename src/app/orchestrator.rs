@@ -1567,7 +1567,15 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         workspace_path: Some(ctx.app.paths.repo_root.clone()),
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
-        permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
+        permission_mode: ctx
+            .dynamic
+            .bootstrap_provider()
+            .and_then(|provider| {
+                ctx.dynamic
+                    .permission_mode()
+                    .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+            })
+            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -3272,6 +3280,7 @@ fn materialize_dynamic_next(
         DynamicNext::Single { node } => {
             let source = graph.nodes[source_index].clone();
             let new_node = dynamic_node_state_from_spec(
+                ctx,
                 graph,
                 &source,
                 node,
@@ -3326,6 +3335,7 @@ fn materialize_dynamic_next(
             for node in nodes {
                 let chain_id = node.id.clone();
                 let new_node = dynamic_node_state_from_spec(
+                    ctx,
                     graph,
                     &source,
                     node,
@@ -3361,6 +3371,7 @@ fn materialize_dynamic_next(
 }
 
 fn dynamic_node_state_from_spec(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     source: &DynamicNodeState,
     spec: DynamicNodeSpec,
@@ -3380,6 +3391,15 @@ fn dynamic_node_state_from_spec(
             .find(|snapshot| snapshot.workflow_id == *workflow_id)
             .map(|snapshot| snapshot.snapshot_id.clone())
     });
+    let resolved_permission_mode = spec
+        .provider
+        .as_deref()
+        .and_then(|provider| {
+            inherited_permission_mode
+                .as_deref()
+                .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+        })
+        .or(inherited_permission_mode);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         id: spec.id,
@@ -3398,7 +3418,7 @@ fn dynamic_node_state_from_spec(
         provider: spec.provider,
         profile: spec.profile,
         model: spec.model.clone(),
-        permission_mode: inherited_permission_mode,
+        permission_mode: resolved_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -3471,7 +3491,7 @@ fn advance_dynamic_groups(
         let status = graph.groups[group_index].status;
         match status {
             DynamicGroupStatus::Open if dynamic_group_ready(graph, group_index) => {
-                let merge_node = create_dynamic_merge_node(graph, group_index)?;
+                let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Merging;
                 graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
@@ -3492,7 +3512,7 @@ fn advance_dynamic_groups(
                     graph.groups[group_index].merge_node_id.as_deref(),
                 ) =>
             {
-                let acceptance_node = create_dynamic_acceptance_node(graph, group_index)?;
+                let acceptance_node = create_dynamic_acceptance_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Accepting;
                 graph.groups[group_index].acceptance_node_id = Some(acceptance_node.id.clone());
@@ -3687,6 +3707,7 @@ fn group_node_completed(graph: &DynamicGraphState, node_id: Option<&str>) -> boo
 }
 
 fn create_dynamic_merge_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3727,7 +3748,11 @@ fn create_dynamic_merge_node(
         provider: Some(group.merge.provider.clone()),
         profile: None,
         model: group.merge.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.merge.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3741,6 +3766,7 @@ fn create_dynamic_merge_node(
 }
 
 fn create_dynamic_acceptance_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3785,7 +3811,11 @@ fn create_dynamic_acceptance_node(
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
         model: group.acceptance.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.acceptance.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -4840,16 +4870,22 @@ fn drive_from_node_with_initial_session(
 
         // ── Metrics: notify node started (predecessor + current) ──
         if let Some(metrics_cb) = &app.metrics_callback {
-            let seq = round.trace.iter()
+            let seq = round
+                .trace
+                .iter()
                 .filter(|t| t.node_id == node.node_id)
                 .map(|t| t.sequence)
                 .last();
-            let node_name = node.resolved_config.get("profileName")
+            let node_name = node
+                .resolved_config
+                .get("profileName")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
-            let agent_type = node.resolved_config.get("provider")
+            let agent_type = node
+                .resolved_config
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let metrics_ctx = super::MetricsEventContext {
@@ -4874,9 +4910,12 @@ fn drive_from_node_with_initial_session(
                 total_tokens: 0,
                 outcome: None,
             };
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeStarted {
-                predecessor: run.last_executed_node.clone(),
-            });
+            metrics_cb(
+                metrics_ctx,
+                super::MetricsEvent::NodeStarted {
+                    predecessor: run.last_executed_node.clone(),
+                },
+            );
         }
 
         let current_node_dsl = workflow
@@ -5212,22 +5251,30 @@ fn drive_from_node_with_initial_session(
                 Some(crate::domain::NodeOutcome::Invalid) => "FAILED",
                 None => "FAILED",
             };
-            let node_name = node.resolved_config.get("profileName")
+            let node_name = node
+                .resolved_config
+                .get("profileName")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
             // Read real token data from ACP session metadata
-            let attempt_dir = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let attempt_dir =
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
             let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
             let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
                 crate::acp::events::read_session_tokens(&session_paths.session);
-            let seq = round.trace.iter()
+            let seq = round
+                .trace
+                .iter()
                 .filter(|t| t.node_id == node.node_id)
                 .map(|t| t.sequence)
                 .last();
-            let agent_type = node.resolved_config.get("provider")
+            let agent_type = node
+                .resolved_config
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             run.last_executed_node = Some(crate::runtime::LastExecutedNode {
@@ -5274,21 +5321,29 @@ fn drive_from_node_with_initial_session(
                 Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
                 _ => "FAILED",
             };
-            let node_name = node.resolved_config.get("profileName")
+            let node_name = node
+                .resolved_config
+                .get("profileName")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
-            let agent_type = node.resolved_config.get("provider")
+            let agent_type = node
+                .resolved_config
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let seq = round.trace.iter()
+            let seq = round
+                .trace
+                .iter()
                 .filter(|t| t.node_id == node.node_id)
                 .map(|t| t.sequence)
                 .last();
             // Update last_executed_node with final state (read real token data from ACP session)
-            let ad = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let ad =
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
             let sp = crate::acp::events::AcpAttemptPaths::from_attempt_dir(ad);
             let (it, ot, cr, tt) = crate::acp::events::read_session_tokens(&sp.session);
             run.last_executed_node = Some(crate::runtime::LastExecutedNode {

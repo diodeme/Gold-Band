@@ -798,7 +798,7 @@ pub fn roll_jsonl(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()
     if meta.len() <= max_size {
         return Ok(());
     }
-    let content = std::fs::read_to_string(path.as_std_path())?;
+    let content = std::fs::read(path.as_std_path())?;
     let total = content.len() as u64;
     if total <= target_size {
         return Ok(());
@@ -806,14 +806,14 @@ pub fn roll_jsonl(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()
     let excess = total.saturating_sub(target_size);
     let mut cumulative = 0u64;
     let mut drop_bytes = 0usize;
-    for line in content.lines() {
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
         if cumulative >= excess {
             break;
         }
-        let line_len = line.len() + 1; // +1 for newline
-        cumulative += line_len as u64;
-        drop_bytes += line_len;
+        cumulative += line.len() as u64;
+        drop_bytes += line.len();
     }
+    let drop_bytes = drop_bytes.min(content.len());
     let keep = &content[drop_bytes..];
     std::fs::write(path.as_std_path(), keep)?;
     Ok(())
@@ -989,5 +989,19 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn roll_jsonl_trims_unicode_file_without_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("unicode.jsonl")).unwrap();
+        let first = r#"{"content":"本次任务包含中文内容一"}"#;
+        let second = r#"{"content":"本次任务包含中文内容二"}"#;
+        std::fs::write(path.as_std_path(), format!("{first}\n{second}")).unwrap();
+
+        roll_jsonl(&path, 1, second.len() as u64).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(after, second);
     }
 }

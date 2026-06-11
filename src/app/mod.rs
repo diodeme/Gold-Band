@@ -419,6 +419,7 @@ pub struct MetricsEventContext {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub acp_session_path: Option<String>,
     // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
     // Used by NodeCompleted to report the real status instead of hardcoding.
     pub outcome: Option<String>,
@@ -439,7 +440,11 @@ pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
-    acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    acp_live_update: Option<
+        Arc<
+            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+        >,
+    >,
     metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
 }
 

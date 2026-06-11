@@ -771,7 +771,9 @@ export const ACPChatDialog = forwardRef<
       : awaitingFirstResponse
         ? "processing"
         : timeline.length === 0
-          ? "launching"
+          ? effectiveEvents.length > 0
+            ? "processing"
+            : "launching"
           : processingKindFromTimeline(composerLatestEvent, false);
   const showComposerStatus =
     !waitingForPermission &&
@@ -786,6 +788,7 @@ export const ACPChatDialog = forwardRef<
     composerStatusActive && composerProcessingKind !== "sending",
     composerStatusStartAt,
   );
+  const composerStatusLabel = processingLabel(t, composerProcessingKind);
   const composerInputHint = waitingForPermission
     ? t("acp.permissionPending")
     : cancelling
@@ -793,7 +796,7 @@ export const ACPChatDialog = forwardRef<
       : submittingPrompt
         ? t("acp.sending")
         : composerStatusActive
-          ? t("acp.processing")
+          ? composerStatusLabel
           : t("acp.promptInputHint");
   const composerPlaceholder = planInterventionOption
     ? t("acp.planInterventionHint")
@@ -1467,6 +1470,10 @@ export const ACPChatDialog = forwardRef<
                 <div className="p-5">
                   <EmptyAcpState />
                 </div>
+              ) : timeline.length === 0 ? (
+                <div className="p-5">
+                  <AcpPendingTimelineState label={composerStatusLabel} />
+                </div>
               ) : (
                 <div className="space-y-3 px-5 py-3">
                   {timeline.map((item) => (
@@ -1535,8 +1542,11 @@ export const ACPChatDialog = forwardRef<
           <div className="border-t px-4 pt-1.5 pb-1.5">
             <AcpUsagePanel
               usage={effective?.usage}
-              isRunning={isSessionActive(effective.status)}
+              isRunning={sessionActive}
               compact={usageCompact}
+              processingLabel={
+                usageCompact && composerStatusActive ? composerStatusLabel : null
+              }
               stepSeconds={
                 usageCompact
                   ? composerStatusActive
@@ -2607,6 +2617,20 @@ function EmptyAcpState() {
   );
 }
 
+function AcpPendingTimelineState({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-[10rem] items-center justify-center text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+        />
+        <span className="font-medium text-foreground">{label}...</span>
+      </div>
+    </div>
+  );
+}
+
 function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
   return (
     <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
@@ -2878,9 +2902,9 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
       {active ? (
         <>
-          <Loader2
-            className="size-3.5 shrink-0 animate-spin text-primary"
-            style={{ willChange: "transform" }}
+          <span
+            aria-hidden="true"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
           />
           <span className="font-medium text-foreground">{label}</span>
           {kind === "sending" ? (

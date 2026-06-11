@@ -154,7 +154,10 @@ pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
                 output = meta.output_tokens.unwrap_or(0);
                 cache_read = meta.cached_read_tokens.unwrap_or(0);
                 total = meta.total_tokens.unwrap_or(0);
-                eprintln!("[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+                eprintln!(
+                    "[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}",
+                    input, output, cache_read, total
+                );
             }
         }
     }
@@ -185,12 +188,18 @@ pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
                     }
                 }
             }
-            eprintln!("[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+            eprintln!(
+                "[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}",
+                input, output, cache_read, total
+            );
         } else {
             eprintln!("[metrics] failed to open timeline at {}", tp.as_str());
         }
     } else {
-        eprintln!("[metrics] no timeline file found for {}", session_path.as_str());
+        eprintln!(
+            "[metrics] no timeline file found for {}",
+            session_path.as_str()
+        );
     }
 
     // 3. Debug: list files in attempt dir and show first timeline line
@@ -207,9 +216,12 @@ pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
         if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
             let reader = BufReader::new(file);
             for (i, line) in reader.lines().enumerate() {
-                if i >= 3 { break; }
+                if i >= 3 {
+                    break;
+                }
                 if let Ok(l) = line {
-                    eprintln!("[metrics] timeline[{}]: {}", i, &l[..l.len().min(200)]);
+                    let preview = l.chars().take(200).collect::<String>();
+                    eprintln!("[metrics] timeline[{}]: {}", i, preview);
                 }
             }
         }
@@ -226,7 +238,13 @@ pub fn current_timestamp() -> String {
     format!("{secs}Z")
 }
 
-pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value, max_size: u64, target_size: u64) -> Result<()> {
+pub fn append_raw_frame(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Result<()> {
     append_jsonl(
         path,
         &AcpRawFrame {
@@ -250,15 +268,21 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     if meta.len() <= max_size {
         return Ok(());
     }
-    let content = std::fs::read_to_string(path.as_std_path())?;
+    let content = std::fs::read(path.as_std_path())?;
 
     // Find byte offset of the first session/update line — only trim from there onward.
     let mut pinned_bytes = 0usize;
-    for line in content.lines() {
-        if line.contains("\"method\":\"session/update\"") {
+    let marker = br#""method":"session/update""#;
+    let mut found_updatable = false;
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
+        if line.windows(marker.len()).any(|window| window == marker) {
+            found_updatable = true;
             break;
         }
-        pinned_bytes += line.len() + 1; // +1 for newline
+        pinned_bytes += line.len();
+    }
+    if !found_updatable {
+        return Ok(());
     }
 
     let updatable_start = pinned_bytes;
@@ -273,18 +297,18 @@ fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> 
     let updatable = &content[updatable_start..];
     let mut cumulative = 0u64;
     let mut drop_bytes = 0usize;
-    for line in updatable.lines() {
+    for line in updatable.split_inclusive(|byte| *byte == b'\n') {
         if cumulative >= excess {
             break;
         }
-        let line_len = line.len() + 1;
-        cumulative += line_len as u64;
-        drop_bytes += line_len;
+        cumulative += line.len() as u64;
+        drop_bytes += line.len();
     }
+    let drop_bytes = drop_bytes.min(updatable.len());
 
     let mut file = std::fs::File::create(path.as_std_path())?;
-    file.write_all(content[..updatable_start].as_bytes())?;
-    file.write_all(updatable[drop_bytes..].as_bytes())?;
+    file.write_all(&content[..updatable_start])?;
+    file.write_all(&updatable[drop_bytes..])?;
     Ok(())
 }
 
@@ -798,18 +822,24 @@ mod tests {
     }
 
     // ── read_session_tokens tests ──
-    use tempfile::TempDir;
     use std::io::Write as _;
+    use tempfile::TempDir;
 
     #[test]
     fn tokens_from_snapshot() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
             "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
             "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
             "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700
-        }"#).unwrap();
-        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
         let (i, o, c, t) = super::read_session_tokens(&session_path);
         assert_eq!(i, 1000);
         assert_eq!(o, 500);
@@ -820,7 +850,9 @@ mod tests {
     #[test]
     fn tokens_no_files_returns_zero() {
         let dir = TempDir::new().unwrap();
-        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
         let (i, o, c, t) = super::read_session_tokens(&session_path);
         assert_eq!((i, o, c, t), (0, 0, 0, 0));
     }
@@ -830,7 +862,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
         writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":99,"outputTokens":33,"totalTokens":132}}}}"#).unwrap();
-        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
         let (i, o, _c, t) = super::read_session_tokens(&session_path);
         assert_eq!(i, 99);
         assert_eq!(o, 33);
@@ -844,7 +878,9 @@ mod tests {
         writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":100,"outputTokens":10,"totalTokens":110}}}}"#).unwrap();
         writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":500,"outputTokens":20,"totalTokens":520}}}}"#).unwrap();
         writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":300,"outputTokens":5,"totalTokens":305}}}}"#).unwrap();
-        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
         let (i, o, _c, t) = super::read_session_tokens(&session_path);
         assert_eq!(i, 500);
         assert_eq!(o, 20);
@@ -855,13 +891,42 @@ mod tests {
     fn tokens_ignores_non_usage_events() {
         let dir = TempDir::new().unwrap();
         let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
-        writeln!(f, r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#
+        )
+        .unwrap();
         writeln!(f, r#"{{"item":{{"kind":"availableCommands"}}}}"#).unwrap();
         writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":77,"outputTokens":7,"totalTokens":84}}}}"#).unwrap();
-        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
         let (i, o, _c, t) = super::read_session_tokens(&session_path);
         assert_eq!(i, 77);
         assert_eq!(o, 7);
         assert_eq!(t, 84);
+    }
+
+    #[test]
+    fn roll_raw_log_trims_by_line_bytes_with_unicode_without_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+        let pinned = r#"{"method":"initialize","content":"固定握手"}"#;
+        let update_one = r#"{"method":"session/update","content":"本次任务包含中文内容一"}"#;
+        let update_two = r#"{"method":"session/update","content":"本次任务包含中文内容二"}"#;
+        std::fs::write(
+            path.as_std_path(),
+            format!("{pinned}\n{update_one}\n{update_two}"),
+        )
+        .unwrap();
+
+        super::roll_raw_log(&path, 1, (pinned.len() + 1 + update_two.len()) as u64).unwrap();
+
+        let rolled = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert!(rolled.contains(pinned));
+        assert!(rolled.contains(update_two));
+        assert!(!rolled.contains(update_one));
     }
 }

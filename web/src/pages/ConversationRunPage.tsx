@@ -285,6 +285,7 @@ export function ConversationRunPage({
             onSessionStopped={handleSessionStopped}
             onAtBottomChange={handleAtBottomChange}
             externalComposerState={externalComposerState}
+            runtimeStatus={selectedLeaf.status}
             artifacts={run.artifacts}
             attachments={run.attachments}
             usageCompact

@@ -191,6 +191,7 @@ const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
+const LIVE_EVENT_FLUSH_MS = 50;
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -479,6 +480,8 @@ export const ACPChatDialog = forwardRef<
   const configGenerationRef = useRef(0);
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
+  const liveEventFlushTimerRef = useRef<number | null>(null);
 
   const updateOptimisticEvents = (
     updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
@@ -644,11 +647,15 @@ export const ACPChatDialog = forwardRef<
     }>;
     return entries.filter((e) => e.content);
   }, [effectiveEvents]);
-  const timeline = useMemo(
+  const rebuiltTimeline = useMemo(
     () => buildAcpTimeline(effectiveEvents),
     [effectiveEvents],
   );
+  const timeline = useStableAcpTimeline(rebuiltTimeline);
   const sessionActive = isSessionActive(effective?.status) || runtimeActive;
+  const streamingTextItemKey = sessionActive
+    ? latestStreamingTextItemKey(timeline)
+    : null;
   const handleTimelineItemOpenChange = useCallback(
     (key: string, open: boolean) => {
       setExpandedItems((current) =>
@@ -862,17 +869,17 @@ export const ACPChatDialog = forwardRef<
     setCurrentSession(updated);
   };
 
-  const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
-    const normalized = normalizeEventUpdate(event);
-    if (
-      !normalized ||
-      (!isRenderableEvent(normalized) &&
-        normalized.kind !== "permissionRequest")
-    )
-      return;
+  const applyEventUpdates = (updates: AcpUiEventVm[]) => {
+    const normalizedUpdates = updates
+      .map((event) => normalizeEventUpdate(event))
+      .filter((event): event is AcpUiEventVm => {
+        if (!event) return false;
+        return isRenderableEvent(event) || event.kind === "permissionRequest";
+      });
+    if (normalizedUpdates.length === 0) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(false);
-      const merged = mergeAcpEvents(events, [normalized]);
+      const merged = mergeAcpEvents(events, normalizedUpdates);
       const limited = limitAcpEvents(
         merged,
         "start",
@@ -883,6 +890,38 @@ export const ACPChatDialog = forwardRef<
       return limited;
     });
   };
+
+  const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
+    if (!event) return;
+    applyEventUpdates([event]);
+  };
+
+  const flushPendingLiveEvents = useCallback(() => {
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+    const updates = [...pendingLiveEventsRef.current.values()];
+    pendingLiveEventsRef.current.clear();
+    if (updates.length > 0) applyEventUpdates(updates);
+  }, [effectiveLoadedEventBufferLimit, eventIdPrefix]);
+
+  const enqueueLiveEventUpdate = useCallback(
+    (event: AcpUiEventVm) => {
+      if (!isCoalescableLiveEvent(event)) {
+        flushPendingLiveEvents();
+        applyEventUpdate(event);
+        return;
+      }
+      pendingLiveEventsRef.current.set(liveEventBufferKey(event), event);
+      if (liveEventFlushTimerRef.current !== null) return;
+      liveEventFlushTimerRef.current = window.setTimeout(() => {
+        liveEventFlushTimerRef.current = null;
+        flushPendingLiveEvents();
+      }, LIVE_EVENT_FLUSH_MS);
+    },
+    [flushPendingLiveEvents],
+  );
 
   useEffect(() => {
     latestSessionRef.current = effective ?? currentSession ?? session ?? null;
@@ -943,8 +982,9 @@ export const ACPChatDialog = forwardRef<
     void (async () => {
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
-        if (event.event) applyEventUpdate(event.event);
+        if (event.event) enqueueLiveEventUpdate(event.event);
         else {
+          flushPendingLiveEvents();
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
@@ -980,10 +1020,17 @@ export const ACPChatDialog = forwardRef<
     return () => {
       active = false;
       stopListening?.();
+      if (liveEventFlushTimerRef.current !== null) {
+        window.clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      pendingLiveEventsRef.current.clear();
     };
   }, [
     attemptId,
+    enqueueLiveEventUpdate,
     eventWindowKey,
+    flushPendingLiveEvents,
     nodeId,
     outerAttemptId,
     outerNodeId,
@@ -1484,6 +1531,7 @@ export const ACPChatDialog = forwardRef<
                       <ACPTimelineItemRenderer
                         event={item}
                         expansionControls={expansionControls}
+                        streamingTextItemKey={streamingTextItemKey}
                         taskId={taskId}
                         onMessageAttachmentClick={(att) => handleOpenArtifactDetail({
                           kind: 'input-attachment',
@@ -2585,6 +2633,7 @@ export function ACPMessageList({
   onLayoutChange?: () => void;
 }) {
   const active = isSessionActive(sessionStatus) || sending;
+  const streamingTextItemKey = active ? latestStreamingTextItemKey(timeline) : null;
   const expansionControls = useMemo<AcpExpansionControls>(
     () => ({
       expandedItems: {},
@@ -2602,6 +2651,7 @@ export function ACPMessageList({
           key={timelineEventKey(item)}
           event={item}
           expansionControls={expansionControls}
+          streamingTextItemKey={streamingTextItemKey}
         />
       ))}
     </div>
@@ -2646,11 +2696,13 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
 const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
   expansionControls,
+  streamingTextItemKey,
   taskId,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
+  streamingTextItemKey?: string | null;
   taskId?: string;
   onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
 }) {
@@ -2660,13 +2712,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
         <ChildAgentGroupCard
           event={event}
           expansionControls={expansionControls}
+          streamingTextItemKey={streamingTextItemKey}
         />
       </AssistantTimelineRow>
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
+    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
     return <ThoughtBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -2683,10 +2736,12 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   event,
   expansionControls,
+  streamingTextItemKey,
   onLayoutChange,
 }: {
   event: AcpChildAgentGroup;
   expansionControls: AcpExpansionControls;
+  streamingTextItemKey?: string | null;
   onLayoutChange?: () => void;
 }) {
   const { t } = useTranslation();
@@ -2800,6 +2855,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                       key={timelineEventKey(child)}
                       event={child}
                       expansionControls={expansionControls}
+                      streamingTextItemKey={streamingTextItemKey}
                     />
                   ))}
                 </div>
@@ -2937,16 +2993,20 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
 
 const MessageBubble = memo(function MessageBubble({
   event,
+  streamingTextItemKey,
   taskId,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineEvent;
+  streamingTextItemKey?: string | null;
   taskId?: string;
   onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
 }) {
   const { t } = useTranslation();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
+  const streamingDraft =
+    !isUser && timelineEventKey(event) === streamingTextItemKey;
   const rawAttachments: Array<{ name: string; path: string; type: string; size: number }> =
     rawObject(event.raw)?.attachments as any ?? [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
@@ -2973,7 +3033,13 @@ const MessageBubble = memo(function MessageBubble({
               "border border-destructive/40 bg-destructive/10 text-destructive",
           )}
         >
-          {isUser ? event.content : <Markdown>{event.content ?? ""}</Markdown>}
+          {isUser ? (
+            event.content
+          ) : streamingDraft ? (
+            <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
+          ) : (
+            <Markdown>{event.content ?? ""}</Markdown>
+          )}
         </MessageContent>
         {hasAttachments ? (
           <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
@@ -3019,6 +3085,18 @@ const MessageBubble = memo(function MessageBubble({
         <AcpAvatarWithTime tone="user" timestamp={event.timestamp} />
       ) : null}
     </Message>
+  );
+});
+
+const StreamingTextDraft = memo(function StreamingTextDraft({
+  children,
+}: {
+  children: string;
+}) {
+  return (
+    <div className="min-w-0 max-w-full whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">
+      {children}
+    </div>
   );
 });
 
@@ -3423,6 +3501,11 @@ const RawFrameRow = memo(function RawFrameRow({
   const [expandedContent, setExpandedContent] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
 
+  useEffect(() => {
+    setExpandedContent(null);
+    setIsOpen(false);
+  }, [frame.id, frame.content]);
+
   const handleToggle = useCallback(
     (e: React.SyntheticEvent<HTMLDetailsElement>) => {
       const open = e.currentTarget.open;
@@ -3440,8 +3523,11 @@ const RawFrameRow = memo(function RawFrameRow({
     [expandedContent, frame.content, onLayoutChange],
   );
 
-  const compact = truncateFrameLine(frame.content.trimStart());
-  const displayExpanded = expandedContent ?? frame.content;
+  const compact = useMemo(
+    () => truncateFrameLine(frame.content.trimStart()),
+    [frame.content],
+  );
+  const displayExpanded = expandedContent ?? t("acp.loadingRawFrames");
   const scrollable =
     expandedContent !== null && isLongRawFrame(expandedContent);
 
@@ -3755,6 +3841,110 @@ function isNormalResponseAfterError(event: AcpUiEventVm, errorAt: number) {
   )
     return false;
   return toolStatusTone(event.status) !== "danger";
+}
+
+function isCoalescableLiveEvent(event: AcpUiEventVm) {
+  return ["textDelta", "thoughtDelta", "plan"].includes(event.kind);
+}
+
+function liveEventBufferKey(event: AcpUiEventVm) {
+  return acpEventKey(event);
+}
+
+function useStableAcpTimeline(timeline: AcpTimelineItem[]) {
+  const previousRef = useRef<AcpTimelineItem[]>([]);
+  return useMemo(() => {
+    const stable = stabilizeTimelineItems(timeline, previousRef.current);
+    previousRef.current = stable;
+    return stable;
+  }, [timeline]);
+}
+
+function stabilizeTimelineItems(
+  nextItems: AcpTimelineItem[],
+  previousItems: AcpTimelineItem[],
+): AcpTimelineItem[] {
+  if (previousItems.length === 0) return nextItems;
+  const previousByKey = new Map(
+    previousItems.map((item) => [timelineEventKey(item), item]),
+  );
+  let changed = nextItems.length !== previousItems.length;
+  const stableItems = nextItems.map((item) => {
+    const previous = previousByKey.get(timelineEventKey(item));
+    const stable = stabilizeTimelineItem(item, previous);
+    if (stable !== previous) changed = true;
+    return stable;
+  });
+  return changed ? stableItems : previousItems;
+}
+
+function stabilizeTimelineItem(
+  next: AcpTimelineItem,
+  previous?: AcpTimelineItem,
+): AcpTimelineItem {
+  if (!previous || isChildAgentGroup(next) !== isChildAgentGroup(previous))
+    return next;
+  if (isChildAgentGroup(next) && isChildAgentGroup(previous)) {
+    const events = stabilizeTimelineItems(next.events, previous.events);
+    if (
+      events === previous.events &&
+      next.seq === previous.seq &&
+      next.timestamp === previous.timestamp &&
+      next.startedSeq === previous.startedSeq &&
+      next.endedSeq === previous.endedSeq &&
+      next.startedAt === previous.startedAt &&
+      next.endedAt === previous.endedAt &&
+      next.status === previous.status &&
+      next.title === previous.title &&
+      next.toolCallId === previous.toolCallId &&
+      stabilizeTimelineItem(next.toolEvent, previous.toolEvent) ===
+        previous.toolEvent
+    ) {
+      return previous;
+    }
+    return {
+      ...next,
+      events,
+      toolEvent: stabilizeTimelineItem(next.toolEvent, previous.toolEvent) as AcpTimelineEvent,
+    };
+  }
+  return sameTimelineEvent(next as AcpTimelineEvent, previous as AcpTimelineEvent)
+    ? previous
+    : next;
+}
+
+function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
+  return (
+    left.id === right.id &&
+    left.seq === right.seq &&
+    left.timestamp === right.timestamp &&
+    left.kind === right.kind &&
+    left.sessionId === right.sessionId &&
+    left.content === right.content &&
+    left.title === right.title &&
+    left.toolCallId === right.toolCallId &&
+    left.status === right.status &&
+    left.startedSeq === right.startedSeq &&
+    left.endedSeq === right.endedSeq &&
+    left.startedAt === right.startedAt &&
+    left.endedAt === right.endedAt &&
+    left.durationMs === right.durationMs &&
+    left.optimistic === right.optimistic &&
+    left.raw === right.raw
+  );
+}
+
+function latestStreamingTextItemKey(items: AcpTimelineItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (isChildAgentGroup(item)) {
+      const childKey: string | null = latestStreamingTextItemKey(item.events);
+      if (childKey) return childKey;
+      continue;
+    }
+    if (item.kind === "textDelta") return timelineEventKey(item);
+  }
+  return null;
 }
 
 function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {

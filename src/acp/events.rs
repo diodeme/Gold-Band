@@ -109,6 +109,16 @@ pub struct AcpTimelineItem {
     pub item: AcpUiEvent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimelinePatch {
+    pub patch_type: String,
+    pub item_id: String,
+    pub revision: u64,
+    pub op: String,
+    pub item: AcpUiEvent,
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpAttemptPaths {
     pub attempt_dir: Utf8PathBuf,
@@ -344,48 +354,57 @@ pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()>
     Ok(())
 }
 
+pub fn append_timeline_patch(
+    path: &Utf8Path,
+    item_id: impl Into<String>,
+    revision: u64,
+    item: &AcpUiEvent,
+) -> Result<()> {
+    append_jsonl(
+        path,
+        &AcpTimelinePatch {
+            patch_type: "timelinePatch".to_string(),
+            item_id: item_id.into(),
+            revision,
+            op: "upsert".to_string(),
+            item: item.clone(),
+        },
+    )
+}
+
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
-    let mut legacy_latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
+    let mut latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
     let mut final_items = Vec::<AcpUiEvent>::new();
-    let mut saw_legacy_patch = false;
+    let mut saw_patch = false;
     for line in BufReader::new(file).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
+        if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
+            if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                continue;
+            }
+            saw_patch = true;
+            let should_replace = latest_by_item
+                .get(&patch.item_id)
+                .map(|(revision, _)| patch.revision >= *revision)
+                .unwrap_or(true);
+            if should_replace {
+                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+            }
+            continue;
+        }
         if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+            latest_by_item.insert(entry.item.id.clone(), (0, entry.item.clone()));
             final_items.push(entry.item);
-            continue;
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LegacyPatch {
-            patch_type: String,
-            item_id: String,
-            revision: u64,
-            op: String,
-            item: AcpUiEvent,
-        }
-        let Ok(patch) = serde_json::from_str::<LegacyPatch>(&line) else {
-            continue;
-        };
-        if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
-            continue;
-        }
-        saw_legacy_patch = true;
-        let should_replace = legacy_latest_by_item
-            .get(&patch.item_id)
-            .map(|(revision, _)| patch.revision >= *revision)
-            .unwrap_or(true);
-        if should_replace {
-            legacy_latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
         }
     }
-    if saw_legacy_patch {
-        let mut items = legacy_latest_by_item
+    if saw_patch {
+        let mut items = latest_by_item
             .into_values()
             .map(|(_, item)| item)
             .collect::<Vec<_>>();
@@ -634,7 +653,10 @@ fn extract_status(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_usage_fields, kind_to_ui_kind, user_prompt_event};
+    use super::{
+        AcpUiEvent, append_timeline_patch, extract_usage_fields, kind_to_ui_kind,
+        load_timeline_items, user_prompt_event, write_timeline_items,
+    };
     use serde_json::json;
 
     // --- extract_usage_fields ---
@@ -824,6 +846,52 @@ mod tests {
     // ── read_session_tokens tests ──
     use std::io::Write as _;
     use tempfile::TempDir;
+
+    fn test_timeline_event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
+        AcpUiEvent {
+            id: id.to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(content.to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(seq),
+            ended_seq: Some(seq),
+            started_at: Some(format!("{seq}Z")),
+            ended_at: Some(format!("{seq}Z")),
+            raw: None,
+        }
+    }
+
+    #[test]
+    fn load_timeline_items_merges_snapshot_and_patch() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[
+                test_timeline_event("message-1", 10, "old"),
+                test_timeline_event("message-2", 20, "keep"),
+            ],
+        )
+        .unwrap();
+        let mut updated = test_timeline_event("message-1", 30, "new");
+        updated.started_seq = Some(10);
+        updated.started_at = Some("10Z".to_string());
+        append_timeline_patch(&path, "message-1", 1, &updated).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "message-1");
+        assert_eq!(items[0].content.as_deref(), Some("new"));
+        assert_eq!(items[1].id, "message-2");
+        assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
 
     #[test]
     fn tokens_from_snapshot() {

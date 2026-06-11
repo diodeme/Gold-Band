@@ -3691,25 +3691,24 @@ fn parse_timeline_file(
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) {
-                event_count += 1;
-                final_item.item.seq = final_item
-                    .item
-                    .ended_seq
-                    .or(final_item.item.started_seq)
-                    .unwrap_or(final_item.item.seq);
-                session_elapsed.observe_event(&final_item.item);
-                if final_item.item.kind == "permissionRequest" {
-                    latest_permission_events
-                        .insert(final_item.item.id.clone(), final_item.item.clone());
+            if let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
+                if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                    continue;
                 }
-                if let Some(raw) = final_item.item.raw.as_ref() {
-                    if is_session_update(&final_item.item, "available_commands_update") {
+                saw_legacy_patch = true;
+                event_count += 1;
+                patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
+                session_elapsed.observe_event(&patch.item);
+                if patch.item.kind == "permissionRequest" {
+                    latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+                }
+                if let Some(raw) = patch.item.raw.as_ref() {
+                    if is_session_update(&patch.item, "available_commands_update") {
                         available_commands = raw
                             .get("availableCommands")
                             .and_then(|value| value.as_array())
                             .cloned();
-                    } else if is_session_update(&final_item.item, "usage_update") {
+                    } else if is_session_update(&patch.item, "usage_update") {
                         let (used, size, cost_amount) =
                             gold_band::acp::events::extract_usage_fields(raw);
                         usage = Some(AcpUsageVm {
@@ -3720,35 +3719,40 @@ fn parse_timeline_file(
                         });
                     }
                 }
-                if is_hidden_from_chat(&final_item.item)
-                    || !is_session_timeline_event(&final_item.item)
-                {
+                if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
                     continue;
                 }
-                final_items.push(final_item.item);
+                let should_replace = latest_by_item
+                    .get(&patch.item_id)
+                    .map(|(revision, _)| patch.revision >= *revision)
+                    .unwrap_or(true);
+                if should_replace {
+                    latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+                }
                 continue;
             }
 
-            let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) else {
+            let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) else {
                 continue;
             };
-            if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
-                continue;
-            }
-            saw_legacy_patch = true;
             event_count += 1;
-            patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
-            session_elapsed.observe_event(&patch.item);
-            if patch.item.kind == "permissionRequest" {
-                latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+            final_item.item.seq = final_item
+                .item
+                .ended_seq
+                .or(final_item.item.started_seq)
+                .unwrap_or(final_item.item.seq);
+            session_elapsed.observe_event(&final_item.item);
+            if final_item.item.kind == "permissionRequest" {
+                latest_permission_events
+                    .insert(final_item.item.id.clone(), final_item.item.clone());
             }
-            if let Some(raw) = patch.item.raw.as_ref() {
-                if is_session_update(&patch.item, "available_commands_update") {
+            if let Some(raw) = final_item.item.raw.as_ref() {
+                if is_session_update(&final_item.item, "available_commands_update") {
                     available_commands = raw
                         .get("availableCommands")
                         .and_then(|value| value.as_array())
                         .cloned();
-                } else if is_session_update(&patch.item, "usage_update") {
+                } else if is_session_update(&final_item.item, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
                     usage = Some(AcpUsageVm {
@@ -3759,21 +3763,21 @@ fn parse_timeline_file(
                     });
                 }
             }
-            if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
+            if is_hidden_from_chat(&final_item.item) || !is_session_timeline_event(&final_item.item)
+            {
                 continue;
             }
-            let should_replace = latest_by_item
-                .get(&patch.item_id)
-                .map(|(revision, _)| patch.revision >= *revision)
-                .unwrap_or(true);
-            if should_replace {
-                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
-            }
+            latest_by_item.insert(final_item.item.id.clone(), (0, final_item.item.clone()));
+            final_items.push(final_item.item);
         }
     }
 
     let mut all_events = if saw_legacy_patch {
-        latest_by_item
+        let mut merged = latest_by_item;
+        for item in final_items {
+            merged.entry(item.id.clone()).or_insert((0, item));
+        }
+        merged
             .into_values()
             .map(|(_, event)| event)
             .collect::<Vec<_>>()

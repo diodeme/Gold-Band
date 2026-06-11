@@ -506,7 +506,10 @@ pub fn get_round_detail(
 #[tauri::command]
 pub fn start_run(app_handle: AppHandle, state: State<'_, DesktopState>, task_id: String) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_acp_live_update(acp_live_update_emitter(app_handle))
+        .with_intervention_notifier(notifier);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -521,10 +524,19 @@ pub fn continue_run(
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
-    app.run_continue_background(&task_id, &run_id, prompt_id)
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_intervention_notifier(notifier);
+    let result = app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
@@ -539,7 +551,10 @@ pub fn submit_manual_check(
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_intervention_notifier(notifier);
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -550,9 +565,18 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
+    let result = app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+            "nodeId": &node_id,
+            "attemptId": &attempt_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
@@ -563,22 +587,40 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
-    app.run_retry(&task_id, &run_id)
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_intervention_notifier(notifier);
+    let result = app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
 pub fn kill_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let app = state.app().map_err(command_error)?;
-    app.run_kill(&task_id, &run_id)
+    let result = app.run_kill(&task_id, &run_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]

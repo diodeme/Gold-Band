@@ -206,7 +206,10 @@ export function RunModeManagementPage({
 
   // ── Workflow template editor helpers ──
   const initWfEditor = () => {
-    const initialTemplate = effectiveWorkflowTemplates?.templates[0] ?? null;
+    const preselectedId = workflowTemplateId || effectiveWorkflowTemplates?.lastUsedTemplateId;
+    const initialTemplate = preselectedId
+      ? effectiveWorkflowTemplates?.templates.find((t) => t.id === preselectedId) ?? effectiveWorkflowTemplates?.templates[0] ?? null
+      : effectiveWorkflowTemplates?.templates[0] ?? null;
     const initialWorkflow = initialTemplate?.workflow ?? null;
     setWfEditTemplateId(initialTemplate?.id ?? null);
     setWfEditWorkflow(initialWorkflow);

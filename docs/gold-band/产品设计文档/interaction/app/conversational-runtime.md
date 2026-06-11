@@ -85,6 +85,8 @@
 ### 停止
 - 停止并重跑在顶部操作区
 - composer 内也有 stop 按钮（ACP 会话停止）
+- composer 内的 ACP 停止表示“中断当前响应”，不是 workflow 配置错误；停止后的 attempt 应显示为可继续暂停
+- ACP 停止先尝试优雅取消，超时后可 kill provider 进程；由停止触发的 adapter closed / cancelled 结果仍按 `process-interrupted` 派生，composer 显示继续按钮，不显示修复工作流入口
 
 ## 会话信息栏（ACPSessionHeader）
 

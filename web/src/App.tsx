@@ -879,6 +879,12 @@ export function App() {
                 }
                 const run = await createConversationRun(input);
                 setConversationRun(run);
+                setConversationPage({
+                  kind: 'conversation-run',
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  runId: run.runId,
+                });
                 getConversationSidebar().then(setConversationSidebar).catch(() => {});
                 pushRoute('task-orchestration', taskListPage, {
                   kind: 'conversation-run',

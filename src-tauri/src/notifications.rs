@@ -58,7 +58,8 @@ pub fn send_intervention_notification(
 
 #[cfg(target_os = "windows")]
 fn send_os_notification(app_handle: &AppHandle, notification: &InterventionNotification) {
-    use tauri_winrt_notification::{Toast, Duration, Scenario};
+    use std::path::Path;
+    use tauri_winrt_notification::{Toast, Duration, Scenario, IconCrop};
 
     let app_id = aumid(app_handle);
 
@@ -68,10 +69,14 @@ fn send_os_notification(app_handle: &AppHandle, notification: &InterventionNotif
     );
     let dismiss_action = "dismiss".to_string();
 
+    // 编译时解析图标路径
+    let icon_path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "\\icons\\icon.png"));
+
     let handle = app_handle.clone();
     let _ = Toast::new(&app_id)
         .title(&notification.title)
         .text1(&notification.body)
+        .icon(icon_path, IconCrop::Square, "码灵")
         .duration(Duration::Long)
         .scenario(Scenario::Reminder)
         .add_button("查看详情", &view_action)
@@ -129,7 +134,7 @@ pub fn init_notification_support(app_handle: &AppHandle) {
 pub fn init_notification_support(_app_handle: &AppHandle) {}
 
 #[cfg(target_os = "windows")]
-fn ensure_toast_aumid_registered(aumid: &str) {
+fn ensure_toast_aumid_registered(_aumid: &str) {
     use std::env;
     use std::fs;
 

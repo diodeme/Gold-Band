@@ -808,6 +808,9 @@ fn error_blocked_run_is_continuable() {
         current_attempt: Some("attempt-001".to_string()),
         new_rounds_opened: 0,
         pause_reason: Some(PauseReason::ErrorBlocked),
+        task_uuid: None,
+        uuid: None,
+        last_executed_node: None,
     };
 
     assert!(is_run_continuable(&run));

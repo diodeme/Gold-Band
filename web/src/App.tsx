@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   checkUpdateManual,
   chooseWorkspace,
@@ -13,6 +13,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationSidebar,
+  getWorkflowTemplates,
   switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
@@ -35,6 +36,7 @@ import {
   removeConversationWorkspace,
   syncConversationWorkspace,
   saveDesktopUiMode,
+  saveConversationRunMode,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -61,7 +63,6 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
-import { StartupSplash, type SplashPhase } from './components/StartupSplash';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -70,18 +71,19 @@ import type {
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
+  WorkflowTemplateStore,
   ConversationSidebarVm,
   CreateTaskInput,
   DesktopFontPreference,
   DesktopLanguage,
   DesktopThemePreference,
   DesktopUiMode,
+  MetricsSettingsVm,
   PreferencesVm,
   UpdateBadgeStateVm,
   PrimaryModule,
   RoundDetailVm,
   RoundSelection,
-  StartupCheckResult,
   TaskListVm,
   TaskPage,
   UpdateStatusVm,
@@ -97,6 +99,14 @@ const defaultUpdaterSettings: UpdaterSettingsVm = {
   overrideUrl: null,
   effectiveUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
   pollIntervalMinutes: 240,
+};
+
+const defaultMetricsSettings: MetricsSettingsVm = {
+  enabled: false,
+  toggleLocked: false,
+  heartbeatEndpoint: null,
+  nodeMetricsEndpoint: null,
+  apiKeySet: false,
 };
 const defaultUpdateStatus: UpdateStatusVm = {
   status: 'idle',
@@ -135,6 +145,8 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
+  const [, startTransition] = useTransition();
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   // Derive active workspace: persisted lastActiveWorkspaceId > explicit state > first workspace
@@ -158,13 +170,11 @@ export function App() {
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
-  const [startupPhase, setStartupPhase] = useState<SplashPhase>('checking');
-  const [splashProgress, setSplashProgress] = useState({ downloaded: 0, total: null as number | null });
-  const [splashUpdateVersion, setSplashUpdateVersion] = useState<string | null>(null);
   const backgroundRefreshInFlightRef = useRef(false);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
+  const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
   const updateBadges = bootstrap?.updateBadges ?? defaultUpdateBadges;
   const persistedAvailableUpdate = bootstrap?.persistedAvailableUpdate ?? null;
@@ -256,6 +266,19 @@ export function App() {
       .catch(() => {}); // Silently fail - sidebar will show empty state
   }, [bootstrap, uiMode]);
 
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    getAgentRegistry().then(setAgentRegistry).catch(() => {});
+    getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
+  }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
+    getConversationRunMode(defaultProjectId)
+      .then((mode) => { if (mode) setConversationRunMode(mode); })
+      .catch(() => {});
+  }, [bootstrap, uiMode, defaultProjectId]);
+
   // Load conversation run when navigating to a run page
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
@@ -290,51 +313,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
-      setStartupPhase('done');
-      return undefined;
-    }
-    let active = true;
-    let unlisten: (() => void) | undefined;
-
-    function handleStartupCheck(result: StartupCheckResult) {
-      if (result.critical) {
-        setStartupPhase('downloading');
-      } else {
-        setStartupPhase('done');
-      }
-    }
-
-    // check-then-listen：先读后端缓存，消除事件竞态
-    import('./api').then(({ getStartupCheckResult }) => {
-      getStartupCheckResult().then((cached) => {
-        if (!active) return;
-        if (cached) {
-          handleStartupCheck(cached);
-          return;
-        }
-        void listen<StartupCheckResult>('gold-band://startup-update-check', (event) => {
-          if (active) handleStartupCheck(event.payload);
-        }).then((dispose) => {
-          if (active) unlisten = dispose; else dispose();
-        });
-      });
-    });
-
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<{ downloaded: number; total: number | null }>('gold-band://update-download-progress', (event) => {
       if (!active) return;
       setDownloadProgress(event.payload);
-      setSplashProgress(event.payload);
     }).then((dispose) => {
       if (active) {
         unlisten = dispose;
@@ -460,6 +444,11 @@ export function App() {
     }
   };
 
+  const updateConversationRunMode = (mode: ConversationRunModeVm) => {
+    setConversationRunMode(mode);
+    saveConversationRunMode(defaultProjectId, mode).catch(() => {});
+  };
+
   const onKillRun = (taskId: string, runId: string) => {
     if (window.confirm(t('common.confirmKill'))) {
       void runAction(() => killRun(taskId, runId));
@@ -528,6 +517,7 @@ export function App() {
         updaterSettings: defaultUpdaterSettings,
         updateStatus: defaultUpdateStatus,
         updateBadges: defaultUpdateBadges,
+        metricsSettings: defaultMetricsSettings,
         clientVersion: '',
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
@@ -615,22 +605,6 @@ export function App() {
     pushRoute('settings', taskPage);
   };
 
-  // 安全超时：15s 内未收到任何事件则自动进入主 UI（防止事件竞态导致 splash 卡死）
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setStartupPhase((current) => (current === 'checking' ? 'done' : current));
-    }, 15_000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (startupPhase !== 'downloading') return;
-    const { downloaded, total } = splashProgress;
-    if (total !== null && total > 0 && downloaded >= total) {
-      setStartupPhase('installing');
-    }
-  }, [startupPhase, splashProgress]);
-
   const onInstallUpdate = async () => {
     setBusy(true);
     setDownloadProgress(null);
@@ -664,6 +638,7 @@ export function App() {
           preferences={preferences}
           appInfo={appInfo}
           updaterSettings={updaterSettings}
+          metricsSettings={metricsSettings}
           updateStatus={updateStatus}
           availableUpdate={effectiveAvailableUpdate}
           showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
@@ -685,15 +660,6 @@ export function App() {
           ? <ContextManagementPage />
           : renderTaskContent();
 
-  if (startupPhase !== 'done') {
-    return (
-      <StartupSplash
-        phase={startupPhase}
-        progress={splashProgress}
-        version={splashUpdateVersion}
-      />
-    );
-  }
   const onToggleUiMode = () => {
     const nextMode: DesktopUiMode = uiMode === 'conversation' ? 'workbench' : 'conversation';
     setUiMode(nextMode);
@@ -864,6 +830,7 @@ export function App() {
             preferences={preferences}
             appInfo={appInfo}
             updaterSettings={updaterSettings}
+            metricsSettings={metricsSettings}
             updateStatus={updateStatus}
             availableUpdate={effectiveAvailableUpdate}
             showAdvancedUpdateDot={showSettingsAdvancedUpdateDot}
@@ -889,9 +856,16 @@ export function App() {
           workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
+          workflowTemplates={conversationWorkflowTemplates}
           busy={busy}
-          onRunModeChange={setConversationRunMode}
+          onRunModeChange={updateConversationRunMode}
           onSubmit={(input) => {
+            const nextMode: ConversationRunModeVm = input.runMode === 'auto'
+              ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
+              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId };
+            setConversationRunMode(nextMode);
+            setBusy(true);
+            saveConversationRunMode(input.projectId, nextMode).catch(() => {});
             validateConversationCreate(input)
               .then(async (validation) => {
                 if (!validation.valid) {
@@ -908,7 +882,8 @@ export function App() {
                   runId: run.runId,
                 });
               })
-              .catch((err) => setError(displayAppError(t, err)));
+              .catch((err) => setError(displayAppError(t, err)))
+              .finally(() => setBusy(false));
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
@@ -923,8 +898,9 @@ export function App() {
         <RunModeManagementPage
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
-          workflowTemplates={null}
-          onSave={(mode) => setConversationRunMode(mode)}
+          workflowTemplates={conversationWorkflowTemplates}
+          onSave={updateConversationRunMode}
+          onWorkflowTemplatesChange={setConversationWorkflowTemplates}
           onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );
@@ -960,6 +936,8 @@ export function App() {
           onSaveWorkflow={async (json) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
             await saveTaskWorkflow(conversationPage.taskId, dsl);
+            const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
+            setConversationRun(refreshed);
           }}
           onSelectSession={(leaf) => {
             const key = leaf.outerNodeId
@@ -974,18 +952,24 @@ export function App() {
               leaf.outerNodeId,
               leaf.outerAttemptId,
             ).then((switched) => {
-              setConversationRun((prev) => prev ? {
-                ...prev,
-                selectedSession: switched.selectedSession,
-                artifacts: switched.artifacts,
-                attachments: switched.attachments,
-                sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-              } : prev);
+              startTransition(() => {
+                setConversationRun((prev) => prev ? {
+                  ...prev,
+                  selectedSession: switched.selectedSession,
+                  artifacts: switched.artifacts,
+                  attachments: switched.attachments,
+                  sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
+                } : prev);
+              });
             }).catch(() => {});
           }}
           onSessionStopped={() => {}}
-          onContinueRun={() => {}}
-          onRepairWorkflow={() => {}}
+          onContinueRun={() => {
+            continueRun(conversationPage.taskId, conversationPage.runId)
+              .then(() => getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId))
+              .then(setConversationRun)
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           onTitleChange={(title) => {
             setConversationRun((prev) => prev ? { ...prev, title } : prev);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
@@ -1000,10 +984,11 @@ export function App() {
       projectId={defaultProjectId}
       workspaceName={defaultWorkspaceName}
       workspaces={conversationSidebar.workspaces}
-      runMode={conversationRunMode}
-      agentRegistry={agentRegistry}
-      busy={busy}
-      onRunModeChange={setConversationRunMode}
+          runMode={conversationRunMode}
+          agentRegistry={agentRegistry}
+          workflowTemplates={conversationWorkflowTemplates}
+          busy={busy}
+      onRunModeChange={updateConversationRunMode}
       onSubmit={(_input) => {}}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {

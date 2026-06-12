@@ -5,6 +5,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { PortalContainerContext } from "@/lib/portal-container"
 import { Button } from "@/components/ui/button"
 
 function Dialog({
@@ -57,10 +58,18 @@ function DialogContent({
   showCloseButton?: boolean
   overlayClassName?: string
 }) {
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
+  const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    setPortalContainerEl(node)
+  }, [])
+
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
+        ref={setContentRef}
         data-slot="dialog-content"
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
@@ -68,7 +77,9 @@ function DialogContent({
         )}
         {...props}
       >
-        {children}
+        <PortalContainerContext.Provider value={portalContainerEl}>
+          {children}
+        </PortalContainerContext.Provider>
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"

@@ -4,6 +4,7 @@ Your final step must output only the JSON content for the `dynamic-node-completi
 This AI-DYNAMIC node uses the fixed-agent strategy: except for `workflow-invocation`, all internal worker, merge, and acceptance nodes will use the same fixed agent chosen by runtime. Do not output provider fields for any node.
 {% else %}
 This AI-DYNAMIC node uses the dynamic-agent strategy: the bootstrap agent is already fixed by runtime, but for later worker / merge / acceptance nodes you must choose and output the provider for each node based on the routing guidance and available providers in this prompt.
+{% if dynamic_requires_model_in_proposal %}Because routing guidance is configured, every worker / merge / acceptance node must output `model`. If a provider already has a configured model, runtime will use the configured model even if you output a different model.{% else %}Because routing guidance is empty, every available provider has a configured model. Do not output `model` for worker / merge / acceptance nodes.{% endif %}
 {% endif %}
 
 Below are scenario-based examples. The strings inside the JSON include type / meaning / requiredness hints for the model. Runtime validation remains the final source of truth.
@@ -39,6 +40,7 @@ Below are scenario-based examples. The strings inside the JSON include type / me
       "task": "string, node task instruction, required",
       {% if agent_strategy_mode == "dynamic" %}
       "provider": "string, provider ID, required when kind=worker; omit when kind=workflow-invocation",
+      "model": "string, model name; required for kind=worker when routing guidance is configured; omit when routing guidance is empty; omit when kind=workflow-invocation",
       {% endif %}      "profile": "string, registered profile ID, optional; if present it must exist",
       "sessionMode": "string, session mode, optional, defaults to new; use continue only when resuming a reusable session node listed in this prompt for the current chain",
       "continueFromNodeId": "string, reusable session source node ID, required when sessionMode=continue; it must come from the resumable session node list in this prompt",
@@ -71,6 +73,7 @@ Below are scenario-based examples. The strings inside the JSON include type / me
         "task": "string, node task instruction, required",
         {% if agent_strategy_mode == "dynamic" %}
         "provider": "string, provider ID, required when kind=worker; omit when kind=workflow-invocation",
+        "model": "string, model name; required for kind=worker when routing guidance is configured; omit when routing guidance is empty; omit when kind=workflow-invocation",
         {% endif %}
         "profile": "string, registered profile ID, optional; if present it must exist",
         "sessionMode": "string, session mode, optional, defaults to new; use continue only when resuming a reusable session node listed in this prompt for the current chain",
@@ -86,6 +89,7 @@ Below are scenario-based examples. The strings inside the JSON include type / me
       "title": "string, merge node title, required",
       {% if agent_strategy_mode == "dynamic" %}
       "provider": "string, merge provider, required, and must be available",
+      "model": "string, merge model name; required when routing guidance is configured; omit when routing guidance is empty",
       {% endif %}
       "profile": "string, registered profile ID, optional; if present it must exist",
       "task": "string, merge task instruction, required"
@@ -94,6 +98,7 @@ Below are scenario-based examples. The strings inside the JSON include type / me
       "title": "string, acceptance node title, required",
       {% if agent_strategy_mode == "dynamic" %}
       "provider": "string, acceptance provider, required, and must be available",
+      "model": "string, acceptance model name; required when routing guidance is configured; omit when routing guidance is empty",
       {% endif %}
       "profile": "string, registered profile ID, optional; if present it must exist",
       "task": "string, acceptance task instruction, required"
@@ -105,6 +110,8 @@ Below are scenario-based examples. The strings inside the JSON include type / me
 Constraint reminders:
 {% if agent_strategy_mode == "fixed" %}- Under the fixed-agent strategy, do not output any `provider` fields. Runtime injects the fixed agent automatically.
 {% else %}- Under the dynamic-agent strategy, every `worker / merge / acceptance` must output a valid provider and it must follow the routing guidance in this prompt.
+- When routing guidance is configured, every matching `worker / merge / acceptance` must output `model`; if that provider has a configured model, runtime still prefers the configured model.
+- When routing guidance is empty, do not output `model`; runtime uses the configured model for each provider.
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.

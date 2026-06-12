@@ -301,7 +301,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (
                 <>
-                  <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} activeStatus={activeRun?.status} />
+                  <GraphView graph={vm.graph} variant="workflow" activeNodeId={activeWorkflowNodeId} />
                   {vm.workflowJson ? <div className="mt-4"><CodeBlock>{vm.workflowJson}</CodeBlock></div> : null}
                   <div className="mt-4 flex justify-end">
                     <Button variant="outline" onClick={() => openWorkflowDrawer('edit')}>{t('workflow.editWorkflow')}</Button>

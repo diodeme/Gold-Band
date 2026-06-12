@@ -106,13 +106,22 @@ struct AcpRuntime<'a> {
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
 }
 
-pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: bool) -> Result<Value> {
+pub fn doctor(
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
-    let mut runtime =
-        AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude, None)?;
+    let mut runtime = AcpRuntime::start(
+        config,
+        cwd.clone(),
+        paths.runtime_root.join("doctor/acp"),
+        use_local_claude,
+        None,
+    )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, "", false)?;
+        runtime.setup_session(cwd, None, None, None, "", false)?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
@@ -129,19 +138,27 @@ pub fn run_prompt(
     prompt: &PromptBundle,
     session_mode: SessionMode,
     permission_mode: Option<String>,
+    model: Option<String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
-    let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude, live_update)?;
+    let mut runtime = AcpRuntime::start(
+        config,
+        workspace_dir.clone(),
+        attempt_dir,
+        use_local_claude,
+        live_update,
+    )?;
     let capabilities = runtime.initialize()?;
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = runtime.setup_session(
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
+        model.as_deref(),
         &prompt.system_prompt,
         strict_continue,
     )?;
@@ -257,12 +274,25 @@ fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) ->
 }
 
 fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+    let mut prompt_blocks: Vec<Value> = Vec::new();
+
+    // Add attachment content blocks first (images, resources)
+    for block in &prompt.content_blocks {
+        prompt_blocks.push(serde_json::to_value(block).unwrap_or_default());
+    }
+
+    // Add the text block with user prompt
+    let text = session_prompt_text(provider_id, prompt);
+    if !text.is_empty() {
+        prompt_blocks.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+
     json!({
         "sessionId": session_id,
-        "prompt": [{
-            "type": "text",
-            "text": session_prompt_text(provider_id, prompt),
-        }]
+        "prompt": prompt_blocks,
     })
 }
 
@@ -288,7 +318,8 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude) {
+        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude)
+        {
             Ok(result) => result,
             Err(error) => {
                 append_diagnostic(
@@ -450,6 +481,7 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
+        model: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
     ) -> Result<bool> {
@@ -468,11 +500,7 @@ impl<'a> AcpRuntime<'a> {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.session_id = Some(session_id.to_string());
-                    if let Some(permission_mode) =
-                        permission_mode.filter(|value| !value.trim().is_empty())
-                    {
-                        self.apply_permission_mode(permission_mode)?;
-                    }
+                    self.apply_session_mode_options(permission_mode, model)?;
                     return Ok(true);
                 }
                 Err(err) => {
@@ -500,9 +528,7 @@ impl<'a> AcpRuntime<'a> {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.session_id = Some(session_id.to_string());
-        if let Some(permission_mode) = permission_mode.filter(|value| !value.trim().is_empty()) {
-            self.apply_permission_mode(permission_mode)?;
-        }
+        self.apply_session_mode_options(permission_mode, model)?;
         Ok(false)
     }
 
@@ -515,6 +541,76 @@ impl<'a> AcpRuntime<'a> {
         }
         if let Some(config_options) = result.get("configOptions") {
             self.config_options = Some(config_options.clone());
+        }
+    }
+
+    /// Applies the effective session mode: model takes priority, falls back to
+    /// permission_mode for backward compatibility.
+    fn apply_session_mode_options(
+        &mut self,
+        permission_mode: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
+            self.set_session_model(m)?;
+        } else if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
+            self.apply_permission_mode(pm)?;
+        }
+        Ok(())
+    }
+
+    fn set_session_model(&mut self, model: &str) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP model selection requires a session id"))?;
+        let model = model.trim();
+        if model.is_empty() {
+            return Ok(());
+        }
+        if has_model_config_option(self.config_options.as_ref()) {
+            let result = self.request(
+                "session/set_config_option",
+                json!({
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": model,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_model(model);
+            return Ok(());
+        }
+        if self.modes.is_some() {
+            let result = self.request(
+                "session/set_mode",
+                json!({
+                    "sessionId": session_id,
+                    "modeId": model,
+                }),
+            )?;
+            self.capture_session_config(&result);
+            self.set_current_model(model);
+        }
+        Ok(())
+    }
+
+    fn set_current_model(&mut self, model: &str) {
+        if let Some(models) = self.models.as_mut().and_then(Value::as_object_mut) {
+            models.insert(
+                "currentModelId".to_string(),
+                Value::String(model.to_string()),
+            );
+        }
+        if let Some(options) = self.config_options.as_mut().and_then(Value::as_array_mut) {
+            if let Some(option) = options.iter_mut().find(|option| {
+                option.get("id").and_then(Value::as_str) == Some("model")
+                    || option.get("category").and_then(Value::as_str) == Some("model")
+            }) {
+                if let Some(object) = option.as_object_mut() {
+                    object.insert("currentValue".to_string(), Value::String(model.to_string()));
+                }
+            }
         }
     }
 
@@ -706,14 +802,20 @@ impl<'a> AcpRuntime<'a> {
             prompt.user_prompt.clone(),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
+            prompt.attachment_metas.clone(),
         );
         self.persist_event(&user_event)?;
         let result = self.request_with_progress(
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
             None,
-            acp_session_title_refresh_enabled
-                .then_some((workspace_dir, "running", restored, None, capabilities)),
+            acp_session_title_refresh_enabled.then_some((
+                workspace_dir,
+                "running",
+                restored,
+                None,
+                capabilities,
+            )),
         )?;
         // Capture session-end usage breakdown (inputTokens / outputTokens / …)
         // that the adapter returns alongside the stopReason.
@@ -842,7 +944,9 @@ impl<'a> AcpRuntime<'a> {
                     self.send_cancel_notification()?;
                     cancel_notified = true;
                 }
-                if cancel_started_at.is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD) {
+                if cancel_started_at
+                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
+                {
                     self.kill_adapter_process();
                     return Err(anyhow!(AcpCancelled));
                 }
@@ -886,11 +990,7 @@ impl<'a> AcpRuntime<'a> {
         let update = params.get("update").cloned().unwrap_or(params);
 
         // Track usage from usage_update events so we can persist them at prompt end.
-        if update
-            .get("sessionUpdate")
-            .and_then(Value::as_str)
-            == Some("usage_update")
-        {
+        if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
             let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
             if let Some(u) = used {
                 // Accumulate positive deltas so compaction-driven resets
@@ -910,23 +1010,22 @@ impl<'a> AcpRuntime<'a> {
         }
 
         self.seq += 1;
-        for event in normalize_session_update(self.seq, session_id, &update) {
-            if contributes_to_final_text(&event.kind) {
-                if !self.collecting_text_output {
-                    self.final_outputs.push(String::new());
-                    self.collecting_text_output = true;
-                }
-                if let Some(content) = &event.content {
-                    append_bounded(&mut self.final_text, content, 256_000);
-                    if let Some(output) = self.final_outputs.last_mut() {
-                        append_bounded(output, content, 64_000);
-                    }
-                }
-            } else {
-                self.collecting_text_output = false;
+        let event = normalize_session_update(self.seq, session_id, &update);
+        if contributes_to_final_text(&event.kind) {
+            if !self.collecting_text_output {
+                self.final_outputs.push(String::new());
+                self.collecting_text_output = true;
             }
-            self.persist_event(&event)?;
+            if let Some(content) = &event.content {
+                append_bounded(&mut self.final_text, content, 256_000);
+                if let Some(output) = self.final_outputs.last_mut() {
+                    append_bounded(output, content, 64_000);
+                }
+            }
+        } else {
+            self.collecting_text_output = false;
         }
+        self.persist_event(&event)?;
         Ok(())
     }
 
@@ -1088,6 +1187,49 @@ impl<'a> AcpRuntime<'a> {
         write_timeline_items(&self.paths.timeline, &items)
     }
 
+    /// Apply a streaming delta — get-or-create the stream, append content,
+    /// and stamp the item with stream identity + sequence bounds.
+    fn apply_streaming_delta(
+        stream: &mut Option<AcpTimelineStreamState>,
+        item: &mut crate::acp::events::AcpUiEvent,
+        stable_id: &str,
+        max_chars: usize,
+        seq: u64,
+        timestamp: &str,
+    ) {
+        let stream = stream.get_or_insert_with(|| AcpTimelineStreamState {
+            item_id: stable_id.to_string(),
+            started_seq: seq,
+            started_at: timestamp.to_string(),
+            content: String::new(),
+        });
+        if let Some(content) = item.content.as_deref() {
+            append_bounded(&mut stream.content, content, max_chars);
+        }
+        item.id = stream.item_id.clone();
+        item.content = Some(stream.content.clone());
+        item.started_seq = Some(stream.started_seq);
+        item.ended_seq = Some(seq);
+        item.started_at = Some(stream.started_at.clone());
+        item.ended_at = Some(timestamp.to_string());
+    }
+
+    /// Stamp a non-streaming event with sequence bounds and clear all streams.
+    fn finalize_non_streaming_event(
+        streams: (&mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>),
+        item: &mut crate::acp::events::AcpUiEvent,
+        seq: u64,
+        timestamp: &str,
+    ) {
+        *streams.0 = None;
+        *streams.1 = None;
+        *streams.2 = None;
+        item.started_seq = Some(item.started_seq.unwrap_or(seq));
+        item.ended_seq = Some(seq);
+        item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.to_string()));
+        item.ended_at = Some(timestamp.to_string());
+    }
+
     fn timeline_item_for_event(
         &mut self,
         event: &crate::acp::events::AcpUiEvent,
@@ -1097,89 +1239,52 @@ impl<'a> AcpRuntime<'a> {
         let seq = item.seq;
         match item.kind.as_str() {
             "textDelta" => {
-                let stream = self.active_text_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_message_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 256_000);
-                }
-                item.id = stream.item_id.clone();
-                item.content = Some(stream.content.clone());
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                let stable_id = stable_message_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_text_stream, &mut item,
+                    &stable_id, 256_000, seq, &timestamp,
+                );
             }
             "thoughtDelta" => {
-                let stream = self.active_thought_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_thought_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 256_000);
-                }
-                item.id = stream.item_id.clone();
-                item.content = Some(stream.content.clone());
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                let stable_id = stable_thought_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_thought_stream, &mut item,
+                    &stable_id, 256_000, seq, &timestamp,
+                );
+            }
+            "plan" => {
+                let stable_id = stable_plan_item_id(&item);
+                Self::apply_streaming_delta(
+                    &mut self.active_plan_stream, &mut item,
+                    &stable_id, 64_000, seq, &timestamp,
+                );
             }
             "toolCall" | "toolCallUpdate" => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
                     item.id = format!("tool-call-{tool_call_id}");
                 }
                 item.kind = "toolCall".to_string();
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
             "permissionRequest" => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
                 item.id = format!("permission-{}", item.id);
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
-            }
-            "plan" => {
-                let stream = self.active_plan_stream.get_or_insert_with(|| AcpTimelineStreamState {
-                    item_id: stable_plan_item_id(&item),
-                    started_seq: seq,
-                    started_at: timestamp.clone(),
-                    content: String::new(),
-                });
-                if let Some(content) = item.content.as_deref() {
-                    append_bounded(&mut stream.content, content, 64_000);
-                    item.content = Some(stream.content.clone());
-                }
-                item.id = stream.item_id.clone();
-                item.started_seq = Some(stream.started_seq);
-                item.ended_seq = Some(seq);
-                item.started_at = Some(stream.started_at.clone());
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
             _ => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
-                item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
-                item.ended_at = Some(timestamp);
+                Self::finalize_non_streaming_event(
+                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
+                    &mut item, seq, &timestamp,
+                );
             }
         }
+        // Clear streams whose kind no longer matches — the next delta of a
+        // different kind will create a fresh stream with a new stable id.
         if item.kind != "textDelta" {
             self.active_text_stream = None;
         }
@@ -1340,8 +1445,21 @@ fn find_mode_config_option(config_options: &Value) -> Option<&Value> {
     })
 }
 
+fn find_model_config_option(config_options: &Value) -> Option<&Value> {
+    config_options.as_array().and_then(|options| {
+        options.iter().find(|option| {
+            option.get("id").and_then(Value::as_str) == Some("model")
+                || option.get("category").and_then(Value::as_str) == Some("model")
+        })
+    })
+}
+
 fn has_mode_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_mode_config_option).is_some()
+}
+
+fn has_model_config_option(config_options: Option<&Value>) -> bool {
+    config_options.and_then(find_model_config_option).is_some()
 }
 
 fn cancel_notification_frame(session_id: &str) -> Value {
@@ -1438,6 +1556,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         let text = session_prompt_text("codex-acp", &prompt);
@@ -1456,6 +1576,8 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
         };
 
         assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");

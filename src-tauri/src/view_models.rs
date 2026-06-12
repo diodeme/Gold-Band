@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    sync::{LazyLock, Mutex},
 };
 
 use anyhow::Result;
@@ -14,11 +15,12 @@ use gold_band::config::{
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
-use gold_band::provider::supported_modes_from_capabilities;
+use gold_band::provider::{supported_models_from_capabilities, supported_modes_from_capabilities};
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::channel::current_channel_config;
 use crate::i18n::Translator;
+use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::process::kill_process_tree;
@@ -58,6 +60,7 @@ pub struct AppBootstrapVm {
     pub recent_workspaces: Vec<String>,
     pub preferences: PreferencesVm,
     pub updater_settings: UpdaterSettingsVm,
+    pub metrics_settings: MetricsSettingsVm,
     pub update_status: UpdateStatusVm,
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
@@ -102,6 +105,7 @@ pub struct ManagedAgentVm {
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
+    pub supported_models: Option<Vec<AcpModeVm>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,6 +113,7 @@ pub struct ManagedAgentVm {
 pub struct AcpModeVm {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -293,6 +298,17 @@ pub struct GraphVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeDisplayVm {
+    pub code: String,
+    pub tone: String,
+    pub icon: String,
+    pub terminal: bool,
+    pub resumable: bool,
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphNodeVm {
     pub id: String,
     pub node_id: Option<String>,
@@ -301,6 +317,7 @@ pub struct GraphNodeVm {
     pub node_type: String,
     pub status: Option<String>,
     pub outcome: Option<String>,
+    pub runtime_display: RuntimeDisplayVm,
     pub attempt_id: Option<String>,
     pub outer_node_id: Option<String>,
     pub outer_attempt_id: Option<String>,
@@ -334,6 +351,7 @@ pub struct GraphAttemptVm {
     pub sequence: Option<u32>,
     pub status: String,
     pub outcome: Option<String>,
+    pub runtime_display: RuntimeDisplayVm,
     pub session_mode: Option<String>,
     pub acp_session_id: Option<String>,
     pub current: bool,
@@ -348,6 +366,64 @@ pub struct GraphEdgeVm {
     pub traversal_count: usize,
     pub last_outcome: Option<String>,
     pub blocked_reason: Option<ControlFailureVm>,
+}
+
+pub fn runtime_display_vm(
+    status: Option<&str>,
+    outcome: Option<&str>,
+    current: bool,
+    pause_reason: Option<&str>,
+    resumable: bool,
+) -> RuntimeDisplayVm {
+    let status = status.map(normalize_status_code);
+    let outcome = outcome.map(normalize_status_code);
+    let reason_code = pause_reason.map(normalize_status_code);
+
+    let (code, tone, icon, terminal) = match outcome.as_deref() {
+        Some("success") => ("success", "success", "check", true),
+        Some("failure") | Some("failed") | Some("invalid") => ("failure", "danger", "error", true),
+        Some("killed") | Some("cancelled") | Some("canceled") => {
+            ("killed", "danger", "error", true)
+        }
+        _ => match status.as_deref() {
+            Some("running") | Some("in-progress") | Some("in_progress") | Some("active") => {
+                ("running", "running", "dot", false)
+            }
+            Some("paused") if current && reason_code.as_deref() == Some("error-blocked") => {
+                ("error-blocked", "danger", "error", false)
+            }
+            Some("paused") => ("paused", "warning", "pause", false),
+            Some("pending") | Some("ready") => ("pending", "neutral", "dot", false),
+            Some("completed") | Some("complete") => ("completed", "neutral", "dot", true),
+            Some("failed") | Some("failure") | Some("error") => {
+                ("failure", "danger", "error", true)
+            }
+            Some("killed") | Some("cancelled") | Some("canceled") => {
+                ("killed", "danger", "error", true)
+            }
+            Some(other) => (other, "neutral", "dot", false),
+            None => ("pending", "neutral", "dot", false),
+        },
+    };
+
+    RuntimeDisplayVm {
+        code: code.to_string(),
+        tone: tone.to_string(),
+        icon: icon.to_string(),
+        terminal,
+        resumable: (code == "paused" || code == "error-blocked") && resumable,
+        reason_code,
+    }
+}
+
+fn normalize_status_code(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "errorblocked" => "error-blocked".to_string(),
+        "processinterrupted" => "process-interrupted".to_string(),
+        "waitingforuserinput" => "waiting-for-user-input".to_string(),
+        "permissionrequested" => "permission-requested".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -752,8 +828,13 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     }
 }
 
-fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>) -> Option<UpdateInfoVm> {
-    update.map(|update| UpdateInfoVm {
+fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>, current_version: &str) -> Option<UpdateInfoVm> {
+    let update = update?;
+    // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
+    if update.current_version != current_version {
+        return None;
+    }
+    Some(UpdateInfoVm {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
         notes: update.notes.clone(),
@@ -775,6 +856,7 @@ pub fn bootstrap_vm(
     client_version: impl Into<String>,
     needs_workspace: bool,
 ) -> AppBootstrapVm {
+    let client_version_string: String = client_version.into();
     let channel_config = current_channel_config();
     AppBootstrapVm {
         repo_root: app.paths.repo_root.to_string(),
@@ -786,12 +868,14 @@ pub fn bootstrap_vm(
             app.config.use_local_claude,
         ),
         updater_settings: updater_settings(&app.config),
+        metrics_settings: metrics_settings(&app.config),
         update_status,
         update_badges: update_badge_state_vm(&app.config.desktop_update_badges),
         persisted_available_update: persisted_available_update_vm(
             app.config.desktop_available_update.as_ref(),
+            &client_version_string,
         ),
-        client_version: client_version.into(),
+        client_version: client_version_string,
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),
@@ -878,10 +962,22 @@ fn managed_agent_vm(
                 .into_iter()
                 .map(|mode| AcpModeVm {
                     id: mode.id.clone(),
-                    name: mode.name.unwrap_or(mode.id),
+                    name: mode.name.unwrap_or_else(|| mode.id.clone()),
+                    description: mode.description.clone(),
                 })
                 .collect::<Vec<_>>();
             (!modes.is_empty()).then_some(modes)
+        }),
+        supported_models: diagnostic.and_then(|diagnostic| {
+            let models = supported_models_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|model| AcpModeVm {
+                    id: model.id.clone(),
+                    name: model.name.unwrap_or_else(|| model.id.clone()),
+                    description: model.description.clone(),
+                })
+                .collect::<Vec<_>>();
+            (!models.is_empty()).then_some(models)
         }),
     }
 }
@@ -1132,6 +1228,38 @@ fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
                 "workflowName": workflow_name,
                 "reason": reason,
             }),
+        }),
+        Some(WorkflowValidationError::WorkerModelBlank { node_id, provider }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.model-blank".to_string(),
+                params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+            })
+        }
+        Some(WorkflowValidationError::DynamicFixedModelBlank { node_id }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.dynamic-fixed-model-blank".to_string(),
+                params: serde_json::json!({ "nodeId": node_id }),
+            })
+        }
+        Some(WorkflowValidationError::DynamicAgentsEmpty { node_id }) => Some(WorkflowErrorVm {
+            code: "workflow.dynamic-agents-empty".to_string(),
+            params: serde_json::json!({ "nodeId": node_id }),
+        }),
+        Some(WorkflowValidationError::DynamicAgentDuplicate { node_id, provider }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.dynamic-agent-duplicate".to_string(),
+                params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+            })
+        }
+        Some(WorkflowValidationError::DynamicAgentModelBlank { node_id, provider }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.dynamic-agent-model-blank".to_string(),
+                params: serde_json::json!({ "nodeId": node_id, "provider": provider }),
+            })
+        }
+        Some(WorkflowValidationError::AgentModelBlank { provider }) => Some(WorkflowErrorVm {
+            code: "workflow.agent-model-blank".to_string(),
+            params: serde_json::json!({ "provider": provider }),
         }),
         None if summary.workflow_error.is_some() => Some(WorkflowErrorVm {
             code: "workflow.invalid".to_string(),
@@ -1416,6 +1544,7 @@ pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 node_type: enum_label(&node.node_type()),
                 status: None,
                 outcome: None,
+                runtime_display: runtime_display_vm(None, None, false, None, false),
                 attempt_id: None,
                 outer_node_id: None,
                 outer_attempt_id: None,
@@ -1542,12 +1671,21 @@ fn round_trace_graph_vm(
                 &node.attempt_id,
             ) {
                 let base_sequence = step.sequence.saturating_mul(100);
+                let pause_reason = run.pause_reason.as_ref().map(enum_label);
+                let run_resumable = is_run_continuable(run);
                 let mut internal_nodes = dynamic_graph
                     .nodes
                     .iter()
                     .enumerate()
                     .map(|(index, dynamic_node)| {
-                        let mut vm = dynamic_node_graph_vm(
+                        let current = run.current_round.as_deref() == Some(&round.id)
+                            && run.current_node.as_deref() == Some(&node.node_id)
+                            && dynamic_graph
+                                .run
+                                .current_node_ids
+                                .iter()
+                                .any(|id| id == &dynamic_node.id);
+                        dynamic_node_graph_vm(
                             app,
                             task_id,
                             &run.id,
@@ -1557,14 +1695,10 @@ fn round_trace_graph_vm(
                             dynamic_node,
                             index as u32 + 1,
                             Some(base_sequence + index as u32 + 1),
-                        );
-                        vm.current = run.current_round.as_deref() == Some(&round.id)
-                            && run.current_node.as_deref() == Some(&node.node_id)
-                            && dynamic_graph.run.current_node_ids.iter().any(|id| id == &dynamic_node.id);
-                        if let Some(attempt) = vm.attempts.first_mut() {
-                            attempt.current = vm.current;
-                        }
-                        vm
+                            current,
+                            pause_reason.as_deref(),
+                            run_resumable,
+                        )
                     })
                     .collect::<Vec<_>>();
 
@@ -1574,10 +1708,12 @@ fn round_trace_graph_vm(
                 let terminal_ids = internal_nodes
                     .iter()
                     .filter(|candidate| {
-                        !dynamic_graph
-                            .nodes
-                            .iter()
-                            .any(|other| other.depends_on.iter().any(|dep| dep == candidate.node_id.as_deref().unwrap_or_default()))
+                        !dynamic_graph.nodes.iter().any(|other| {
+                            other
+                                .depends_on
+                                .iter()
+                                .any(|dep| dep == candidate.node_id.as_deref().unwrap_or_default())
+                        })
                     })
                     .map(|candidate| candidate.id.clone())
                     .collect::<Vec<_>>();
@@ -1603,7 +1739,8 @@ fn round_trace_graph_vm(
                         item.from == edge.from && item.to == edge.to && item.label == edge.label
                     }) {
                         existing.traversal_count += edge.traversal_count;
-                        existing.last_outcome = edge.last_outcome.clone().or(existing.last_outcome.clone());
+                        existing.last_outcome =
+                            edge.last_outcome.clone().or(existing.last_outcome.clone());
                     } else {
                         graph_edges.push(edge);
                     }
@@ -1623,16 +1760,24 @@ fn round_trace_graph_vm(
             .last()
             .expect("node_steps is non-empty because it is built from current node_id");
         let latest_node = nodes.iter().find(|candidate| {
-            candidate.node_id == latest_step.node_id && candidate.attempt_id == latest_step.attempt_id
+            candidate.node_id == latest_step.node_id
+                && candidate.attempt_id == latest_step.attempt_id
         });
         let first_sequence = node_steps.first().map(|candidate| candidate.sequence);
         let mut attempts = Vec::new();
         for node_step in &node_steps {
-            if let Some(node_attempt) = nodes
-                .iter()
-                .find(|candidate| candidate.node_id == node_step.node_id && candidate.attempt_id == node_step.attempt_id)
-            {
-                attempts.push(graph_attempt_vm(app, task_id, run, round, node_step, node_attempt)?);
+            if let Some(node_attempt) = nodes.iter().find(|candidate| {
+                candidate.node_id == node_step.node_id
+                    && candidate.attempt_id == node_step.attempt_id
+            }) {
+                attempts.push(graph_attempt_vm(
+                    app,
+                    task_id,
+                    run,
+                    round,
+                    node_step,
+                    node_attempt,
+                )?);
             }
         }
         let artifacts = app
@@ -1653,6 +1798,19 @@ fn round_trace_graph_vm(
                 &latest_step.attempt_id,
             )?
             .len();
+        let latest_status = latest_node.map(|node| enum_label(&node.status));
+        let latest_outcome =
+            latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome)));
+        let current = run.current_round.as_deref() == Some(&round.id)
+            && run.current_node.as_deref() == Some(&latest_step.node_id);
+        let pause_reason = run.pause_reason.as_ref().map(enum_label);
+        let runtime_display = runtime_display_vm(
+            latest_status.as_deref(),
+            latest_outcome.as_deref(),
+            current,
+            pause_reason.as_deref(),
+            is_run_continuable(run),
+        );
         graph_nodes.push(GraphNodeVm {
             id: latest_step.node_id.clone(),
             node_id: Some(latest_step.node_id.clone()),
@@ -1664,8 +1822,9 @@ fn round_trace_graph_vm(
             node_type: latest_node
                 .map(|node| enum_label(&node.node_type))
                 .unwrap_or_else(|| "unknown".to_string()),
-            status: latest_node.map(|node| enum_label(&node.status)),
-            outcome: latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome))),
+            status: latest_status,
+            outcome: latest_outcome,
+            runtime_display,
             attempt_id: Some(latest_step.attempt_id.clone()),
             outer_node_id: None,
             outer_attempt_id: None,
@@ -1673,8 +1832,7 @@ fn round_trace_graph_vm(
             attempts,
             artifact_count: artifacts,
             attachment_count: attachments,
-            current: run.current_round.as_deref() == Some(&round.id)
-                && run.current_node.as_deref() == Some(&latest_step.node_id),
+            current,
             icon_key: latest_node.and_then(|n| {
                 n.resolved_config
                     .get("provider")
@@ -1813,11 +1971,25 @@ fn graph_attempt_vm(
     step: &RoundTraceStep,
     node: &NodeState,
 ) -> Result<GraphAttemptVm> {
+    let status = enum_label(&node.status);
+    let outcome = node.outcome.map(|outcome| enum_label(&outcome));
+    let current = run.current_round.as_deref() == Some(&round.id)
+        && run.current_node.as_deref() == Some(&node.node_id)
+        && run.current_attempt.as_deref() == Some(&node.attempt_id);
+    let pause_reason = run.pause_reason.as_ref().map(enum_label);
+    let runtime_display = runtime_display_vm(
+        Some(&status),
+        outcome.as_deref(),
+        current,
+        pause_reason.as_deref(),
+        is_run_continuable(run),
+    );
     Ok(GraphAttemptVm {
         attempt_id: step.attempt_id.clone(),
         sequence: Some(step.sequence),
-        status: enum_label(&node.status),
-        outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+        status,
+        outcome,
+        runtime_display,
         session_mode: worker_ref_session_mode(
             app,
             task_id,
@@ -1834,9 +2006,7 @@ fn graph_attempt_vm(
             &node.node_id,
             &node.attempt_id,
         ),
-        current: run.current_round.as_deref() == Some(&round.id)
-            && run.current_node.as_deref() == Some(&node.node_id)
-            && run.current_attempt.as_deref() == Some(&node.attempt_id),
+        current,
     })
 }
 
@@ -1882,9 +2052,14 @@ fn latest_dynamic_attempt_id(
     outer_attempt_id: &str,
     node_id: &str,
 ) -> String {
-    let node_dir = app
-        .paths
-        .dynamic_node_dir(task_id, run_id, round_id, outer_node_id, outer_attempt_id, node_id);
+    let node_dir = app.paths.dynamic_node_dir(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        node_id,
+    );
     let mut attempts = fs::read_dir(node_dir.as_std_path())
         .map(|entries| {
             entries
@@ -1908,6 +2083,9 @@ fn dynamic_node_graph_vm(
     node: &gold_band::dynamic::DynamicNodeState,
     sequence: u32,
     sequence_hint: Option<u32>,
+    current: bool,
+    pause_reason: Option<&str>,
+    resumable: bool,
 ) -> GraphNodeVm {
     let attempt_id = latest_dynamic_attempt_id(
         app,
@@ -1954,14 +2132,24 @@ fn dynamic_node_graph_vm(
             .and_then(|value| value.as_str())
             .map(str::to_string)
     });
+    let status = enum_label(&node.status);
+    let outcome = node.outcome.map(|outcome| enum_label(&outcome));
+    let runtime_display = runtime_display_vm(
+        Some(&status),
+        outcome.as_deref(),
+        current,
+        pause_reason,
+        resumable,
+    );
     GraphNodeVm {
         id: format!("{outer_node_id}::{outer_attempt_id}::{}", node.id),
         node_id: Some(node.id.clone()),
         sequence: Some(sequence_hint.unwrap_or(sequence)),
         label: node.title.clone(),
         node_type: format!("dynamic-{}", enum_label(&node.kind)),
-        status: Some(enum_label(&node.status)),
-        outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+        status: Some(status.clone()),
+        outcome: outcome.clone(),
+        runtime_display: runtime_display.clone(),
         attempt_id: Some(attempt_id.clone()),
         outer_node_id: Some(outer_node_id.to_string()),
         outer_attempt_id: Some(outer_attempt_id.to_string()),
@@ -1969,15 +2157,16 @@ fn dynamic_node_graph_vm(
         attempts: vec![GraphAttemptVm {
             attempt_id,
             sequence: Some(sequence_hint.unwrap_or(sequence)),
-            status: enum_label(&node.status),
-            outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+            status,
+            outcome,
+            runtime_display,
             session_mode: Some(enum_label(&node.session_mode)),
             acp_session_id,
-            current: false,
+            current,
         }],
         artifact_count,
         attachment_count,
-        current: false,
+        current,
         icon_key: node.provider.as_deref().and_then(provider_icon_key),
         session_mode: Some(enum_label(&node.session_mode)),
         continue_from_node_id: node.continue_from_node_id.clone(),
@@ -2000,7 +2189,10 @@ fn dynamic_internal_graph_vm(
         .iter()
         .enumerate()
         .map(|(index, node)| {
-            let mut vm = dynamic_node_graph_vm(
+            let current = graph.run.current_node_ids.iter().any(|id| id == &node.id);
+            let pause_reason = graph.run.pause_reason.as_ref().map(enum_label);
+            let run_status = enum_label(&graph.run.status);
+            dynamic_node_graph_vm(
                 app,
                 task_id,
                 run_id,
@@ -2010,12 +2202,10 @@ fn dynamic_internal_graph_vm(
                 node,
                 index as u32 + 1,
                 Some(index as u32 + 1),
-            );
-            vm.current = graph.run.current_node_ids.iter().any(|id| id == &node.id);
-            if let Some(attempt) = vm.attempts.first_mut() {
-                attempt.current = vm.current;
-            }
-            vm
+                current,
+                pause_reason.as_deref(),
+                run_status == "paused",
+            )
         })
         .collect::<Vec<_>>();
 
@@ -2038,14 +2228,25 @@ fn dynamic_internal_graph_vm(
             let upstream = graph
                 .nodes
                 .iter()
-                .find(|candidate| candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth)
+                .find(|candidate| {
+                    candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth
+                })
                 .or_else(|| {
                     node.group_id.as_deref().and_then(|group_id| {
-                        graph.groups
+                        graph
+                            .groups
                             .iter()
-                            .find(|group| group.id == group_id && group.root_node_ids.iter().any(|id| id == &node.id))
+                            .find(|group| {
+                                group.id == group_id
+                                    && group.root_node_ids.iter().any(|id| id == &node.id)
+                            })
                             .map(|group| &group.created_by_node_id)
-                            .and_then(|source_id| graph.nodes.iter().find(|candidate| candidate.id == *source_id))
+                            .and_then(|source_id| {
+                                graph
+                                    .nodes
+                                    .iter()
+                                    .find(|candidate| candidate.id == *source_id)
+                            })
                     })
                 });
             if let Some(upstream) = upstream {
@@ -2161,6 +2362,27 @@ fn round_node_graph_vm(
             .map(|graph| dynamic_summary_vm(&graph))
         })
         .flatten();
+    let status = enum_label(&node.status);
+    let outcome = node.outcome.map(|outcome| enum_label(&outcome));
+    let node_current = run.current_round.as_deref() == Some(&round.id)
+        && run.current_node.as_deref() == Some(&node.node_id);
+    let attempt_current = node_current && run.current_attempt.as_deref() == Some(&node.attempt_id);
+    let pause_reason = run.pause_reason.as_ref().map(enum_label);
+    let run_resumable = is_run_continuable(run);
+    let runtime_display = runtime_display_vm(
+        Some(&status),
+        outcome.as_deref(),
+        node_current,
+        pause_reason.as_deref(),
+        run_resumable,
+    );
+    let attempt_runtime_display = runtime_display_vm(
+        Some(&status),
+        outcome.as_deref(),
+        attempt_current,
+        pause_reason.as_deref(),
+        run_resumable,
+    );
     Ok(GraphNodeVm {
         id: format!("{}:{}:{}", sequence, node.node_id, node.attempt_id),
         node_id: Some(node.node_id.clone()),
@@ -2170,8 +2392,9 @@ fn round_node_graph_vm(
             .cloned()
             .unwrap_or_else(|| node.node_id.clone()),
         node_type: enum_label(&node.node_type),
-        status: Some(enum_label(&node.status)),
-        outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+        status: Some(status.clone()),
+        outcome: outcome.clone(),
+        runtime_display: runtime_display.clone(),
         attempt_id: Some(node.attempt_id.clone()),
         outer_node_id: None,
         outer_attempt_id: None,
@@ -2179,8 +2402,9 @@ fn round_node_graph_vm(
         attempts: vec![GraphAttemptVm {
             attempt_id: node.attempt_id.clone(),
             sequence: Some(sequence),
-            status: enum_label(&node.status),
-            outcome: node.outcome.map(|outcome| enum_label(&outcome)),
+            status,
+            outcome,
+            runtime_display: attempt_runtime_display,
             session_mode: worker_ref_session_mode(
                 app,
                 task_id,
@@ -2197,14 +2421,11 @@ fn round_node_graph_vm(
                 &node.node_id,
                 &node.attempt_id,
             ),
-            current: run.current_round.as_deref() == Some(&round.id)
-                && run.current_node.as_deref() == Some(&node.node_id)
-                && run.current_attempt.as_deref() == Some(&node.attempt_id),
+            current: attempt_current,
         }],
         artifact_count: artifacts,
         attachment_count: attachments,
-        current: run.current_round.as_deref() == Some(&round.id)
-            && run.current_node.as_deref() == Some(&node.node_id),
+        current: node_current,
         icon_key: node
             .resolved_config
             .get("provider")
@@ -2362,6 +2583,7 @@ fn selected_node_detail_vm(
         node_id,
         &node.attempt_id,
         None,
+        None,
     )?;
     let acp_conversations = acp_conversations_vm(app, task_id, run_id, round, node_id, nodes)?;
     let selected_conversation_key = acp_conversations
@@ -2485,9 +2707,8 @@ fn selected_dynamic_node_detail_vm(
     let Some(node) = dynamic_node else {
         return Ok(None);
     };
-    let dynamic_attempt_id = attempt_id
-        .map(str::to_string)
-        .unwrap_or_else(|| latest_dynamic_attempt_id(
+    let dynamic_attempt_id = attempt_id.map(str::to_string).unwrap_or_else(|| {
+        latest_dynamic_attempt_id(
             app,
             task_id,
             run_id,
@@ -2495,7 +2716,8 @@ fn selected_dynamic_node_detail_vm(
             outer_node_id,
             outer_attempt_id,
             &node.id,
-        ));
+        )
+    });
     let graph_node = graph.nodes.iter().find(|item| {
         item.node_id.as_deref() == Some(node_id)
             && item.outer_node_id.as_deref() == Some(outer_node_id)
@@ -2529,7 +2751,15 @@ fn selected_dynamic_node_detail_vm(
             entries
                 .filter_map(|entry| entry.ok())
                 .filter_map(|entry| entry.file_name().into_string().ok())
-                .map(|name| asset_item_vm("artifact", round_id, node_id, &dynamic_attempt_id, name.strip_suffix(".json").unwrap_or(&name).to_string()))
+                .map(|name| {
+                    asset_item_vm(
+                        "artifact",
+                        round_id,
+                        node_id,
+                        &dynamic_attempt_id,
+                        name.strip_suffix(".json").unwrap_or(&name).to_string(),
+                    )
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -2538,7 +2768,9 @@ fn selected_dynamic_node_detail_vm(
             entries
                 .filter_map(|entry| entry.ok())
                 .filter_map(|entry| entry.file_name().into_string().ok())
-                .map(|name| asset_item_vm("attachment", round_id, node_id, &dynamic_attempt_id, name))
+                .map(|name| {
+                    asset_item_vm("attachment", round_id, node_id, &dynamic_attempt_id, name)
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -2551,6 +2783,7 @@ fn selected_dynamic_node_detail_vm(
         outer_attempt_id,
         node_id,
         &dynamic_attempt_id,
+        None,
         None,
     )?;
     Ok(Some(NodeDetailVm {
@@ -2571,40 +2804,55 @@ fn selected_dynamic_node_detail_vm(
         outer_node_id: Some(outer_node_id.to_string()),
         outer_attempt_id: Some(outer_attempt_id.to_string()),
         current: run.current_round.as_deref() == Some(&round.id)
-            && dynamic_graph.run.current_node_ids.iter().any(|id| id == node_id),
+            && dynamic_graph
+                .run
+                .current_node_ids
+                .iter()
+                .any(|id| id == node_id),
         started_at: node.started_at.unwrap_or_else(|| round.started_at.clone()),
         finished_at: node.finished_at,
         artifact_count: artifacts.len(),
         attachment_count: attachments.len(),
         artifacts,
         attachments,
-        has_progress_events: app.paths.dynamic_node_attempt_dir(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            &dynamic_attempt_id,
-        ).join("progress.events.jsonl").exists(),
-        has_raw_stream: app.paths.dynamic_node_attempt_dir(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            &dynamic_attempt_id,
-        ).join("raw.stream.jsonl").exists(),
-        has_worker_ref: app.paths.dynamic_node_worker_ref_file(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            &dynamic_attempt_id,
-        ).exists(),
+        has_progress_events: app
+            .paths
+            .dynamic_node_attempt_dir(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                node_id,
+                &dynamic_attempt_id,
+            )
+            .join("progress.events.jsonl")
+            .exists(),
+        has_raw_stream: app
+            .paths
+            .dynamic_node_attempt_dir(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                node_id,
+                &dynamic_attempt_id,
+            )
+            .join("raw.stream.jsonl")
+            .exists(),
+        has_worker_ref: app
+            .paths
+            .dynamic_node_worker_ref_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                node_id,
+                &dynamic_attempt_id,
+            )
+            .exists(),
         manual_check_enabled: false,
         manual_check_pending: false,
         session_mode: Some(enum_label(&node.session_mode)),
@@ -2654,6 +2902,7 @@ fn acp_conversations_vm(
             &round.id,
             node_id,
             &node.attempt_id,
+            None,
             None,
         )?;
         let acp_session_id = worker_acp_session_id.or_else(|| {
@@ -2752,6 +3001,7 @@ pub fn dynamic_acp_session_vm(
     node_id: &str,
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
+    preloaded_session_json: Option<serde_json::Value>,
 ) -> Result<Option<AcpSessionVm>> {
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
         task_id,
@@ -2768,7 +3018,9 @@ pub fn dynamic_acp_session_vm(
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
-    if !snapshot_path.exists()
+    let has_preloaded = preloaded_session_json.is_some();
+    if !has_preloaded
+        && !snapshot_path.exists()
         && !session_path.exists()
         && !timeline_path.exists()
         && !events_path.exists()
@@ -2777,7 +3029,9 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let mut session = if snapshot_path.exists() {
+    let mut session = if let Some(json) = preloaded_session_json {
+        json
+    } else if snapshot_path.exists() {
         read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
     } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
@@ -2881,7 +3135,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    Ok(Some(AcpSessionVm {
+    let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -2935,19 +3189,13 @@ pub fn dynamic_acp_session_vm(
         usage: {
             let mut u = event_scan.usage.unwrap_or_default();
             if u.used.is_none() {
-                u.used = session
-                    .get("usedTokens")
-                    .and_then(|v| v.as_u64());
+                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
             }
             if u.size.is_none() {
-                u.size = session
-                    .get("contextWindowSize")
-                    .and_then(|v| v.as_u64());
+                u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
             }
             if u.cost_amount_usd.is_none() {
-                u.cost_amount_usd = session
-                    .get("totalCostUsd")
-                    .and_then(|v| v.as_f64());
+                u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
             if u.input_tokens.is_none() {
                 u.input_tokens = session.get("inputTokens").and_then(|v| v.as_u64());
@@ -2973,7 +3221,8 @@ pub fn dynamic_acp_session_vm(
             last_error: diagnostics.last_error,
             last_error_timestamp: diagnostics.last_error_timestamp,
         },
-    }))
+    };
+    Ok(Some(result))
 }
 
 pub fn acp_session_vm(
@@ -2984,6 +3233,7 @@ pub fn acp_session_vm(
     node_id: &str,
     attempt_id: &str,
     query: Option<AcpSessionQueryInput>,
+    preloaded_session_json: Option<serde_json::Value>,
 ) -> Result<Option<AcpSessionVm>> {
     let snapshot_path = app
         .paths
@@ -3003,7 +3253,9 @@ pub fn acp_session_vm(
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
-    if !snapshot_path.exists()
+    let has_preloaded = preloaded_session_json.is_some();
+    if !has_preloaded
+        && !snapshot_path.exists()
         && !session_path.exists()
         && !timeline_path.exists()
         && !events_path.exists()
@@ -3013,7 +3265,9 @@ pub fn acp_session_vm(
         return Ok(None);
     }
 
-    let mut session = if snapshot_path.exists() {
+    let mut session = if let Some(json) = preloaded_session_json {
+        json
+    } else if snapshot_path.exists() {
         read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
     } else if session_path.exists() {
         read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
@@ -3137,7 +3391,7 @@ pub fn acp_session_vm(
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
 
-    Ok(Some(AcpSessionVm {
+    let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -3190,19 +3444,13 @@ pub fn acp_session_vm(
             // Merge persisted session usage as fallback for restored sessions
             // where events may not contain a usage_update yet.
             if u.used.is_none() {
-                u.used = session
-                    .get("usedTokens")
-                    .and_then(|v| v.as_u64());
+                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
             }
             if u.size.is_none() {
-                u.size = session
-                    .get("contextWindowSize")
-                    .and_then(|v| v.as_u64());
+                u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
             }
             if u.cost_amount_usd.is_none() {
-                u.cost_amount_usd = session
-                    .get("totalCostUsd")
-                    .and_then(|v| v.as_f64());
+                u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
             // Merge session-end breakdown (input/output/cache/total) from session metadata.
             // These fields are only available after the prompt completes.
@@ -3233,7 +3481,8 @@ pub fn acp_session_vm(
         events: event_scan.events,
         event_page: event_scan.event_page,
         pending_permissions,
-    }))
+    };
+    Ok(Some(result))
 }
 
 struct AcpEventScan {
@@ -3252,8 +3501,7 @@ struct AcpDiagnosticsScan {
     last_error_timestamp: Option<String>,
 }
 
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpTimelineItemVm {
     item: AcpUiEventVm,
@@ -3268,6 +3516,52 @@ struct AcpTimelinePatchVm {
     op: String,
     item: AcpUiEventVm,
 }
+
+// --- timeline scan cache ---
+
+const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
+
+struct CachedTimeline {
+    all_events: Vec<AcpUiEventVm>,
+    event_count: usize,
+    session_elapsed_seconds: Option<u64>,
+    latest_permission_events: HashMap<String, AcpUiEventVm>,
+    available_commands: Option<Vec<serde_json::Value>>,
+    usage: Option<AcpUsageVm>,
+}
+
+struct TimelineCache {
+    entries: HashMap<String, CachedTimeline>,
+    order: VecDeque<String>,
+}
+
+static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
+    Mutex::new(TimelineCache {
+        entries: HashMap::new(),
+        order: VecDeque::new(),
+    })
+});
+
+fn timeline_cache_key(path: &camino::Utf8Path) -> String {
+    path.as_str().to_string()
+}
+
+fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
+    if let Some(pos) = cache.order.iter().position(|k| k == key) {
+        cache.order.remove(pos);
+    }
+    cache.order.push_back(key.to_string());
+}
+
+fn evict_timeline_cache(cache: &mut TimelineCache) {
+    while cache.order.len() > TIMELINE_CACHE_MAX_ENTRIES {
+        if let Some(oldest) = cache.order.pop_front() {
+            cache.entries.remove(&oldest);
+        }
+    }
+}
+
+// --- end timeline scan cache ---
 
 fn scan_acp_timeline(
     path: &camino::Utf8Path,
@@ -3301,6 +3595,83 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+
+    // Check cache for completed sessions (timeline file is immutable once complete)
+    let cache_key = timeline_cache_key(path);
+    let (
+        all_events,
+        event_count,
+        session_elapsed_seconds,
+        latest_permission_events,
+        available_commands,
+        usage,
+    ) = if !session_active {
+        let mut cache = TIMELINE_CACHE.lock().unwrap();
+        if let Some(cached) = cache.entries.get(&cache_key) {
+            let all_events = cached.all_events.clone();
+            let event_count = cached.event_count;
+            let session_elapsed_seconds = cached.session_elapsed_seconds;
+            let latest_permission_events = cached.latest_permission_events.clone();
+            let available_commands = cached.available_commands.clone();
+            let usage = cached.usage.clone();
+            touch_timeline_cache(&mut cache, &cache_key);
+            return paginate_timeline(
+                &all_events,
+                event_count,
+                session_elapsed_seconds,
+                &latest_permission_events,
+                available_commands.as_ref(),
+                usage.as_ref(),
+                after_seq,
+                before_seq,
+                limit,
+            );
+        }
+        drop(cache);
+        let result = parse_timeline_file(path, session_active)?;
+        let mut cache = TIMELINE_CACHE.lock().unwrap();
+        cache.entries.insert(
+            cache_key.clone(),
+            CachedTimeline {
+                all_events: result.0.clone(),
+                event_count: result.1,
+                session_elapsed_seconds: result.2,
+                latest_permission_events: result.3.clone(),
+                available_commands: result.4.clone(),
+                usage: result.5.clone(),
+            },
+        );
+        touch_timeline_cache(&mut cache, &cache_key);
+        evict_timeline_cache(&mut cache);
+        result
+    } else {
+        parse_timeline_file(path, session_active)?
+    };
+
+    paginate_timeline(
+        &all_events,
+        event_count,
+        session_elapsed_seconds,
+        &latest_permission_events,
+        available_commands.as_ref(),
+        usage.as_ref(),
+        after_seq,
+        before_seq,
+        limit,
+    )
+}
+
+fn parse_timeline_file(
+    path: &camino::Utf8Path,
+    session_active: bool,
+) -> Result<(
+    Vec<AcpUiEventVm>,
+    usize,
+    Option<u64>,
+    HashMap<String, AcpUiEventVm>,
+    Option<Vec<serde_json::Value>>,
+    Option<AcpUsageVm>,
+)> {
     let mut latest_by_item = HashMap::<String, (u64, AcpUiEventVm)>::new();
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
@@ -3346,7 +3717,8 @@ fn scan_acp_timeline(
                         });
                     }
                 }
-                if is_hidden_from_chat(&final_item.item) || !is_session_timeline_event(&final_item.item)
+                if is_hidden_from_chat(&final_item.item)
+                    || !is_session_timeline_event(&final_item.item)
                 {
                     continue;
                 }
@@ -3374,7 +3746,8 @@ fn scan_acp_timeline(
                         .and_then(|value| value.as_array())
                         .cloned();
                 } else if is_session_update(&patch.item, "usage_update") {
-                    let (used, size, cost_amount) = gold_band::acp::events::extract_usage_fields(raw);
+                    let (used, size, cost_amount) =
+                        gold_band::acp::events::extract_usage_fields(raw);
                     usage = Some(AcpUsageVm {
                         used,
                         size,
@@ -3405,6 +3778,28 @@ fn scan_acp_timeline(
         final_items
     };
     all_events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+
+    Ok((
+        all_events,
+        event_count,
+        session_elapsed.finish(session_active),
+        latest_permission_events,
+        available_commands,
+        usage,
+    ))
+}
+
+fn paginate_timeline(
+    all_events: &[AcpUiEventVm],
+    event_count: usize,
+    session_elapsed_seconds: Option<u64>,
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+    available_commands: Option<&Vec<serde_json::Value>>,
+    usage: Option<&AcpUsageVm>,
+    after_seq: Option<u64>,
+    before_seq: Option<u64>,
+    limit: usize,
+) -> Result<AcpEventScan> {
     let total = all_events.len();
     let filtered = if let Some(cursor) = after_seq {
         all_events
@@ -3426,7 +3821,7 @@ fn scan_acp_timeline(
     } else if total > limit {
         all_events[total - limit..].to_vec()
     } else {
-        all_events.clone()
+        all_events.to_vec()
     };
     // Compact only the events in the final window (not all events)
     let filtered: Vec<_> = filtered
@@ -3439,8 +3834,12 @@ fn scan_acp_timeline(
             }
         })
         .collect();
-    let oldest_seq = filtered.first().map(|event| event.started_seq.unwrap_or(event.seq));
-    let newest_seq = filtered.last().map(|event| event.ended_seq.unwrap_or(event.seq));
+    let oldest_seq = filtered
+        .first()
+        .map(|event| event.started_seq.unwrap_or(event.seq));
+    let newest_seq = filtered
+        .last()
+        .map(|event| event.ended_seq.unwrap_or(event.seq));
     let oldest_index = oldest_seq.and_then(|seq| {
         all_events
             .iter()
@@ -3466,10 +3865,10 @@ fn scan_acp_timeline(
         events: filtered,
         event_page,
         event_count,
-        session_elapsed_seconds: session_elapsed.finish(session_active),
-        latest_permission_events,
-        available_commands,
-        usage,
+        session_elapsed_seconds,
+        latest_permission_events: latest_permission_events.clone(),
+        available_commands: available_commands.cloned(),
+        usage: usage.cloned(),
     })
 }
 
@@ -3505,17 +3904,90 @@ fn scan_acp_events(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let mut window = VecDeque::<AcpUiEventVm>::with_capacity(limit + 1);
-    let mut after_window = Vec::<AcpUiEventVm>::with_capacity(limit);
+
+    // Cache via the same pool as scan_acp_timeline
+    let cache_key = timeline_cache_key(path);
+    let (
+        all_events,
+        raw_event_count,
+        session_elapsed_seconds,
+        latest_permission_events,
+        available_commands,
+        usage,
+    ) = if !session_active {
+        let mut cache = TIMELINE_CACHE.lock().unwrap();
+        if let Some(cached) = cache.entries.get(&cache_key) {
+            let all_events = cached.all_events.clone();
+            let raw_event_count = cached.event_count;
+            let session_elapsed_seconds = cached.session_elapsed_seconds;
+            let latest_permission_events = cached.latest_permission_events.clone();
+            let available_commands = cached.available_commands.clone();
+            let usage = cached.usage.clone();
+            touch_timeline_cache(&mut cache, &cache_key);
+            return paginate_timeline(
+                &all_events,
+                raw_event_count,
+                session_elapsed_seconds,
+                &latest_permission_events,
+                available_commands.as_ref(),
+                usage.as_ref(),
+                after_seq,
+                before_seq,
+                limit,
+            );
+        }
+        drop(cache);
+        let result = parse_events_file(path, session_active)?;
+        let mut cache = TIMELINE_CACHE.lock().unwrap();
+        cache.entries.insert(
+            cache_key.clone(),
+            CachedTimeline {
+                all_events: result.0.clone(),
+                event_count: result.1,
+                session_elapsed_seconds: result.2,
+                latest_permission_events: result.3.clone(),
+                available_commands: result.4.clone(),
+                usage: result.5.clone(),
+            },
+        );
+        touch_timeline_cache(&mut cache, &cache_key);
+        evict_timeline_cache(&mut cache);
+        result
+    } else {
+        parse_events_file(path, session_active)?
+    };
+
+    paginate_timeline(
+        &all_events,
+        raw_event_count,
+        session_elapsed_seconds,
+        &latest_permission_events,
+        available_commands.as_ref(),
+        usage.as_ref(),
+        after_seq,
+        before_seq,
+        limit,
+    )
+}
+
+fn parse_events_file(
+    path: &camino::Utf8Path,
+    session_active: bool,
+) -> Result<(
+    Vec<AcpUiEventVm>,
+    usize,
+    Option<u64>,
+    HashMap<String, AcpUiEventVm>,
+    Option<Vec<serde_json::Value>>,
+    Option<AcpUsageVm>,
+)> {
     let mut raw_event_count = 0usize;
-    let mut normalized_event_count = 0usize;
     let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
     let mut usage = None;
-    let mut first_seq = None;
-    let mut last_seq = None;
-    let mut pending_delta: Option<AcpUiEventVm> = None;
     let mut session_elapsed = AcpSessionElapsedState::default();
+    let mut all_events = Vec::<AcpUiEventVm>::new();
+    let mut pending_delta: Option<AcpUiEventVm> = None;
 
     if path.exists() {
         let file = fs::File::open(path.as_std_path())?;
@@ -3551,17 +4023,7 @@ fn scan_acp_events(
                 }
             }
             if is_hidden_from_chat(&event) {
-                flush_normalized_event(
-                    pending_delta.take(),
-                    before_seq,
-                    after_seq,
-                    limit,
-                    &mut window,
-                    &mut after_window,
-                    &mut normalized_event_count,
-                    &mut first_seq,
-                    &mut last_seq,
-                );
+                flush_pending_delta(&mut pending_delta, &mut all_events);
                 continue;
             }
             if !is_session_timeline_event(&event) {
@@ -3570,92 +4032,31 @@ fn scan_acp_events(
             if merge_pending_delta(&mut pending_delta, &event) {
                 continue;
             }
-            flush_normalized_event(
-                pending_delta.take(),
-                before_seq,
-                after_seq,
-                limit,
-                &mut window,
-                &mut after_window,
-                &mut normalized_event_count,
-                &mut first_seq,
-                &mut last_seq,
-            );
+            flush_pending_delta(&mut pending_delta, &mut all_events);
             if is_delta_event(&event) {
                 pending_delta = Some(event);
             } else {
-                flush_normalized_event(
-                    Some(event),
-                    before_seq,
-                    after_seq,
-                    limit,
-                    &mut window,
-                    &mut after_window,
-                    &mut normalized_event_count,
-                    &mut first_seq,
-                    &mut last_seq,
-                );
+                all_events.push(event);
             }
         }
     }
 
-    flush_normalized_event(
-        pending_delta.take(),
-        before_seq,
-        after_seq,
-        limit,
-        &mut window,
-        &mut after_window,
-        &mut normalized_event_count,
-        &mut first_seq,
-        &mut last_seq,
-    );
+    flush_pending_delta(&mut pending_delta, &mut all_events);
 
-    let session_elapsed_seconds = session_elapsed.finish(session_active);
-    let mut events = if after_seq.is_some() {
-        after_window
-    } else {
-        window.into_iter().collect::<Vec<_>>()
-    };
-    // Compact only the events in the final window (not all events)
-    events = events
-        .into_iter()
-        .map(|event| {
-            if matches!(event.kind.as_str(), "permissionRequest") {
-                event
-            } else {
-                compact_event_for_session(event)
-            }
-        })
-        .collect();
-    let oldest_seq = events.first().map(|event| event.seq);
-    let newest_seq = events.last().map(|event| event.seq);
-    let has_older = oldest_seq
-        .zip(first_seq)
-        .is_some_and(|(oldest, first)| oldest > first);
-    let has_newer = newest_seq
-        .zip(last_seq)
-        .is_some_and(|(newest, last)| newest < last);
-    let event_page = AcpEventPageVm {
-        loaded_count: events.len(),
-        total: normalized_event_count,
-        oldest_seq,
-        newest_seq,
-        has_older,
-        has_newer,
-        oldest_cursor: oldest_seq.map(format_timeline_cursor),
-        newest_cursor: newest_seq.map(format_timeline_cursor),
-    };
-
-    Ok(AcpEventScan {
-        events,
-        event_page,
-        event_count: raw_event_count,
-        session_elapsed_seconds,
+    Ok((
+        all_events,
+        raw_event_count,
+        session_elapsed.finish(session_active),
         latest_permission_events,
         available_commands,
         usage,
-    })
+    ))
+}
+
+fn flush_pending_delta(pending: &mut Option<AcpUiEventVm>, events: &mut Vec<AcpUiEventVm>) {
+    if let Some(event) = pending.take() {
+        events.push(event);
+    }
 }
 
 fn apply_stale_cancel_fuse(
@@ -3733,7 +4134,9 @@ fn apply_stale_session_completion_fuse(
         .paths
         .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
     let node_status = if node_path.exists() {
-        read_json::<NodeState>(node_path).ok().map(|node| node.status)
+        read_json::<NodeState>(node_path)
+            .ok()
+            .map(|node| node.status)
     } else {
         None
     };
@@ -3741,7 +4144,9 @@ fn apply_stale_session_completion_fuse(
         &pid_path,
         attempt_dir,
         session,
-        node_status.map(|status| status == RunStatus::Completed).unwrap_or(false),
+        node_status
+            .map(|status| status == RunStatus::Completed)
+            .unwrap_or(false),
     )?;
     if fused {
         let snapshot_path = app
@@ -3799,7 +4204,12 @@ fn apply_stale_session_completion_fuse_dynamic(
         return Ok(());
     }
     let _ = attempt_id;
-    let fused = apply_stale_session_completion_fuse_common(&pid_path, attempt_dir, session, node_completed)?;
+    let fused = apply_stale_session_completion_fuse_common(
+        &pid_path,
+        attempt_dir,
+        session,
+        node_completed,
+    )?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -3955,7 +4365,9 @@ fn format_timeline_cursor(seq: u64) -> String {
 }
 
 fn parse_timeline_cursor(value: &str) -> Option<u64> {
-    value.strip_prefix("rev:").and_then(|value| value.parse::<u64>().ok())
+    value
+        .strip_prefix("rev:")
+        .and_then(|value| value.parse::<u64>().ok())
 }
 
 fn current_epoch_seconds() -> u64 {
@@ -3963,39 +4375,6 @@ fn current_epoch_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
-}
-
-
-fn flush_normalized_event(
-    event: Option<AcpUiEventVm>,
-    before_seq: Option<u64>,
-    after_seq: Option<u64>,
-    limit: usize,
-    window: &mut VecDeque<AcpUiEventVm>,
-    after_window: &mut Vec<AcpUiEventVm>,
-    normalized_event_count: &mut usize,
-    first_seq: &mut Option<u64>,
-    last_seq: &mut Option<u64>,
-) {
-    let Some(event) = event else {
-        return;
-    };
-    *normalized_event_count += 1;
-    first_seq.get_or_insert(event.seq);
-    *last_seq = Some(event.seq);
-    if let Some(cursor) = after_seq {
-        if event.seq > cursor && after_window.len() < limit {
-            after_window.push(event);
-        }
-        return;
-    }
-    if before_seq.is_some_and(|cursor| event.seq >= cursor) {
-        return;
-    }
-    window.push_back(event);
-    if window.len() > limit {
-        window.pop_front();
-    }
 }
 
 fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm) -> bool {
@@ -4296,9 +4675,10 @@ fn find_config_option<'a>(
     config_options
         .and_then(|value| value.as_array())
         .and_then(|options| {
-            options
-                .iter()
-                .find(|option| option.get("id").and_then(|item| item.as_str()) == Some(option_id))
+            options.iter().find(|option| {
+                option.get("id").and_then(|item| item.as_str()) == Some(option_id)
+                    || option.get("category").and_then(|item| item.as_str()) == Some(option_id)
+            })
         })
 }
 
@@ -4380,7 +4760,13 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
     }
 }
 
-fn asset_item_vm(kind: &str, round_id: &str, node_id: &str, attempt_id: &str, name: String) -> AssetItemVm {
+fn asset_item_vm(
+    kind: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    name: String,
+) -> AssetItemVm {
     AssetItemVm {
         kind: kind.to_string(),
         title: name.clone(),
@@ -4903,6 +5289,10 @@ mod tests {
             title: None,
             tool_call_id: None,
             status: Some("completed".to_string()),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
     }
@@ -4924,6 +5314,10 @@ mod tests {
             title: None,
             tool_call_id: None,
             status: status.map(str::to_string),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
             raw,
         }
     }
@@ -4994,8 +5388,7 @@ mod tests {
 
     #[test]
     fn diagnostics_file_populates_session_diagnostics() {
-        let dir =
-            std::env::temp_dir().join(format!("gold-band-diag-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gold-band-diag-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.join("acp.diagnostics.jsonl")).unwrap();
         fs::write(
@@ -5156,5 +5549,232 @@ mod tests {
         );
 
         assert_eq!(elapsed, Some(30));
+    }
+
+    // --- timeline / events parse & cache tests ---
+
+    fn write_timeline_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for event in events {
+            let item = AcpTimelineItemVm {
+                item: event.clone(),
+            };
+            content.push_str(&serde_json::to_string(&item).unwrap());
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
+    fn write_events_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for event in events {
+            content.push_str(&serde_json::to_string(event).unwrap());
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
+    fn event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
+        (0..count)
+            .map(|i| AcpUiEventVm {
+                id: format!("evt-{i}"),
+                seq: i as u64 + 1,
+                timestamp: format!("{}Z", base_ts + i as u64),
+                kind: "textDelta".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("message {i}")),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: Some(i as u64 + 1),
+                ended_seq: Some(i as u64 + 1),
+                started_at: Some(format!("{}Z", base_ts + i as u64)),
+                ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                raw: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_timeline_file_all_events() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-parse-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let events = event_sequence(50, 1000);
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &events);
+
+        let (all_events, count, _, _, _, _) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(all_events.len(), 50);
+        assert_eq!(count, 50);
+        assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
+        assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_events_file_delta_merging() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-merge-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        let raw = vec![
+            AcpUiEventVm {
+                id: "d1".into(),
+                seq: 0,
+                timestamp: "100Z".into(),
+                kind: "textDelta".into(),
+                session_id: Some("s1".into()),
+                content: Some("Hello ".into()),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".into()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                raw: None,
+            },
+            AcpUiEventVm {
+                id: "d2".into(),
+                seq: 0,
+                timestamp: "101Z".into(),
+                kind: "textDelta".into(),
+                session_id: Some("s1".into()),
+                content: Some("World".into()),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".into()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                raw: None,
+            },
+        ];
+        let path = write_events_file(&db, "acp.events.jsonl", &raw);
+
+        let (all_events, raw_count, _, _, _, _) = parse_events_file(&path, false).unwrap();
+
+        assert_eq!(raw_count, 2);
+        assert_eq!(all_events.len(), 1);
+        assert_eq!(all_events[0].content.as_deref(), Some("Hello World"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_timeline_cache_hit_on_repeat() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-hit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(20, 2000));
+
+        let r1 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+
+        assert_eq!(r1.events.len(), 20);
+        assert_eq!(r2.events.len(), 20);
+        assert_eq!(r2.event_count, r1.event_count);
+        assert_eq!(r2.event_page.total, r1.event_page.total);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_events_cache_hit_on_repeat() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-hit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        // Use unique kinds so events don't get merged by delta logic
+        let events: Vec<_> = (0..15)
+            .map(|i| AcpUiEventVm {
+                id: format!("evt-{i}"),
+                seq: 0,
+                timestamp: format!("{}Z", 3000 + i),
+                kind: "toolCall".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("tool {i}")),
+                title: Some(format!("Tool {i}")),
+                tool_call_id: Some(format!("call-{i}")),
+                status: Some("completed".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                raw: None,
+            })
+            .collect();
+        let path = write_events_file(&db, "acp.events.jsonl", &events);
+
+        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
+        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
+
+        assert_eq!(r1.events.len(), 15);
+        assert_eq!(r2.events.len(), 15);
+        assert_eq!(r2.event_count, r1.event_count);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_timeline_active_session_bypasses_cache() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-active-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(10, 4000));
+
+        // Active: should parse fresh, not write cache
+        let r = scan_acp_timeline(&path, None, true, 360).unwrap();
+        assert_eq!(r.events.len(), 10);
+
+        // Completed: first call should be a MISS, then a HIT
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        assert_eq!(r2.events.len(), 10);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_respects_limit() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-page-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(100, 5000));
+
+        let r = scan_acp_timeline(&path, None, false, 30).unwrap();
+
+        assert_eq!(r.events.len(), 30);
+        assert_eq!(r.event_page.total, 100);
+        assert!(r.event_page.has_older);
+        assert!(!r.event_page.has_newer);
+        assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cache_key_isolated_by_path() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-keys-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pa = write_timeline_file(&db, "a.jsonl", &event_sequence(5, 6000));
+        let pb = write_timeline_file(&db, "b.jsonl", &event_sequence(8, 7000));
+
+        let ra = scan_acp_timeline(&pa, None, false, 360).unwrap();
+        let rb = scan_acp_timeline(&pb, None, false, 360).unwrap();
+        assert_eq!(ra.events.len(), 5);
+        assert_eq!(rb.events.len(), 8);
+
+        // Second call to A still returns 5, not 8
+        let ra2 = scan_acp_timeline(&pa, None, false, 360).unwrap();
+        assert_eq!(ra2.events.len(), 5);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -98,6 +98,26 @@ export function deleteWorkflowTemplate(templateId: string) {
   return getRuntimeApi().deleteWorkflowTemplate(templateId);
 }
 
+export function getAutoTemplates() {
+  return getRuntimeApi().getAutoTemplates();
+}
+
+export function saveAutoTemplate(name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['saveAutoTemplate']>[1]) {
+  return getRuntimeApi().saveAutoTemplate(name, config);
+}
+
+export function updateAutoTemplate(templateId: string, name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['updateAutoTemplate']>[2]) {
+  return getRuntimeApi().updateAutoTemplate(templateId, name, config);
+}
+
+export function deleteAutoTemplate(templateId: string) {
+  return getRuntimeApi().deleteAutoTemplate(templateId);
+}
+
+export function replaceAutoTemplates(templates: Parameters<ReturnType<typeof getRuntimeApi>['replaceAutoTemplates']>[0]) {
+  return getRuntimeApi().replaceAutoTemplates(templates);
+}
+
 export function getRunDetail(taskId: string, runId: string) {
   return getRuntimeApi().getRunDetail(taskId, runId);
 }
@@ -134,8 +154,16 @@ export function getAcpSession(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId);
+export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+}
+
+export function setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionModel(taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
+}
+
+export function setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionPermissionMode(taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
 export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -198,8 +226,12 @@ export function downloadAndInstallUpdate() {
   return getRuntimeApi().downloadAndInstallUpdate();
 }
 
-export function getStartupCheckResult() {
-  return getRuntimeApi().getStartupCheckResult();
+export function getMetricsSettings() {
+  return getRuntimeApi().getMetricsSettings();
+}
+
+export function saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
+  return getRuntimeApi().saveMetricsSettings(enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey);
 }
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
@@ -280,6 +312,10 @@ export function saveConversationPreference(key: string, value: unknown) {
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function getSupportedAttachmentExtensions() {
+  return getRuntimeApi().getSupportedAttachmentExtensions();
 }
 
 export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {

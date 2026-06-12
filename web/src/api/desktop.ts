@@ -1,7 +1,17 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
 import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+// ── Metrics Settings ──
+
+export interface MetricsSettingsVm {
+    enabled: boolean;
+    toggleLocked: boolean;
+    heartbeatEndpoint: string | null;
+    nodeMetricsEndpoint: string | null;
+    apiKeySet: boolean;
+}
 
 const noopUnlisten = () => {};
 
@@ -85,6 +95,21 @@ export const desktopApi: RuntimeApi = {
   deleteWorkflowTemplate(templateId: string) {
     return invokeCommand('delete_workflow_template', { templateId });
   },
+  getAutoTemplates() {
+    return invokeCommand('get_auto_templates');
+  },
+  saveAutoTemplate(name: string, config: ConversationAutoConfigVm) {
+    return invokeCommand('save_auto_template', { input: { name, config } });
+  },
+  updateAutoTemplate(templateId: string, name: string, config: ConversationAutoConfigVm) {
+    return invokeCommand('update_auto_template', { templateId, input: { name, config } });
+  },
+  deleteAutoTemplate(templateId: string) {
+    return invokeCommand('delete_auto_template', { templateId });
+  },
+  replaceAutoTemplates(templates: AutoTemplate[]) {
+    return invokeCommand('replace_auto_templates', { input: { templates } });
+  },
   getRunDetail(taskId: string, runId: string) {
     return invokeCommand('get_run_detail', { taskId, runId });
   },
@@ -112,8 +137,14 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId });
+  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  },
+  setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
+  },
+  setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
   },
   respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
@@ -143,6 +174,12 @@ export const desktopApi: RuntimeApi = {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });
   },
+  getMetricsSettings() {
+    return invokeCommand<MetricsSettingsVm>('get_metrics_settings');
+  },
+  saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
+    return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey });
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },
@@ -160,9 +197,6 @@ export const desktopApi: RuntimeApi = {
   },
   downloadAndInstallUpdate() {
     return invokeCommand('download_and_install_update');
-  },
-  getStartupCheckResult() {
-    return invokeCommand<import('../types').StartupCheckResult | null>('get_startup_check_result');
   },
   // ── Conversation UI ──
   saveDesktopUiMode(mode) {
@@ -224,6 +258,9 @@ export const desktopApi: RuntimeApi = {
   },
   pickAttachmentFiles() {
     return invokeCommand<Array<{ path: string; name: string; size: number }>>('pick_attachment_files');
+  },
+  getSupportedAttachmentExtensions() {
+    return invokeCommand<string[]>('get_supported_attachment_extensions');
   },
   openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });

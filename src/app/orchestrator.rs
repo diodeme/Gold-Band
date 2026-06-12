@@ -5016,7 +5016,7 @@ fn drive_from_node_with_initial_session(
                     .pause_reason
                     .unwrap_or(PauseReason::ProcessInterrupted)
             } else {
-                PauseReason::ProcessInterrupted
+                node.pause_reason.unwrap_or(PauseReason::ProcessInterrupted)
             };
             run.status = RunStatus::Paused;
             run.pause_reason = Some(pause_reason);

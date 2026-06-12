@@ -58,6 +58,7 @@ fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
         manual_check_pending: false,
         resolved_config: Default::default(),
         uuid: None,
+        pause_reason: None,
     }
 }
 

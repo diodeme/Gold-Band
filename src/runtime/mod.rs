@@ -103,6 +103,8 @@ pub struct NodeState {
     pub resolved_config: ResolvedConfig,
     #[serde(default)]
     pub uuid: Option<String>,
+    #[serde(default)]
+    pub pause_reason: Option<crate::domain::PauseReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

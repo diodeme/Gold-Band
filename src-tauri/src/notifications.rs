@@ -28,10 +28,11 @@ impl NotificationDedup {
     pub fn clear_node(
         &self,
         run_id: &str,
+        round_id: &str,
         node_id: &str,
         attempt_id: &str,
     ) {
-        let prefix = format!("{}:{}:{}", run_id, node_id, attempt_id);
+        let prefix = format!("{}:{}:{}:{}", run_id, round_id, node_id, attempt_id);
         self.sent
             .lock()
             .unwrap()
@@ -187,13 +188,33 @@ $sc.Save()
 
     let temp = env::temp_dir().join(format!("gold_band_toast_reg_{}.ps1", std::process::id()));
     let _ = fs::write(&temp, &ps_script);
-    // 异步创建，不阻塞启动
-    let _ = std::process::Command::new("powershell")
+    // 同步等待 PowerShell 完成：Windows Toast 的 on_activated 回调依赖
+    // 开始菜单中存在带有正确 AppUserModelID 的快捷方式。
+    // 如果 fire-and-forget，首个 Toast 弹出时快捷方式可能尚未创建完毕，
+    // 导致"查看详情"按钮点击无效。
+    let result = std::process::Command::new("powershell")
         .args(["-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
         .arg(&temp)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .status();
+    match result {
+        Ok(status) if status.success() => {
+            let _ = fs::remove_file(&temp);
+        }
+        Ok(status) => {
+            eprintln!(
+                "[toast-init] PowerShell shortcut creation exited with {status}, keeping script at {}",
+                temp.display()
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "[toast-init] failed to run PowerShell for shortcut: {error}, keeping script at {}",
+                temp.display()
+            );
+        }
+    }
 }
 
 /// 首次运行时确保 Windows 通知注册表项存在（设置显示名称）
@@ -229,10 +250,11 @@ pub fn emit_intervention_resolved(
     app_handle: &AppHandle,
     dedup: &NotificationDedup,
     run_id: &str,
+    round_id: &str,
     node_id: &str,
     attempt_id: &str,
 ) {
-    dedup.clear_node(run_id, node_id, attempt_id);
+    dedup.clear_node(run_id, round_id, node_id, attempt_id);
     let _ = app_handle.emit(
         "gold-band://intervention-resolved",
         serde_json::json!({

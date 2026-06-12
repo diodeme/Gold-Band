@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
 
 use crate::artifacts::parse_json_artifact;
-use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
+use crate::domain::{InvocationKind, NodeOutcome, PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
 };
@@ -740,11 +740,20 @@ pub(crate) fn finalize_ai_attempt(
             node.status = RunStatus::Completed;
             node.outcome = Some(NodeOutcome::Failure);
         }
-        ProviderRunStatus::Interrupted
-        | ProviderRunStatus::WaitingForUserInput
-        | ProviderRunStatus::PermissionRequested => {
+        ProviderRunStatus::Interrupted => {
             node.status = RunStatus::Paused;
             node.outcome = None;
+            node.pause_reason = Some(PauseReason::ProcessInterrupted);
+        }
+        ProviderRunStatus::WaitingForUserInput => {
+            node.status = RunStatus::Paused;
+            node.outcome = None;
+            node.pause_reason = Some(PauseReason::WaitingForUserInput);
+        }
+        ProviderRunStatus::PermissionRequested => {
+            node.status = RunStatus::Paused;
+            node.outcome = None;
+            node.pause_reason = Some(PauseReason::PermissionRequested);
         }
     }
     validate_node_state(&node)?;

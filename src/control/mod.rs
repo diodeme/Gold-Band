@@ -37,7 +37,9 @@ pub fn decide_next_step(
         Some(crate::domain::NodeOutcome::Killed) => {
             ControlDecision::CompleteRun(RunOutcome::Killed)
         }
-        None => ControlDecision::PauseRun(PauseReason::ProcessInterrupted),
+        None => ControlDecision::PauseRun(
+            node.pause_reason.unwrap_or(PauseReason::ProcessInterrupted)
+        ),
     }
 }
 

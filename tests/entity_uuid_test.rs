@@ -156,6 +156,7 @@ fn node_state_with_uuid() {
         finished_at: None,
         manual_check_pending: false,
         resolved_config: Default::default(),
+        pause_reason: None,
     };
     let json = serde_json::to_string(&node).unwrap();
     let parsed: NodeState = serde_json::from_str(&json).unwrap();

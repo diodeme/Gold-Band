@@ -27,6 +27,7 @@ pub(crate) fn create_node_state(
         manual_check_pending: false,
         resolved_config: resolved_config_for_node(node_dsl, resolved_profile),
         uuid: Some(generate_uuid()),
+        pause_reason: None,
     }
 }
 

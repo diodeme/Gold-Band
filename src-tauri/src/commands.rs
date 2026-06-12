@@ -606,7 +606,10 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone(), Arc::clone(&state.notification_dedup)), crate::metrics::create_metrics_callback(app_handle))
+        .with_intervention_notifier(notifier);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -621,10 +624,19 @@ pub fn continue_run(
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
-    app.run_continue_background(&task_id, &run_id, prompt_id)
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone(), Arc::clone(&state.notification_dedup)), crate::metrics::create_metrics_callback(app_handle.clone()))
+        .with_intervention_notifier(notifier);
+    let result = app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
@@ -639,7 +651,10 @@ pub fn submit_manual_check(
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone(), Arc::clone(&state.notification_dedup)), crate::metrics::create_metrics_callback(app_handle.clone()))
+        .with_intervention_notifier(notifier);
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -650,9 +665,18 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
+    let result = app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+            "nodeId": &node_id,
+            "attemptId": &attempt_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
@@ -663,22 +687,40 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
-    app.run_retry(&task_id, &run_id)
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone(), Arc::clone(&state.notification_dedup)), crate::metrics::create_metrics_callback(app_handle.clone()))
+        .with_intervention_notifier(notifier);
+    let result = app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
 pub fn kill_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let app = state.app().map_err(command_error)?;
-    app.run_kill(&task_id, &run_id)
+    let result = app.run_kill(&task_id, &run_id)
         .map(run_summary_vm)
-        .map_err(command_error)
+        .map_err(command_error);
+    if result.is_ok() {
+        use tauri::Emitter;
+        let _ = app_handle.emit("gold-band://intervention-resolved", serde_json::json!({
+            "runId": &run_id,
+        }));
+    }
+    result
 }
 
 #[tauri::command]
@@ -766,9 +808,39 @@ pub fn save_metrics_settings(
 
 fn acp_live_update_emitter(
     app_handle: AppHandle,
+    dedup: Arc<crate::notifications::NotificationDedup>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
+        // 权限请求到达时触发系统通知（此时 ACP client 阻塞等待用户决策）
+        // fire-and-forget：通知发送失败不影响 ACP 事件传递
+        if event.kind == "permissionRequest" && event.status.as_deref() == Some("pending") {
+            let app_handle2 = app_handle.clone();
+            let dedup2 = Arc::clone(&dedup);
+            let task_id = context.task_id.clone();
+            let run_id = context.run_id.clone();
+            let round_id = context.round_id.clone();
+            let node_id = context.node_id.clone();
+            let attempt_id = context.attempt_id.clone();
+            std::thread::spawn(move || {
+                let notification = gold_band::app::notification::InterventionNotification::new(
+                    &task_id,
+                    None,
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &node_id, // node_label fallback
+                    gold_band::domain::PauseReason::PermissionRequested,
+                );
+                crate::notifications::send_intervention_notification(
+                    &app_handle2,
+                    &dedup2,
+                    &notification,
+                );
+            });
+        }
+
         emit_acp_event_update(
             &app_handle,
             &context.task_id,
@@ -1212,6 +1284,19 @@ pub fn respond_acp_permission(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    // 规范化 request_id：前端的 pendingPermission.requestId 可能
+    // 携带旧的 "permission-" 前缀（来自旧版 append_permission_decision_artifacts
+    // 中 event.id = format!("permission-{request_id}") 的残留数据）。
+    // 必须与 ACP client 在 handle_permission_request 中使用的
+    // rpc_id_to_string(rpc_id) 结果一致。
+    let normalized_request_id = request_id
+        .strip_prefix("permission-")
+        .unwrap_or(&request_id);
+    eprintln!(
+        "[respond_acp_permission] raw_request_id={} normalized={}",
+        request_id, normalized_request_id
+    );
+
     let app = state.app().map_err(command_error)?;
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
@@ -1225,16 +1310,20 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
+        eprintln!(
+            "[respond_acp_permission] dynamic attempt_dir={} request_id={} option_id={:?}",
+            attempt_dir, normalized_request_id, option_id
+        );
         write_permission_response(
             &attempt_dir,
-            &request_id,
+            normalized_request_id,
             option_id.clone(),
             false,
             current_timestamp(),
         )
         .map_err(command_error)?;
         let events_path = attempt_dir.join("acp.events.jsonl");
-        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        append_permission_decision_artifacts(&attempt_dir, &events_path, normalized_request_id.to_string(), option_id)?;
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -1252,9 +1341,13 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        eprintln!(
+            "[respond_acp_permission] regular attempt_dir={} request_id={} option_id={:?}",
+            attempt_dir, normalized_request_id, option_id
+        );
         write_permission_response(
             &attempt_dir,
-            &request_id,
+            normalized_request_id,
             option_id.clone(),
             false,
             current_timestamp(),
@@ -1263,7 +1356,7 @@ pub fn respond_acp_permission(
         let events_path =
             app.paths
                 .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        append_permission_decision_artifacts(&attempt_dir, &events_path, normalized_request_id.to_string(), option_id)?;
         acp_session_vm(
             &app,
             &task_id,
@@ -1297,6 +1390,17 @@ pub fn respond_acp_permission(
         outer_node_id.as_deref(),
         outer_attempt_id.as_deref(),
     );
+    // 清除干预通知去重（fire-and-forget，不影响权限响应结果）
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::notifications::emit_intervention_resolved(
+            &app_handle,
+            &state.notification_dedup,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+        );
+    }));
     Ok(session)
 }
 
@@ -1474,7 +1578,8 @@ fn append_permission_decision_artifacts(
         next_acp_event_seq(events_path)
     };
     let mut event = permission_decision_event(source_seq, request_id.clone(), option_id);
-    event.id = format!("permission-{request_id}");
+    // 保持与原始权限请求事件相同的 id，以便 session builder 中的
+    // latest_permission_events 能正确用 decision 覆盖 pending 状态
     event.started_seq = Some(source_seq);
     event.ended_seq = Some(source_seq);
     event.started_at = Some(event.timestamp.clone());

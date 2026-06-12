@@ -49,6 +49,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
+import { useInterventionNotifications } from './hooks/useInterventionNotifications';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
 import { ConversationHomePage } from './pages/ConversationHomePage';
@@ -189,6 +190,17 @@ export function App() {
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
   );
   const { t } = useTranslation();
+
+  // 工作流干预通知队列（OS 通知"查看详情"按钮触发时导航到对应任务）
+  const handleInterventionNavigate = useCallback((taskId: string, runId: string, roundId: string) => {
+    if (uiMode === 'conversation') {
+      setConversationPage({ kind: 'conversation-run', projectId: defaultProjectId, taskId, runId });
+    } else {
+      setTaskPage({ kind: 'round-detail', taskId, runId, roundId });
+      setPrimaryModule('task-orchestration');
+    }
+  }, [uiMode, defaultProjectId]);
+  const { queue: interventionQueue } = useInterventionNotifications(handleInterventionNavigate);
 
   useEffect(() => {
     applyTheme(preferences.theme);

@@ -5,6 +5,7 @@ mod commands;
 mod commands_conversation;
 mod i18n;
 mod metrics;
+mod notifications;
 mod state;
 mod updater;
 mod view_models;
@@ -66,6 +67,8 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            // 初始化 Windows Toast 通知支持（注册 AUMID 快捷方式和注册表）
+            notifications::init_notification_support(app.handle());
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {

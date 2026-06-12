@@ -998,3 +998,18 @@ export interface AcpModelVm {
   id: string;
   name: string;
 }
+
+export interface InterventionNotificationVm {
+  dedup_key: string;
+  task_id: string;
+  task_title: string | null;
+  run_id: string;
+  round_id: string;
+  node_id: string;
+  attempt_id: string;
+  node_label: string;
+  pause_reason: string;
+  title: string;
+  body: string;
+  intervention_type: 'ManualCheck' | 'PermissionRequest' | 'ErrorBlocked';
+}

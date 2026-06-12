@@ -970,6 +970,20 @@ const resources = {
         validationTemplateNameRequired: '模板名称不能为空',
         validationTemplateNameDuplicated: '模板名称 {{name}} 已存在',
       },
+      notification: {
+        intervention: {
+          manualCheckTitle: '码灵 - 人工确认',
+          permissionTitle: '码灵 - 权限请求',
+          errorBlockedTitle: '码灵 - 执行错误',
+          processInterruptedTitle: '码灵 - 进程中断',
+          actions: {
+            approve: '通过',
+            reject: '拒绝',
+            viewDetail: '查看详情',
+            dismiss: '忽略',
+          },
+        },
+      },
     },
   },
   en: {
@@ -1938,6 +1952,20 @@ const resources = {
         validationPositiveNumber: '{{field}} must be greater than 0',
         validationTemplateNameRequired: 'Template name is required',
         validationTemplateNameDuplicated: 'Template name {{name}} already exists',
+      },
+      notification: {
+        intervention: {
+          manualCheckTitle: 'Maling - Manual Check',
+          permissionTitle: 'Maling - Permission Request',
+          errorBlockedTitle: 'Maling - Error',
+          processInterruptedTitle: 'Maling - Interrupted',
+          actions: {
+            approve: 'Approve',
+            reject: 'Reject',
+            viewDetail: 'View Details',
+            dismiss: 'Dismiss',
+          },
+        },
       },
     },
   },

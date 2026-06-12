@@ -3,7 +3,7 @@ use std::process::{Child, Stdio};
 use anyhow::{Context, Result, ensure};
 
 use crate::config::AcpAdapterConfig;
-use crate::process::{background_command, find_executable_in_path};
+use crate::process::{background_command, find_executable_in_path, resolve_cmd_to_exe};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
@@ -29,7 +29,7 @@ pub fn resolve_adapter(config: &AcpAdapterConfig) -> Result<ResolvedAcpAdapter> 
 pub fn spawn_adapter(
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
-    use_local_claude: bool,
+    _use_local_claude: bool,
 ) -> Result<(ResolvedAcpAdapter, Child)> {
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
@@ -43,9 +43,17 @@ pub fn spawn_adapter(
     for (key, value) in &config.env {
         command.env(key, value);
     }
-    if use_local_claude && !config.env.contains_key("CLAUDE_CODE_EXECUTABLE") {
+    // Always resolve the local Claude Code binary when available, not only when
+    // use_local_claude is true.  The ACP adapter's claudeCliPath() honours this
+    // env var first, which avoids the SDK's bundled launcher binary — that launcher
+    // internally tries to find and spawn the CLI via PATH and can resolve an
+    // extensionless npm-global wrapper script on Windows, failing to launch.
+    if !config.env.contains_key("CLAUDE_CODE_EXECUTABLE") {
         if let Some(claude_path) = find_executable_in_path("claude") {
-            command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+            // Ensure we pass a real executable, not a .cmd wrapper that
+            // Node.js child_process.spawn() cannot launch on Windows.
+            let executable_path = resolve_cmd_to_exe(&claude_path).unwrap_or(claude_path);
+            command.env("CLAUDE_CODE_EXECUTABLE", executable_path);
         }
     }
     let child = command

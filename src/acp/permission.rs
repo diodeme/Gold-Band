@@ -141,8 +141,13 @@ pub fn wait_for_permission_response(
     request_id: &str,
 ) -> Result<PermissionResponseState> {
     let path = permission_response_file(attempt_dir, request_id);
+    eprintln!(
+        "[wait_for_permission_response] polling path={} attempt_dir={} request_id={}",
+        path, attempt_dir, request_id
+    );
     loop {
         if path.exists() {
+            eprintln!("[wait_for_permission_response] FOUND response file at {}", path);
             let response = read_json(&path)?;
             let _ = fs::remove_file(path.as_std_path());
             return Ok(response);

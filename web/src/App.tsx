@@ -55,6 +55,11 @@ import {
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
 } from '@/lib/conversation-session-follow';
+import {
+  conversationSessionKeyFromParts,
+  mergeConversationRunSnapshot,
+  type ConversationRunSnapshotSource,
+} from '@/lib/conversation-run-snapshot';
 import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
@@ -149,19 +154,6 @@ function debugConversationSession(message: string, payload?: Record<string, unkn
   console.log(`[gb-session-follow] ${timestamp} ${message}`);
 }
 
-function conversationSessionKeyFromParts(parts: {
-  roundId: string;
-  nodeId: string;
-  attemptId: string;
-  outerNodeId?: string | null;
-  outerAttemptId?: string | null;
-}) {
-  if (parts.outerNodeId && parts.outerAttemptId) {
-    return `${parts.roundId}/${parts.outerNodeId}/${parts.outerAttemptId}/${parts.nodeId}/${parts.attemptId}`;
-  }
-  return `${parts.roundId}/${parts.nodeId}/${parts.attemptId}`;
-}
-
 function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: string) {
   for (const round of tree.rounds) {
     for (const node of round.nodes) {
@@ -197,6 +189,30 @@ export function App() {
   const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
+
+  const applyConversationRunSnapshot = useCallback((
+    snapshot: ConversationRunVm,
+    source: ConversationRunSnapshotSource,
+  ) => {
+    setConversationRun((current) => {
+      const merged = mergeConversationRunSnapshot(current, snapshot, source);
+      conversationRunRef.current = merged;
+      conversationSelectedSessionKeyRef.current = merged.sessionTree.selectedSessionKey ?? null;
+      debugConversationSession('conversation run snapshot applied', {
+        source,
+        runId: merged.runId,
+        incomingSelectedSessionKey: snapshot.sessionTree.selectedSessionKey ?? null,
+        appliedSelectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
+        incomingActiveSessions: snapshot.activeSessions.map((session) =>
+          conversationSessionKeyFromParts(session),
+        ),
+        appliedActiveSessions: merged.activeSessions.map((session) =>
+          conversationSessionKeyFromParts(session),
+        ),
+      });
+      return merged;
+    });
+  }, []);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   // Derive active workspace: persisted lastActiveWorkspaceId > explicit state > first workspace
@@ -246,6 +262,16 @@ export function App() {
       taskId: conversationPage.taskId,
       runId: conversationPage.runId,
     });
+  }, [conversationPage]);
+
+  const handleConversationAutoFollowChange = useCallback((enabled: boolean) => {
+    if (conversationPage.kind !== 'conversation-run') return;
+    debugConversationSession('auto follow changed', {
+      runId: conversationPage.runId,
+      enabled,
+      selectedSessionKey: conversationSelectedSessionKeyRef.current,
+    });
+    conversationSessionAutoFollowRef.current = enabled;
   }, [conversationPage]);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
@@ -366,10 +392,10 @@ export function App() {
           requestedSelectedSessionKey: null,
           returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
         });
-        setConversationRun(run);
+        applyConversationRunSnapshot(run, 'initial-load');
       })
       .catch(() => setConversationRun(null));
-  }, [bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
@@ -408,9 +434,7 @@ export function App() {
             requestedSelectedSessionKey: selectedKey,
             returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
           });
-          setConversationRun(run);
-          conversationRunRef.current = run;
-          conversationSelectedSessionKeyRef.current = run.sessionTree.selectedSessionKey ?? null;
+          applyConversationRunSnapshot(run, 'live-refresh');
         })
         .catch(() => {});
       getConversationSidebar()
@@ -467,7 +491,7 @@ export function App() {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       stopListening?.();
     };
-  }, [bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1082,7 +1106,7 @@ export function App() {
                 const run = await createConversationRun(input);
                 setActiveWorkspaceId(run.projectId);
                 saveLastConversationWorkspace(run.projectId).catch(() => {});
-                setConversationRun(run);
+                applyConversationRunSnapshot(run, 'create');
                 setConversationPage({
                   kind: 'conversation-run',
                   projectId: run.projectId,
@@ -1140,7 +1164,7 @@ export function App() {
               .then((run) => {
                 setActiveWorkspaceId(run.projectId);
                 saveLastConversationWorkspace(run.projectId).catch(() => {});
-                setConversationRun(run);
+                applyConversationRunSnapshot(run, 'rerun');
                 setConversationPage({
                   kind: 'conversation-run',
                   projectId: run.projectId,
@@ -1166,7 +1190,7 @@ export function App() {
               runId: conversationPage.runId,
               returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
             });
-            setConversationRun(refreshed);
+            applyConversationRunSnapshot(refreshed, 'workflow-save');
           }}
           onSelectSession={(leaf) => {
             const key = leaf.outerNodeId
@@ -1228,21 +1252,13 @@ export function App() {
                   requestedSelectedSessionKey: selectedKey,
                   returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
                 });
-                setConversationRun(refreshed);
-                conversationRunRef.current = refreshed;
+                applyConversationRunSnapshot(refreshed, 'session-stopped');
                 return getConversationSidebar();
               })
               .then(setConversationSidebar)
               .catch((err) => setError(displayAppError(t, err)));
           }}
-          onAutoFollowChange={(enabled) => {
-            debugConversationSession('auto follow changed', {
-              runId: conversationPage.runId,
-              enabled,
-              selectedSessionKey: conversationSelectedSessionKeyRef.current,
-            });
-            conversationSessionAutoFollowRef.current = enabled;
-          }}
+          onAutoFollowChange={handleConversationAutoFollowChange}
           onContinueRun={async (promptId, prompt) => {
             try {
               await continueRun(conversationPage.taskId, conversationPage.runId, promptId, prompt);
@@ -1256,9 +1272,7 @@ export function App() {
                 requestedSelectedSessionKey: selectedKey,
                 returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
               });
-              setConversationRun(refreshed);
-              conversationRunRef.current = refreshed;
-              conversationSelectedSessionKeyRef.current = refreshed.sessionTree.selectedSessionKey ?? null;
+              applyConversationRunSnapshot(refreshed, 'continue');
             } catch (err) {
               setError(displayAppError(t, err));
               throw err;

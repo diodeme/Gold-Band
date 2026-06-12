@@ -547,7 +547,11 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           attemptId={attemptId}
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
-          runtimeStatus={runtimeStatus}
+          runtimeComposerContext={{
+            runtimeStatus,
+            runtimeDisplay: undefined,
+            workflowValid: true,
+          }}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
           onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}

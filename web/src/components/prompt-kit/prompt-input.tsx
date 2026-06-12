@@ -107,16 +107,19 @@ function PromptInput({
 
 export type PromptInputTextareaProps = {
   disableAutosize?: boolean
+  textareaDisabled?: boolean
 } & React.ComponentProps<typeof Textarea>
 
 function PromptInputTextarea({
   className,
   onKeyDown,
   disableAutosize = false,
+  textareaDisabled,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput()
+  const effectiveDisabled = textareaDisabled ?? disabled
 
   const adjustHeight = (el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
@@ -173,7 +176,7 @@ function PromptInputTextarea({
         className
       )}
       rows={1}
-      disabled={disabled}
+      disabled={effectiveDisabled}
       {...props}
     />
   )

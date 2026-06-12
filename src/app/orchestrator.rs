@@ -284,6 +284,11 @@ fn prepare_run(
         entry_node,
         entry_profile,
     );
+    write_json(
+        &app.paths
+            .node_file(task_id, &run_id, &round_id, &node.node_id, &node.attempt_id),
+        &node,
+    )?;
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
         .with_node(node.node_id.clone())

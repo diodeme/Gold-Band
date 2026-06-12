@@ -79,6 +79,11 @@ import {
   normalizeAcpSessionForAttempt,
   originalSeqFromAcpEvent,
 } from "@/lib/acp-event-normalization";
+import {
+  deriveAcpRuntimeComposerState,
+  isRuntimeActiveStatus,
+  isSessionActiveStatus,
+} from "@/lib/acp-runtime-composer-state";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
   getAcpRawFrames,
@@ -87,10 +92,10 @@ import {
   sendAcpPrompt,
   setAcpSessionModel,
   setAcpSessionPermissionMode,
-  stopActiveSession,
   showArtifact,
   showAttachment,
   showConversationAttachment,
+  stopActiveSession,
   submitManualCheck,
 } from "@/api";
 import { getRuntimeApi } from "@/api/client";
@@ -106,13 +111,51 @@ import type {
   AcpUsageVm,
   AssetItemVm,
   ContentVm,
+  ConversationAttemptLifecycleVm,
+  RuntimeDisplayVm,
 } from "@/types";
 
-export type AcpExternalComposerState =
-  | { kind: "normal" }
-  | { kind: "paused"; message: string; onContinue?: (promptId?: string | null, prompt?: string | null) => void | Promise<unknown>; continueLabel?: string; allowPromptInput?: boolean }
-  | { kind: "invalid-workflow"; workflowError: string; onRepair?: () => void }
-  | { kind: "runtime-error"; errorMessage: string; onRepair?: () => void };
+export type AcpRuntimeComposerContext = {
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+  runtimeStatus?: string | null;
+  runtimeDisplay?: RuntimeDisplayVm | null;
+  workflowValid: boolean;
+  workflowError?: string | null;
+  pauseMessage?: string | null;
+  runtimeError?: string | null;
+  onContinue?: (promptId?: string | null, prompt?: string | null) => void | Promise<unknown>;
+  onRepair?: () => void;
+  continueLabel?: string;
+};
+
+function debugAcpComposer(message: string, payload?: Record<string, unknown>) {
+  if (
+    localStorage.getItem("gold-band-acp-debug") !== "true" &&
+    localStorage.getItem("gold-band-session-follow-debug") !== "true"
+  ) {
+    return;
+  }
+  const timestamp = new Date().toISOString();
+  const summary = payload ? ` ${debugPayloadSummary(payload)}` : "";
+  console.log(`[gb-acp] ${timestamp} ${message}${summary}`);
+}
+
+function debugPayloadSummary(payload: Record<string, unknown>) {
+  return Object.entries(payload)
+    .map(([key, value]) => `${key}=${debugPayloadValue(value)}`)
+    .join(" ");
+}
+
+function debugPayloadValue(value: unknown) {
+  if (value == null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
 export interface ACPChatDialogHandle {
   openArtifactsDialog: (asset?: AssetItemVm) => void;
@@ -127,7 +170,7 @@ interface ACPChatDialogProps {
   attemptId: string;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
-  runtimeStatus?: string | null;
+  runtimeComposerContext?: AcpRuntimeComposerContext;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   eventIdPrefix?: string;
@@ -137,7 +180,6 @@ interface ACPChatDialogProps {
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
   onAtBottomChange?: (atBottom: boolean) => void;
-  externalComposerState?: AcpExternalComposerState;
   artifacts?: AssetItemVm[];
   attachments?: AssetItemVm[];
   usageCompact?: boolean;
@@ -353,7 +395,7 @@ export const ACPChatDialog = forwardRef<
     attemptId,
     outerNodeId,
     outerAttemptId,
-    runtimeStatus,
+    runtimeComposerContext,
     manualCheckPending = false,
     systemPromptOptions,
     eventIdPrefix,
@@ -363,7 +405,6 @@ export const ACPChatDialog = forwardRef<
     onManualCheckSubmitted,
     onSessionStopped,
     onAtBottomChange,
-    externalComposerState,
     artifacts = [],
     attachments = [],
     usageCompact,
@@ -475,6 +516,9 @@ export const ACPChatDialog = forwardRef<
   const preservingScrollRef = useRef(false);
   const pinToBottomRef = useRef(true);
   const cancelRequestedRef = useRef(false);
+  const awaitTerminalStopRef = useRef(false);
+  const [stopCommandPending, setStopCommandPending] = useState(false);
+  const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
@@ -563,6 +607,8 @@ export const ACPChatDialog = forwardRef<
     setSendError(null);
     setCancelError(null);
     setCancelling(false);
+    setStopCommandPending(false);
+    setRuntimeStopAccepted(false);
     setAwaitingResponse(Boolean(storedPromptEvent));
     setActiveTurnPrompt(storedPromptEvent?.content?.trim() || null);
     setActiveTurnPromptId(promptIdFromEvent(storedPromptEvent));
@@ -580,6 +626,7 @@ export const ACPChatDialog = forwardRef<
     prependAnchorRef.current = null;
     pinToBottomRef.current = true;
     cancelRequestedRef.current = false;
+    awaitTerminalStopRef.current = false;
     latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
     setCanvasMode("chat");
@@ -599,7 +646,7 @@ export const ACPChatDialog = forwardRef<
   }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
-  const runtimeActive = isRuntimeActiveStatus(runtimeStatus);
+  const runtimeActive = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
   const liveSessionShell = useMemo(
     () =>
       loadedEvents.length > 0 || runtimeActive
@@ -652,7 +699,8 @@ export const ACPChatDialog = forwardRef<
     [effectiveEvents],
   );
   const timeline = useStableAcpTimeline(rebuiltTimeline);
-  const sessionActive = isSessionActive(effective?.status) || runtimeActive;
+  const acpSessionActive = isSessionActiveStatus(effective?.status);
+  const sessionActive = acpSessionActive || runtimeActive;
   const streamingTextItemKey = sessionActive
     ? latestStreamingTextItemKey(timeline)
     : null;
@@ -750,48 +798,67 @@ export const ACPChatDialog = forwardRef<
   }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const externalState = externalComposerState?.kind === "normal" ? undefined : externalComposerState;
-  const pausedComposerState = externalState?.kind === "paused" ? externalState : undefined;
-  const allowPausedPromptInput = pausedComposerState?.allowPromptInput === true;
-  const runtimeErrorComposerState = externalState?.kind === "runtime-error" ? externalState : undefined;
-  const invalidWorkflowComposerState = externalState?.kind === "invalid-workflow" ? externalState : undefined;
-  const composerLocked = waitingForPermission && !planInterventionOption;
-  const turnAccepted = Boolean(activeTurnStartedAt);
-  const submittingPrompt =
-    (sending || waitingForOptimisticPrompt) && !turnAccepted;
-  const activePromptLocked =
-    sending ||
-    awaitingResponse ||
-    waitingForOptimisticPrompt ||
-    sessionActive ||
-    cancelling;
+  const localLifecycle = runtimeStopAccepted && runtimeComposerContext?.lifecycle
+    ? {
+        ...runtimeComposerContext.lifecycle,
+        runtime: {
+          ...runtimeComposerContext.lifecycle.runtime,
+          status: "paused",
+          pauseReason: "process-interrupted",
+          resumable: true,
+          active: false,
+          continuable: true,
+        },
+        displayStatus: "paused",
+        continueKind: "input",
+      }
+    : runtimeComposerContext?.lifecycle;
   const composerLatestEvent = timeline.at(-1) ?? null;
-  const awaitingFirstResponse =
-    !waitingForPermission &&
-    awaitingResponse &&
-    turnAccepted &&
-    !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
-  const composerStatusActive =
-    !waitingForPermission &&
-    !composerLocked &&
-    (submittingPrompt || awaitingResponse || sessionActive || cancelling);
+  const turnAccepted = Boolean(activeTurnStartedAt);
+  const hasTurnResponse = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+  const composerState = deriveAcpRuntimeComposerState({
+    lifecycle: localLifecycle,
+    legacyRuntimeStatus: runtimeStopAccepted ? "paused" : runtimeComposerContext?.runtimeStatus,
+    legacyRuntimeDisplay: runtimeStopAccepted
+      ? {
+          ...(runtimeComposerContext?.runtimeDisplay ?? {}),
+          code: "paused",
+          tone: "warning",
+          terminal: false,
+          resumable: true,
+          reasonCode: "process-interrupted",
+        }
+      : runtimeComposerContext?.runtimeDisplay,
+    workflowValid: runtimeComposerContext?.workflowValid ?? true,
+    workflowInvalidMessage: runtimeComposerContext?.workflowError,
+    pauseMessage: runtimeComposerContext?.pauseMessage,
+    runtimeErrorMessage: runtimeComposerContext?.runtimeError,
+    acpStatus: effective?.status,
+    prompt,
+    waitingForPermission,
+    hasPlanIntervention: Boolean(planInterventionOption),
+    sending,
+    awaitingResponse,
+    waitingForOptimisticPrompt,
+    cancelling,
+    stopCommandPending,
+    turnAccepted,
+    hasResponseAfterTurn: hasTurnResponse,
+    hasTimelineItems: timeline.length > 0,
+    hasEffectiveEvents: effectiveEvents.length > 0,
+    timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
+  });
+  const stopInProgress = composerState.stopInProgress;
+  const composerLocked = composerState.composerLocked;
+  const composerInputDisabled = composerState.inputDisabled;
+  const composerStatusActive = composerState.statusActive;
   const composerSessionSeconds = effective?.sessionElapsedSeconds ?? null;
-  const composerProcessingKind: AcpProcessingKind = cancelling
-    ? "stopping"
-    : submittingPrompt
-      ? "sending"
-      : awaitingFirstResponse
-        ? "processing"
-        : timeline.length === 0
-          ? effectiveEvents.length > 0
-            ? "processing"
-            : "launching"
-          : processingKindFromTimeline(composerLatestEvent, false);
-  const showComposerStatus =
-    !waitingForPermission &&
-    (composerStatusActive || composerSessionSeconds != null);
+  const composerProcessingKind: AcpProcessingKind = composerState.processingKind;
+  const showComposerStatus = composerState.showStatus || composerSessionSeconds != null;
   const composerStatusStartAt =
-    submittingPrompt || awaitingFirstResponse || cancelling
+    composerState.mode === "submitting" ||
+    composerState.mode === "stopping" ||
+    (awaitingResponse && turnAccepted && !hasTurnResponse)
       ? activeTurnStartedAt
       : (composerLatestEvent?.startedAt ??
         composerLatestEvent?.timestamp ??
@@ -801,42 +868,69 @@ export const ACPChatDialog = forwardRef<
     composerStatusStartAt,
   );
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
-  const composerInputHint = waitingForPermission
-    ? t("acp.permissionPending")
-    : cancelling
-      ? t("acp.stopping")
-      : pausedComposerState && !allowPausedPromptInput
-        ? pausedComposerState.message
-        : submittingPrompt
-          ? t("acp.sending")
-          : composerStatusActive
-            ? composerStatusLabel
-            : t("acp.promptInputHint");
-  const composerPlaceholder = planInterventionOption
-    ? t("acp.planInterventionHint")
-    : cancelling
-      ? t("conversation.runtime.composerStoppingPlaceholder")
-      : pausedComposerState
-        ? allowPausedPromptInput
-          ? t("conversation.runtime.composerStoppedPlaceholder")
-          : pausedComposerState.message
-        : t("conversation.runtime.composerRuntimeControlledPlaceholder");
-  const canSubmitPrompt =
-    Boolean(prompt.trim()) &&
-    !cancelling &&
-    !(pausedComposerState && !allowPausedPromptInput) &&
-    !runtimeErrorComposerState &&
-    !invalidWorkflowComposerState &&
-    (planInterventionOption ? !sending : !activePromptLocked);
-  const canStopSession =
-    sessionActive ||
-    awaitingResponse ||
-    sending ||
-    waitingForOptimisticPrompt ||
-    cancelling;
+  const composerInputHint = composerHintText(
+    composerState,
+    composerStatusLabel,
+    t,
+  );
+  const composerPlaceholder = composerPlaceholderText(composerState, t);
+  const canSubmitPrompt = composerState.canSubmit;
+  const canStopSession = composerState.canStop;
   const sendButtonBusy =
     (sending || waitingForOptimisticPrompt) && !planInterventionOption;
   const lastEvent = effectiveEvents.at(-1);
+
+  useEffect(() => {
+    debugAcpComposer("composer stop state", {
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId: outerNodeId ?? null,
+      outerAttemptId: outerAttemptId ?? null,
+      runtimeStatus: runtimeComposerContext?.runtimeStatus ?? null,
+      runtimeDisplay: runtimeComposerContext?.runtimeDisplay?.code ?? null,
+      lifecycleContinueKind: runtimeComposerContext?.lifecycle?.continueKind ?? null,
+      sessionStatus: effective?.status ?? null,
+      mode: composerState.mode,
+      submitTarget: composerState.submitTarget,
+      cancelling,
+      stopCommandPending,
+      stopInProgress,
+      awaitingResponse,
+      acpSessionActive,
+      sessionActive,
+      composerInputDisabled,
+      canSubmitPrompt,
+      placeholder: composerPlaceholder,
+      inputHint: composerInputHint,
+    });
+  }, [
+    acpSessionActive,
+    attemptId,
+    awaitingResponse,
+    canSubmitPrompt,
+    cancelling,
+    composerInputDisabled,
+    composerInputHint,
+    composerPlaceholder,
+    effective?.status,
+    composerState.mode,
+    composerState.submitTarget,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    roundId,
+    runId,
+    runtimeComposerContext?.lifecycle?.continueKind,
+    runtimeComposerContext?.runtimeDisplay?.code,
+    runtimeComposerContext?.runtimeStatus,
+    sessionActive,
+    stopCommandPending,
+    stopInProgress,
+    taskId,
+  ]);
 
   const normalizeSessionUpdate = (updated: AcpSessionVm | null) =>
     eventIdPrefix
@@ -1056,21 +1150,32 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   useEffect(() => {
-    if (
-      (!awaitingResponse && !cancelling) ||
-      sessionActive ||
-      sending ||
-      waitingForOptimisticPrompt
-    )
-      return;
+    if (runtimeStopAccepted && !(runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus))) {
+      setRuntimeStopAccepted(false);
+    }
+  }, [runtimeComposerContext?.lifecycle?.runtime.active, runtimeComposerContext?.runtimeStatus, runtimeStopAccepted]);
+
+  useEffect(() => {
+    if (stopCommandPending || sending || waitingForOptimisticPrompt) return;
+    if (!awaitingResponse && !cancelling) return;
+    if (cancelling && awaitTerminalStopRef.current && acpSessionActive) return;
+    if (cancelling && acpSessionActive) return;
+    if (!cancelling && sessionActive) return;
     setAwaitingResponse(false);
     setCancelling(false);
+    awaitTerminalStopRef.current = false;
+    const shouldNotifyStopped = cancelRequestedRef.current;
     cancelRequestedRef.current = false;
+    if (shouldNotifyStopped) onSessionStopped?.();
   }, [
+    acpSessionActive,
     awaitingResponse,
     cancelling,
+    effective?.status,
+    onSessionStopped,
     sending,
     sessionActive,
+    stopCommandPending,
     waitingForOptimisticPrompt,
   ]);
 
@@ -1285,7 +1390,7 @@ export const ACPChatDialog = forwardRef<
       );
       return;
     }
-    if (pausedComposerState && pausedComposerState.onContinue) {
+    if (composerState.submitTarget === "runtime-continue") {
       const promptId = createAcpPromptId();
       const optimisticEvent = optimisticUserEvent(trimmed, promptId);
       setPrompt("");
@@ -1299,7 +1404,7 @@ export const ACPChatDialog = forwardRef<
       updateOptimisticEvents((current) => [...current, optimisticEvent]);
       setSending(true);
       try {
-        await pausedComposerState.onContinue?.(promptId, trimmed);
+        await runtimeComposerContext?.onContinue?.(promptId, trimmed);
       } catch (error) {
         setSendError(displayAppError(t, error));
         setAwaitingResponse(false);
@@ -1318,13 +1423,27 @@ export const ACPChatDialog = forwardRef<
       }
       return;
     }
-    await submitPrompt(trimmed);
+    if (composerState.submitTarget === "acp-prompt") {
+      await submitPrompt(trimmed);
+    }
   };
 
   const stopSession = async () => {
-    if (cancelling || !canStopSession) return;
+    if (stopInProgress || !canStopSession) return;
+    debugAcpComposer("stop requested", {
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId: outerNodeId ?? null,
+      outerAttemptId: outerAttemptId ?? null,
+      runtimeStatus: runtimeComposerContext?.runtimeStatus ?? null,
+      sessionStatus: effective?.status ?? null,
+    });
     cancelRequestedRef.current = true;
     setCancelling(true);
+    setStopCommandPending(true);
     setCancelError(null);
     setAwaitingResponse(true);
     try {
@@ -1338,18 +1457,37 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
+      debugAcpComposer("stop command resolved", {
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        kind: result.kind,
+        returnedRunStatus: result.run?.status ?? null,
+        returnedSessionStatus: result.session?.status ?? null,
+        returnedSessionId: result.session?.sessionId ?? null,
+      });
+      awaitTerminalStopRef.current = Boolean(result.session?.sessionId);
+      setRuntimeStopAccepted(Boolean(result.run));
       applySessionUpdate(result.session ?? null);
+      setStopCommandPending(false);
       setSending(false);
-      setAwaitingResponse(false);
       setActiveTurnPrompt(null);
       setActiveTurnPromptId(null);
       setActiveTurnStartedAt(null);
-      setCancelling(false);
-      cancelRequestedRef.current = false;
-      onSessionStopped?.();
     } catch (error) {
+      debugAcpComposer("stop command failed", {
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        error: displayAppError(t, error),
+      });
       setCancelError(displayAppError(t, error));
       setCancelling(false);
+      setStopCommandPending(false);
       cancelRequestedRef.current = false;
     }
   };
@@ -1568,7 +1706,7 @@ export const ACPChatDialog = forwardRef<
                 <div className="h-3" />
               )}
               {timeline.length === 0 &&
-              !isSessionActive(effective.status) &&
+              !isSessionActiveStatus(effective.status) &&
               !sending ? (
                 <div className="p-5">
                   <EmptyAcpState />
@@ -1661,24 +1799,22 @@ export const ACPChatDialog = forwardRef<
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
-            {invalidWorkflowComposerState ? (
+            {composerState.externalKind ? (
               <AcpExternalComposerState
-                kind="invalid-workflow"
-                message={invalidWorkflowComposerState.workflowError}
-                onAction={invalidWorkflowComposerState.onRepair}
-              />
-            ) : pausedComposerState && !allowPausedPromptInput ? (
-              <AcpExternalComposerState
-                kind="paused"
-                message={pausedComposerState.message}
-                onAction={pausedComposerState.onContinue}
-                actionLabel={pausedComposerState.continueLabel}
-              />
-            ) : runtimeErrorComposerState ? (
-              <AcpExternalComposerState
-                kind="runtime-error"
-                message={runtimeErrorComposerState.errorMessage}
-                onAction={runtimeErrorComposerState.onRepair}
+                kind={composerState.externalKind}
+                message={composerState.externalMessage ?? ""}
+                onAction={
+                  composerState.externalKind === "invalid-workflow"
+                    ? runtimeComposerContext?.onRepair
+                    : composerState.externalKind === "paused"
+                      ? () => { void runtimeComposerContext?.onContinue?.(); }
+                      : undefined
+                }
+                actionLabel={
+                  composerState.externalKind === "paused"
+                    ? runtimeComposerContext?.continueLabel
+                    : undefined
+                }
               />
             ) : (
               <>
@@ -1733,7 +1869,7 @@ export const ACPChatDialog = forwardRef<
                       <PromptInputTextarea
                         className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
                         placeholder={composerPlaceholder}
-                        readOnly={activePromptLocked && !planInterventionOption}
+                        textareaDisabled={composerInputDisabled}
                         onDragEnter={dropZoneHandlers.onDragEnter}
                         onDragOver={dropZoneHandlers.onDragOver}
                         onDrop={dropZoneHandlers.onDrop}
@@ -1755,9 +1891,7 @@ export const ACPChatDialog = forwardRef<
                               className="size-7 rounded-full"
                               size="icon"
                               variant="ghost"
-                              disabled={
-                                activePromptLocked && !planInterventionOption
-                              }
+                              disabled={composerInputDisabled}
                               onClick={() => { void pickFiles(); }}
                             >
                               <Paperclip className="size-3.5" />
@@ -1774,10 +1908,10 @@ export const ACPChatDialog = forwardRef<
                                 className="h-8 gap-1.5 rounded-full px-3"
                                 size="sm"
                                 variant="secondary"
-                                disabled={cancelling}
+                                disabled={stopInProgress}
                                 onClick={stopSession}
                               >
-                                {cancelling ? (
+                                {stopInProgress ? (
                                   <Loader2
                                     className="size-3.5 animate-spin"
                                     style={{ willChange: "transform" }}
@@ -1785,7 +1919,7 @@ export const ACPChatDialog = forwardRef<
                                 ) : (
                                   <CircleStop className="size-3.5" />
                                 )}
-                                {cancelling ? t("acp.stopping") : t("acp.stop")}
+                                {stopInProgress ? t("acp.stopping") : t("acp.stop")}
                               </Button>
                             </PromptInputAction>
                           ) : null}
@@ -2691,7 +2825,7 @@ export function ACPMessageList({
   sending: boolean;
   onLayoutChange?: () => void;
 }) {
-  const active = isSessionActive(sessionStatus) || sending;
+  const active = isSessionActiveStatus(sessionStatus) || sending;
   const streamingTextItemKey = active ? latestStreamingTextItemKey(timeline) : null;
   const expansionControls = useMemo<AcpExpansionControls>(
     () => ({
@@ -3782,23 +3916,6 @@ function hasResponseAfterTurn(
   return start != null && firstResponseTimestampAfter(events, start) != null;
 }
 
-function isSessionActive(status?: string | null) {
-  return [
-    "pending",
-    "running",
-    "in_progress",
-    "sending",
-    "cancelling",
-    "cancel_requested",
-  ].includes(status?.toLowerCase() ?? "");
-}
-
-function isRuntimeActiveStatus(status?: string | null) {
-  return ["pending", "running", "in_progress", "active"].includes(
-    status?.toLowerCase() ?? "",
-  );
-}
-
 function processingKindFromTimeline(
   event: AcpTimelineItem | null,
   sending: boolean,
@@ -3828,6 +3945,31 @@ function processingLabel(
   if (kind === "tool") return t("acp.toolRunning");
   if (kind === "responding") return t("acp.responding");
   return t("acp.processing");
+}
+
+function composerHintText(
+  state: ReturnType<typeof deriveAcpRuntimeComposerState>,
+  statusLabel: string,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (state.hintKind === "permission-pending") return t("acp.permissionPending");
+  if (state.hintKind === "stopping") return t("acp.stopping");
+  if (state.hintKind === "sending") return t("acp.sending");
+  if (state.hintKind === "status") return statusLabel;
+  if (state.hintKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.promptInputHint");
+  return t("acp.promptInputHint");
+}
+
+function composerPlaceholderText(
+  state: ReturnType<typeof deriveAcpRuntimeComposerState>,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (state.placeholderKind === "plan-intervention") return t("acp.planInterventionHint");
+  if (state.placeholderKind === "stopping") return t("conversation.runtime.composerStoppingPlaceholder");
+  if (state.placeholderKind === "stopped") return t("conversation.runtime.composerStoppedPlaceholder");
+  if (state.placeholderKind === "runtime-controlled") return t("conversation.runtime.composerRuntimeControlledPlaceholder");
+  if (state.placeholderKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.composerPlaceholder");
+  return t("acp.composerPlaceholder");
 }
 
 function findPlanInterventionOption(request: AcpPermissionRequestVm) {

@@ -78,6 +78,13 @@ fn resolve_acp_attempt_dir(
     }
 }
 
+fn is_acp_session_active_status(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "pending" | "running" | "in_progress" | "sending" | "cancelling" | "cancel_requested"
+    )
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
@@ -668,40 +675,25 @@ pub fn stop_active_session(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ActiveSessionStopVm> {
     let app = state.app().map_err(command_error)?;
-    let run = app.run_status(&task_id, &run_id).map_err(command_error)?;
-    if run.status == RunStatus::Running {
-        let paused = app
-            .run_pause(&task_id, &run_id, PauseReason::ProcessInterrupted)
-            .map_err(command_error)?;
-        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-        {
-            dynamic_acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .map_err(command_error)?
-        } else {
-            acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .map_err(command_error)?
-        };
+    let was_running = app
+        .run_status(&task_id, &run_id)
+        .map(|run| run.status == RunStatus::Running)
+        .map_err(command_error)?;
+
+    let session = cancel_acp_session(
+        app_handle,
+        state,
+        task_id.clone(),
+        run_id.clone(),
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    )?;
+
+    if was_running {
+        let paused = app.run_status(&task_id, &run_id).map_err(command_error)?;
         return Ok(ActiveSessionStopVm {
             kind: "run-paused".to_string(),
             run: Some(run_summary_vm(paused)),
@@ -709,17 +701,6 @@ pub fn stop_active_session(
         });
     }
 
-    let session = cancel_acp_session(
-        app_handle,
-        state,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    )?;
     Ok(ActiveSessionStopVm {
         kind: "session-cancelled".to_string(),
         run: None,

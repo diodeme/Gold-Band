@@ -41,20 +41,25 @@
 - `status / outcome / pauseReason` 只作为运行事实字段保留；Session Switcher、顶部选中栏、工作流查看 Sheet 不在前端自行推断成功/失败/暂停，而是统一消费后端派生的 `runtimeDisplay.code / tone / icon / terminal / resumable / reasonCode`
 - `completed + outcome=null` 不展示为成功；成功必须来自 `outcome=success` 派生出的 `runtimeDisplay.tone=success`
 - AI-DYNAMIC 内部节点的 session 状态来源于 dynamic graph 中的节点状态（`dynamic/nodes/<node-id>/node.json` 或 `graph.json.nodes`），ACP attempt 目录只代表聊天会话记录，不作为工作流节点成败状态来源
+- 当 runtime attempt 已因 `process-interrupted / waiting-for-user-input / error-blocked` 进入可继续暂停时，session tree 与 composer 的用户态状态必须继续展示为 `paused`；此时 ACP snapshot/session 被写成 `cancelled` 只代表底层会话传输已结束，不能覆盖 runtime 的“可继续”事实
 
 ### 默认 session 选择
 - 用户已有选中 session 且仍有效时保持
 - 多个 session 默认最近 session；最近 session 必须按 session/attempt 的实际开始时间选择，不能按 workflow DSL 节点顺序选择最后一个节点
 - run 结束时显示到达 end 状态的 session
+- run 启动时必须先同步创建首个 `round/node/attempt` 的最小运行锚点并写入 `node.json`，再后台启动 agent/provider；`selectedSessionKey` 应能在首次 `getConversationRun` 中从当前 attempt 推导出来，不能依赖首个 ACP frame 到达后才出现。
+- 没有显式 `selectedSessionKey` 时，默认 session 选择顺序为：当前 runtime attempt → active/running attempt → 最近 session；只有不存在运行中锚点时才回退到最新历史 session。前端可用 `activeSessions` 做短暂兜底，但该兜底只用于极短竞态，不作为主事实源。
 - 新会话从会话式主页发起后，run 创建命令只负责落盘 task/run 初始状态并后台启动执行；前端收到该 run 的第一个 ACP live event 后必须立即刷新 session tree，插入对应 attempt，选中该 session，并把右侧详情切到该 session。后续同一 attempt 的流式消息由 ACP 会话详情订阅直接合并，不依赖整页轮询。
-- run 已进入 `running` 但首个 attempt 尚未出现在 session tree 前，右侧主区域显示 `Agent 调起中` 状态，不回退为“暂无活跃会话”。attempt 已出现在 session tree 但尚无可见 thought/text/tool timeline item 时，消息主区域显示 `处理中...`；收到首个 thought 后自然切换为 `思考中...`，避免创建 session 后到首 token 前出现空白。会话式运行页必须把当前 attempt 的外层 runtime status 传入 ACPChatDialog，不能只依赖 ACP snapshot/session status；否则自动工作流节点早期会误判为可输入状态，导致底部状态栏和停止按钮缺失。
+- run 已进入 `running` 但首个 attempt 尚未出现在 session tree 前，右侧主区域显示 `Agent 调起中` 状态，不回退为“暂无活跃会话”。attempt 已出现在 session tree 但尚无可见 thought/text/tool timeline item 时，消息主区域显示 `处理中...`；收到首个 thought 后自然切换为 `思考中...`，避免创建 session 后到首 token 前出现空白。会话式运行页必须把当前 attempt 的外层 runtime status 传入 ACPChatDialog，不能只依赖 ACP snapshot/session status；当前选中 attempt 运行中时必须展示阶段状态、禁用输入并显示停止按钮，当前选中 attempt 已结束时必须恢复正常追问输入且不显示停止按钮。
 
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史
 - 用户不在底部（正在看历史）→ 不自动切换、不折叠
 - 用户手动切到其他 session（无论通过 session tree、顶部运行中节点 chip，还是工作流图入口）后，自动跟随立即解除；后续新 running session 只在后台推进，不抢占当前查看中的会话
 - 用户显式切回某个 running session 且消息窗口位于底部时，才重新进入自动跟随；刷新 run VM 时若未满足自动跟随条件，前端必须继续保留当前 `selectedSessionKey`，不能因为其他 session 的 live event 回退到最新 running attempt；若手动切换与已排队的 live refresh 同时发生，仍以最新手动选择为准
+- 会话页内“进入 run 时重置自动跟随”的前端 effect 只能绑定 `runId` 等稳定 run 身份，不能依赖父组件每次重建的回调引用；否则 live refresh 触发父组件重渲染后会误把手动关闭的自动跟随重新打开
 - 手动切换后是否恢复自动跟随，必须以 `run.activeSessions` 中是否仍包含当前选中 session 为准，不能仅依赖该 leaf 自身的 `runtimeDisplay.tone`，避免树状态短暂不一致时把已完成 session 误判成仍可跟随
+- 前端所有完整 `ConversationRunVm` 快照进入 React state 时必须走统一合并入口，不允许调用点直接覆盖；合并入口负责保留当前 selected key、阻止 ACP `unknown` 空快照降级 runtime active 状态，并在 run 仍运行但 activeSessions 暂空时从 selected leaf 补出临时 active session。
 - 只有一个 session 运行中 → 自动展开该 session
 - 多个 session 运行中 → 显示折叠行（session 名 + 实时状态），用户点击进入
 
@@ -79,13 +84,28 @@
 - timeline item 必须保持稳定 id；未变化的历史 item 应尽量复用对象引用，让消息、工具卡、thought 和子 Agent 分组的 memo 化渲染有效。
 - Raw frames 面板默认只展示行摘要；展开单条 frame 时才做 JSON pretty print 和长段落换行，不允许折叠态批量解析完整 raw 内容。
 
+### canonical lifecycle
+
+会话页不得再让 runtime、attempt、ACP session 与 composer 各自重复解释同一个 `status` 字符串。后端 conversation VM 必须为每个 leaf 派生 `lifecycle`：
+
+| 层级 | 字段 | 职责 |
+|---|---|---|
+| runtime facet | `status / outcome / pauseReason / resumable / current / active / continuable` | 表达 workflow runtime 与 attempt 是否仍由运行时控制、是否可继续 |
+| ACP facet | `status / active / stopping / terminal` | 表达底层 ACP provider/session 是否还在响应或停止流程中 |
+| lifecycle 顶层 | `displayStatus / runtimeDisplay / continueKind` | 作为 session tree、activeSessions 与 composer 的唯一派生事实源 |
+
+`status` 与 `runtimeDisplay` 仍可作为兼容字段暴露，但必须由 lifecycle 同一个派生函数产出，不能在前端或其他 VM 中重新拼优先级。
+
+composer 只消费 lifecycle + ACP session live status + 少量本地 optimistic 状态，派生为单一 semantic composer state；placeholder、输入禁用、停止按钮、发送目标都来自这个 state。
+
 ### 互斥状态
-1. **正常输入**：当前 session 已正常结束时，用户可继续输入消息（含附件）
-2. **运行中锁定**：当前 session 正在运行时不允许输入消息
-3. **运行错误提示/操作**：当前 session 派生为 `runtimeDisplay.code=error-blocked` 或终局失败时，不允许输入，显示错误原因和修复入口；`error-blocked` 不归入“暂停可继续”，`killed / failure / invalid` 也必须使用终止或失败文案，错误态不得复用“当前会话已暂停，可继续运行”这类暂停提示
-4. **工作流无效修复按钮**：需要通过 runtime 继续暂停 run 且 workflow 无效时，不允许输入，显示修改按钮；该状态优先于普通暂停继续
-5. **继续按钮**：当前 session 因 `waiting-for-user-input` 暂停且可继续时不允许输入，显示继续按钮；点击后仍走 runtime `continue`，只是继续文案保持默认
-6. **停止后用户介入**：当前 session 因用户停止而派生为 `process-interrupted` 且可继续时，不显示继续按钮，恢复输入框；用户发送的文本仍走同一条 runtime `continue` 链路，只是把默认“继续”替换成用户发送内容，因此用户感知上是在会话中发出一条消息
+1. **正常输入**：当前 session 已正常结束时，用户可继续输入消息（含附件），发送目标为 ACP same-session prompt
+2. **运行中锁定**：当前 lifecycle 表示 runtime active 时不允许输入消息
+3. **停止中锁定**：本地 stop 命令未返回、ACP session 为 `cancelling/cancel_requested`、或 lifecycle 的 ACP facet 为 `stopping` 时，composer 显示“正在停止当前会话…”并锁定输入
+4. **运行错误提示/操作**：当前 session 派生为 `runtimeDisplay.code=error-blocked` 或终局失败时，不允许输入，显示错误原因和修复入口；`error-blocked` 不归入“暂停可继续”，`killed / failure / invalid` 也必须使用终止或失败文案，错误态不得复用“当前会话已暂停，可继续运行”这类暂停提示
+5. **工作流无效修复按钮**：只有 submit target 为 runtime continue 且 workflow 无效时才不允许输入并显示修改按钮；当前 session 已正常结束后的 ACP same-session 追问不受 workflow invalid 阻塞
+6. **继续按钮**：当前 session 因 `waiting-for-user-input` 暂停且可继续时不允许输入，显示继续按钮；点击后仍走 runtime `continue`，只是继续文案保持默认
+7. **停止后用户介入**：当前 session 因用户停止而派生为 `process-interrupted` 且可继续时，不显示继续按钮，恢复输入框；用户发送的文本仍走同一条 runtime `continue` 链路，只是把默认“继续”替换成用户发送内容，因此用户感知上是在会话中发出一条消息
 
 ### 修复入口
 
@@ -98,14 +118,20 @@
 - 当前 session 正常结束后，在会话窗口追问属于 ACP same-session prompt，不要求 authoring workflow 合法
 - 追问发送时，当前会话对应行进入旋转运行态；结束后只影响该 ACP session 的消息流，不触发工作流 runtime 继续执行
 - 当前 run 暂停后通过 runtime 继续仍然要求 workflow 合法；如果 workflow 无效，composer 只显示修改按钮
-- 当前 run 因 `process-interrupted` 暂停且可继续时，composer 允许输入用户补充内容并触发 workflow runtime continue；这与当前 session 已正常结束后的 ACP same-session 追问不同，不能退化为普通 ACP prompt
-- 停止按钮只调用桌面 `stop_active_session` 语义入口，不在前端按“ACP / runtime”维护两套停止链路。后端根据当前 run 与选中 session locator 判定：run 仍为 `running` 时统一复用 `App::run_pause` 暂停当前 run、写入当前 attempt cancel 请求、清理 provider pid 与 dynamic descendants；run 已非 running 但当前 ACP prompt/追问仍活跃时，复用 `cancel_acp_session` 取消该 ACP session；没有活跃 ACP 时不额外修改 run 状态。
+- 当前 run 因 `process-interrupted` 暂停且可继续时，composer 允许输入用户补充内容并触发 workflow runtime continue；这与当前 session 已正常结束后的 ACP same-session 追问不同，不能退化为普通 ACP prompt。continue 请求已把 attempt/runtime 拉回 running 后，旧 ACP snapshot 的 `cancelled` 只代表上一段响应的历史终态，不能继续驱动 composer 的“会话已终止”错误态
+- 停止按钮只调用桌面 `stop_active_session` 统一语义入口，不在前端按“ACP / runtime”维护两套停止链路。用户语义始终是“停止当前进行中的运行”；后端根据当前 run 与选中 session locator 判定是否需要同时写入 ACP cancel 请求并等待 provider 优雅退出。
+- `stop_active_session` 返回成功只代表“停止请求已被接收并进入停止流程”，不代表 provider 已退出。若当前 attempt 已存在 ACP session，前端必须保持 `stopping / cancelling` 中间态，直到收到 ACP session 非 active 终态快照后，才把当前会话视为停止完成并触发上层 run/session 刷新；若当前还没有 ACP session，则以 runtime 不再 active 作为停止完成信号。
+- 停止过程中可能同时出现 `run paused/process-interrupted` 与 `ACP session active/cancelling` 两个事实；composer 展示优先级必须以 ACP 是否仍在停止流程为准：`cancel-request` 仍存在且 `provider.pid` 未消失、session 为 `cancelling/cancel_requested`、或 runtime 已 paused 但 ACP session 仍 active 时，都显示“正在停止当前会话…”并保持输入锁定；停止完成判断只看 ACP session 是否非 active，不用可能滞后的 `runtimeStatus=running` 阻塞完成；确认 ACP 非 active 后才显示“当前会话已停止...”
+- composer semantic state 的优先级固定为：permission blocked → stopping → submitting → invalid workflow（仅 runtime continue 路径）→ runtime error → `process-interrupted` 输入继续 → `waiting-for-user-input` 按钮继续 → runtime active lock → normal ACP prompt。后续新增状态必须先进入该派生表和矩阵测试，不能在组件里局部追加布尔判断。
+- 排查停止状态时，前端可通过 `localStorage.setItem('gold-band-acp-debug','true')` 打开 ACP composer 状态日志；日志需以可复制的一行摘要输出 lifecycle runtime status、ACP session status、composer mode、submit target、local cancelling、stopCommandPending、stopInProgress、输入锁定、placeholder 与提交可用状态
 
 ### 停止
 - 停止并重跑在顶部操作区
 - composer 内也有 stop 按钮（ACP 会话停止）
 - composer 内的 ACP 停止表示“中断当前响应”，不是 workflow 配置错误；停止后的 attempt 应显示为可继续暂停
 - ACP 停止先尝试优雅取消，超时后可 kill provider 进程；由停止触发的 adapter closed / cancelled 结果仍按 `process-interrupted` 派生，不显示修复工作流入口
+- runtime 异常、agent/provider 异常与 workflow DSL 无效必须分开提示：只有 `workflowValid=false` 或明确的 workflow validation error 才展示“修改/修复工作流”入口；`error-blocked`、session failure、session killed 等运行期异常只提示查看错误原因，不默认引导用户修改工作流。
+- 当前选中 session 已有 `diagnostics.lastError` 时，错误面板文案应直接拼接具体错误原因，避免用户再额外寻找日志入口。
 - 新 UI 中，`process-interrupted` 不再展示单独“继续”按钮，而是恢复输入框；用户点击发送后仍走 runtime `continue`，只是把默认“继续”替换成用户本次输入内容，因此用户感知上是继续在当前会话里发消息
 
 ## 会话信息栏（ACPSessionHeader）

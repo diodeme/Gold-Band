@@ -24,7 +24,7 @@ import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 
@@ -365,18 +365,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             <SettingsSection title={t('settings.advanced')}>
               <div className="flex items-center gap-3 py-2">
                 <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <CircleHelp className="size-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent align="start" side="top" sideOffset={8} className="max-w-64 whitespace-pre-wrap break-words text-xs leading-5">
-                      {t('settings.useLocalClaude.tooltip')}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                <SettingInfoTooltip content={t('settings.useLocalClaude.tooltip')} />
                 <button
                   type="button"
                   role="switch"
@@ -402,11 +391,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
                 ) : null}
               </div>
-              <div className="flex items-center justify-between gap-4 py-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
-                  <div className="text-xs text-muted-foreground">{t('settings.verboseLogging.description')}</div>
-                </div>
+              <div className="flex items-center gap-3 py-2">
+                <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
+                <SettingInfoTooltip content={t('settings.verboseLogging.description')} />
                 <button
                   type="button"
                   role="switch"
@@ -488,11 +475,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             {/* Metrics reporting section — always visible from desktop API */}
               <SettingsSection title={t('settings.metrics.title')} divided>
                 <div className="max-w-4xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">{t('settings.metrics.enable')}</p>
-                      <p className="text-xs text-muted-foreground">{t('settings.metrics.enableDescription')}</p>
-                    </div>
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm font-medium text-muted-foreground">{t('settings.metrics.enable')}</p>
+                    <SettingInfoTooltip content={t('settings.metrics.enableDescription')} />
                     <button
                       type="button"
                       role="switch"
@@ -609,6 +594,21 @@ function SettingsSection({ title, children, divided = false }: { title: ReactNod
       <h2 className="text-base font-semibold text-foreground">{title}</h2>
       <div className="min-w-0 space-y-4">{children}</div>
     </section>
+  );
+}
+
+function SettingInfoTooltip({ content }: { content: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <CircleHelp className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent align="start" side="top" sideOffset={8} className="max-w-64 whitespace-pre-wrap break-words text-xs leading-5">
+        {content}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

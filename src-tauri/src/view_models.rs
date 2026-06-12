@@ -3091,8 +3091,8 @@ pub fn dynamic_acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let cancelling =
-        is_cancel_requested(&attempt_dir) && is_acp_session_active_status(metadata_status);
+    let provider_pid_path = attempt_dir.join("provider.pid");
+    let cancelling = acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -3344,8 +3344,10 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let cancelling =
-        is_cancel_requested(&attempt_dir) && is_acp_session_active_status(metadata_status);
+    let provider_pid_path = app
+        .paths
+        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
+    let cancelling = acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -4605,6 +4607,15 @@ fn is_acp_session_active_status(status: &str) -> bool {
     )
 }
 
+fn acp_cancel_request_in_progress(
+    attempt_dir: &camino::Utf8Path,
+    provider_pid_path: &camino::Utf8Path,
+    metadata_status: &str,
+) -> bool {
+    is_cancel_requested(attempt_dir)
+        && (provider_pid_path.exists() || is_acp_session_active_status(metadata_status))
+}
+
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
@@ -5396,6 +5407,28 @@ mod tests {
             state.observe_event(&event);
         }
         state.finish_at(session_active, now)
+    }
+
+    #[test]
+    fn cancel_requested_with_live_provider_stays_cancelling() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-cancel-status-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
+            .unwrap();
+
+        assert!(acp_cancel_request_in_progress(
+            &attempt_dir,
+            &pid_path,
+            "cancelled"
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

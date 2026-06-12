@@ -861,6 +861,31 @@ export interface PinRef {
   taskId: string;
 }
 
+export interface ConversationRuntimeFacetVm {
+  status: string;
+  outcome?: string | null;
+  pauseReason?: string | null;
+  resumable: boolean;
+  current: boolean;
+  active: boolean;
+  continuable: boolean;
+}
+
+export interface ConversationAcpFacetVm {
+  status?: string | null;
+  active: boolean;
+  stopping: boolean;
+  terminal: boolean;
+}
+
+export interface ConversationAttemptLifecycleVm {
+  runtime: ConversationRuntimeFacetVm;
+  acp: ConversationAcpFacetVm;
+  displayStatus: string;
+  runtimeDisplay: RuntimeDisplayVm;
+  continueKind?: 'input' | 'action' | string | null;
+}
+
 export interface ConversationSessionLeafVm {
   roundId: string;
   nodeId: string;
@@ -871,6 +896,7 @@ export interface ConversationSessionLeafVm {
   status: string;
   outcome?: string | null;
   runtimeDisplay: RuntimeDisplayVm;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -943,6 +969,7 @@ export interface ConversationActiveSessionVm {
   pathLabel: string;
   status: string;
   runtimeDisplay: RuntimeDisplayVm;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
   sessionId?: string | null;
   startedAt?: string | null;
 }

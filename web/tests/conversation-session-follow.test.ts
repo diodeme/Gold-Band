@@ -5,6 +5,18 @@ import {
   shouldEnableConversationAutoFollow,
 } from '@/lib/conversation-session-follow';
 
+function runPageResetCount(runIds: string[]) {
+  let previousRunId: string | null = null;
+  let resets = 0;
+  for (const runId of runIds) {
+    if (runId !== previousRunId) {
+      resets += 1;
+      previousRunId = runId;
+    }
+  }
+  return resets;
+}
+
 describe('conversation session follow helpers', () => {
   it('selects the incoming session when there is no current selection', () => {
     expect(resolveConversationEventSelectedSessionKey({
@@ -50,5 +62,10 @@ describe('conversation session follow helpers', () => {
       pendingEventSessionKey: 'round-001/node-b/attempt-001',
       currentSelectedKey: 'round-001/node-a/attempt-001',
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('resets run-page auto-follow only when the run id changes', () => {
+    expect(runPageResetCount(['run-1', 'run-1', 'run-1'])).toBe(1);
+    expect(runPageResetCount(['run-1', 'run-1', 'run-2'])).toBe(2);
   });
 });

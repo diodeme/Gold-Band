@@ -36,7 +36,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::i18n::Translator;
-use crate::metrics::{MetricsSettingsVm, metrics_settings};
+use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
@@ -737,8 +737,8 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
     let context = state.context().map_err(command_error)?;
     let vm = metrics_settings(&context.config);
     eprintln!(
-        "[metrics] enabled={} toggle_locked={} heartbeat={:?} node_metrics={:?} api_key_set={}",
-        vm.enabled, vm.toggle_locked, vm.heartbeat_endpoint, vm.node_metrics_endpoint, vm.api_key_set,
+        "[metrics] enabled={} toggle_locked={} base_url={:?} heartbeat={:?} node_metrics={:?} api_key_set={}",
+        vm.enabled, vm.toggle_locked, vm.metrics_base_url, vm.heartbeat_endpoint, vm.node_metrics_endpoint, vm.api_key_set,
     );
     Ok(vm)
 }
@@ -747,16 +747,18 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
     enabled: bool,
-    heartbeat_endpoint: Option<String>,
-    node_metrics_endpoint: Option<String>,
+    metrics_base_url: Option<String>,
     api_key: Option<String>,
 ) -> CommandResult<MetricsSettingsVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
     existing.desktop_metrics_enabled = Some(enabled);
-    existing.desktop_heartbeat_endpoint = heartbeat_endpoint.filter(|s| !s.trim().is_empty());
-    existing.desktop_node_metrics_endpoint = node_metrics_endpoint.filter(|s| !s.trim().is_empty());
+    existing.desktop_metrics_base_url = metrics_base_url
+        .as_deref()
+        .and_then(normalize_metrics_base_url);
+    existing.desktop_heartbeat_endpoint = None;
+    existing.desktop_node_metrics_endpoint = None;
     existing.desktop_metrics_api_key = api_key.filter(|s| !s.trim().is_empty());
     app.save_settings(&existing).map_err(command_error)?;
     state.update_settings_config(&existing).map_err(command_error)?;

@@ -7,11 +7,14 @@ use gold_band::app::{MetricsEvent, MetricsEventContext};
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
+use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
 /// Cached log path — resolved once, avoids env-var lookup + create_dir_all on every log line.
 static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
+const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
+const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
 
 fn metrics_log_path() -> Option<&'static str> {
     METRICS_LOG_PATH
@@ -73,38 +76,80 @@ fn to_iso8601(ts: &str) -> String {
 pub struct MetricsSettingsVm {
     pub enabled: bool,
     pub toggle_locked: bool,
+    pub metrics_base_url: Option<String>,
     pub heartbeat_endpoint: Option<String>,
     pub node_metrics_endpoint: Option<String>,
     pub api_key_set: bool,         // true if api_key is non-empty (never expose the key itself)
 }
 
+pub fn normalize_metrics_base_url(raw: &str) -> Option<String> {
+    let mut value = raw.trim().trim_end_matches('/').to_string();
+    if value.is_empty() {
+        return None;
+    }
+    for suffix in [HEARTBEAT_ENDPOINT_PATH, NODE_METRICS_ENDPOINT_PATH] {
+        if value.ends_with(suffix) {
+            value.truncate(value.len() - suffix.len());
+            value = value.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+
+    let mut url = Url::parse(&value).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    let mut normalized = url.to_string().trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        normalized = value;
+    }
+    Some(normalized)
+}
+
+fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
+    let channel_config = current_channel_config();
+    config
+        .desktop_metrics_base_url
+        .as_deref()
+        .and_then(normalize_metrics_base_url)
+        .or_else(|| {
+            config
+                .desktop_heartbeat_endpoint
+                .as_deref()
+                .and_then(normalize_metrics_base_url)
+        })
+        .or_else(|| {
+            config
+                .desktop_node_metrics_endpoint
+                .as_deref()
+                .and_then(normalize_metrics_base_url)
+        })
+        .or_else(|| normalize_metrics_base_url(channel_config.metrics_base_url))
+}
+
+fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<String> {
+    normalize_metrics_base_url(base_url).map(|base| format!("{}{}", base.trim_end_matches('/'), path))
+}
+
 pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     let channel_config = current_channel_config();
     eprintln!(
-        "[metrics] channel raw: ch_enabled={} ch_locked={} ch_heartbeat={} ch_node_metrics={} ch_apikey_empty={}",
+        "[metrics] channel raw: ch_enabled={} ch_locked={} ch_base_url={} ch_apikey_empty={}",
         channel_config.metrics_enabled,
         channel_config.metrics_toggle_locked,
-        channel_config.heartbeat_endpoint,
-        channel_config.node_metrics_endpoint,
+        channel_config.metrics_base_url,
         channel_config.metrics_api_key.is_empty(),
     );
     let enabled = config.desktop_metrics_enabled || channel_config.metrics_enabled;
-    let heartbeat_endpoint = config
-        .desktop_heartbeat_endpoint
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let ep = channel_config.heartbeat_endpoint;
-            if ep.is_empty() { None } else { Some(ep.to_string()) }
-        });
-    let node_metrics_endpoint = config
-        .desktop_node_metrics_endpoint
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let ep = channel_config.node_metrics_endpoint;
-            if ep.is_empty() { None } else { Some(ep.to_string()) }
-        });
+    let metrics_base_url = metrics_base_url(config);
+    let heartbeat_endpoint = metrics_base_url
+        .as_deref()
+        .and_then(|base_url| endpoint_from_base_url(base_url, HEARTBEAT_ENDPOINT_PATH));
+    let node_metrics_endpoint = metrics_base_url
+        .as_deref()
+        .and_then(|base_url| endpoint_from_base_url(base_url, NODE_METRICS_ENDPOINT_PATH));
     let api_key = config
         .desktop_metrics_api_key
         .clone()
@@ -114,8 +159,9 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
             if k.is_empty() { None } else { Some(k.to_string()) }
         });
     MetricsSettingsVm {
-        enabled: enabled && heartbeat_endpoint.is_some(),
+        enabled: enabled && metrics_base_url.is_some(),
         toggle_locked: channel_config.metrics_toggle_locked,
+        metrics_base_url,
         heartbeat_endpoint,
         node_metrics_endpoint,
         api_key_set: api_key.is_some(),

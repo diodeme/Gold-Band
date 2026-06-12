@@ -103,6 +103,7 @@ const defaultUpdaterSettings: UpdaterSettingsVm = {
 const defaultMetricsSettings: MetricsSettingsVm = {
   enabled: false,
   toggleLocked: false,
+  metricsBaseUrl: null,
   heartbeatEndpoint: null,
   nodeMetricsEndpoint: null,
   apiKeySet: false,

@@ -17,7 +17,11 @@ struct ChannelConfig {
     allow_http_updater: bool,
     metrics_enabled: bool,
     metrics_toggle_locked: bool,
+    #[serde(default)]
+    metrics_base_url: String,
+    #[serde(default)]
     heartbeat_endpoint: String,
+    #[serde(default)]
     node_metrics_endpoint: String,
     metrics_api_key: String,
 }
@@ -25,6 +29,7 @@ struct ChannelConfig {
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_BASE_URL");
     println!("cargo:rerun-if-changed=../configs/channels");
 
     let channel = env::var("GOLD_BAND_RELEASE_CHANNEL").unwrap_or_else(|_| "default".to_string());
@@ -92,14 +97,16 @@ fn main() {
         "cargo:rustc-env=GOLD_BAND_METRICS_TOGGLE_LOCKED={}",
         config.metrics_toggle_locked
     );
-    println!(
-        "cargo:rustc-env=GOLD_BAND_HEARTBEAT_ENDPOINT={}",
-        config.heartbeat_endpoint
-    );
-    println!(
-        "cargo:rustc-env=GOLD_BAND_NODE_METRICS_ENDPOINT={}",
-        config.node_metrics_endpoint
-    );
+    let metrics_base_url = if let Ok(value) = env::var("GOLD_BAND_METRICS_BASE_URL") {
+        value
+    } else if config.metrics_base_url.is_empty() {
+        derive_metrics_base_url(&config.heartbeat_endpoint)
+            .or_else(|| derive_metrics_base_url(&config.node_metrics_endpoint))
+            .unwrap_or_default()
+    } else {
+        config.metrics_base_url
+    };
+    println!("cargo:rustc-env=GOLD_BAND_METRICS_BASE_URL={}", metrics_base_url);
     // Allow env var to override JSON value — keeps secrets out of the repo.
     let metrics_api_key = env::var("GOLD_BAND_METRICS_API_KEY")
         .ok()
@@ -112,4 +119,13 @@ fn main() {
     );
 
     tauri_build::build()
+}
+
+fn derive_metrics_base_url(endpoint: &str) -> Option<String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return None;
+    }
+    let url = url::Url::parse(endpoint).ok()?;
+    Some(format!("{}://{}", url.scheme(), url.host_str()?))
 }

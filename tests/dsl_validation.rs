@@ -77,7 +77,11 @@ fn rejects_workflow_without_end_node() {
     );
 
     let error = validate_workflow(workflow).expect_err("workflow should require an end node");
-    assert!(error.to_string().contains("must include an edge targeting `$end`"));
+    assert!(
+        error
+            .to_string()
+            .contains("must include an edge targeting `$end`")
+    );
 }
 
 #[test]
@@ -99,7 +103,11 @@ fn rejects_unreachable_node() {
     );
 
     let error = validate_workflow(workflow).expect_err("workflow should reject unreachable node");
-    assert!(error.to_string().contains("node `accept` is unreachable from entry"));
+    assert!(
+        error
+            .to_string()
+            .contains("node `accept` is unreachable from entry")
+    );
 }
 
 #[test]

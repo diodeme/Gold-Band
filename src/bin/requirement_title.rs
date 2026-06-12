@@ -8,15 +8,36 @@ const TARGET_LEN: usize = 10;
 const MAX_LEN: usize = 18;
 const MAX_SHINGLE: usize = 4;
 
-const FOCUS_MARKERS: &[&str] = &["需求", "需求描述", "核心需求", "目标", "目标描述", "标题", "一句话总结"];
+const FOCUS_MARKERS: &[&str] = &[
+    "需求",
+    "需求描述",
+    "核心需求",
+    "目标",
+    "目标描述",
+    "标题",
+    "一句话总结",
+];
 const LIGHT_FILLERS: &[&str] = &[
-    "当前", "本次", "这次", "一个", "一种", "一套", "进行", "相关", "用于", "需要", "请", "将", "把",
+    "当前", "本次", "这次", "一个", "一种", "一套", "进行", "相关", "用于", "需要", "请", "将",
+    "把",
 ];
 const TRAILING_SUFFIXES: &[&str] = &[
-    "详细设计", "设计方案", "实现方案", "实施方案", "重构计划", "优化计划", "改造计划", "功能说明", "需求说明", "方案", "计划", "说明",
+    "详细设计",
+    "设计方案",
+    "实现方案",
+    "实施方案",
+    "重构计划",
+    "优化计划",
+    "改造计划",
+    "功能说明",
+    "需求说明",
+    "方案",
+    "计划",
+    "说明",
 ];
 const GENERIC_SECTION_WORDS: &[&str] = &[
-    "实现", "设计", "方案", "改动", "改造", "接入", "规则", "布局", "约束", "验收", "背景", "目标", "结论", "状态", "模块", "步骤", "细节", "示例", "接口", "组件",
+    "实现", "设计", "方案", "改动", "改造", "接入", "规则", "布局", "约束", "验收", "背景", "目标",
+    "结论", "状态", "模块", "步骤", "细节", "示例", "接口", "组件",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +120,11 @@ pub fn generate_title(text: &str) -> String {
     candidates
         .into_iter()
         .map(|candidate| finalize_candidate(candidate, &stats))
-        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| readability_bonus(&left.0).cmp(&readability_bonus(&right.0))))
+        .max_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| readability_bonus(&left.0).cmp(&readability_bonus(&right.0)))
+        })
         .map(|(title, _)| title)
         .unwrap_or_else(|| FALLBACK_TITLE.to_string())
 }
@@ -138,7 +163,10 @@ fn parse_lines(text: &str) -> Vec<Line> {
         if stripped.is_empty()
             || looks_repetitive(&stripped)
             || trailing_segment_after_delimiter(&stripped)
-                .map(|segment| looks_repetitive(segment) || sounds_like_discardable_tail(&leading_segment(segment)))
+                .map(|segment| {
+                    looks_repetitive(segment)
+                        || sounds_like_discardable_tail(&leading_segment(segment))
+                })
                 .unwrap_or(false)
         {
             continue;
@@ -211,7 +239,10 @@ fn add_text_to_stats(text: &str, stats: &mut Stats) {
     }
 
     for shingle in cjk_shingles(text, 2, MAX_SHINGLE) {
-        if shingle.chars().all(|ch| ch == shingle.chars().next().unwrap_or(ch)) {
+        if shingle
+            .chars()
+            .all(|ch| ch == shingle.chars().next().unwrap_or(ch))
+        {
             continue;
         }
         *stats.cjk_shingle_freq.entry(shingle).or_insert(0) += 1;
@@ -219,7 +250,9 @@ fn add_text_to_stats(text: &str, stats: &mut Stats) {
 }
 
 fn strongest_structural_title(lines: &[Line], stats: &Stats) -> Option<String> {
-    let h1 = lines.iter().find(|line| matches!(line.role, LineRole::Heading { level: 1, .. }))?;
+    let h1 = lines
+        .iter()
+        .find(|line| matches!(line.role, LineRole::Heading { level: 1, .. }))?;
     let normalized = normalize_title_text(&h1.text);
     if normalized.is_empty() || is_focus_marker(&normalized) || is_overly_generic(&normalized) {
         return None;
@@ -291,7 +324,8 @@ fn build_candidates(lines: &[Line], paragraphs: &[String]) -> Vec<Candidate> {
             source_kind: CandidateSourceKind::ParagraphLead,
         });
 
-        for (sentence_index, sentence) in split_sentences(paragraph).into_iter().take(3).enumerate() {
+        for (sentence_index, sentence) in split_sentences(paragraph).into_iter().take(3).enumerate()
+        {
             let lead = leading_segment(&sentence);
             candidates.push(Candidate {
                 text: lead,
@@ -315,12 +349,24 @@ fn build_candidates(lines: &[Line], paragraphs: &[String]) -> Vec<Candidate> {
 fn finalize_candidate(candidate: Candidate, stats: &Stats) -> (String, i32) {
     let raw = normalize_title_text(&candidate.text);
     let mut best_title = compress_title(&raw, stats);
-    let mut best_score = score_title(&best_title, candidate.base_score, stats, &raw, &candidate.source_kind);
+    let mut best_score = score_title(
+        &best_title,
+        candidate.base_score,
+        stats,
+        &raw,
+        &candidate.source_kind,
+    );
 
     for (index, clause) in split_clauses(&raw).into_iter().enumerate() {
         let compressed = compress_title(&clause, stats);
         let clause_base = candidate.base_score - 6 - (index as i32 * 14);
-        let score = score_title(&compressed, clause_base, stats, &raw, &candidate.source_kind);
+        let score = score_title(
+            &compressed,
+            clause_base,
+            stats,
+            &raw,
+            &candidate.source_kind,
+        );
         if score > best_score {
             best_title = compressed;
             best_score = score;
@@ -358,7 +404,13 @@ fn compress_title(text: &str, stats: &Stats) -> String {
     smart_truncate(&title, MAX_LEN)
 }
 
-fn score_title(title: &str, base_score: i32, stats: &Stats, raw_source: &str, source_kind: &CandidateSourceKind) -> i32 {
+fn score_title(
+    title: &str,
+    base_score: i32,
+    stats: &Stats,
+    raw_source: &str,
+    source_kind: &CandidateSourceKind,
+) -> i32 {
     let mut score = base_score;
     let length = char_len(title);
     let distance = length.abs_diff(TARGET_LEN) as i32;
@@ -472,7 +524,11 @@ fn ranked_pieces(text: &str, stats: &Stats) -> Vec<(usize, String, i32)> {
         if freq == 0 {
             continue;
         }
-        let generic_penalty = if GENERIC_SECTION_WORDS.contains(&shingle.as_str()) { 8 } else { 0 };
+        let generic_penalty = if GENERIC_SECTION_WORDS.contains(&shingle.as_str()) {
+            8
+        } else {
+            0
+        };
         let score = freq * shingle.chars().count() as i32 - generic_penalty;
         if score > 0 {
             pieces.push((start, shingle, score));
@@ -486,7 +542,10 @@ fn ranked_pieces(text: &str, stats: &Stats) -> Vec<(usize, String, i32)> {
 
     for (start, piece, score) in pieces {
         let end = start + piece.chars().count();
-        if occupied.iter().any(|(used_start, used_end)| ranges_overlap(start, end, *used_start, *used_end)) {
+        if occupied
+            .iter()
+            .any(|(used_start, used_end)| ranges_overlap(start, end, *used_start, *used_end))
+        {
             continue;
         }
         occupied.push((start, end));
@@ -501,7 +560,8 @@ fn best_clause<'a>(clauses: &'a [String], stats: &Stats) -> Option<&'a str> {
         .iter()
         .map(|clause| {
             let normalized = normalize_title_text(clause);
-            let score = relevance_score(&normalized, stats) - (char_len(&normalized).abs_diff(TARGET_LEN) as i32);
+            let score = relevance_score(&normalized, stats)
+                - (char_len(&normalized).abs_diff(TARGET_LEN) as i32);
             (clause.as_str(), score)
         })
         .max_by_key(|(_, score)| *score)
@@ -543,7 +603,9 @@ fn normalize_text(text: &str) -> String {
 }
 
 fn cleanup_path_phrases(text: &str) -> String {
-    text.replace("目录下", "").replace("目录", "").replace("文件中", "")
+    text.replace("目录下", "")
+        .replace("目录", "")
+        .replace("文件中", "")
 }
 
 fn strip_leading_function_words(text: &str) -> String {
@@ -558,7 +620,10 @@ fn strip_leading_function_words(text: &str) -> String {
 }
 
 fn trim_trailing_punctuation(text: &str) -> String {
-    text.trim_matches(|ch: char| matches!(ch, '，' | '。' | '；' | '：' | ':' | '-' | '_' | '、' | ' ')).to_string()
+    text.trim_matches(|ch: char| {
+        matches!(ch, '，' | '。' | '；' | '：' | ':' | '-' | '_' | '、' | ' ')
+    })
+    .to_string()
 }
 
 fn split_sentences(text: &str) -> Vec<String> {
@@ -595,7 +660,9 @@ fn first_sentence(text: &str) -> &str {
 }
 
 fn leading_segment(text: &str) -> String {
-    split_once_by_chars(text, &['，', '。', '；', '：', ':']).unwrap_or(text).to_string()
+    split_once_by_chars(text, &['，', '。', '；', '：', ':'])
+        .unwrap_or(text)
+        .to_string()
 }
 
 fn trailing_segment_after_delimiter(text: &str) -> Option<&str> {
@@ -627,7 +694,11 @@ fn markdown_heading_level(text: &str) -> Option<usize> {
 }
 
 fn strip_markdown_heading(text: &str, level: usize) -> String {
-    text.chars().skip(level).collect::<String>().trim().to_string()
+    text.chars()
+        .skip(level)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn strip_list_marker(text: &str) -> String {
@@ -648,7 +719,10 @@ fn strip_list_marker(text: &str) -> String {
 
 fn looks_like_list_item(text: &str) -> bool {
     let trimmed = text.trim_start();
-    trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") || has_leading_numbering(trimmed)
+    trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("+ ")
+        || has_leading_numbering(trimmed)
 }
 
 fn has_leading_numbering(text: &str) -> bool {
@@ -702,7 +776,10 @@ fn remove_leading_numbering(text: &str) -> String {
 fn is_numbering_char(ch: char) -> bool {
     ch.is_ascii_digit()
         || matches!(ch, '.' | '-' | '_')
-        || matches!(ch, '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十')
+        || matches!(
+            ch,
+            '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十'
+        )
         || matches!(ch, 'a'..='z' | 'A'..='Z')
 }
 
@@ -744,7 +821,10 @@ fn is_focus_marker(text: &str) -> bool {
 }
 
 fn ascii_tokens(text: &str) -> Vec<String> {
-    ascii_token_spans(text).into_iter().map(|(_, token)| token).collect()
+    ascii_token_spans(text)
+        .into_iter()
+        .map(|(_, token)| token)
+        .collect()
 }
 
 fn ascii_token_spans(text: &str) -> Vec<(usize, String)> {
@@ -783,10 +863,17 @@ fn normalize_ascii_token(token: &str) -> String {
     if token.starts_with('.') || token.contains('/') {
         return token.to_string();
     }
-    if token.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '-') {
+    if token
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '-')
+    {
         return token.replace('-', "");
     }
-    if token.contains('-') && token.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_') {
+    if token.contains('-')
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+    {
         return token.to_string();
     }
     String::new()
@@ -796,7 +883,12 @@ fn has_acronym(text: &str) -> bool {
     ascii_tokens(text)
         .into_iter()
         .map(|token| normalize_ascii_token(&token))
-        .any(|token| !token.is_empty() && token.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
+        .any(|token| {
+            !token.is_empty()
+                && token
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        })
 }
 
 fn has_path_token(text: &str) -> bool {
@@ -820,7 +912,8 @@ fn specificity_score(text: &str) -> i32 {
         .into_iter()
         .map(|token| normalize_ascii_token(&token))
         .filter(|token| !token.is_empty())
-        .count() as i32 * 2;
+        .count() as i32
+        * 2;
     score
 }
 

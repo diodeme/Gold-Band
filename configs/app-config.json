@@ -1,4 +1,16 @@
 {
   "acpSessionTitleRefreshEnabled": false,
-  "acpChatEventPageSize": 200
+  "acpChatEventPageSize": 200,
+  "permissionModeMapping": {
+    "claude-acp": {
+      "read_only": "plan",
+      "ask": "acceptEdits",
+      "full_access": "bypassPermissions"
+    },
+    "codex-acp": {
+      "read_only": "read-only",
+      "ask": "auto",
+      "full_access": "full-access"
+    }
+  }
 }

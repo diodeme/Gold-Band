@@ -8,7 +8,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::DesktopLanguage;
-use crate::prompts::{PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN, PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language};
+use crate::prompts::{
+    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
+    PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
+    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language,
+};
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
 static PROFILE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -165,7 +169,10 @@ pub(crate) fn ensure_default_user_profiles(_paths: &GoldBandPaths) -> Result<Def
     Ok(DefaultProfileIds { by_key })
 }
 
-pub(crate) fn list_profiles(paths: &GoldBandPaths, language: DesktopLanguage) -> Result<ProfileList> {
+pub(crate) fn list_profiles(
+    paths: &GoldBandPaths,
+    language: DesktopLanguage,
+) -> Result<ProfileList> {
     let mut profiles = Vec::new();
     profiles.extend(read_profile_dir(paths, ProfileScope::Project)?);
     profiles.extend(read_profile_dir(paths, ProfileScope::User)?);
@@ -179,7 +186,11 @@ pub(crate) fn list_profiles(paths: &GoldBandPaths, language: DesktopLanguage) ->
     Ok(ProfileList { profiles })
 }
 
-pub(crate) fn show_profile(paths: &GoldBandPaths, id: &str, language: DesktopLanguage) -> Result<ProfileEntry> {
+pub(crate) fn show_profile(
+    paths: &GoldBandPaths,
+    id: &str,
+    language: DesktopLanguage,
+) -> Result<ProfileEntry> {
     find_profile_by_id(paths, id, language)?.ok_or_else(|| anyhow!("profile `{id}` not found"))
 }
 

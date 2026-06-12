@@ -5,6 +5,7 @@ import { basename, join, relative } from 'node:path';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
 const channel = process.argv[2] ?? 'default';
+const isCritical = process.argv[3] === 'critical';
 
 let config;
 try {
@@ -102,8 +103,9 @@ if (result.status === 0 && config.releaseBaseUrl) {
 
   // Generate latest.json
   const version = isDefaultChannel ? baseVersion : channelVersion;
+  const criticalFlag = isCritical ? ' --critical' : '';
   execSync(
-    `node scripts/generate-updater-json.mjs "${releaseDir}" "${join(releaseDir, 'latest.json')}" --base-url "${config.releaseBaseUrl}" --version "${version}"`,
+    `node scripts/generate-updater-json.mjs "${releaseDir}" "${join(releaseDir, 'latest.json')}" --base-url "${config.releaseBaseUrl}" --version "${version}"${criticalFlag}`,
     { stdio: 'inherit', cwd: repoRoot },
   );
 

@@ -22,6 +22,9 @@ fn sample_run() -> RunState {
         current_attempt: Some("attempt-001".to_string()),
         new_rounds_opened: 0,
         pause_reason: None,
+        task_uuid: None,
+        uuid: None,
+        last_executed_node: None,
     }
 }
 
@@ -36,6 +39,7 @@ fn sample_round() -> RoundState {
         trigger: gold_band::domain::RoundTrigger::Initial,
         started_at: "0Z".to_string(),
         trace: Vec::new(),
+        uuid: None,
     }
 }
 
@@ -53,6 +57,7 @@ fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
         finished_at: Some("1Z".to_string()),
         manual_check_pending: false,
         resolved_config: Default::default(),
+        uuid: None,
     }
 }
 

@@ -186,7 +186,15 @@ impl GoldBandPaths {
     }
 
     pub fn workflow_templates_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("workflows.json")
+    }
+
+    pub fn legacy_project_workflow_templates_file(&self) -> Utf8PathBuf {
         self.authoring_dir().join("workflows.json")
+    }
+
+    pub fn auto_templates_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("auto-templates.json")
     }
 
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
@@ -552,8 +560,15 @@ impl GoldBandPaths {
         attempt_id: &str,
         dynamic_node_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
-            .join("node.json")
+        self.dynamic_node_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+        )
+        .join("node.json")
     }
 
     pub fn dynamic_node_attempt_dir(
@@ -566,8 +581,15 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
-            .join(dynamic_attempt_id)
+        self.dynamic_node_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+        )
+        .join(dynamic_attempt_id)
     }
 
     pub fn dynamic_node_artifacts_dir(
@@ -580,8 +602,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("artifacts")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("artifacts")
     }
 
     pub fn dynamic_node_artifact_file(
@@ -595,8 +625,16 @@ impl GoldBandPaths {
         dynamic_attempt_id: &str,
         name: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_artifacts_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join(format!("{name}.json"))
+        self.dynamic_node_artifacts_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join(format!("{name}.json"))
     }
 
     pub fn dynamic_node_attachments_dir(
@@ -609,8 +647,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("attachments")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("attachments")
     }
 
     pub fn dynamic_node_worker_ref_file(
@@ -623,8 +669,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("worker-ref.json")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("worker-ref.json")
     }
 }
 
@@ -819,7 +873,12 @@ mod tests {
             DEFAULT_STORAGE_PATH_CONFIG,
         );
         let settings = paths.user_settings_file();
-        assert!(settings.to_string().replace('\\', "/").ends_with("/.gold-band/settings.json"));
+        assert!(
+            settings
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/settings.json")
+        );
     }
 
     #[test]
@@ -831,8 +890,14 @@ mod tests {
         );
         let state = paths.user_state_file();
         let normalized = state.to_string().replace('\\', "/");
-        assert!(normalized.ends_with("state.json"), "expected state.json path, got: {normalized}");
-        assert!(normalized.contains("gold-band"), "expected gold-band in path, got: {normalized}");
+        assert!(
+            normalized.ends_with("state.json"),
+            "expected state.json path, got: {normalized}"
+        );
+        assert!(
+            normalized.contains("gold-band"),
+            "expected gold-band in path, got: {normalized}"
+        );
     }
 
     #[test]
@@ -844,7 +909,12 @@ mod tests {
             DEFAULT_STORAGE_PATH_CONFIG,
         );
         let state = paths.user_state_file();
-        assert!(state.to_string().replace('\\', "/").ends_with("/.gold-band/state.json"));
+        assert!(
+            state
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/state.json")
+        );
         assert!(state.to_string().replace('\\', "/").contains("gold-band"));
     }
 }

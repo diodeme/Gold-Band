@@ -1,7 +1,8 @@
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    ConversationAutoConfig, ConversationPin, ConversationRunModeEntry, ConversationWorkspaceEntry,
-    DesktopUiMode,
+    ConversationAllowedWorkflowRef, ConversationAutoConfig, ConversationDynamicAgentRef,
+    ConversationDynamicControl, ConversationPin, ConversationRunModeEntry,
+    ConversationWorkspaceEntry, DesktopUiMode,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -22,18 +23,14 @@ pub struct ConversationRunModeSettingsVm {
 }
 
 #[tauri::command]
-pub fn save_desktop_ui_mode(
-    state: State<'_, DesktopState>,
-    mode: String,
-) -> CommandResult<()> {
+pub fn save_desktop_ui_mode(state: State<'_, DesktopState>, mode: String) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
     state.desktop_ui_mode = Some(match mode.as_str() {
         "workbench" => DesktopUiMode::Workbench,
         _ => DesktopUiMode::Conversation,
     });
-    app.save_state(&state)
-        .map_err(command_error)?;
+    app.save_state(&state).map_err(command_error)?;
     Ok(())
 }
 
@@ -42,8 +39,10 @@ pub fn get_conversation_sidebar(
     state: State<'_, DesktopState>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let state =app.load_state().map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    let state = app.load_state().map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[tauri::command]
@@ -77,13 +76,17 @@ pub fn validate_conversation_create(
 }
 
 #[tauri::command]
-pub fn create_conversation_run(
+pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
     let app = state.app().map_err(command_error)?;
-    crate::view_models_conversation::create_conversation_run_vm(&app, &input)
-        .map_err(command_error)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::view_models_conversation::create_conversation_run_vm(&app, &input)
+            .map_err(command_error)
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
 
 #[tauri::command]
@@ -132,7 +135,11 @@ pub fn update_task_metadata(
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
     crate::view_models_conversation::update_task_metadata_vm(
-        &app, &project_id, &task_id, &title, description.as_deref(),
+        &app,
+        &project_id,
+        &task_id,
+        &title,
+        description.as_deref(),
     )
     .map_err(command_error)
 }
@@ -144,7 +151,7 @@ pub fn pin_conversation(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
     let max_order = state
         .conversation_pins
         .iter()
@@ -156,9 +163,10 @@ pub fn pin_conversation(
         task_id,
         order: max_order + 1,
     });
-    app.save_state(&state)
-        .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    app.save_state(&state).map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[tauri::command]
@@ -168,13 +176,14 @@ pub fn unpin_conversation(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
     state
         .conversation_pins
         .retain(|p| p.project_id != project_id || p.task_id != task_id);
-    app.save_state(&state)
-        .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    app.save_state(&state).map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[tauri::command]
@@ -183,7 +192,7 @@ pub fn reorder_pinned_conversations(
     ordered: Vec<gold_band::config::ConversationPin>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
     state.conversation_pins = ordered
         .into_iter()
         .enumerate()
@@ -192,9 +201,10 @@ pub fn reorder_pinned_conversations(
             pin
         })
         .collect();
-    app.save_state(&state)
-        .map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    app.save_state(&state).map_err(command_error)?;
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[tauri::command]
@@ -205,7 +215,7 @@ pub fn search_conversation_tasks(
 ) -> CommandResult<Vec<crate::view_models_conversation::ConversationSearchResultVm>> {
     let limit = limit.unwrap_or(50).min(200);
     let app = state.app().map_err(command_error)?;
-    let state =app.load_state().unwrap_or_default();
+    let state = app.load_state().unwrap_or_default();
     if let Some(index) = gold_band::storage::sqlite::search_index() {
         index
             .search_tasks(&query, limit)
@@ -249,7 +259,10 @@ fn extract_project_from_task_path(
     let mut project_id = String::new();
     for i in 0..segments.len().saturating_sub(1) {
         if segments[i] == "projects" {
-            project_id = segments.get(i + 1).map(|s| s.to_string()).unwrap_or_default();
+            project_id = segments
+                .get(i + 1)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             break;
         }
     }
@@ -268,23 +281,60 @@ pub fn get_conversation_run_mode(
     project_id: String,
 ) -> CommandResult<Option<crate::view_models_conversation::ConversationRunModeVm>> {
     let app = state.app().map_err(command_error)?;
-    let state =app.load_state().map_err(command_error)?;
-    Ok(state
-        .conversation_run_modes
-        .get(&project_id)
-        .map(|entry| crate::view_models_conversation::ConversationRunModeVm {
+    let state = app.load_state().map_err(command_error)?;
+    Ok(state.conversation_run_modes.get(&project_id).map(|entry| {
+        crate::view_models_conversation::ConversationRunModeVm {
             mode: entry.mode.clone(),
             workflow_template_id: entry.workflow_template_id.clone(),
             auto_config: entry.auto_config.as_ref().map(|cfg| {
                 crate::view_models_conversation::ConversationAutoConfigVm {
+                    agent_strategy: cfg.agent_strategy.clone(),
                     agent_type: cfg.agent_type.clone(),
+                    bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
+                    bootstrap_model_id: cfg.bootstrap_model_id.clone(),
                     model_id: cfg.model_id.clone(),
                     permission_mode: cfg.permission_mode.clone(),
+                    available_agents: cfg.available_agents.as_ref().map(|agents| {
+                        agents
+                            .iter()
+                            .map(|agent| {
+                                crate::view_models_conversation::ConversationDynamicAgentRefVm {
+                                    provider: agent.provider.clone(),
+                                    model: agent.model.clone(),
+                                }
+                            })
+                            .collect()
+                    }),
+                    routing_prompt: cfg.routing_prompt.clone(),
+                    allowed_workflows: cfg.allowed_workflows.as_ref().map(|workflows| {
+                        workflows
+                            .iter()
+                            .map(|workflow| {
+                                crate::view_models_conversation::ConversationAllowedWorkflowRefVm {
+                                    workflow_id: workflow.workflow_id.clone(),
+                                }
+                            })
+                            .collect()
+                    }),
                     allowed_profiles: cfg.allowed_profiles.clone(),
                     global_goal: cfg.global_goal.clone(),
+                    control: cfg.control.as_ref().map(|control| {
+                        crate::view_models_conversation::ConversationDynamicControlVm {
+                            max_dynamic_nodes: control.max_dynamic_nodes,
+                            max_fanout: control.max_fanout,
+                            max_depth: control.max_depth,
+                            max_parallel: control.max_parallel,
+                            max_group_depth: control.max_group_depth,
+                            max_workflow_invocations: control.max_workflow_invocations,
+                            allow_nested_dynamic: control.allow_nested_dynamic,
+                        }
+                    }),
+                    active_template_id: cfg.active_template_id.clone(),
+                    active_template_name: cfg.active_template_name.clone(),
                 }
             }),
-        }))
+        }
+    }))
 }
 
 #[tauri::command]
@@ -294,23 +344,54 @@ pub fn save_conversation_run_mode(
     settings: ConversationRunModeSettingsVm,
 ) -> CommandResult<()> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
     state.conversation_run_modes.insert(
         project_id,
         ConversationRunModeEntry {
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
             auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
+                agent_strategy: cfg.agent_strategy,
                 agent_type: cfg.agent_type,
+                bootstrap_agent_type: cfg.bootstrap_agent_type,
+                bootstrap_model_id: cfg.bootstrap_model_id,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
+                available_agents: cfg.available_agents.map(|agents| {
+                    agents
+                        .into_iter()
+                        .map(|agent| ConversationDynamicAgentRef {
+                            provider: agent.provider,
+                            model: agent.model,
+                        })
+                        .collect()
+                }),
+                routing_prompt: cfg.routing_prompt,
+                allowed_workflows: cfg.allowed_workflows.map(|workflows| {
+                    workflows
+                        .into_iter()
+                        .map(|workflow| ConversationAllowedWorkflowRef {
+                            workflow_id: workflow.workflow_id,
+                        })
+                        .collect()
+                }),
                 allowed_profiles: cfg.allowed_profiles,
                 global_goal: cfg.global_goal,
+                control: cfg.control.map(|control| ConversationDynamicControl {
+                    max_dynamic_nodes: control.max_dynamic_nodes,
+                    max_fanout: control.max_fanout,
+                    max_depth: control.max_depth,
+                    max_parallel: control.max_parallel,
+                    max_group_depth: control.max_group_depth,
+                    max_workflow_invocations: control.max_workflow_invocations,
+                    allow_nested_dynamic: control.allow_nested_dynamic,
+                }),
+                active_template_id: cfg.active_template_id,
+                active_template_name: cfg.active_template_name,
             }),
         },
     );
-    app.save_state(&state)
-        .map_err(command_error)?;
+    app.save_state(&state).map_err(command_error)?;
     Ok(())
 }
 
@@ -342,19 +423,17 @@ pub fn add_conversation_workspace(
     let gold_band_app = state.app().map_err(command_error)?;
 
     // Open directory picker via Tauri dialog plugin
-    let Some(path) = app_handle
-        .dialog()
-        .file()
-        .blocking_pick_folder()
-    else {
-        return Err(CommandErrorVm::new("workspace.cancelled", serde_json::json!({})));
+    let Some(path) = app_handle.dialog().file().blocking_pick_folder() else {
+        return Err(CommandErrorVm::new(
+            "workspace.cancelled",
+            serde_json::json!({}),
+        ));
     };
-    let path = path.into_path().map_err(|_| {
-        CommandErrorVm::new("workspace.path-invalid", serde_json::json!({}))
-    })?;
-    let workspace_path = Utf8PathBuf::from_path_buf(path).map_err(|_| {
-        CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({}))
-    })?;
+    let path = path
+        .into_path()
+        .map_err(|_| CommandErrorVm::new("workspace.path-invalid", serde_json::json!({})))?;
+    let workspace_path = Utf8PathBuf::from_path_buf(path)
+        .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
     let workspace_path_str = workspace_path.as_str().to_string();
 
     let name = std::path::Path::new(&workspace_path_str)
@@ -365,44 +444,60 @@ pub fn add_conversation_workspace(
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
 
-    let mut state =gold_band_app.load_state().map_err(command_error)?;
+    let mut state = gold_band_app.load_state().map_err(command_error)?;
 
     // Ensure default workspace is persisted in stored state
     let default_repo = gold_band_app.paths.repo_root.to_string();
     let default_id = default_repo
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
-    if default_id != project_id && !state.conversation_workspaces.iter().any(|w| w.project_id == default_id) {
+    if default_id != project_id
+        && !state
+            .conversation_workspaces
+            .iter()
+            .any(|w| w.project_id == default_id)
+    {
         let default_name = std::path::Path::new(&default_repo)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| default_repo.clone());
-        state.conversation_workspaces.push(ConversationWorkspaceEntry {
-            project_id: default_id.clone(),
-            workspace_path: default_repo,
-            name: default_name,
-            added_at: chrono::Utc::now().to_rfc3339(),
-        });
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: default_id.clone(),
+                workspace_path: default_repo,
+                name: default_name,
+                added_at: chrono::Utc::now().to_rfc3339(),
+            });
     }
 
     // Check not already added
-    if state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
+    if state
+        .conversation_workspaces
+        .iter()
+        .any(|w| w.project_id == project_id)
+    {
         return Err(CommandErrorVm::new(
             "workspace.already-exists",
             serde_json::json!({ "name": name }),
         ));
     }
 
-    state.conversation_workspaces.push(ConversationWorkspaceEntry {
-        project_id: project_id.clone(),
-        workspace_path: workspace_path_str,
-        name: name.clone(),
-        added_at: chrono::Utc::now().to_rfc3339(),
-    });
+    state
+        .conversation_workspaces
+        .push(ConversationWorkspaceEntry {
+            project_id: project_id.clone(),
+            workspace_path: workspace_path_str,
+            name: name.clone(),
+            added_at: chrono::Utc::now().to_rfc3339(),
+        });
     state.last_conversation_workspace = Some(project_id.clone());
     gold_band_app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&gold_band_app, &state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &gold_band_app,
+        &state,
+    ))
 }
 
 #[tauri::command]
@@ -432,20 +527,28 @@ pub fn sync_conversation_workspace(
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
 
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
 
-    if !state.conversation_workspaces.iter().any(|w| w.project_id == project_id) {
-        state.conversation_workspaces.push(ConversationWorkspaceEntry {
-            project_id: project_id.clone(),
-            workspace_path: workspace_path.clone(),
-            name: name.clone(),
-            added_at: chrono::Utc::now().to_rfc3339(),
-        });
+    if !state
+        .conversation_workspaces
+        .iter()
+        .any(|w| w.project_id == project_id)
+    {
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: project_id.clone(),
+                workspace_path: workspace_path.clone(),
+                name: name.clone(),
+                added_at: chrono::Utc::now().to_rfc3339(),
+            });
     }
     state.last_conversation_workspace = Some(project_id);
     app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[tauri::command]
@@ -454,11 +557,15 @@ pub fn remove_conversation_workspace(
     project_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let app = state.app().map_err(command_error)?;
-    let mut state =app.load_state().map_err(command_error)?;
+    let mut state = app.load_state().map_err(command_error)?;
 
-    state.conversation_workspaces.retain(|w| w.project_id != project_id);
+    state
+        .conversation_workspaces
+        .retain(|w| w.project_id != project_id);
     // Also clean up pins and run modes for this workspace
-    state.conversation_pins.retain(|p| p.project_id != project_id);
+    state
+        .conversation_pins
+        .retain(|p| p.project_id != project_id);
     state.conversation_run_modes.remove(&project_id);
     if state.last_conversation_workspace.as_deref() == Some(&project_id) {
         state.last_conversation_workspace = state
@@ -468,7 +575,9 @@ pub fn remove_conversation_workspace(
     }
     app.save_state(&state).map_err(command_error)?;
 
-    Ok(crate::view_models_conversation::conversation_sidebar_vm(&app, &state))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm(
+        &app, &state,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -484,11 +593,7 @@ pub fn pick_attachment_files(
     app_handle: AppHandle,
     _state: State<'_, DesktopState>,
 ) -> CommandResult<Vec<AttachmentFileVm>> {
-    let Some(paths) = app_handle
-        .dialog()
-        .file()
-        .blocking_pick_files()
-    else {
+    let Some(paths) = app_handle.dialog().file().blocking_pick_files() else {
         return Ok(Vec::new());
     };
     let files: Vec<AttachmentFileVm> = paths
@@ -497,7 +602,11 @@ pub fn pick_attachment_files(
             let path = p.into_path().ok()?;
             let name = path.file_name()?.to_str()?.to_string();
             let size = path.metadata().ok()?.len();
-            Some(AttachmentFileVm { path: path.to_string_lossy().to_string(), name, size })
+            Some(AttachmentFileVm {
+                path: path.to_string_lossy().to_string(),
+                name,
+                size,
+            })
         })
         .collect();
     Ok(files)
@@ -510,9 +619,11 @@ pub fn show_conversation_attachment(
     name: String,
 ) -> CommandResult<ContentVm> {
     let app = state.app().map_err(command_error)?;
-    let path = app.paths.task_dir(&task_id)
+    let path = app
+        .paths
+        .task_dir(&task_id)
         .join("authoring")
-        .join("attachments")
+        .join("inputs")
         .join(&name);
     if !path.exists() {
         return Err(CommandErrorVm::new(
@@ -539,11 +650,7 @@ pub fn show_conversation_attachment(
             "webp" => "image/webp",
             _ => "application/octet-stream",
         };
-        format!(
-            "data:{};base64,{}",
-            mime,
-            base64_encode(&bytes)
-        )
+        format!("data:{};base64,{}", mime, base64_encode(&bytes))
     } else {
         fs::read_to_string(path.as_std_path()).map_err(|e| {
             CommandErrorVm::new(
@@ -570,8 +677,24 @@ fn base64_encode(bytes: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
         out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 0x3F) as usize] as char } else { b'=' as char });
-        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { b'=' as char });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3F) as usize] as char
+        } else {
+            b'=' as char
+        });
     }
     out
+}
+
+#[tauri::command]
+pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
+    Ok(gold_band::provider::supported_attachment_extensions()
+        .into_iter()
+        .map(str::to_string)
+        .collect())
 }

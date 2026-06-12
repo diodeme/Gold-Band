@@ -30,6 +30,18 @@ pub enum WorkflowValidationError {
         workflow_name: String,
         reason: String,
     },
+    #[error("model cannot be blank")]
+    WorkerModelBlank { node_id: String, provider: String },
+    #[error("ai-dynamic node `{node_id}` fixed model cannot be blank")]
+    DynamicFixedModelBlank { node_id: String },
+    #[error("ai-dynamic node `{node_id}` availableAgents cannot be empty")]
+    DynamicAgentsEmpty { node_id: String },
+    #[error("ai-dynamic node `{node_id}` available agent `{provider}` is duplicated")]
+    DynamicAgentDuplicate { node_id: String, provider: String },
+    #[error("ai-dynamic node `{node_id}` available agent `{provider}` model cannot be blank")]
+    DynamicAgentModelBlank { node_id: String, provider: String },
+    #[error("agent `{provider}` model cannot be blank")]
+    AgentModelBlank { provider: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +254,8 @@ impl NodeDsl {
 pub struct WorkerNode {
     pub id: String,
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub profile: Option<String>,
     pub goal: Option<String>,
     pub output: Option<OutputContractDsl>,
@@ -308,7 +322,10 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| serde::de::Error::missing_field("agentStrategy"))?;
-                AiDynamicAgentStrategy::Fixed { provider }
+                AiDynamicAgentStrategy::Fixed {
+                    provider,
+                    model: None,
+                }
             }
         };
         Ok(Self {
@@ -337,10 +354,19 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
 impl AiDynamicNode {
     pub fn bootstrap_provider(&self) -> Option<&str> {
         match &self.agent_strategy {
-            AiDynamicAgentStrategy::Fixed { provider } => Some(provider.as_str()),
+            AiDynamicAgentStrategy::Fixed { provider, .. } => Some(provider.as_str()),
             AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider, ..
             } => Some(bootstrap_provider.as_str()),
+        }
+    }
+
+    pub fn bootstrap_model(&self) -> Option<&str> {
+        match &self.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { model, .. } => model.as_deref(),
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_model, ..
+            } => bootstrap_model.as_deref(),
         }
     }
 
@@ -359,12 +385,26 @@ pub enum AiDynamicAgentStrategy {
     #[serde(rename_all = "camelCase")]
     Fixed {
         provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Dynamic {
         bootstrap_provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap_model: Option<String>,
         routing_prompt: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_agents: Vec<DynamicAgentRef>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicAgentRef {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +546,14 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
         !provider.is_empty(),
         "worker node `{id}` provider cannot be blank"
     );
+    if let Some(model) = &worker.model {
+        if model.trim().is_empty() {
+            bail!(WorkflowValidationError::WorkerModelBlank {
+                node_id: id.to_string(),
+                provider: provider.to_string(),
+            });
+        }
+    }
     if let Some(profile) = &worker.profile {
         ensure!(
             !profile.trim().is_empty(),
@@ -575,24 +623,69 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
 
 fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     match &node.agent_strategy {
-        AiDynamicAgentStrategy::Fixed { provider } => {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
             ensure!(
                 !provider.trim().is_empty(),
                 "ai-dynamic node `{id}` fixed provider cannot be blank"
             );
+            if let Some(m) = model {
+                if m.trim().is_empty() {
+                    bail!(WorkflowValidationError::DynamicFixedModelBlank {
+                        node_id: id.to_string(),
+                    });
+                }
+            }
         }
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
+            bootstrap_model,
             routing_prompt,
+            available_agents,
         } => {
             ensure!(
                 !bootstrap_provider.trim().is_empty(),
                 "ai-dynamic node `{id}` bootstrapProvider cannot be blank"
             );
-            ensure!(
-                !routing_prompt.trim().is_empty(),
-                "ai-dynamic node `{id}` routingPrompt cannot be blank"
-            );
+            if let Some(model) = bootstrap_model {
+                if model.trim().is_empty() {
+                    bail!(WorkflowValidationError::DynamicFixedModelBlank {
+                        node_id: id.to_string(),
+                    });
+                }
+            }
+            if available_agents.is_empty() {
+                bail!(WorkflowValidationError::DynamicAgentsEmpty {
+                    node_id: id.to_string(),
+                });
+            }
+            let has_routing_prompt = !routing_prompt.trim().is_empty();
+            let mut seen_providers = HashSet::new();
+            for agent_ref in available_agents {
+                let provider = agent_ref.provider.trim();
+                ensure!(
+                    !provider.is_empty(),
+                    "ai-dynamic node `{id}` available agent provider cannot be blank"
+                );
+                if !seen_providers.insert(provider.to_string()) {
+                    bail!(WorkflowValidationError::DynamicAgentDuplicate {
+                        node_id: id.to_string(),
+                        provider: provider.to_string(),
+                    });
+                }
+                if let Some(m) = &agent_ref.model {
+                    if m.trim().is_empty() {
+                        bail!(WorkflowValidationError::DynamicAgentModelBlank {
+                            node_id: id.to_string(),
+                            provider: provider.to_string(),
+                        });
+                    }
+                } else if !has_routing_prompt {
+                    bail!(WorkflowValidationError::DynamicAgentModelBlank {
+                        node_id: id.to_string(),
+                        provider: provider.to_string(),
+                    });
+                }
+            }
         }
     }
     if let Some(permission_mode) = &node.permission_mode {
@@ -600,6 +693,15 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             !permission_mode.trim().is_empty(),
             "ai-dynamic node `{id}` permissionMode cannot be blank"
         );
+        if matches!(&node.agent_strategy, AiDynamicAgentStrategy::Dynamic { .. }) {
+            ensure!(
+                matches!(
+                    permission_mode.as_str(),
+                    "read_only" | "ask" | "full_access"
+                ),
+                "ai-dynamic node `{id}` permissionMode must be one of: read_only, ask, full_access, got `{permission_mode}`"
+            );
+        }
     }
     ensure!(
         node.control.max_dynamic_nodes > 0,
@@ -777,7 +879,10 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             .filter(|edge| edge.to != END_NODE && edge.to != NEW_ROUND_NODE)
             .for_each(|edge| pending.push(edge.to.clone()));
     }
-    if let Some(node_id) = nodes_by_id.keys().find(|node_id| !reachable.contains(*node_id)) {
+    if let Some(node_id) = nodes_by_id
+        .keys()
+        .find(|node_id| !reachable.contains(*node_id))
+    {
         return Err(WorkflowValidationError::UnreachableNode {
             node_id: node_id.clone(),
         }

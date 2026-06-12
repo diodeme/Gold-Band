@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, ContentVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
@@ -108,10 +108,18 @@ export const browserApi: RuntimeApi = {
   },
   saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
     const current = browserPreviewState.getWorkflowTemplates();
+    let nextWorkflow = workflow;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const workflowId = `workflow-${crypto.randomUUID().replaceAll('-', '')}`;
+      if (!current.templates.some((template) => template.workflow.id === workflowId)) {
+        nextWorkflow = { ...workflow, id: workflowId };
+        break;
+      }
+    }
     const template = {
       id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${current.templates.length + 1}`,
       name,
-      workflow,
+      workflow: nextWorkflow,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -136,6 +144,41 @@ export const browserApi: RuntimeApi = {
       lastUsedTemplateId: current.lastUsedTemplateId === templateId ? 'default' : current.lastUsedTemplateId,
       templates: current.templates.filter((template) => template.id !== templateId),
     }));
+  },
+  getAutoTemplates() {
+    return Promise.resolve(browserPreviewState.getAutoTemplates());
+  },
+  saveAutoTemplate(name: string, config: ConversationAutoConfigVm) {
+    const current = browserPreviewState.getAutoTemplates();
+    const idBase = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `auto-${current.templates.length + 1}`;
+    let id = idBase;
+    let suffix = 1;
+    while (current.templates.some((template) => template.id === id)) {
+      suffix += 1;
+      id = `${idBase}-${suffix}`;
+    }
+    const now = new Date().toISOString();
+    return Promise.resolve(browserPreviewState.setAutoTemplates({
+      ...current,
+      templates: [...current.templates, { id, name, config, createdAt: now, updatedAt: now }],
+    }));
+  },
+  updateAutoTemplate(templateId: string, name: string, config: ConversationAutoConfigVm) {
+    const current = browserPreviewState.getAutoTemplates();
+    return Promise.resolve(browserPreviewState.setAutoTemplates({
+      ...current,
+      templates: current.templates.map((template) => template.id === templateId ? { ...template, name, config, updatedAt: new Date().toISOString() } : template),
+    }));
+  },
+  deleteAutoTemplate(templateId: string) {
+    const current = browserPreviewState.getAutoTemplates();
+    return Promise.resolve(browserPreviewState.setAutoTemplates({
+      ...current,
+      templates: current.templates.filter((template) => template.id !== templateId),
+    }));
+  },
+  replaceAutoTemplates(templates: AutoTemplate[]) {
+    return Promise.resolve(browserPreviewState.setAutoTemplates({ version: '0.1', templates }));
   },
   getRunDetail(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail, run: { ...mockRunDetail.run, id: runId, taskId } });
@@ -167,8 +210,14 @@ export const browserApi: RuntimeApi = {
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
-  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null, _attachmentPaths?: string[]) {
     return Promise.resolve(fallback ?? null);
+  },
+  setAcpSessionModel(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _modelId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve(null);
+  },
+  setAcpSessionPermissionMode(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _permissionModeId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve(null);
   },
   respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve(fallback ?? null);
@@ -215,6 +264,18 @@ export const browserApi: RuntimeApi = {
       effectiveUrl: normalized ?? current.builtInUrl,
     }));
   },
+  getMetricsSettings() {
+    return Promise.resolve({
+      enabled: false,
+      toggleLocked: false,
+      heartbeatEndpoint: null,
+      nodeMetricsEndpoint: null,
+      apiKeySet: false,
+    });
+  },
+  saveMetricsSettings(_enabled: boolean, _heartbeatEndpoint: string | null, _nodeMetricsEndpoint: string | null, _apiKey: string | null) {
+    return this.getMetricsSettings();
+  },
   getUpdateStatus() {
     return Promise.resolve(browserPreviewState.getUpdateStatus());
   },
@@ -241,9 +302,6 @@ export const browserApi: RuntimeApi = {
   },
   downloadAndInstallUpdate() {
     return Promise.resolve();
-  },
-  getStartupCheckResult() {
-    return Promise.resolve(null);
   },
   // ── Conversation UI mocks ──
   saveDesktopUiMode(_mode) {
@@ -349,6 +407,15 @@ export const browserApi: RuntimeApi = {
   },
   pickAttachmentFiles() {
     return Promise.resolve([]);
+  },
+  getSupportedAttachmentExtensions() {
+    return Promise.resolve([
+      "png", "jpg", "jpeg", "webp", "gif", "bmp",
+      "txt", "md", "json", "jsonl", "csv",
+      "html", "htm", "css", "js", "ts", "tsx", "jsx",
+      "rs", "py", "go", "java", "c", "h", "cpp", "hpp",
+      "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
+    ]);
   },
   openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();

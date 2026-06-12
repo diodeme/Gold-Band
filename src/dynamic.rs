@@ -119,6 +119,8 @@ pub struct DynamicNodeState {
     pub profile: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub session_mode: SessionMode,
     pub continue_from_node_id: Option<String>,
     pub workflow_id: Option<String>,
@@ -159,7 +161,11 @@ pub struct DynamicProposalValidationError {
 }
 
 impl DynamicProposalValidationError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, params: serde_json::Value) -> Self {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        params: serde_json::Value,
+    ) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -212,6 +218,8 @@ pub struct DynamicNodeSpec {
     pub provider: Option<String>,
     pub profile: Option<String>,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub session_mode: SessionMode,
@@ -236,6 +244,8 @@ pub enum DynamicNodeSpecKind {
 pub struct DynamicAgentTaskSpec {
     pub title: String,
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub profile: String,
     pub task: String,
 }

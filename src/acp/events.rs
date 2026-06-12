@@ -10,6 +10,16 @@ use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AttachmentMeta {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpSessionMetadata {
     pub adapter_id: String,
     pub adapter_display_name: String,
@@ -124,6 +134,88 @@ impl AcpAttemptPaths {
             attempt_dir,
         }
     }
+}
+
+/// Read token totals from the ACP session metadata file and timeline.
+/// First reads `acp.session.json`, then scans `acp.timeline.jsonl` for usage events
+/// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
+pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
+    let mut input = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut total = 0u64;
+
+    // 1. Read acp.snapshot.json (acp.session.json may not exist)
+    let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
+    if let Some(ref sp) = snapshot_path {
+        if let Ok(contents) = std::fs::read_to_string(sp.as_std_path()) {
+            if let Ok(meta) = serde_json::from_str::<AcpSessionMetadata>(&contents) {
+                input = meta.input_tokens.unwrap_or(0);
+                output = meta.output_tokens.unwrap_or(0);
+                cache_read = meta.cached_read_tokens.unwrap_or(0);
+                total = meta.total_tokens.unwrap_or(0);
+                eprintln!("[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+            }
+        }
+    }
+
+    // 2. Scan timeline for usage events (may have more up-to-date data)
+    let timeline_path = session_path.parent().map(|p| p.join("acp.timeline.jsonl"));
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Ok(line_val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    // Unwrap AcpTimelineItem wrapper if present
+                    let event = line_val.get("item").unwrap_or(&line_val);
+                    let kind = event.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "usageUpdate" {
+                        if let Some(v) = event.get("inputTokens").and_then(|v| v.as_u64()) {
+                            input = input.max(v);
+                        }
+                        if let Some(v) = event.get("outputTokens").and_then(|v| v.as_u64()) {
+                            output = output.max(v);
+                        }
+                        if let Some(v) = event.get("cachedReadTokens").and_then(|v| v.as_u64()) {
+                            cache_read = cache_read.max(v);
+                        }
+                        if let Some(v) = event.get("totalTokens").and_then(|v| v.as_u64()) {
+                            total = total.max(v);
+                        }
+                    }
+                }
+            }
+            eprintln!("[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}", input, output, cache_read, total);
+        } else {
+            eprintln!("[metrics] failed to open timeline at {}", tp.as_str());
+        }
+    } else {
+        eprintln!("[metrics] no timeline file found for {}", session_path.as_str());
+    }
+
+    // 3. Debug: list files in attempt dir and show first timeline line
+    let dir = session_path.parent();
+    if let Some(d) = dir {
+        if let Ok(entries) = std::fs::read_dir(d.as_std_path()) {
+            eprintln!("[metrics] attempt_dir files:");
+            for e in entries.flatten() {
+                eprintln!("[metrics]   {}", e.file_name().to_string_lossy());
+            }
+        }
+    }
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for (i, line) in reader.lines().enumerate() {
+                if i >= 3 { break; }
+                if let Ok(l) = line {
+                    eprintln!("[metrics] timeline[{}]: {}", i, &l[..l.len().min(200)]);
+                }
+            }
+        }
+    }
+
+    (input, output, cache_read, total)
 }
 
 pub fn current_timestamp() -> String {
@@ -257,7 +349,7 @@ pub fn normalize_session_update(
     seq: u64,
     session_id: Option<String>,
     update: &Value,
-) -> Vec<AcpUiEvent> {
+) -> AcpUiEvent {
     let timestamp = current_timestamp();
     let kind = update
         .get("sessionUpdate")
@@ -291,7 +383,7 @@ pub fn normalize_session_update(
         event.content = Some(String::new());
     }
 
-    vec![event]
+    event
 }
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
@@ -348,6 +440,7 @@ pub fn user_prompt_event(
     content: String,
     prompt_id: Option<String>,
     hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
@@ -359,6 +452,9 @@ pub fn user_prompt_event(
     if hidden_from_chat {
         raw["hiddenFromChat"] = Value::Bool(true);
         raw["reason"] = Value::String("invalidOutputRepair".to_string());
+    }
+    if !attachments.is_empty() {
+        raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -435,11 +531,6 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
                 .pointer("/toolCall/toolCallId")
                 .and_then(Value::as_str)
         })
-        .or_else(|| {
-            value
-                .pointer("/toolCall/toolCallId")
-                .and_then(Value::as_str)
-        })
         .map(str::to_string)
 }
 
@@ -448,9 +539,7 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
 pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
     let used = raw.get("used").and_then(Value::as_u64);
     let size = raw.get("size").and_then(Value::as_u64);
-    let cost_amount = raw
-        .pointer("/cost/amount")
-        .and_then(Value::as_f64);
+    let cost_amount = raw.pointer("/cost/amount").and_then(Value::as_f64);
     (used, size, cost_amount)
 }
 
@@ -477,7 +566,8 @@ mod tests {
 
     #[test]
     fn extract_usage_all_fields() {
-        let raw = json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
+        let raw =
+            json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
         let (used, size, cost) = extract_usage_fields(&raw);
         assert_eq!(used, Some(12345));
         assert_eq!(size, Some(200000));
@@ -569,7 +659,10 @@ mod tests {
 
     #[test]
     fn kind_to_ui_available_commands_update() {
-        assert_eq!(kind_to_ui_kind("available_commands_update"), "availableCommands");
+        assert_eq!(
+            kind_to_ui_kind("available_commands_update"),
+            "availableCommands"
+        );
     }
 
     #[test]
@@ -607,6 +700,7 @@ mod tests {
             "继续".to_string(),
             Some("prompt-123".to_string()),
             false,
+            Vec::new(),
         );
         assert_eq!(
             event
@@ -626,6 +720,7 @@ mod tests {
             "继续".to_string(),
             None,
             false,
+            Vec::new(),
         );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
@@ -638,6 +733,7 @@ mod tests {
             "repair".to_string(),
             None,
             true,
+            Vec::new(),
         );
         assert_eq!(event.content, None);
         assert_eq!(
@@ -648,5 +744,73 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
+    }
+
+    // ── read_session_tokens tests ──
+    use tempfile::TempDir;
+    use std::io::Write as _;
+
+    #[test]
+    fn tokens_from_snapshot() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700
+        }"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 1000);
+        assert_eq!(o, 500);
+        assert_eq!(c, 200);
+        assert_eq!(t, 1700);
+    }
+
+    #[test]
+    fn tokens_no_files_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!((i, o, c, t), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn tokens_from_timeline_usage_update_camelcase() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":99,"outputTokens":33,"totalTokens":132}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 99);
+        assert_eq!(o, 33);
+        assert_eq!(t, 132);
+    }
+
+    #[test]
+    fn tokens_timeline_takes_max_across_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":100,"outputTokens":10,"totalTokens":110}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":500,"outputTokens":20,"totalTokens":520}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":300,"outputTokens":5,"totalTokens":305}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 500);
+        assert_eq!(o, 20);
+        assert_eq!(t, 520);
+    }
+
+    #[test]
+    fn tokens_ignores_non_usage_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"availableCommands"}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":77,"outputTokens":7,"totalTokens":84}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path()).unwrap().join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 77);
+        assert_eq!(o, 7);
+        assert_eq!(t, 84);
     }
 }

@@ -4,6 +4,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { PortalContainerContext } from "@/lib/portal-container"
 import { Button } from "@/components/ui/button"
 
 function AlertDialog({
@@ -47,14 +48,23 @@ function AlertDialogOverlay({
 function AlertDialogContent({
   className,
   size = "default",
+  children,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm"
 }) {
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
+  const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    setPortalContainerEl(node)
+  }, [])
+
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
+        ref={setContentRef}
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
@@ -62,7 +72,11 @@ function AlertDialogContent({
           className
         )}
         {...props}
-      />
+      >
+        <PortalContainerContext.Provider value={portalContainerEl}>
+          {children}
+        </PortalContainerContext.Provider>
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )
 }

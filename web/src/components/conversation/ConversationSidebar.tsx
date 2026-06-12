@@ -83,7 +83,7 @@ export function ConversationSidebar({
 
   return (
     <TooltipProvider>
-      <aside className="flex min-h-0 h-full flex-col gap-2 bg-sidebar px-3 py-3 text-sidebar-foreground">
+      <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -99,10 +99,10 @@ export function ConversationSidebar({
           />
         </div>
 
-        <Separator className="my-0.5" />
+        <Separator className="mx-1 my-0 opacity-45" />
 
         {/* Navigation */}
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-1">
           <SidebarButton
             compact
             active={active.kind === 'agents'}
@@ -128,10 +128,10 @@ export function ConversationSidebar({
 
         {/* Pinned section — fixed, collapsible, outside scroll */}
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0 border-y border-border py-0.5">
+          <div className="shrink-0 border-y border-border/55 py-1">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[13px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[14px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -151,7 +151,7 @@ export function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
@@ -182,18 +182,18 @@ export function ConversationSidebar({
             ) : null}
           </div>
         ) : (
-          <Separator className="my-0.5" />
+          <Separator className="mx-1 my-0.75 opacity-45" />
         )}
 
         {/* Workspace sections — scrollable with sticky headers */}
         <ScrollArea className="min-h-0 flex-1">
-          <div>
+          <div className="pt-2.5">
             {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-2">
-                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-2 py-1">
+              <div key={ws.projectId} className="mb-2.5">
+                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -241,7 +241,7 @@ export function ConversationSidebar({
             {onAddWorkspace ? (
               <button
                 type="button"
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={onAddWorkspace}
               >
                 <Plus className="size-3.5" />
@@ -259,7 +259,7 @@ export function ConversationSidebar({
 
 
         {/* Settings */}
-        <Separator className="my-0.5" />
+        <Separator className="mx-1 my-0.75 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
       </aside>
     </TooltipProvider>
@@ -435,8 +435,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-lg px-2.5 text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-8 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-primary',
       )}
       onClick={onClick}

@@ -390,13 +390,13 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     setWorkflowNotice(null);
   };
 
-  const validateTemplateWorkflow = (workflowDraft: WorkflowDsl) => {
+  const validateTemplateWorkflow = (workflowDraft: WorkflowDsl, validateTemplateDuplicateId = true) => {
     if (!agentRegistry || !profileList) {
       setWorkflowNotice(null);
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -407,7 +407,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
 
   const saveCurrentAsTemplate = async () => {
     if (!workflow || !saveTemplateName.trim()) return;
-    const validatedWorkflow = validateTemplateWorkflow(workflow);
+    const validatedWorkflow = validateTemplateWorkflow(workflow, false);
     if (!validatedWorkflow) return;
     setSaving(true);
     try {

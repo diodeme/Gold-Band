@@ -23,26 +23,34 @@ use crate::dynamic::{
     DynamicNodeCompletion, DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec,
     DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus, DynamicProposalState,
     DynamicProposalValidationError, DynamicProposalValidationStatus, DynamicRunState,
-    DynamicRunStatus, WorkspaceMode,
-    WorkspacePolicy, dynamic_completion_schema, validate_dynamic_group_state,
-    validate_dynamic_node_state, validate_dynamic_run_state,
+    DynamicRunStatus, WorkspaceMode, WorkspacePolicy, dynamic_completion_schema,
+    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
 };
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
 };
-use crate::prompts::{AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN, AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN, AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN, AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN, AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN, RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template};
+use crate::prompts::{
+    AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN,
+    AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN,
+    AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
+    AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN,
+    AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
+    AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
+    RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template,
+};
 use crate::provider::{
-    PromptBundle, PromptOutputContract, PromptRuntimeContext, PromptVisibility,
-    ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation, render_prompt_bundle,
+    PromptBundle, PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
+    ProviderRunStatus, StreamMode, WorkerInvocation, render_prompt_bundle,
+    supported_models_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState, validate_round_state,
-    validate_run_state, validate_worker_ref_state,
+    NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
+    validate_round_state, validate_run_state, validate_worker_ref_state,
 };
 use crate::storage::{append_jsonl, read_json, write_json};
 
-use super::ids::{next_attempt_id, next_run_id, now_rfc3339_like};
+use super::ids::{generate_uuid, next_attempt_id, next_run_id, now_rfc3339_like};
 use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
@@ -192,7 +200,8 @@ fn prepare_run(
     let workflow: WorkflowDsl = read_json(&workflow_path)?;
     let validated = validate_workflow(workflow.clone())?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
+    let resolved_profiles =
+        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     write_json(
         &app.paths.task_workflow_resolved_file(task_id),
         &validated.raw,
@@ -204,10 +213,14 @@ fn prepare_run(
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
 
+    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))
+        .ok()
+        .and_then(|t| t.uuid);
     let run = RunState {
         version: VERSION.to_string(),
         id: run_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid,
         status: RunStatus::Running,
         outcome: None,
         started_at: now.clone(),
@@ -218,6 +231,8 @@ fn prepare_run(
         current_attempt: Some(attempt_id.clone()),
         new_rounds_opened: 0,
         pause_reason: None,
+        uuid: Some(generate_uuid()),
+        last_executed_node: None,
     };
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
@@ -243,6 +258,7 @@ fn prepare_run(
             None,
             now.clone(),
         )],
+        uuid: Some(generate_uuid()),
     };
     validate_round_state(&round)?;
     write_json(&app.paths.round_file(task_id, &run_id, &round_id), &round)?;
@@ -321,7 +337,8 @@ pub(crate) fn run_continue(
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
+    let resolved_profiles =
+        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     let current = current_attempt_state(app, task_id, &run)?;
     let (mut round, mut node) = current;
@@ -371,12 +388,7 @@ pub(crate) fn run_continue(
                 bail!("current attempt is waiting for manual check");
             }
             match validated.get_node(&node.node_id) {
-                Some(NodeDsl::AiDynamic(_)) => (
-                    SessionMode::Continue,
-                    None,
-                    None,
-                    None,
-                ),
+                Some(NodeDsl::AiDynamic(_)) => (SessionMode::Continue, None, None, None),
                 _ => {
                     let provider_pid_path = app.paths.provider_pid_file(
                         task_id,
@@ -386,7 +398,9 @@ pub(crate) fn run_continue(
                         &node.attempt_id,
                     );
                     if provider_pid_path.exists() {
-                        bail!("current attempt is still stopping; wait for provider shutdown before continuing");
+                        bail!(
+                            "current attempt is still stopping; wait for provider shutdown before continuing"
+                        );
                     }
                     let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                         task_id,
@@ -396,7 +410,9 @@ pub(crate) fn run_continue(
                         &node.attempt_id,
                     ))?
                     .continue_ref
-                    .ok_or_else(|| anyhow::anyhow!("current attempt has no ACP continue reference"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("current attempt has no ACP continue reference")
+                    })?;
                     (
                         SessionMode::Continue,
                         Some(continue_ref),
@@ -481,7 +497,8 @@ pub(crate) fn submit_manual_check(
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
+    let resolved_profiles =
+        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     ensure!(run.status == RunStatus::Paused, "run is not paused");
     ensure!(
@@ -634,7 +651,8 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
-    let resolved_profiles = resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
+    let resolved_profiles =
+        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     let (mut round, node) = current_attempt_state(app, task_id, &run)?;
     let node_id = node.node_id.clone();
@@ -1073,6 +1091,7 @@ fn apply_control_decision(
                 trigger: RoundTrigger::NewRound,
                 started_at: now_rfc3339_like(),
                 trace: Vec::new(),
+                uuid: Some(generate_uuid()),
             };
             validate_round_state(round)?;
             write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
@@ -1374,6 +1393,7 @@ fn dynamic_runtime_context(
         node_dir,
         attempt_dir,
         attachments_dir,
+        task_inputs_dir: None,
     }
 }
 
@@ -1384,6 +1404,53 @@ fn dynamic_agent_strategy_mode(dynamic: &AiDynamicNode) -> &'static str {
     }
 }
 
+fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option<String> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { model, .. } => model.clone(),
+        AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } => available_agents
+            .iter()
+            .find(|agent_ref| agent_ref.provider == provider)
+            .and_then(|agent_ref| agent_ref.model.clone()),
+    }
+}
+
+fn dynamic_requires_model_in_proposal(dynamic: &AiDynamicNode) -> bool {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { .. } => false,
+        AiDynamicAgentStrategy::Dynamic { routing_prompt, .. } => !routing_prompt.trim().is_empty(),
+    }
+}
+
+fn provider_model_options_summary(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> Vec<String> {
+    let Ok(doctor) = ctx.app.provider_doctor(provider) else {
+        return Vec::new();
+    };
+    supported_models_from_capabilities(doctor.capabilities.as_ref())
+        .into_iter()
+        .map(|model| {
+            let name = model.name.as_deref().unwrap_or(model.id.as_str());
+            match model.description.as_deref() {
+                Some(description) => format!("{name} — {description}"),
+                None => name.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn dynamic_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>, provider: &str) -> bool {
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+        AiDynamicAgentStrategy::Fixed { .. } => {
+            dynamic_model_for_provider(ctx.dynamic, provider).is_none()
+                && !provider_model_options_summary(ctx, provider).is_empty()
+        }
+    }
+}
 fn dynamic_agent_routing_prompt(dynamic: &AiDynamicNode) -> Option<&str> {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { .. } => None,
@@ -1391,7 +1458,10 @@ fn dynamic_agent_routing_prompt(dynamic: &AiDynamicNode) -> Option<&str> {
     }
 }
 
-fn dynamic_output_contract(language: DesktopLanguage, dynamic: &AiDynamicNode) -> PromptOutputContract {
+fn dynamic_output_contract(
+    language: DesktopLanguage,
+    dynamic: &AiDynamicNode,
+) -> PromptOutputContract {
     let schema_text = render_template(
         prompt_by_language(
             language,
@@ -1400,6 +1470,7 @@ fn dynamic_output_contract(language: DesktopLanguage, dynamic: &AiDynamicNode) -
         ),
         serde_json::json!({
             "agent_strategy_mode": dynamic_agent_strategy_mode(dynamic),
+            "dynamic_requires_model_in_proposal": dynamic_requires_model_in_proposal(dynamic),
         }),
     )
     .expect("prompt template renders");
@@ -1416,10 +1487,7 @@ fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
     "attempt-001".to_string()
 }
 
-fn dynamic_proposal_file_path(
-    ctx: &DynamicExecutionContext<'_>,
-    proposal_id: &str,
-) -> Utf8PathBuf {
+fn dynamic_proposal_file_path(ctx: &DynamicExecutionContext<'_>, proposal_id: &str) -> Utf8PathBuf {
     ctx.app
         .paths
         .dynamic_dir(
@@ -1532,6 +1600,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
+        model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -1609,7 +1678,7 @@ fn drive_dynamic_graph(
             .iter()
             .any(|node| node.status == DynamicNodeStatus::Running)
         {
-                let message = rx
+            let message = rx
                 .recv()
                 .map_err(|_| anyhow!("dynamic execution channel closed unexpectedly"))?;
             apply_dynamic_execution_message(ctx, graph, message)?;
@@ -1724,7 +1793,12 @@ fn apply_dynamic_execution_message(
             .nodes
             .iter()
             .position(|node| node.id == proposal.source_node_id)
-            .ok_or_else(|| anyhow!("dynamic proposal source node `{}` missing", proposal.source_node_id))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "dynamic proposal source node `{}` missing",
+                    proposal.source_node_id
+                )
+            })?;
         if proposal.validation_status == DynamicProposalValidationStatus::Rejected {
             rejected_source_node_id = Some(graph.nodes[source_index].id.clone());
             graph.proposals.push(proposal);
@@ -1751,7 +1825,9 @@ fn apply_dynamic_execution_message(
                 PauseReason::ErrorBlocked,
                 "invalid dynamic-node-completion proposal",
             )?;
-            return Err(anyhow!("dynamic proposal from `{source_node_id}` was rejected"));
+            return Err(anyhow!(
+                "dynamic proposal from `{source_node_id}` was rejected"
+            ));
         }
     }
     graph.run.updated_at = now_rfc3339_like();
@@ -1768,12 +1844,12 @@ fn execute_dynamic_node_job(
     dynamic: &AiDynamicNode,
     node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
-    let dynamic_run_path = app
-        .paths
-        .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
-    let graph_path = app
-        .paths
-        .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let dynamic_run_path =
+        app.paths
+            .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let graph_path =
+        app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
     let run: DynamicRunState = read_json(&dynamic_run_path)?;
     let mut graph: DynamicGraphState = read_json(&graph_path)?;
     let ctx = DynamicExecutionContext {
@@ -1794,8 +1870,12 @@ fn execute_dynamic_node_job(
     graph.nodes[index] = node.clone();
     match node.kind {
         DynamicNodeKind::Worker => execute_dynamic_worker(&ctx, &graph, node),
-        DynamicNodeKind::WorkflowInvocation => execute_dynamic_workflow_invocation(&ctx, &graph, node),
-        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => execute_dynamic_agent_stage(&ctx, &graph, node),
+        DynamicNodeKind::WorkflowInvocation => {
+            execute_dynamic_workflow_invocation(&ctx, &graph, node)
+        }
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+            execute_dynamic_agent_stage(&ctx, &graph, node)
+        }
     }
 }
 
@@ -1853,7 +1933,9 @@ fn execute_dynamic_worker(
         SessionMode::Continue => node
             .continue_from_node_id
             .as_deref()
-            .and_then(|source_node_id| dynamic_continue_ref_for_source_node(ctx, graph, source_node_id)),
+            .and_then(|source_node_id| {
+                dynamic_continue_ref_for_source_node(ctx, graph, source_node_id)
+            }),
         SessionMode::New => dynamic_node_continue_ref(ctx, &node, &attempt_id),
     };
     let mut session_mode = if continue_ref.is_some() {
@@ -1877,14 +1959,22 @@ fn execute_dynamic_worker(
             graph,
             &node,
             &attempt_id,
-            Some(dynamic_output_contract(ctx.app.config.desktop_language, ctx.dynamic)),
+            Some(dynamic_output_contract(
+                ctx.app.config.desktop_language,
+                ctx.dynamic,
+            )),
             session_mode,
             continue_ref.clone(),
             resume_prompt.take(),
             None,
             resume_prompt_visibility,
         )
-        .map_err(|error| anyhow!("failed to build dynamic worker invocation for `{}`: {error}", node.id))?;
+        .map_err(|error| {
+            anyhow!(
+                "failed to build dynamic worker invocation for `{}`: {error}",
+                node.id
+            )
+        })?;
         append_dynamic_event(
             ctx,
             "dynamic_node_started",
@@ -1894,13 +1984,33 @@ fn execute_dynamic_worker(
                 "sessionMode": session_mode,
             }),
         )
-        .map_err(|error| anyhow!("failed to append dynamic start event for `{}`: {error}", node.id))?;
+        .map_err(|error| {
+            anyhow!(
+                "failed to append dynamic start event for `{}`: {error}",
+                node.id
+            )
+        })?;
         let result = ctx
             .app
             .provider_for_id(&provider_id)
-            .map_err(|error| anyhow!("failed to resolve provider `{}` for `{}`: {error}", provider_id, node.id))?
-            .run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))
-            .map_err(|error| anyhow!("provider `{}` failed to run `{}`: {error}", provider_id, node.id))?;
+            .map_err(|error| {
+                anyhow!(
+                    "failed to resolve provider `{}` for `{}`: {error}",
+                    provider_id,
+                    node.id
+                )
+            })?
+            .run_worker_with_live_update(
+                invocation,
+                live_update.as_ref().map(|callback| callback as _),
+            )
+            .map_err(|error| {
+                anyhow!(
+                    "provider `{}` failed to run `{}`: {error}",
+                    provider_id,
+                    node.id
+                )
+            })?;
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
         if node.status == DynamicNodeStatus::Paused {
             return Ok(DynamicExecutionResult {
@@ -1912,7 +2022,9 @@ fn execute_dynamic_worker(
             bail!("dynamic worker `{}` failed", node.id);
         }
         match build_dynamic_completion_from_artifact(ctx, &attempt_id, &node) {
-            Ok(proposal) if proposal.validation_status == DynamicProposalValidationStatus::Accepted => {
+            Ok(proposal)
+                if proposal.validation_status == DynamicProposalValidationStatus::Accepted =>
+            {
                 proposals.push(proposal);
                 append_dynamic_event(
                     ctx,
@@ -1962,7 +2074,12 @@ fn execute_dynamic_worker(
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(dynamic_proposal_repair_prompt(ctx, graph, &node, &validation_errors));
+                resume_prompt = Some(dynamic_proposal_repair_prompt(
+                    ctx,
+                    graph,
+                    &node,
+                    &validation_errors,
+                ));
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -2008,7 +2125,12 @@ fn execute_dynamic_worker(
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()));
+                resume_prompt = Some(dynamic_text_repair_prompt(
+                    ctx,
+                    graph,
+                    &node,
+                    err.to_string(),
+                ));
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -2081,7 +2203,10 @@ fn execute_dynamic_agent_stage(
     let result = ctx
         .app
         .provider_for_id(provider_id)?
-        .run_worker_with_live_update(invocation, live_update.as_ref().map(|callback| callback as _))?;
+        .run_worker_with_live_update(
+            invocation,
+            live_update.as_ref().map(|callback| callback as _),
+        )?;
     finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
     if node.status == DynamicNodeStatus::Paused {
         return Ok(DynamicExecutionResult {
@@ -2411,7 +2536,13 @@ fn build_dynamic_completion_from_artifact(
             attempt_id,
         )
         .join("raw.stream.jsonl");
-    build_dynamic_completion_proposal(ctx, node, completion, Some(artifact_path), Some(raw_output_path))
+    build_dynamic_completion_proposal(
+        ctx,
+        node,
+        completion,
+        Some(artifact_path),
+        Some(raw_output_path),
+    )
 }
 
 fn build_dynamic_completion_proposal(
@@ -2621,7 +2752,11 @@ fn validate_dynamic_completion(
                 ));
             }
             errors.extend(validate_dynamic_agent_task_spec(ctx, merge, "merge"));
-            errors.extend(validate_dynamic_agent_task_spec(ctx, acceptance, "acceptance"));
+            errors.extend(validate_dynamic_agent_task_spec(
+                ctx,
+                acceptance,
+                "acceptance",
+            ));
             let group_depth = source
                 .group_id
                 .as_deref()
@@ -2659,11 +2794,37 @@ fn validate_dynamic_completion(
                         }),
                     ));
                 }
-                errors.extend(validate_dynamic_node_spec(ctx, graph, source, node, nodes.len()));
+                errors.extend(validate_dynamic_node_spec(
+                    ctx,
+                    graph,
+                    source,
+                    node,
+                    nodes.len(),
+                ));
             }
         }
     }
     errors
+}
+
+fn validate_dynamic_permission_mode(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+    normative_mode: &str,
+    make_error: impl FnOnce(&str) -> DynamicProposalValidationError,
+) -> Option<DynamicProposalValidationError> {
+    let doctor = ctx.app.provider_doctor(provider).ok()?;
+    let resolved = ctx
+        .app
+        .config
+        .resolve_permission_mode(provider, normative_mode);
+    let supported = doctor.supported_modes();
+    let supported_ids: Vec<_> = supported.into_iter().map(|m| m.id).collect();
+    if !supported_ids.is_empty() && !supported_ids.iter().any(|id| id == &resolved) {
+        Some(make_error(&resolved))
+    } else {
+        None
+    }
 }
 
 fn validate_dynamic_node_spec(
@@ -2739,7 +2900,10 @@ fn validate_dynamic_node_spec(
         if !graph.nodes.iter().any(|node| node.id == *dependency) {
             errors.push(dynamic_validation_error(
                 "dynamic.node.depends-on.unknown",
-                format!("dynamic node `{}` depends on unknown node `{dependency}`", spec.id),
+                format!(
+                    "dynamic node `{}` depends on unknown node `{dependency}`",
+                    spec.id
+                ),
                 serde_json::json!({
                     "nodeId": spec.id,
                     "dependency": dependency,
@@ -2752,7 +2916,10 @@ fn validate_dynamic_node_spec(
             if let Some(continue_from_node_id) = spec.continue_from_node_id.as_deref() {
                 errors.push(dynamic_validation_error(
                     "dynamic.node.session.continue-from-with-new",
-                    format!("dynamic node `{}` cannot set continueFromNodeId when session is new", spec.id),
+                    format!(
+                        "dynamic node `{}` cannot set continueFromNodeId when session is new",
+                        spec.id
+                    ),
                     serde_json::json!({
                         "nodeId": spec.id,
                         "field": "continueFromNodeId",
@@ -2776,7 +2943,10 @@ fn validate_dynamic_node_spec(
             if spec.kind == DynamicNodeSpecKind::WorkflowInvocation {
                 errors.push(dynamic_validation_error(
                     "dynamic.node.session.workflow-invocation-disallowed",
-                    format!("workflow invocation `{}` cannot use continue session", spec.id),
+                    format!(
+                        "workflow invocation `{}` cannot use continue session",
+                        spec.id
+                    ),
                     serde_json::json!({
                         "nodeId": spec.id,
                         "continueFromNodeId": continue_from_node_id,
@@ -2788,7 +2958,8 @@ fn validate_dynamic_node_spec(
                 .find(|node| node.id == continue_from_node_id)
             {
                 Some(target) => {
-                    if dynamic_node_continue_ref(ctx, target, &dynamic_attempt_id(target)).is_none() {
+                    if dynamic_node_continue_ref(ctx, target, &dynamic_attempt_id(target)).is_none()
+                    {
                         errors.push(dynamic_validation_error(
                             "dynamic.node.session.continue-target-missing-ref",
                             format!("dynamic node `{}` cannot continue from `{}` because it has no continue ref", spec.id, continue_from_node_id),
@@ -2817,7 +2988,10 @@ fn validate_dynamic_node_spec(
                 }
                 None => errors.push(dynamic_validation_error(
                     "dynamic.node.session.continue-target-unavailable",
-                    format!("dynamic node `{}` cannot continue from `{}`", spec.id, continue_from_node_id),
+                    format!(
+                        "dynamic node `{}` cannot continue from `{}`",
+                        spec.id, continue_from_node_id
+                    ),
                     serde_json::json!({
                         "nodeId": spec.id,
                         "continueFromNodeId": continue_from_node_id,
@@ -2832,31 +3006,55 @@ fn validate_dynamic_node_spec(
                 if ctx.app.provider_for_id(provider).is_err() {
                     errors.push(dynamic_validation_error(
                         "dynamic.node.provider.unknown",
-                        format!("dynamic worker `{}` references unknown provider `{provider}`", spec.id),
+                        format!(
+                            "dynamic worker `{}` references unknown provider `{provider}`",
+                            spec.id
+                        ),
                         serde_json::json!({
                             "nodeId": spec.id,
                             "provider": provider,
                         }),
                     ));
-                } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
-                    if let Ok(doctor) = ctx.app.provider_doctor(provider) {
-                        let supported_mode_ids = doctor
-                            .supported_modes()
-                            .into_iter()
-                            .map(|mode| mode.id)
-                            .collect::<std::collections::HashSet<_>>();
-                        if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
-                            errors.push(dynamic_validation_error(
+                } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
+                    if let Some(error) = validate_dynamic_permission_mode(
+                        ctx,
+                        provider,
+                        normative_mode,
+                        |resolved| {
+                            dynamic_validation_error(
                                 "dynamic.node.permission-mode.unsupported",
-                                format!("dynamic worker `{}` permissionMode `{}` is not supported by provider `{provider}`", spec.id, permission_mode),
+                                format!(
+                                    "dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`",
+                                    spec.id, normative_mode, resolved
+                                ),
                                 serde_json::json!({
                                     "nodeId": spec.id,
                                     "provider": provider,
-                                    "permissionMode": permission_mode,
+                                    "permissionMode": normative_mode,
                                 }),
-                            ));
-                        }
+                            )
+                        },
+                    ) {
+                        errors.push(error);
                     }
+                }
+                if dynamic_model_required_from_proposal(ctx, provider)
+                    && spec
+                        .model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())
+                        .is_none()
+                {
+                    errors.push(dynamic_validation_error(
+                        "dynamic.node.model.required",
+                        format!("dynamic worker `{}` must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one", spec.id),
+                        serde_json::json!({
+                            "nodeId": spec.id,
+                            "provider": provider,
+                            "field": "model",
+                        }),
+                    ));
                 }
                 if let Some(profile) = spec.profile.as_deref() {
                     let allowed = ctx
@@ -2920,7 +3118,10 @@ fn validate_dynamic_node_spec(
                 }
                 _ => errors.push(dynamic_validation_error(
                     "dynamic.workflow-invocation.workflow-id.blank",
-                    format!("workflow invocation `{}` workflowId cannot be blank", spec.id),
+                    format!(
+                        "workflow invocation `{}` workflowId cannot be blank",
+                        spec.id
+                    ),
                     serde_json::json!({
                         "nodeId": spec.id,
                         "field": "workflowId",
@@ -2988,31 +3189,56 @@ fn validate_dynamic_agent_task_spec(
     } else if ctx.app.provider_for_id(&spec.provider).is_err() {
         errors.push(dynamic_validation_error(
             &format!("dynamic.{name}.provider.unknown"),
-            format!("dynamic {name} references unknown provider `{}`", spec.provider),
+            format!(
+                "dynamic {name} references unknown provider `{}`",
+                spec.provider
+            ),
             serde_json::json!({
                 "provider": spec.provider,
                 "stage": name,
             }),
         ));
-    } else if let Some(permission_mode) = ctx.dynamic.permission_mode() {
-        if let Ok(doctor) = ctx.app.provider_doctor(&spec.provider) {
-            let supported_mode_ids = doctor
-                .supported_modes()
-                .into_iter()
-                .map(|mode| mode.id)
-                .collect::<std::collections::HashSet<_>>();
-            if !supported_mode_ids.is_empty() && !supported_mode_ids.contains(permission_mode) {
-                errors.push(dynamic_validation_error(
+    } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
+        if let Some(error) = validate_dynamic_permission_mode(
+            ctx,
+            &spec.provider,
+            normative_mode,
+            |resolved| {
+                dynamic_validation_error(
                     &format!("dynamic.{name}.permission-mode.unsupported"),
-                    format!("dynamic {name} permissionMode `{}` is not supported by provider `{}`", permission_mode, spec.provider),
+                    format!(
+                        "dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{}`",
+                        normative_mode, resolved, spec.provider
+                    ),
                     serde_json::json!({
                         "provider": spec.provider,
                         "stage": name,
-                        "permissionMode": permission_mode,
+                        "permissionMode": normative_mode,
                     }),
-                ));
-            }
+                )
+            },
+        ) {
+            errors.push(error);
         }
+    }
+    if !spec.provider.trim().is_empty()
+        && dynamic_model_required_from_proposal(ctx, &spec.provider)
+        && spec
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .is_none()
+    {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.model.required"),
+            format!("dynamic {name} must output model for provider `{}` because the AI-DYNAMIC config did not lock one", spec.provider),
+            serde_json::json!({
+                "provider": spec.provider,
+                "stage": name,
+                "field": "model",
+            }),
+        ));
     }
     if spec.task.trim().is_empty() {
         errors.push(dynamic_validation_error(
@@ -3203,6 +3429,7 @@ fn dynamic_node_state_from_spec(
         workspace_path: None,
         provider: spec.provider,
         profile: spec.profile,
+        model: spec.model.clone(),
         permission_mode: inherited_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
@@ -3531,6 +3758,7 @@ fn create_dynamic_merge_node(
         workspace_path: None,
         provider: Some(group.merge.provider.clone()),
         profile: None,
+        model: group.merge.model.clone(),
         permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -3588,6 +3816,7 @@ fn create_dynamic_acceptance_node(
         workspace_path: None,
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
+        model: group.acceptance.model.clone(),
         permission_mode: None,
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -3651,11 +3880,23 @@ pub(crate) fn build_dynamic_prompt_bundle(
     continue_ref: Option<serde_json::Value>,
 ) -> Result<PromptBundle> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow(workflow)?;
-    let dynamic = match validated.get_node(outer_node_id) {
-        Some(NodeDsl::AiDynamic(dynamic)) => dynamic,
-        _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
-    };
+    let is_follow_up = continue_ref.is_some();
+    // For follow-up chats in an existing session, skip full workflow validation.
+    let validated: Option<ValidatedWorkflow>;
+    let dynamic: &AiDynamicNode;
+    if is_follow_up {
+        validated = None;
+        dynamic = match workflow.nodes.iter().find(|n| n.id() == outer_node_id) {
+            Some(NodeDsl::AiDynamic(d)) => d,
+            _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
+        };
+    } else {
+        validated = Some(validate_workflow(workflow)?);
+        dynamic = match validated.as_ref().unwrap().get_node(outer_node_id) {
+            Some(NodeDsl::AiDynamic(d)) => d,
+            _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
+        };
+    }
     let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
     validate_round_state(&round)?;
     let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
@@ -3683,9 +3924,9 @@ pub(crate) fn build_dynamic_prompt_bundle(
         dynamic,
     };
     let output_contract = match node.kind {
-        DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
-            Some(dynamic_output_contract(app.config.desktop_language, dynamic))
-        }
+        DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => Some(
+            dynamic_output_contract(app.config.desktop_language, dynamic),
+        ),
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => None,
     };
     let invocation = build_dynamic_worker_invocation(
@@ -3726,10 +3967,12 @@ fn build_dynamic_worker_invocation(
         .or_else(|| node.profile.clone());
     let profile_content = match builtin_profile {
         Some((_, content)) => Some(content.trim().to_string()),
-        None => node
-            .profile
-            .as_deref()
-            .and_then(|profile| ctx.app.profile_show(profile).ok().map(|entry| entry.content)),
+        None => node.profile.as_deref().and_then(|profile| {
+            ctx.app
+                .profile_show(profile)
+                .ok()
+                .map(|entry| entry.content)
+        }),
     };
     let workspace_dir = node
         .workspace_path
@@ -3750,10 +3993,23 @@ fn build_dynamic_worker_invocation(
         extra_system_sections,
         task_instruction: Some(dynamic_task_instruction(ctx, graph, node)),
         session_mode,
-        permission_mode: node
-            .permission_mode
-            .clone()
-            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
+        permission_mode: {
+            let raw = node
+                .permission_mode
+                .clone()
+                .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned));
+            match (raw, node.provider.as_deref()) {
+                (Some(normative), Some(provider)) => {
+                    Some(ctx.app.config.resolve_permission_mode(provider, &normative))
+                }
+                (other, _) => other,
+            }
+        },
+        model: node
+            .provider
+            .as_deref()
+            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+            .or_else(|| node.model.clone()),
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -3772,6 +4028,7 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
+        input_attachment_paths: Vec::new(),
     })
 }
 
@@ -3801,10 +4058,10 @@ fn dynamic_builtin_profile(
 }
 
 fn dynamic_requirement_text(ctx: &DynamicExecutionContext<'_>) -> Result<String> {
-    Ok(std::fs::read_to_string(
-        ctx.app.paths.requirement_file(ctx.task_id).as_std_path(),
+    Ok(
+        std::fs::read_to_string(ctx.app.paths.requirement_file(ctx.task_id).as_std_path())
+            .unwrap_or_default(),
     )
-    .unwrap_or_default())
 }
 
 fn dynamic_proposal_repair_prompt(
@@ -3854,7 +4111,11 @@ fn dynamic_text_repair_prompt(
     .expect("prompt template renders")
 }
 
-fn dynamic_task_instruction(ctx: &DynamicExecutionContext<'_>, _graph: &DynamicGraphState, node: &DynamicNodeState) -> String {
+fn dynamic_task_instruction(
+    ctx: &DynamicExecutionContext<'_>,
+    _graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> String {
     let metadata = render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -3926,9 +4187,7 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
         .map(|snapshot| {
             format!(
                 "- workflowId={} name={} containsAiDynamic={}",
-                snapshot.workflow_id,
-                snapshot.name,
-                snapshot.contains_ai_dynamic,
+                snapshot.workflow_id, snapshot.name, snapshot.contains_ai_dynamic,
             )
         })
         .collect::<Vec<_>>()
@@ -3936,25 +4195,71 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
 }
 
 fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    let mut providers = ctx
-        .app
-        .managed_agents()
-        .keys()
-        .map(|agent_type| agent_type.as_str().to_string())
-        .collect::<Vec<_>>();
-    if let Some(provider) = ctx.dynamic.bootstrap_provider() {
-        providers.push(provider.to_string());
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
+            if let Some(model) = model.as_deref() {
+                return format!("- {provider} (configured model: {model}; do not output model)");
+            }
+            let options = provider_model_options_summary(ctx, provider);
+            if options.is_empty() {
+                format!("- {provider} (model not configured; provider default will be used)")
+            } else {
+                format!(
+                    "- {provider} (model required in proposal; choose one model by name)\n  models:\n  - {}",
+                    options.join("\n  - ")
+                )
+            }
+        }
+        AiDynamicAgentStrategy::Dynamic {
+            routing_prompt,
+            available_agents,
+            ..
+        } => {
+            if available_agents.is_empty() {
+                return "none".to_string();
+            }
+            let requires_model_output = !routing_prompt.trim().is_empty();
+            available_agents
+                .iter()
+                .map(|agent_ref| {
+                    if let Some(model) = agent_ref.model.as_deref() {
+                        return if requires_model_output {
+                            format!(
+                                "- {provider} (configured model: {model}; output model is still required, but runtime will use the configured model)",
+                                provider = agent_ref.provider,
+                            )
+                        } else {
+                            format!(
+                                "- {provider} (configured model: {model}; do not output model)",
+                                provider = agent_ref.provider,
+                            )
+                        };
+                    }
+                    let options = provider_model_options_summary(ctx, &agent_ref.provider);
+                    if options.is_empty() {
+                        if requires_model_output {
+                            format!(
+                                "- {provider} (model required in proposal; no model catalog is available, use a model supported by this provider)",
+                                provider = agent_ref.provider,
+                            )
+                        } else {
+                            format!(
+                                "- {provider} (model not configured; provider default will be used)",
+                                provider = agent_ref.provider,
+                            )
+                        }
+                    } else {
+                        format!(
+                            "- {provider} (model required in proposal; choose one model by name)\n  models:\n  - {models}",
+                            provider = agent_ref.provider,
+                            models = options.join("\n  - "),
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     }
-    providers.sort();
-    providers.dedup();
-    if providers.is_empty() {
-        return "none".to_string();
-    }
-    providers
-        .into_iter()
-        .map(|provider| format!("- {provider}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
@@ -4079,7 +4384,8 @@ fn dynamic_resumable_session_summary(
     let lines = dynamic_resumable_session_nodes(graph, source)
         .into_iter()
         .filter_map(|candidate| {
-            let continue_ref = dynamic_node_continue_ref(ctx, candidate, &dynamic_attempt_id(candidate))?;
+            let continue_ref =
+                dynamic_node_continue_ref(ctx, candidate, &dynamic_attempt_id(candidate))?;
             let _ = continue_ref;
             Some(format!(
                 "- nodeId={} title={} goal={}",
@@ -4155,9 +4461,10 @@ fn dynamic_kind_specific_summary(
                 .iter()
                 .filter(|candidate| candidate.group_id.as_deref() == Some(group_id))
                 .filter_map(|candidate| {
-                    candidate.child_run_id.as_ref().map(|child_run_id| {
-                        format!("{}={}", candidate.id, child_run_id)
-                    })
+                    candidate
+                        .child_run_id
+                        .as_ref()
+                        .map(|child_run_id| format!("{}={}", candidate.id, child_run_id))
                 })
                 .collect::<Vec<_>>();
             let child_runs = if child_runs.is_empty() {
@@ -4562,6 +4869,48 @@ fn drive_from_node_with_initial_session(
             ),
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
+
+        // ── Metrics: notify node started (predecessor + current) ──
+        if let Some(metrics_cb) = &app.metrics_callback {
+            let seq = round.trace.iter()
+                .filter(|t| t.node_id == node.node_id)
+                .map(|t| t.sequence)
+                .last();
+            let node_name = node.resolved_config.get("profileName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+            let agent_type = node.resolved_config.get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let metrics_ctx = super::MetricsEventContext {
+                repo_root: app.paths.repo_root.to_string(),
+                task_id: task_id.to_string(),
+                run_id: run.id.clone(),
+                round_id: round.id.clone(),
+                node_id: node.node_id.clone(),
+                attempt_id: node.attempt_id.clone(),
+                task_uuid: run.task_uuid.clone(),
+                run_uuid: run.uuid.clone(),
+                round_uuid: round.uuid.clone(),
+                node_uuid: node.uuid.clone(),
+                seq,
+                node_name,
+                agent_type,
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 0,
+                outcome: None,
+            };
+            metrics_cb(metrics_ctx, super::MetricsEvent::NodeStarted {
+                predecessor: run.last_executed_node.clone(),
+            });
+        }
+
         let current_node_dsl = workflow
             .get_node(&current_node_id)
             .expect("validated node exists");
@@ -4662,7 +5011,10 @@ fn drive_from_node_with_initial_session(
                     &node.node_id,
                     &node.attempt_id,
                 ))?;
-                graph.run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted)
+                graph
+                    .run
+                    .pause_reason
+                    .unwrap_or(PauseReason::ProcessInterrupted)
             } else {
                 PauseReason::ProcessInterrupted
             };
@@ -4885,6 +5237,51 @@ fn drive_from_node_with_initial_session(
             ),
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
+
+        // ── Metrics: update last_executed_node and notify node completed ──
+        {
+            let status_str = match node.outcome {
+                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
+                Some(crate::domain::NodeOutcome::Failure) => "FAILED",
+                Some(crate::domain::NodeOutcome::Killed) => "FAILED",
+                Some(crate::domain::NodeOutcome::Invalid) => "FAILED",
+                None => "FAILED",
+            };
+            let node_name = node.resolved_config.get("profileName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            // Read real token data from ACP session metadata
+            let attempt_dir = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
+            let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+                crate::acp::events::read_session_tokens(&session_paths.session);
+            let seq = round.trace.iter()
+                .filter(|t| t.node_id == node.node_id)
+                .map(|t| t.sequence)
+                .last();
+            let agent_type = node.resolved_config.get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
+                node_id: node.node_id.clone(),
+                uuid: node.uuid.clone().unwrap_or_default(),
+                round_uuid: round.uuid.clone().unwrap_or_default(),
+                node_name,
+                seq,
+                agent_type,
+                status: status_str.to_string(),
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                total_tokens,
+            });
+        }
+
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -4905,6 +5302,69 @@ fn drive_from_node_with_initial_session(
             resume_prompt_visibility = PromptVisibility::Visible;
             invalid_output_repair_prompts = 0;
             continue;
+        }
+        // Workflow ended — send final metrics for the last completed node
+        if let Some(metrics_cb) = &app.metrics_callback {
+            let status_str = match node.outcome {
+                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
+                _ => "FAILED",
+            };
+            let node_name = node.resolved_config.get("profileName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let agent_type = node.resolved_config.get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let seq = round.trace.iter()
+                .filter(|t| t.node_id == node.node_id)
+                .map(|t| t.sequence)
+                .last();
+            // Update last_executed_node with final state (read real token data from ACP session)
+            let ad = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let sp = crate::acp::events::AcpAttemptPaths::from_attempt_dir(ad);
+            let (it, ot, cr, tt) = crate::acp::events::read_session_tokens(&sp.session);
+            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
+                node_id: node.node_id.clone(),
+                uuid: node.uuid.clone().unwrap_or_default(),
+                round_uuid: round.uuid.clone().unwrap_or_default(),
+                node_name: node_name.clone(),
+                seq,
+                agent_type: agent_type.clone(),
+                status: status_str.to_string(),
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                input_tokens: it,
+                output_tokens: ot,
+                cache_read_tokens: cr,
+                total_tokens: tt,
+            });
+            let metrics_ctx = super::MetricsEventContext {
+                repo_root: app.paths.repo_root.to_string(),
+                task_id: task_id.to_string(),
+                run_id: run.id.clone(),
+                round_id: round.id.clone(),
+                node_id: node.node_id.clone(),
+                attempt_id: node.attempt_id.clone(),
+                task_uuid: run.task_uuid.clone(),
+                run_uuid: run.uuid.clone(),
+                round_uuid: round.uuid.clone(),
+                node_uuid: node.uuid.clone(),
+                seq,
+                node_name: Some(node_name),
+                agent_type,
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                input_tokens: it,
+                output_tokens: ot,
+                cache_read_tokens: cr,
+                total_tokens: tt,
+                outcome: Some(status_str.to_string()),
+            };
+            // Send with predecessor = this node's final state
+            metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
         }
         return Ok(());
     }

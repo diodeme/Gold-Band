@@ -37,7 +37,9 @@ export function AcpAvatarWithTime({ tone, timestamp, className }: AcpAvatarWithT
     <div className={cn('flex flex-col items-center gap-0.5 shrink-0', className)}>
       <div className={cn(
         'mt-1 flex size-7 shrink-0 items-center justify-center rounded-full border',
-        tone === 'assistant' ? 'bg-card text-muted-foreground' : 'bg-primary/10 text-primary',
+        tone === 'assistant'
+          ? 'bg-card text-muted-foreground'
+          : 'border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
       )}>
         <Icon className="size-3.5" />
       </div>

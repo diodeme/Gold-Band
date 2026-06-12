@@ -194,7 +194,6 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
               variant="actual"
               selectedNodeId={selectedNodeId}
               activeNodeId={vm.round.currentNode ?? vm.run.currentNode}
-              activeStatus={roundDisplayStatus}
               onNodeSelect={(node) => onSelect({ kind: 'node', nodeId: canonicalNodeId(node), attemptId: node.attemptId ?? undefined, outerNodeId: node.outerNodeId ?? undefined, outerAttemptId: node.outerAttemptId ?? undefined })}
               onNodeOpenDetail={(node) => openNodeDrawer(node, 'detail')}
               onNodeOpenSession={(node) => openNodeDrawer(node, 'session')}

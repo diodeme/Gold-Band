@@ -13,7 +13,10 @@ use crate::storage::read_json;
 
 static SEARCH_INDEX: OnceLock<Arc<SearchIndex>> = OnceLock::new();
 
-pub fn init_search_index(db_path: &Utf8Path, projects_dir: &Utf8Path) -> Result<Arc<SearchIndex>, rusqlite::Error> {
+pub fn init_search_index(
+    db_path: &Utf8Path,
+    projects_dir: &Utf8Path,
+) -> Result<Arc<SearchIndex>, rusqlite::Error> {
     let index = Arc::new(SearchIndex::open(db_path)?);
 
     // If the DB is empty (first run), backfill from existing files in a
@@ -227,27 +230,45 @@ impl SearchIndex {
             return;
         };
         for run_entry in run_entries.flatten() {
-            let Some(run_dir) = to_utf8(run_entry.path()) else { continue };
-            if !run_dir.is_dir() { continue; }
-            let Some(run_id) = file_name(&run_dir) else { continue };
+            let Some(run_dir) = to_utf8(run_entry.path()) else {
+                continue;
+            };
+            if !run_dir.is_dir() {
+                continue;
+            }
+            let Some(run_id) = file_name(&run_dir) else {
+                continue;
+            };
 
             let rounds_dir = run_dir.join("rounds");
             let Ok(round_entries) = std::fs::read_dir(rounds_dir.as_std_path()) else {
                 continue;
             };
             for round_entry in round_entries.flatten() {
-                let Some(round_dir) = to_utf8(round_entry.path()) else { continue };
-                if !round_dir.is_dir() { continue; }
-                let Some(round_id) = file_name(&round_dir) else { continue };
+                let Some(round_dir) = to_utf8(round_entry.path()) else {
+                    continue;
+                };
+                if !round_dir.is_dir() {
+                    continue;
+                }
+                let Some(round_id) = file_name(&round_dir) else {
+                    continue;
+                };
 
                 let nodes_dir = round_dir.join("nodes");
                 let Ok(node_entries) = std::fs::read_dir(nodes_dir.as_std_path()) else {
                     continue;
                 };
                 for node_entry in node_entries.flatten() {
-                    let Some(node_dir) = to_utf8(node_entry.path()) else { continue };
-                    if !node_dir.is_dir() { continue; }
-                    let Some(node_id) = file_name(&node_dir) else { continue };
+                    let Some(node_dir) = to_utf8(node_entry.path()) else {
+                        continue;
+                    };
+                    if !node_dir.is_dir() {
+                        continue;
+                    }
+                    let Some(node_id) = file_name(&node_dir) else {
+                        continue;
+                    };
 
                     let Ok(attempt_entries) = std::fs::read_dir(node_dir.as_std_path()) else {
                         continue;
@@ -256,7 +277,9 @@ impl SearchIndex {
                         let Some(attempt_dir) = to_utf8(attempt_entry.path()) else {
                             continue;
                         };
-                        if !attempt_dir.is_dir() { continue; }
+                        if !attempt_dir.is_dir() {
+                            continue;
+                        }
                         if !attempt_dir.join("acp.snapshot.json").exists() {
                             continue;
                         }
@@ -285,11 +308,7 @@ impl SearchIndex {
     /// `acp.timeline.jsonl` fresh from disk, so the write always uses the
     /// latest state even if the session was still streaming during earlier
     /// attempts.
-    pub fn index_session_with_retry(
-        &self,
-        attempt_dir: &Utf8Path,
-        ctx: &AttemptIndexContext,
-    ) {
+    pub fn index_session_with_retry(&self, attempt_dir: &Utf8Path, ctx: &AttemptIndexContext) {
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt as usize]));
@@ -359,8 +378,8 @@ impl SearchIndex {
             ],
         )?;
 
-        let timeline = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl"))
-            .unwrap_or_default();
+        let timeline =
+            load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap_or_default();
         for item in &timeline {
             if item.kind != "userTextDelta" {
                 continue;
@@ -385,7 +404,15 @@ impl SearchIndex {
                  ON CONFLICT(attempt_path, id) DO UPDATE SET
                     text=excluded.text,
                     normalized_text=excluded.normalized_text",
-                params![item.id, attempt_path, session_id, prompt_id, item.timestamp, content, normalized],
+                params![
+                    item.id,
+                    attempt_path,
+                    session_id,
+                    prompt_id,
+                    item.timestamp,
+                    content,
+                    normalized
+                ],
             )?;
         }
 
@@ -411,7 +438,7 @@ impl SearchIndex {
              JOIN sessions s ON s.attempt_path = sp.attempt_path
              WHERE session_prompts_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![normalized, limit as i64], |row| {
             Ok(PromptSearchResult {
@@ -455,15 +482,14 @@ impl SearchIndex {
         }
     }
 
-    fn index_task(
-        &self,
-        task_dir: &Utf8Path,
-        task_id: &str,
-    ) -> Result<(), rusqlite::Error> {
+    fn index_task(&self, task_dir: &Utf8Path, task_id: &str) -> Result<(), rusqlite::Error> {
         let task_path = task_dir.to_string();
         let task: Option<TaskState> = read_json(&task_dir.join("task.json")).ok();
         let requirement_text = std::fs::read_to_string(
-            task_dir.join("authoring").join("requirement.md").as_std_path(),
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
         )
         .unwrap_or_default();
 
@@ -473,8 +499,8 @@ impl SearchIndex {
                 (
                     t.title.as_deref().unwrap_or(""),
                     t.description.as_deref().unwrap_or(""),
-                    "",  // TaskState has no created_at; snapshot-based timestamps don't apply here
-                    "",  // We could derive from file mtime, but keep it simple
+                    "", // TaskState has no created_at; snapshot-based timestamps don't apply here
+                    "", // We could derive from file mtime, but keep it simple
                 )
             })
             .unwrap_or(("", "", "", ""));
@@ -509,7 +535,7 @@ impl SearchIndex {
              JOIN tasks t ON fts.rowid = t.rowid
              WHERE tasks_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![normalized, limit as i64], |row| {
             Ok(TaskSearchResult {
@@ -539,7 +565,7 @@ impl SearchIndex {
              FROM sessions
              WHERE title LIKE ?1 ESCAPE '\\'
              ORDER BY updated_at DESC
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |row| {
             Ok(SessionSearchResult {

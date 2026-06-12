@@ -4,6 +4,7 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod i18n;
+mod metrics;
 mod notifications;
 mod state;
 mod updater;
@@ -12,37 +13,46 @@ mod view_models_conversation;
 
 use anyhow::Context;
 use commands::{
-    cancel_acp_session, check_local_claude, choose_workspace, continue_run, create_agent, create_profile, create_task,
-    delete_agent, delete_profile, delete_workflow_template, doctor_agent, get_acp_raw_frames, get_acp_session,
-    get_agent_registry, get_app_bootstrap, get_log_page, get_profile, get_profiles, get_round_detail,
-    check_update_manual, download_and_install_update, get_run_detail, get_startup_check_result, get_system_fonts,
+    cancel_acp_session, check_local_claude, check_update_manual, choose_workspace, continue_run,
+    create_agent, create_profile, create_task, delete_agent, delete_auto_template, delete_profile,
+    delete_workflow_template, dismiss_update_announcement, doctor_agent,
+    download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
+    get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
+    get_profiles, get_round_detail, get_run_detail, get_system_fonts,
     get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
-    dismiss_update_announcement, kill_run, mark_settings_advanced_update_seen, open_in_file_manager,
-    mark_settings_update_seen, respond_acp_permission, retry_run, save_desktop_preferences,
-    save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
-    select_recent_workspace, send_acp_prompt, show_artifact,
+    kill_run, mark_settings_advanced_update_seen, mark_settings_update_seen,
+    open_in_file_manager, replace_auto_templates, respond_acp_permission, retry_run,
+    save_auto_template, save_desktop_preferences, save_metrics_settings, save_task_workflow,
+    save_updater_settings, save_workflow_template, search_acp_prompts, search_acp_sessions,
+    search_tasks, select_recent_workspace, send_acp_prompt, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact,
     show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
-    update_profile, update_workflow_template,
+    update_auto_template, update_profile, update_workflow_template,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     get_conversation_run, get_conversation_run_mode, get_conversation_sidebar,
-    pick_attachment_files, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, search_conversation_tasks,
-    show_conversation_attachment, switch_conversation_session, sync_conversation_workspace,
-    unpin_conversation, update_task_metadata, validate_conversation_create,
+    get_supported_attachment_extensions, pick_attachment_files, pin_conversation,
+    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
+    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
+    search_conversation_tasks, show_conversation_attachment, switch_conversation_session,
+    sync_conversation_workspace, unpin_conversation, update_task_metadata,
+    validate_conversation_create,
 };
+use gold_band::observability::init_tracing;
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
-use updater::{start_update_polling, startup_critical_check};
+use metrics::start_heartbeat_polling;
 use tauri::{Manager, WindowEvent};
+use updater::{retry_pending_startup_install, start_update_polling};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("failed to start {} desktop: {error:?}", channel::current_channel_config().app_name);
+        eprintln!(
+            "failed to start {} desktop: {error:?}",
+            channel::current_channel_config().app_name
+        );
     }
 }
 
@@ -63,6 +73,7 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                init_tracing(&paths, &ctx.config, true);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
@@ -73,11 +84,9 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = startup_critical_check(&handle).await;
-            });
+            retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
+            start_heartbeat_polling(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -87,6 +96,13 @@ fn run() -> anyhow::Result<()> {
                     let _ = app.pause_all_running_sessions();
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
+                // 关键更新：退出前安装已下载的包，成功自动删文件
+                if let Some(path) = state.take_pending_update() {
+                    let handle = window.app_handle().clone();
+                    tauri::async_runtime::block_on(async move {
+                        let _ = crate::updater::install_pending_file(&handle, &path).await;
+                    });
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,11 +130,18 @@ fn run() -> anyhow::Result<()> {
             save_workflow_template,
             update_workflow_template,
             delete_workflow_template,
+            get_auto_templates,
+            save_auto_template,
+            update_auto_template,
+            delete_auto_template,
+            replace_auto_templates,
             get_run_detail,
             get_round_detail,
             get_log_page,
             get_acp_session,
             send_acp_prompt,
+            set_acp_session_model,
+            set_acp_session_permission_mode,
             respond_acp_permission,
             cancel_acp_session,
             get_acp_raw_frames,
@@ -132,13 +155,14 @@ fn run() -> anyhow::Result<()> {
             show_worker_ref,
             save_desktop_preferences,
             save_updater_settings,
+            get_metrics_settings,
+            save_metrics_settings,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,
             dismiss_update_announcement,
             check_update_manual,
             download_and_install_update,
-            get_startup_check_result,
             search_acp_prompts,
             search_acp_sessions,
             search_tasks,
@@ -164,6 +188,7 @@ fn run() -> anyhow::Result<()> {
             remove_conversation_workspace,
             sync_conversation_workspace,
             save_conversation_preference,
+            get_supported_attachment_extensions,
             open_in_file_manager,
         ])
         .run(tauri::generate_context!())

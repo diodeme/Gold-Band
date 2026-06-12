@@ -34,7 +34,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { EmptyState } from '@/components/PageScaffold';
 import { cn } from '@/lib/utils';
-import { normalizeTone, statusBadgeClass } from '@/lib/status';
+import { statusBadgeClass } from '@/lib/status';
 
 /** Runtime graph nodes use a slightly taller card for status badges. */
 const RUNTIME_NODE_HEIGHT = 138;
@@ -54,6 +54,8 @@ type WorkflowNodeData = {
   currentLabel: string;
   runningLabel: string;
   displayStatusValue: string | null;
+  displayTone: string;
+  displayIcon: string;
   statusLabel: string;
   artifactLabel: string;
   attachmentLabel: string;
@@ -64,7 +66,6 @@ interface GraphViewProps {
   graph: GraphVm;
   selectedNodeId?: string | null;
   activeNodeId?: string | null;
-  activeStatus?: string | null;
   onNodeSelect?: (node: GraphNodeVm) => void;
   onNodeOpenDetail?: (node: GraphNodeVm) => void;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
@@ -81,10 +82,10 @@ const edgeTypes = {
   runtimeEdge: RuntimeEdge,
 };
 
-export function GraphView({ graph, selectedNodeId, activeNodeId, activeStatus, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
+export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
-  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, selectedNodeId, activeNodeId, activeStatus, mode, t), [graph, selectedNodeId, activeNodeId, activeStatus, mode, t]);
+  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, selectedNodeId, activeNodeId, mode, t), [graph, selectedNodeId, activeNodeId, mode, t]);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const contextMenuTimerRef = useRef<number | null>(null);
@@ -239,7 +240,7 @@ function calculateCenteredViewport(bounds: { x: number; y: number; width: number
   };
 }
 
-function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, activeStatus: string | null | undefined, mode: GraphMode, t: TFunction) {
+function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, t: TFunction) {
   const nodeOrder = runtimeNodeOrder(graph.nodes);
   const nodeIds = new Set(graph.nodes.map((n) => n.id));
   const layoutPositions = layoutSuccessPath(
@@ -250,13 +251,15 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
   );
 
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
-  const runningActiveNode = normalizeTone(activeStatus ?? activeNode?.status ?? activeNode?.outcome) === 'running';
+  const runningActiveNode = activeNode?.runtimeDisplay?.tone === 'running';
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((node) => {
     const pos = layoutPositions.get(node.id) ?? { x: 0, y: 0 };
-    const displayStatusValue = graphNodeDisplayStatus(node, activeStatus);
-    const active = matchesNodeId(node, activeNodeId) || (node.current && normalizeTone(node.status ?? node.outcome) === 'running');
-    const running = active && (runningActiveNode || normalizeTone(node.status ?? node.outcome) === 'running');
+    const displayStatusValue = node.runtimeDisplay?.code ?? null;
+    const displayTone = node.runtimeDisplay?.tone ?? 'neutral';
+    const displayIcon = node.runtimeDisplay?.icon ?? 'dot';
+    const active = matchesNodeId(node, activeNodeId) || node.current;
+    const running = active && (runningActiveNode || displayTone === 'running');
     return {
       id: node.id,
       type: 'workflowNode',
@@ -270,6 +273,8 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
         currentLabel: t('graph.current'),
         runningLabel: displayStatus(t, 'running'),
         displayStatusValue,
+        displayTone,
+        displayIcon,
         statusLabel: displayStatus(t, displayStatusValue),
         artifactLabel: t('common.artifacts'),
         attachmentLabel: t('common.attachments'),
@@ -346,20 +351,9 @@ function matchesNodeId(node: GraphNodeVm, id?: string | null) {
   return Boolean(id && (node.id === id || node.nodeId === id));
 }
 
-function graphNodeDisplayStatus(node: GraphNodeVm, activeStatus?: string | null) {
-  const lifecycleStatus = node.current && activeStatus ? activeStatus : node.status ?? activeStatus ?? null;
-  if (isProcessStatus(lifecycleStatus)) return lifecycleStatus;
-  return node.outcome ?? lifecycleStatus;
-}
-
-function isProcessStatus(status?: string | null) {
-  return ['running', 'in_progress', 'active', 'pending', 'paused', 'resumable', 'error-blocked'].includes(status?.toLowerCase() ?? '');
-}
-
 function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
+  const { node, selected, active, running, mode, currentLabel, runningLabel, displayStatusValue, displayTone, displayIcon, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
   const hasStatus = Boolean(displayStatusValue);
-  const tone = normalizeTone(displayStatusValue);
   const isDynamicNode = (node.nodeType ?? '').startsWith('dynamic-');
   return (
     <div
@@ -382,12 +376,12 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}
           {node.attachmentCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{attachmentLabel}:{node.attachmentCount}</Badge> : null}
         </div>
-        {running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', displayStatusValue ? statusBadgeClass(displayStatusValue) : 'border-primary/35 bg-primary/10 text-primary')}>{displayStatusValue ? statusLabel : currentLabel}</Badge> : null}
+        {running ? <Badge className="h-5 shrink-0 gap-1.5 bg-gold-running px-1.5 text-[10px] text-white"><span className="workflow-running-dot bg-white" />{runningLabel}</Badge> : node.current ? <Badge variant="outline" className={cn('h-5 shrink-0 px-1.5 text-[10px]', displayStatusValue ? statusBadgeClass(displayStatusValue, displayTone) : 'border-primary/35 bg-primary/10 text-primary')}>{displayStatusValue ? statusLabel : currentLabel}</Badge> : null}
       </div>
       <div className="flex min-h-0 flex-1 items-center gap-3 px-4 py-1">
         {hasStatus ? (
-          <span aria-label={statusLabel} className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm', statusMarkClass(tone), running && 'workflow-running-mark')}>
-            {statusMark(displayStatusValue, tone)}
+          <span aria-label={statusLabel} className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm', statusMarkClass(displayTone), running && 'workflow-running-mark')}>
+            {statusMark(displayIcon)}
           </span>
         ) : null}
         <div className="min-w-0">
@@ -409,12 +403,11 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
   );
 }
 
-function statusMark(value: string | null | undefined, tone: string) {
-  const status = value?.toLowerCase();
-  if (status === 'paused' || status === 'resumable') return 'Ⅱ';
-  if (tone === 'success') return '✓';
-  if (tone === 'danger') return '!';
-  if (tone === 'running') return '•';
+function statusMark(icon: string | null | undefined) {
+  if (icon === 'pause') return 'Ⅱ';
+  if (icon === 'check') return '✓';
+  if (icon === 'error') return '!';
+  if (icon === 'dot') return '•';
   return '';
 }
 

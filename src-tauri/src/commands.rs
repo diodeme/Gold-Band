@@ -606,7 +606,10 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle))
+        .with_intervention_notifier(notifier);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -621,11 +624,9 @@ pub fn continue_run(
     prompt_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
-    app.run_continue_background(&task_id, &run_id, prompt_id)
     let notifier = state.create_intervention_notifier(app_handle.clone());
     let app = context
-        .app_with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle.clone()))
         .with_intervention_notifier(notifier);
     let result = app.run_continue_background(&task_id, &run_id, prompt_id)
         .map(run_summary_vm)
@@ -652,9 +653,8 @@ pub fn submit_manual_check(
     let context = state.context().map_err(command_error)?;
     let notifier = state.create_intervention_notifier(app_handle.clone());
     let app = context
-        .app_with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle.clone()))
         .with_intervention_notifier(notifier);
-    let app = context.app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle));
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -687,8 +687,11 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_update(acp_live_update_emitter(app_handle));
-    app.run_retry(&task_id, &run_id)
+    let notifier = state.create_intervention_notifier(app_handle.clone());
+    let app = context
+        .app_with_metrics(acp_live_update_emitter(app_handle.clone()), crate::metrics::create_metrics_callback(app_handle.clone()))
+        .with_intervention_notifier(notifier);
+    let result = app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error);
     if result.is_ok() {

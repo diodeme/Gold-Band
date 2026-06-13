@@ -1,6 +1,7 @@
 import {
   forwardRef,
   memo,
+  startTransition,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -181,6 +182,7 @@ interface ACPChatDialogProps {
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   eventIdPrefix?: string;
   eventPageSize?: number;
+  liveUpdatesPaused?: boolean;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
@@ -240,7 +242,7 @@ const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
-const LIVE_EVENT_FLUSH_MS = 50;
+const LIVE_EVENT_FLUSH_MS = 125;
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -407,6 +409,7 @@ export const ACPChatDialog = forwardRef<
     systemPromptOptions,
     eventIdPrefix,
     eventPageSize,
+    liveUpdatesPaused: externalLiveUpdatesPaused = false,
     optimisticEvents: controlledOptimisticEvents,
     onOptimisticEventsChange,
     onManualCheckSubmitted,
@@ -537,6 +540,11 @@ export const ACPChatDialog = forwardRef<
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
   const liveEventFlushTimerRef = useRef<number | null>(null);
+  const liveUpdatesPausedRef = useRef(false);
+  const liveUpdatesPaused = Boolean(
+    externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
+  );
+  liveUpdatesPausedRef.current = liveUpdatesPaused;
 
   const updateOptimisticEvents = (
     updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
@@ -1099,24 +1107,30 @@ export const ACPChatDialog = forwardRef<
     applyEventUpdates([event]);
   };
 
-  const flushPendingLiveEvents = useCallback(() => {
+  const flushPendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
     if (liveEventFlushTimerRef.current !== null) {
       window.clearTimeout(liveEventFlushTimerRef.current);
       liveEventFlushTimerRef.current = null;
     }
     const updates = [...pendingLiveEventsRef.current.values()];
     pendingLiveEventsRef.current.clear();
-    if (updates.length > 0) applyEventUpdates(updates);
+    if (updates.length === 0) return;
+    if (priority === "sync") {
+      applyEventUpdates(updates);
+      return;
+    }
+    startTransition(() => applyEventUpdates(updates));
   }, [effectiveLoadedEventBufferLimit, eventIdPrefix]);
 
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
       if (!isCoalescableLiveEvent(event)) {
-        flushPendingLiveEvents();
+        if (!liveUpdatesPausedRef.current) flushPendingLiveEvents("sync");
         applyEventUpdate(event);
         return;
       }
       pendingLiveEventsRef.current.set(liveEventBufferKey(event), event);
+      if (liveUpdatesPausedRef.current) return;
       if (liveEventFlushTimerRef.current !== null) return;
       liveEventFlushTimerRef.current = window.setTimeout(() => {
         liveEventFlushTimerRef.current = null;
@@ -1125,6 +1139,10 @@ export const ACPChatDialog = forwardRef<
     },
     [flushPendingLiveEvents],
   );
+
+  useEffect(() => {
+    if (!liveUpdatesPaused) flushPendingLiveEvents();
+  }, [flushPendingLiveEvents, liveUpdatesPaused]);
 
   useEffect(() => {
     latestSessionRef.current = effective ?? currentSession ?? session ?? null;
@@ -1199,7 +1217,7 @@ export const ACPChatDialog = forwardRef<
         if (!active || !matchesSessionEvent(event)) return;
         if (event.event) enqueueLiveEventUpdate(event.event);
         else {
-          flushPendingLiveEvents();
+          flushPendingLiveEvents("sync");
           debugAcpComposer("live session update received", {
             taskId,
             runId,
@@ -2775,7 +2793,7 @@ export function ACPSessionHeader({
   );
 }
 
-function SystemPromptDialog({
+const SystemPromptDialog = memo(function SystemPromptDialog({
   open,
   prompt,
   options,
@@ -2787,8 +2805,10 @@ function SystemPromptDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const availableOptions =
-    options?.filter((option) => option.prompt?.trim()) ?? [];
+  const availableOptions = useMemo(
+    () => (open ? (options?.filter((option) => option.prompt?.trim()) ?? []) : []),
+    [open, options],
+  );
   const latestAttemptId = availableOptions.at(-1)?.attemptId ?? null;
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
     latestAttemptId,
@@ -2800,7 +2820,11 @@ function SystemPromptDialog({
   const selectedPrompt = availableOptions.find(
     (option) => option.attemptId === selectedAttemptId,
   )?.prompt;
-  const content = (selectedPrompt ?? prompt)?.trim() || "";
+  const content = useMemo(
+    () => (open ? ((selectedPrompt ?? prompt)?.trim() || "") : ""),
+    [open, prompt, selectedPrompt],
+  );
+  if (!open) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -2843,7 +2867,7 @@ function SystemPromptDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 function ACPArtifactsDialog({
   open,
@@ -4592,6 +4616,27 @@ function mergeRaw(previous: unknown, next: unknown) {
 }
 
 export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
+  if (next.length === 0) return previous;
+  const replacementByKey = new Map<string, AcpUiEventVm>();
+  for (const event of next) replacementByKey.set(acpEventKey(event), event);
+  let allUpdatesReplaceExistingEvents = replacementByKey.size > 0;
+  for (const key of replacementByKey.keys()) {
+    if (!previous.some((event) => acpEventKey(event) === key)) {
+      allUpdatesReplaceExistingEvents = false;
+      break;
+    }
+  }
+  if (allUpdatesReplaceExistingEvents) {
+    let changed = false;
+    const merged = previous.map((event) => {
+      const replacement = replacementByKey.get(acpEventKey(event));
+      if (!replacement) return event;
+      changed = true;
+      return { ...replacement, seq: event.seq };
+    });
+    return changed ? merged : previous;
+  }
+
   const previousByKey = new Map<string, AcpUiEventVm>();
   const byKey = new Map<string, AcpUiEventVm>();
   for (const event of previous) {

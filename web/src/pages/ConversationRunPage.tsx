@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -381,6 +381,7 @@ export function ConversationRunPage({
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}
+            liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
             usageCompact
@@ -558,7 +559,7 @@ function isActiveSessionLeaf(leaf: ConversationSessionLeafVm) {
 
 // ── Workflow sheet (edit / view) ──
 
-function WorkflowSheet({
+const WorkflowSheet = memo(function WorkflowSheet({
   open,
   mode,
   workflowJson,
@@ -589,7 +590,12 @@ function WorkflowSheet({
   onNodeOpenSession?: (node: GraphNodeVm) => void;
   t: (key: string) => string;
 }) {
-  const workflow = parseWorkflowJson(workflowJson);
+  const workflow = useMemo(
+    () => (open ? parseWorkflowJson(workflowJson) : null),
+    [open, workflowJson],
+  );
+
+  if (!open) return null;
 
   if (mode === 'edit' || mode === 'repair') {
     const repairMode = mode === 'repair';
@@ -663,4 +669,4 @@ function WorkflowSheet({
       </SheetContent>
     </Sheet>
   );
-}
+});

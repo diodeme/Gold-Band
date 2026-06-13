@@ -1,4 +1,5 @@
 import type {
+  AcpSessionVm,
   ConversationRunVm,
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
@@ -29,6 +30,30 @@ export function conversationSessionKeyFromParts(parts: {
 export interface ConversationRunSnapshotMergeOptions {
   selectedSessionKey?: string | null;
   preserveSelectedSession?: boolean;
+}
+
+export function applyConversationSelectedSessionSnapshot(
+  current: ConversationRunVm | null,
+  snapshot: {
+    taskId: string;
+    runId: string;
+    roundId: string;
+    nodeId: string;
+    attemptId: string;
+    outerNodeId?: string | null;
+    outerAttemptId?: string | null;
+    session?: AcpSessionVm | null;
+  },
+): ConversationRunVm | null {
+  if (!current || !snapshot.session) return current;
+  if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
+  const snapshotKey = conversationSessionKeyFromParts(snapshot);
+  if (current.sessionTree.selectedSessionKey !== snapshotKey) return current;
+  if (!findConversationLeafByKey(current.sessionTree, snapshotKey)) return current;
+  return {
+    ...current,
+    selectedSession: snapshot.session,
+  };
 }
 
 export function mergeConversationRunSnapshot(

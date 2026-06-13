@@ -171,41 +171,43 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.externalKind).toBeNull();
   });
 
-  it('lets cancelled ACP snapshot finish stale stopping while preserving runtime continue', () => {
-    const state = deriveAcpRuntimeComposerState(baseInput({
-      lifecycle: lifecycle({
-        runtime: {
-          status: 'paused',
-          outcome: null,
-          pauseReason: 'process-interrupted',
-          resumable: true,
-          current: true,
-          active: false,
-          continuable: true,
-        },
-        acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
-        displayStatus: 'cancelling',
-        runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
-      }),
-      legacyRuntimeStatus: 'paused',
-      legacyRuntimeDisplay: pausedDisplay,
-      acpStatus: 'cancelled',
-      cancelling: true,
-      stopCommandPending: true,
-      awaitingResponse: true,
-      turnAccepted: true,
-      hasResponseAfterTurn: false,
-    }));
+  it('lets terminal ACP snapshots finish stale stopping while preserving runtime continue', () => {
+    for (const acpStatus of ['cancelled', 'canceled', 'failed', 'failure', 'error', 'killed']) {
+      const state = deriveAcpRuntimeComposerState(baseInput({
+        lifecycle: lifecycle({
+          runtime: {
+            status: 'paused',
+            outcome: null,
+            pauseReason: 'process-interrupted',
+            resumable: true,
+            current: true,
+            active: false,
+            continuable: true,
+          },
+          acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
+          displayStatus: 'cancelling',
+          runtimeDisplay: pausedDisplay,
+          continueKind: 'input',
+        }),
+        legacyRuntimeStatus: 'paused',
+        legacyRuntimeDisplay: pausedDisplay,
+        acpStatus,
+        cancelling: true,
+        stopCommandPending: true,
+        awaitingResponse: true,
+        turnAccepted: true,
+        hasResponseAfterTurn: false,
+      }));
 
-    expect(state.mode).toBe('interrupted-input');
-    expect(state.stopInProgress).toBe(false);
-    expect(state.sessionActive).toBe(false);
-    expect(state.statusActive).toBe(false);
-    expect(state.processingKind).toBe('responding');
-    expect(state.submitTarget).toBe('runtime-continue');
-    expect(state.inputDisabled).toBe(false);
-    expect(state.canStop).toBe(false);
+      expect(state.mode).toBe('interrupted-input');
+      expect(state.stopInProgress).toBe(false);
+      expect(state.sessionActive).toBe(false);
+      expect(state.statusActive).toBe(false);
+      expect(state.processingKind).toBe('responding');
+      expect(state.submitTarget).toBe('runtime-continue');
+      expect(state.inputDisabled).toBe(false);
+      expect(state.canStop).toBe(false);
+    }
   });
 
   it('blocks waiting-for-user-input with an action instead of free ACP prompt', () => {

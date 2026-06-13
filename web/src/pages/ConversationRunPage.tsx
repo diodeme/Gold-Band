@@ -410,7 +410,7 @@ export function ConversationRunPage({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setRerunConfirmOpen(false); onRerun(); }}>
+            <AlertDialogAction onClick={onRerun}>
               {t('conversation.runtime.rerunConfirmAction')}
             </AlertDialogAction>
           </AlertDialogFooter>

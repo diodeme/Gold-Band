@@ -50,7 +50,7 @@ use crate::runtime::{
 };
 use crate::storage::{append_jsonl, read_json, write_json};
 
-use super::ids::{generate_uuid, next_attempt_id, next_run_id, now_rfc3339_like};
+use super::ids::{generate_uuid, next_attempt_id, now_rfc3339_like, reserve_next_run_dir};
 use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
@@ -215,7 +215,7 @@ fn prepare_run(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let run_id = next_run_id(&app.paths.runs_dir(task_id))?;
+    let (run_id, _) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();

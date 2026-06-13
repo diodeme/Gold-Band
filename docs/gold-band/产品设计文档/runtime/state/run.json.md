@@ -53,6 +53,15 @@
 
 ## 4. 字段说明
 
+### `id`
+- 类型：string
+- 格式：`run-NNN`
+
+说明：
+- `id` 在同一 task 的 `runs/` 目录下唯一。
+- 创建新 run 时从该 task 下已持久化的最大 `run-*` 数字后缀递增，并在写入 `run.json` 前先原子创建对应 run 目录占位。
+- 会话页“重跑该任务”与普通 `run start` 共享同一分配规则，不允许基于当前选中的 run id 直接 `+1`。
+
 ### `status`
 - 类型：string
 - 枚举：`running | paused | completed`

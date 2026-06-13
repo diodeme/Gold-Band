@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldCreateLiveAcpSessionShell } from '@/lib/acp-session-shell';
+import { resolveAcpSessionShellState, shouldCreateLiveAcpSessionShell } from '@/lib/acp-session-shell';
 
 describe('shouldCreateLiveAcpSessionShell', () => {
   it('creates a shell when runtime is active even before session payload exists', () => {
@@ -24,5 +24,36 @@ describe('shouldCreateLiveAcpSessionShell', () => {
       allowEventOnlySessionShell: true,
       loadedEventCount: 3,
     })).toBe(true);
+  });
+});
+
+describe('resolveAcpSessionShellState', () => {
+  it('keeps session switching in loading state until the target session fetch resolves', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+    })).toBe('loading');
+  });
+
+  it('treats real session payloads and live shells as available', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+    })).toBe('available');
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      hasLiveSessionShell: true,
+      initialSessionLoading: true,
+    })).toBe('available');
+  });
+
+  it('reports missing only after loading has completed without a session', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
+    })).toBe('missing');
   });
 });

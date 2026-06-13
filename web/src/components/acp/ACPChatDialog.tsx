@@ -86,7 +86,10 @@ import {
   isSessionCompletedStatus,
   isSessionTerminalStatus,
 } from "@/lib/acp-runtime-composer-state";
-import { shouldCreateLiveAcpSessionShell } from "@/lib/acp-session-shell";
+import {
+  resolveAcpSessionShellState,
+  shouldCreateLiveAcpSessionShell,
+} from "@/lib/acp-session-shell";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
   getAcpRawFrames,
@@ -475,6 +478,7 @@ export const ACPChatDialog = forwardRef<
     pageSize: 100,
   });
   const [rawLoading, setRawLoading] = useState(false);
+  const [loadingInitialSession, setLoadingInitialSession] = useState(!session && isTauriRuntime());
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
     () => session?.eventPage.hasOlder ?? false,
@@ -560,6 +564,7 @@ export const ACPChatDialog = forwardRef<
 
   useEffect(() => {
     setCurrentSession(session ?? null);
+    if (session) setLoadingInitialSession(false);
     if (!session) {
       const restored = restoreAcpLoadedEvents(
         eventWindowKey,
@@ -606,6 +611,7 @@ export const ACPChatDialog = forwardRef<
       storedOptimisticEvents,
     );
     setCurrentSession(session ?? null);
+    setLoadingInitialSession(!session && isTauriRuntime());
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
     setOptimisticEvents(storedOptimisticEvents);
@@ -1157,9 +1163,15 @@ export const ACPChatDialog = forwardRef<
   }, [timeline]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!isTauriRuntime()) {
+      setLoadingInitialSession(false);
+      return;
+    }
     const runtimeApi = getRuntimeApi();
-    if (!runtimeApi.subscribeAcpSessionUpdates) return;
+    if (!runtimeApi.subscribeAcpSessionUpdates) {
+      setLoadingInitialSession(false);
+      return;
+    }
     let active = true;
     let stopListening: (() => void) | null = null;
     const subscribe = runtimeApi.subscribeAcpSessionUpdates;
@@ -1232,6 +1244,9 @@ export const ACPChatDialog = forwardRef<
           applySessionUpdate(updated);
       } catch {
         if (active) applySessionUpdate(latestSessionRef.current);
+      } finally {
+        if (active && sessionRefreshSeqRef.current === refreshSeq)
+          setLoadingInitialSession(false);
       }
     })();
     return () => {
@@ -1798,6 +1813,16 @@ export const ACPChatDialog = forwardRef<
     });
   }, []);
 
+  const sessionShellState = resolveAcpSessionShellState({
+    hasBaseSession: Boolean(baseSession),
+    hasLiveSessionShell: Boolean(liveSessionShell),
+    initialSessionLoading: loadingInitialSession,
+  });
+
+  if (sessionShellState === 'loading') {
+    return <AcpLoadingState label={t("common.loading")} />;
+  }
+
   if (!effective) {
     return <AcpErrorState reason={t("acp.missingSessionReason")} />;
   }
@@ -2191,6 +2216,20 @@ function AcpErrorState({ reason }: { reason: string }) {
     <div className="flex h-full min-h-0 flex-col bg-background">
       <AcpErrorBanner reason={reason} />
       <div className="flex-1" />
+    </div>
+  );
+}
+
+function AcpLoadingState({ label }: { label: string }) {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center bg-background text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+        />
+        <span>{label}</span>
+      </div>
     </div>
   );
 }

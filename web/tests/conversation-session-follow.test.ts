@@ -78,17 +78,14 @@ describe('conversation session follow helpers', () => {
     })).toBe(false);
   });
 
-  it('queues a run refresh for completed snapshots from the selected session', () => {
-    expect(shouldQueueConversationRunRefreshForAcpUpdate({
-      treeHasSession: true,
-      alreadySelected: true,
-      sessionStatus: 'completed',
-    })).toBe(true);
-    expect(shouldQueueConversationRunRefreshForAcpUpdate({
-      treeHasSession: true,
-      alreadySelected: true,
-      sessionStatus: 'complete',
-    })).toBe(true);
+  it('queues a run refresh for terminal snapshots from the selected session', () => {
+    for (const sessionStatus of ['completed', 'complete', 'cancelled', 'canceled', 'failed', 'failure', 'error', 'killed']) {
+      expect(shouldQueueConversationRunRefreshForAcpUpdate({
+        treeHasSession: true,
+        alreadySelected: true,
+        sessionStatus,
+      })).toBe(true);
+    }
     expect(shouldQueueConversationRunRefreshForAcpUpdate({
       treeHasSession: true,
       alreadySelected: true,

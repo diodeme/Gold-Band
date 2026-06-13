@@ -59,6 +59,7 @@ import {
   type ConversationSessionFollowState,
 } from '@/lib/conversation-session-follow';
 import {
+  applyConversationSelectedSessionSnapshot,
   conversationSessionKeyFromParts,
   mergeConversationRunSnapshot,
   type ConversationRunSnapshotSource,
@@ -544,6 +545,13 @@ export function App() {
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
       const alreadySelected = currentSelectedKey === sessionKey;
+      if (event.session && alreadySelected) {
+        setConversationRun((current) => {
+          const patched = applyConversationSelectedSessionSnapshot(current, event);
+          conversationRunRef.current = patched;
+          return patched;
+        });
+      }
       const shouldQueueRunRefresh = shouldQueueConversationRunRefreshForAcpUpdate({
         treeHasSession,
         alreadySelected,

@@ -379,6 +379,7 @@ export function ConversationRunPage({
             eventPageSize={appConfig.acpChatEventPageSize}
             onSessionStopped={handleSessionStopped}
             onAtBottomChange={handleAtBottomChange}
+            allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}

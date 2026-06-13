@@ -86,6 +86,7 @@ import {
   isSessionCompletedStatus,
   isSessionTerminalStatus,
 } from "@/lib/acp-runtime-composer-state";
+import { shouldCreateLiveAcpSessionShell } from "@/lib/acp-session-shell";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
   getAcpRawFrames,
@@ -182,6 +183,7 @@ interface ACPChatDialogProps {
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
   onAtBottomChange?: (atBottom: boolean) => void;
+  allowEventOnlySessionShell?: boolean;
   artifacts?: AssetItemVm[];
   attachments?: AssetItemVm[];
   usageCompact?: boolean;
@@ -407,6 +409,7 @@ export const ACPChatDialog = forwardRef<
     onManualCheckSubmitted,
     onSessionStopped,
     onAtBottomChange,
+    allowEventOnlySessionShell = true,
     artifacts = [],
     attachments = [],
     usageCompact,
@@ -653,14 +656,16 @@ export const ACPChatDialog = forwardRef<
 
   const baseSession = currentSession ?? session;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
-  const liveSessionShellStatus = runtimeComposerContext?.lifecycle?.acp.status
-    ?? (runtimeActiveFromContext ? "running" : "completed");
   const liveSessionShell = useMemo(
     () =>
-      loadedEvents.length > 0 || runtimeActiveFromContext
-        ? createLiveAcpSessionShell(loadedEvents, liveSessionShellStatus)
+      shouldCreateLiveAcpSessionShell({
+        runtimeActive: runtimeActiveFromContext,
+        allowEventOnlySessionShell,
+        loadedEventCount: loadedEvents.length,
+      })
+        ? createLiveAcpSessionShell(loadedEvents, "running")
         : null,
-    [liveSessionShellStatus, loadedEvents, runtimeActiveFromContext],
+    [allowEventOnlySessionShell, loadedEvents, runtimeActiveFromContext],
   );
   const visibleSession = useMemo(
     () =>

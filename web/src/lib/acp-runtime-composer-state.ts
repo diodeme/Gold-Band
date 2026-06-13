@@ -51,6 +51,7 @@ export interface AcpRuntimeComposerStateInput {
     terminal?: boolean | null;
     resumable?: boolean | null;
     reasonCode?: string | null;
+    blockingError?: boolean | null;
   } | null;
   workflowValid: boolean;
   workflowInvalidMessage?: string | null;
@@ -98,20 +99,33 @@ export interface AcpRuntimeComposerState {
 export function deriveAcpRuntimeComposerState(
   input: AcpRuntimeComposerStateInput,
 ): AcpRuntimeComposerState {
-  const acpActive = isSessionActiveStatus(input.acpStatus);
-  const acpStopping = isSessionStopPending(input.acpStatus) || Boolean(input.lifecycle?.acp.stopping);
-  const runtimeActive = input.lifecycle?.runtime.active ?? isRuntimeActiveStatus(input.legacyRuntimeStatus);
+  const acpTerminal = isSessionTerminalStatus(input.acpStatus) || (
+    Boolean(input.lifecycle?.acp.terminal) && isSessionTerminalStatus(input.lifecycle?.acp.status)
+  );
+  const acpStopping = !acpTerminal && (isSessionStopPending(input.acpStatus) || Boolean(input.lifecycle?.acp.stopping));
+  const runtimeActiveFromLifecycle = input.lifecycle?.runtime.active ?? isRuntimeActiveStatus(input.legacyRuntimeStatus);
+  const submissionPending = input.sending || input.waitingForOptimisticPrompt;
+  const suppressStaleRuntimeActive = isSessionCompletedStatus(input.acpStatus) && runtimeActiveFromLifecycle && !submissionPending;
+  const runtimeActive = suppressStaleRuntimeActive ? false : runtimeActiveFromLifecycle;
+  const runtimeTerminal = suppressStaleRuntimeActive || (Boolean(input.lifecycle)
+    && !runtimeActive
+    && !input.lifecycle?.runtime.continuable
+    && isRuntimeTerminalStatus(input.lifecycle?.runtime.status));
+  const acpActive = !runtimeTerminal && isSessionActiveStatus(input.acpStatus);
   const sessionActive = acpActive || runtimeActive;
+  const awaitingResponse = !runtimeTerminal && !acpTerminal && input.awaitingResponse;
   const composerLocked = input.waitingForPermission && !input.hasPlanIntervention;
+  const cancelling = !acpTerminal && input.cancelling;
+  const stopCommandPending = !acpTerminal && input.stopCommandPending;
   const stopInProgress =
-    input.cancelling ||
-    input.stopCommandPending ||
+    cancelling ||
+    stopCommandPending ||
     acpStopping ||
     (isInterruptedInput(input) && acpActive);
   const turnSubmitting = (input.sending || input.waitingForOptimisticPrompt) && !input.turnAccepted;
   const activePromptLocked =
     input.sending ||
-    input.awaitingResponse ||
+    awaitingResponse ||
     input.waitingForOptimisticPrompt ||
     sessionActive ||
     stopInProgress;
@@ -136,11 +150,11 @@ export function deriveAcpRuntimeComposerState(
   const submitTarget = submitTargetForMode(input, mode, runtimeContinueKind);
   const inputDisabled = (composerLocked || activePromptLocked || showContinueAction || mode === 'invalid-workflow' || mode === 'runtime-error') && !input.hasPlanIntervention;
   const canSubmit = Boolean(input.prompt.trim()) && submitTarget !== 'none' && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
-  const processingKind = processingKindForInput(input, stopInProgress, turnSubmitting);
+  const processingKind = processingKindForInput(input, stopInProgress, turnSubmitting, awaitingResponse);
   const statusActive =
     !input.waitingForPermission &&
     !composerLocked &&
-    (turnSubmitting || input.awaitingResponse || sessionActive || stopInProgress);
+    (turnSubmitting || awaitingResponse || sessionActive || stopInProgress);
   const externalMessage = externalMessageForMode(input, mode, runtimeErrorMessage);
 
   return {
@@ -150,10 +164,10 @@ export function deriveAcpRuntimeComposerState(
     canSubmit,
     canStop:
       sessionActive ||
-      input.awaitingResponse ||
+      awaitingResponse ||
       input.sending ||
       input.waitingForOptimisticPrompt ||
-      input.cancelling,
+      cancelling,
     stopInProgress,
     sessionActive,
     acpActive,
@@ -182,8 +196,20 @@ export function isSessionStopPending(status?: string | null) {
   return ['cancelling', 'cancel-requested', 'cancel_requested'].includes(normalizeStatus(status));
 }
 
+export function isSessionCompletedStatus(status?: string | null) {
+  return ['completed', 'complete'].includes(normalizeStatus(status));
+}
+
+export function isSessionTerminalStatus(status?: string | null) {
+  return ['completed', 'complete', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(normalizeStatus(status));
+}
+
 export function isRuntimeActiveStatus(status?: string | null) {
   return ['pending', 'running', 'in-progress', 'in_progress', 'active'].includes(normalizeStatus(status));
+}
+
+export function isRuntimeTerminalStatus(status?: string | null) {
+  return ['completed', 'complete', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(normalizeStatus(status));
 }
 
 function composerMode(input: {
@@ -230,10 +256,11 @@ function processingKindForInput(
   input: AcpRuntimeComposerStateInput,
   stopInProgress: boolean,
   turnSubmitting: boolean,
+  awaitingResponse: boolean,
 ): AcpComposerProcessingKind {
   if (stopInProgress) return 'stopping';
   if (turnSubmitting) return 'sending';
-  if (input.awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
+  if (awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
   if (!input.hasTimelineItems) return input.hasEffectiveEvents ? 'processing' : 'launching';
   return input.timelineProcessingKind;
 }
@@ -296,8 +323,7 @@ function runtimeContinueKindFromInput(input: AcpRuntimeComposerStateInput): 'inp
 function runtimeErrorMessageFromInput(input: AcpRuntimeComposerStateInput) {
   if (input.runtimeErrorMessage) return input.runtimeErrorMessage;
   const display = input.legacyRuntimeDisplay;
-  if (display?.code === 'error-blocked') return 'runtime-error';
-  if (display?.tone === 'danger' && display.terminal) return 'runtime-error';
+  if (display?.code === 'error-blocked' || display?.blockingError) return 'runtime-error';
   return null;
 }
 

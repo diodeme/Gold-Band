@@ -11,7 +11,10 @@ use std::path::Path;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::commands::{CommandErrorVm, CommandResult, acp_live_update_emitter, command_error};
+use crate::commands::{
+    CommandErrorVm, CommandResult, acp_live_update_emitter, acp_session_update_emitter,
+    command_error,
+};
 use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
@@ -86,6 +89,7 @@ pub async fn create_conversation_run(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     tauri::async_runtime::spawn_blocking(move || {
@@ -106,6 +110,7 @@ pub fn rerun_conversation_task(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)

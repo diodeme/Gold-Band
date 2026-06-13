@@ -3,6 +3,7 @@ import {
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
   shouldEnableConversationAutoFollow,
+  shouldQueueConversationRunRefreshForAcpUpdate,
 } from '@/lib/conversation-session-follow';
 
 function runPageResetCount(runIds: string[]) {
@@ -22,7 +23,7 @@ describe('conversation session follow helpers', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: null,
       incomingSessionKey: 'round-001/node-b/attempt-001',
-      autoFollow: false,
+      followMode: 'manual',
     })).toBe('round-001/node-b/attempt-001');
   });
 
@@ -30,15 +31,15 @@ describe('conversation session follow helpers', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: 'round-001/node-a/attempt-001',
       incomingSessionKey: 'round-001/node-b/attempt-001',
-      autoFollow: true,
+      followMode: 'auto',
     })).toBe('round-001/node-b/attempt-001');
   });
 
-  it('preserves the current selection while auto-follow is disabled', () => {
+  it('preserves the current selection while manual mode is active', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: 'round-001/node-a/attempt-001',
       incomingSessionKey: 'round-001/node-b/attempt-001',
-      autoFollow: false,
+      followMode: 'manual',
     })).toBe('round-001/node-a/attempt-001');
   });
 
@@ -50,18 +51,49 @@ describe('conversation session follow helpers', () => {
 
   it('keeps the manual selection when a queued live refresh runs after auto-follow is disabled', () => {
     expect(resolveConversationRefreshSelectedSessionKey({
-      autoFollow: false,
+      followMode: 'manual',
       pendingEventSessionKey: 'round-001/node-b/attempt-001',
       currentSelectedKey: 'round-001/node-a/attempt-001',
     })).toBe('round-001/node-a/attempt-001');
   });
 
-  it('still switches to the pending running session while auto-follow remains enabled', () => {
+  it('switches to the pending running session only in auto mode', () => {
     expect(resolveConversationRefreshSelectedSessionKey({
-      autoFollow: true,
+      followMode: 'auto',
       pendingEventSessionKey: 'round-001/node-b/attempt-001',
       currentSelectedKey: 'round-001/node-a/attempt-001',
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('does not queue a run refresh for non-terminal updates from the selected session', () => {
+    expect(shouldQueueConversationRunRefreshForAcpUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      sessionStatus: null,
+    })).toBe(false);
+    expect(shouldQueueConversationRunRefreshForAcpUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      sessionStatus: 'running',
+    })).toBe(false);
+  });
+
+  it('queues a run refresh for completed snapshots from the selected session', () => {
+    expect(shouldQueueConversationRunRefreshForAcpUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      sessionStatus: 'completed',
+    })).toBe(true);
+    expect(shouldQueueConversationRunRefreshForAcpUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      sessionStatus: 'complete',
+    })).toBe(true);
+    expect(shouldQueueConversationRunRefreshForAcpUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      sessionStatus: 'cancel_requested',
+    })).toBe(false);
   });
 
   it('resets run-page auto-follow only when the run id changes', () => {

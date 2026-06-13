@@ -437,6 +437,7 @@ export interface RuntimeDisplayVm {
   terminal: boolean;
   resumable: boolean;
   reasonCode?: string | null;
+  blockingError: boolean;
 }
 
 export interface GraphNodeVm {

@@ -4,7 +4,8 @@ use gold_band::acp::events::{
     load_timeline_items, permission_decision_event, write_timeline_items,
 };
 use gold_band::acp::permission::{
-    cancel_pending_permission_requests, request_cancel, write_permission_response,
+    cancel_pending_permission_requests, clear_cancel_request, request_cancel,
+    write_permission_response,
 };
 use gold_band::app::{
     AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
@@ -624,6 +625,7 @@ pub fn start_run(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     app.run_start_background(&task_id, None)
@@ -643,6 +645,7 @@ pub fn continue_run(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
@@ -722,6 +725,7 @@ pub fn submit_manual_check(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     let outcome = match outcome.as_str() {
@@ -749,6 +753,7 @@ pub fn retry_run(
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
         acp_live_update_emitter(app_handle.clone()),
+        acp_session_update_emitter(app_handle.clone(), context.app()),
         crate::metrics::create_metrics_callback(app_handle),
     );
     app.run_retry(&task_id, &run_id)
@@ -872,6 +877,54 @@ pub(crate) fn acp_live_update_emitter(
             context.outer_node_id,
             context.outer_attempt_id,
             event,
+        );
+        Ok(())
+    })
+}
+
+pub(crate) fn acp_session_update_emitter(
+    app_handle: AppHandle,
+    app: gold_band::app::App,
+) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
+    Arc::new(move |context| {
+        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) {
+            dynamic_acp_session_vm(
+                &app,
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &context.node_id,
+                &context.attempt_id,
+                None,
+                None,
+            )?
+        } else {
+            acp_session_vm(
+                &app,
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                &context.node_id,
+                &context.attempt_id,
+                None,
+                None,
+            )?
+        };
+        emit_acp_session_update(
+            &app_handle,
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            context.outer_node_id.clone(),
+            context.outer_attempt_id.clone(),
+            session,
         );
         Ok(())
     })
@@ -1453,7 +1506,30 @@ fn spawn_acp_cancel_shutdown(
             outer_node_id.as_deref(),
             outer_attempt_id.as_deref(),
         );
-        graceful_stop_provider(&attempt_dir.join("provider.pid"));
+        let pid_path = attempt_dir.join("provider.pid");
+        eprintln!(
+            "[gb-acp-stop] shutdown-start task={} run={} round={} node={} attempt={} pid_exists={} cancel_requested={}",
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            pid_path.exists(),
+            gold_band::acp::permission::is_cancel_requested(&attempt_dir)
+        );
+        graceful_stop_provider(&pid_path);
+        let clear_result = clear_cancel_request(&attempt_dir);
+        eprintln!(
+            "[gb-acp-stop] shutdown-after-provider task={} run={} round={} node={} attempt={} pid_exists={} cancel_requested={} clear_cancel_ok={}",
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            pid_path.exists(),
+            gold_band::acp::permission::is_cancel_requested(&attempt_dir),
+            clear_result.is_ok()
+        );
 
         // Provider has fully stopped — now write the cancelled snapshot and
         // emit a live update so the UI transitions from "cancelling" → "cancelled".
@@ -1506,6 +1582,23 @@ fn spawn_acp_cancel_shutdown(
             .ok()
             .flatten()
         };
+        eprintln!(
+            "[gb-acp-stop] shutdown-emit task={} run={} round={} node={} attempt={} session_status={} session_id={} has_session={}",
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            session
+                .as_ref()
+                .map(|session| session.status.as_str())
+                .unwrap_or("<none>"),
+            session
+                .as_ref()
+                .and_then(|session| session.session_id.as_deref())
+                .unwrap_or("<none>"),
+            session.is_some()
+        );
         emit_acp_session_update(
             &app_handle,
             &task_id,

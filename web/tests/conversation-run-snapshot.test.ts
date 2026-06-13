@@ -9,6 +9,7 @@ const runningDisplay: RuntimeDisplayVm = {
   terminal: false,
   resumable: false,
   reasonCode: null,
+  blockingError: false,
 };
 
 const unknownDisplay: RuntimeDisplayVm = {
@@ -18,16 +19,23 @@ const unknownDisplay: RuntimeDisplayVm = {
   terminal: false,
   resumable: false,
   reasonCode: null,
+  blockingError: false,
 };
 
-function leaf(status: string, runtimeDisplay: RuntimeDisplayVm): ConversationSessionLeafVm {
+function leaf(
+  status: string,
+  runtimeDisplay: RuntimeDisplayVm,
+  overrides: Partial<ConversationSessionLeafVm> = {},
+): ConversationSessionLeafVm {
+  const nodeId = overrides.nodeId ?? 'dev';
+  const attemptId = overrides.attemptId ?? 'attempt-001';
   return {
     roundId: 'round-001',
-    nodeId: 'dev',
-    attemptId: 'attempt-001',
+    nodeId,
+    attemptId,
     outerNodeId: null,
     outerAttemptId: null,
-    pathLabel: 'dev/attempt-001',
+    pathLabel: `${nodeId}/${attemptId}`,
     status,
     outcome: null,
     runtimeDisplay,
@@ -37,11 +45,12 @@ function leaf(status: string, runtimeDisplay: RuntimeDisplayVm): ConversationSes
     sessionId: null,
     artifactCount: 0,
     attachmentCount: 0,
+    ...overrides,
   };
 }
 
-function run(overrides: Partial<ConversationRunVm> = {}): ConversationRunVm {
-  const attempt = leaf('running', runningDisplay);
+function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('running', runningDisplay)]): ConversationRunVm {
+  const selectedAttempt = attempts[0];
   return {
     projectId: 'default',
     taskId: 'task-001',
@@ -53,36 +62,36 @@ function run(overrides: Partial<ConversationRunVm> = {}): ConversationRunVm {
     runStatus: 'running',
     runOutcome: null,
     sessionTree: {
-      selectedSessionKey: 'round-001/dev/attempt-001',
+      selectedSessionKey: `${selectedAttempt.roundId}/${selectedAttempt.nodeId}/${selectedAttempt.attemptId}`,
       rounds: [{
         roundId: 'round-001',
         index: 1,
         label: 'round-001',
         status: 'running',
         runtimeDisplay: runningDisplay,
-        nodes: [{
-          nodeId: 'dev',
-          label: 'dev',
+        nodes: attempts.map((attempt) => ({
+          nodeId: attempt.nodeId,
+          label: attempt.nodeId,
           nodeType: 'worker',
           status: attempt.status,
           runtimeDisplay: attempt.runtimeDisplay,
           attempts: [attempt],
           outerNodes: undefined,
-        }],
+        })),
       }],
     },
     selectedSession: { sessionId: 'session-1', status: 'running', events: [] } as any,
     activeSessions: [{
-      roundId: attempt.roundId,
-      nodeId: attempt.nodeId,
-      attemptId: attempt.attemptId,
+      roundId: selectedAttempt.roundId,
+      nodeId: selectedAttempt.nodeId,
+      attemptId: selectedAttempt.attemptId,
       outerNodeId: null,
       outerAttemptId: null,
-      pathLabel: attempt.pathLabel,
-      status: attempt.status,
-      runtimeDisplay: attempt.runtimeDisplay,
+      pathLabel: selectedAttempt.pathLabel,
+      status: selectedAttempt.status,
+      runtimeDisplay: selectedAttempt.runtimeDisplay,
       sessionId: null,
-      startedAt: attempt.startedAt,
+      startedAt: selectedAttempt.startedAt,
     }],
     artifacts: [],
     attachments: [],
@@ -144,6 +153,136 @@ describe('mergeConversationRunSnapshot', () => {
     const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh');
 
     expect(merged.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-001');
+  });
+
+  it('preserves manual selection when live refresh returns a different selected key', () => {
+    const testAttempt = leaf('completed', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: false });
+    const devAttempt = leaf('running', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-002', current: true });
+    const current = run({
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/test/attempt-001',
+      },
+    }, [testAttempt, devAttempt]);
+    const incoming = run({
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-002',
+      },
+    }, [testAttempt, devAttempt]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh', {
+      preserveSelectedSession: true,
+    });
+
+    expect(merged.sessionTree.selectedSessionKey).toBe('round-001/test/attempt-001');
+  });
+
+  it('keeps selected session payload when preserving manual selection', () => {
+    const testAttempt = leaf('completed', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: false });
+    const devAttempt = leaf('running', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-002', current: true });
+    const current = run({
+      selectedSession: { sessionId: 'test-session', status: 'completed', events: [] } as any,
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/test/attempt-001',
+      },
+    }, [testAttempt, devAttempt]);
+    const incoming = run({
+      selectedSession: { sessionId: 'dev-session', status: 'running', events: [] } as any,
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-002',
+      },
+    }, [testAttempt, devAttempt]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh', {
+      preserveSelectedSession: true,
+    });
+
+    expect(merged.sessionTree.selectedSessionKey).toBe('round-001/test/attempt-001');
+    expect(merged.selectedSession?.sessionId).toBe('test-session');
+  });
+
+  it('uses the preferred selected key when auto-follow requests it', () => {
+    const testAttempt = leaf('completed', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: false });
+    const devAttempt = leaf('running', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-002', current: true });
+    const current = run({
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/test/attempt-001',
+      },
+    }, [testAttempt, devAttempt]);
+    const incoming = run({
+      selectedSession: { sessionId: 'test-session', status: 'completed', events: [{ content: 'test event' }] } as any,
+      sessionTree: {
+        ...run({}, [testAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/test/attempt-001',
+      },
+    }, [testAttempt, devAttempt]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh', {
+      selectedSessionKey: 'round-001/dev/attempt-002',
+    });
+
+    expect(merged.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-002');
+    expect(merged.selectedSession).toBeNull();
+    expect(merged.artifacts).toEqual([]);
+    expect(merged.attachments).toEqual([]);
+  });
+
+  it('preserves selected session payload when same-key refresh omits it', () => {
+    const current = run({
+      runStatus: 'paused',
+      selectedSession: { sessionId: 'session-1', status: 'cancelled', events: [{ content: 'stopped' }] } as any,
+    });
+    const incoming = run({
+      runStatus: 'paused',
+      selectedSession: null,
+      activeSessions: [],
+      sessionTree: {
+        ...current.sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-001',
+      },
+    });
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh', {
+      preserveSelectedSession: true,
+    });
+
+    expect(merged.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-001');
+    expect(merged.selectedSession?.status).toBe('cancelled');
+    expect(merged.selectedSession?.sessionId).toBe('session-1');
+  });
+
+  it('does not attach stale selected session payload to a newly selected session', () => {
+    const acceptAttempt = leaf('running', runningDisplay, { nodeId: 'accept', attemptId: 'attempt-001', current: true });
+    const devAttempt = leaf('completed', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-002', current: false });
+    const current = run({
+      selectedSession: null,
+      sessionTree: {
+        ...run({}, [acceptAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/accept/attempt-001',
+      },
+    }, [acceptAttempt, devAttempt]);
+    const incoming = run({
+      selectedSession: { sessionId: 'dev-session', status: 'completed', events: [{ content: 'dev event' }] } as any,
+      artifacts: [{ name: 'dev-report.md' }] as any,
+      attachments: [{ name: 'dev-report.md' }] as any,
+      sessionTree: {
+        ...run({}, [acceptAttempt, devAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-002',
+      },
+    }, [acceptAttempt, devAttempt]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh', {
+      selectedSessionKey: 'round-001/accept/attempt-001',
+    });
+
+    expect(merged.sessionTree.selectedSessionKey).toBe('round-001/accept/attempt-001');
+    expect(merged.selectedSession).toBeNull();
+    expect(merged.artifacts).toEqual([]);
+    expect(merged.attachments).toEqual([]);
   });
 
   it('replaces state when the snapshot belongs to a different run', () => {

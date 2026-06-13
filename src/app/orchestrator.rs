@@ -1282,7 +1282,17 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            let completed_node_id = node.node_id.clone();
+            let completed_attempt_id = node.attempt_id.clone();
             persist_runtime_state(app, task_id, run, round, node)?;
+            emit_completed_acp_session_update_best_effort(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                &completed_node_id,
+                &completed_attempt_id,
+            );
             Ok(None)
         }
     }
@@ -1366,6 +1376,25 @@ fn freeze_allowed_workflow_snapshots(
         });
     }
     Ok(snapshots)
+}
+
+fn emit_completed_acp_session_update_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) {
+    let _ = app.emit_acp_session_update(AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    });
 }
 
 fn dynamic_acp_live_event_context(

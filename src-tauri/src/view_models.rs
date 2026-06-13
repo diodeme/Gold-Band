@@ -10,8 +10,7 @@ use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
-    RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -307,6 +306,7 @@ pub struct RuntimeDisplayVm {
     pub terminal: bool,
     pub resumable: bool,
     pub reason_code: Option<String>,
+    pub blocking_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -408,6 +408,12 @@ pub fn runtime_display_vm(
         },
     };
 
+    let blocking_error = match outcome.as_deref() {
+        Some("failure") | Some("failed") | Some("invalid") | Some("success") => false,
+        Some("killed") | Some("cancelled") | Some("canceled") => true,
+        _ => matches!(code, "error-blocked" | "failure" | "killed"),
+    };
+
     RuntimeDisplayVm {
         code: code.to_string(),
         tone: tone.to_string(),
@@ -415,6 +421,7 @@ pub fn runtime_display_vm(
         terminal,
         resumable: (code == "paused" || code == "error-blocked") && resumable,
         reason_code,
+        blocking_error,
     }
 }
 
@@ -3092,7 +3099,8 @@ pub fn dynamic_acp_session_vm(
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
     let provider_pid_path = attempt_dir.join("provider.pid");
-    let cancelling = acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
+    let cancelling =
+        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -3347,7 +3355,8 @@ pub fn acp_session_vm(
     let provider_pid_path = app
         .paths
         .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
-    let cancelling = acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
+    let cancelling =
+        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -4244,13 +4253,14 @@ fn apply_stale_session_completion_fuse_common(
     if !is_acp_session_active_status(metadata_status) {
         return Ok(false);
     }
-    // Provider process is still alive — don't fuse.
-    if pid_path.exists() {
+    if pid_path.exists() && !node_completed {
         return Ok(false);
     }
-    // Process is dead. Fuse when the node itself is done OR the user requested cancel.
     if !node_completed && !is_cancel_requested(attempt_dir) {
         return Ok(false);
+    }
+    if node_completed && pid_path.exists() {
+        let _ = fs::remove_file(pid_path.as_std_path());
     }
     session["status"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
@@ -4602,8 +4612,30 @@ fn truncate_string(value: String, max_chars: usize) -> String {
 
 fn is_acp_session_active_status(status: &str) -> bool {
     matches!(
-        status.to_ascii_lowercase().as_str(),
-        "pending" | "running" | "in_progress" | "sending" | "cancelling" | "cancel_requested"
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
+    )
+}
+
+fn is_acp_session_terminal_status(status: &str) -> bool {
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "completed"
+            | "complete"
+            | "failed"
+            | "failure"
+            | "error"
+            | "killed"
+            | "cancelled"
+            | "canceled"
     )
 }
 
@@ -4613,6 +4645,7 @@ fn acp_cancel_request_in_progress(
     metadata_status: &str,
 ) -> bool {
     is_cancel_requested(attempt_dir)
+        && !is_acp_session_terminal_status(metadata_status)
         && (provider_pid_path.exists() || is_acp_session_active_status(metadata_status))
 }
 
@@ -5410,6 +5443,97 @@ mod tests {
     }
 
     #[test]
+    fn runtime_display_marks_workflow_failure_as_non_blocking() {
+        let failure = runtime_display_vm(Some("completed"), Some("failure"), false, None, false);
+        let error_blocked =
+            runtime_display_vm(Some("paused"), None, true, Some("error-blocked"), true);
+        let killed = runtime_display_vm(Some("completed"), Some("killed"), false, None, false);
+
+        assert_eq!(failure.tone, "danger");
+        assert!(!failure.blocking_error);
+        assert!(error_blocked.blocking_error);
+        assert!(killed.blocking_error);
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_ignores_pid_when_node_completed() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-completion-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        let mut session = json!({ "status": "running" });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
+                .unwrap();
+
+        assert!(fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert!(!pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_keeps_live_incomplete_node_running() {
+        let dir =
+            std::env::temp_dir().join(format!("gold-band-live-fuse-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        let mut session = json!({ "status": "running" });
+
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &attempt_dir,
+            &mut session,
+            false,
+        )
+        .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("running")
+        );
+        assert!(pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_leaves_terminal_session_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-terminal-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let mut session = json!({ "status": "failed" });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
+                .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("failed")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn cancel_requested_with_live_provider_stays_cancelling() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-cancel-status-test-{}",
@@ -5423,6 +5547,28 @@ mod tests {
             .unwrap();
 
         assert!(acp_cancel_request_in_progress(
+            &attempt_dir,
+            &pid_path,
+            "running"
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancel_requested_with_terminal_snapshot_does_not_stay_cancelling() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-terminal-cancel-status-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
+            .unwrap();
+
+        assert!(!acp_cancel_request_in_progress(
             &attempt_dir,
             &pid_path,
             "cancelled"

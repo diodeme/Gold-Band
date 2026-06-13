@@ -40,6 +40,19 @@ function activeSessionKey(session: {
   return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
 }
 
+function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
+  if (!session || !leaf || !session.cwd) return true;
+  const cwd = normalizeSessionPath(session.cwd);
+  const expected = leaf.outerNodeId && leaf.outerAttemptId
+    ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
+    : normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.nodeId}/${leaf.attemptId}`);
+  return cwd.endsWith(expected);
+}
+
+function normalizeSessionPath(path: string) {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+}
+
 interface ConversationRunPageProps {
   run: ConversationRunVm;
   appConfig: AppConfigVm;
@@ -47,7 +60,7 @@ interface ConversationRunPageProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string) => Promise<void>;
-  onSelectSession: (leaf: ConversationSessionLeafVm) => void;
+  onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onSessionStopped: () => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   onContinueRun: (promptId?: string | null, prompt?: string | null) => Promise<void>;
@@ -169,20 +182,16 @@ export function ConversationRunPage({
         if (node.nodeId === nodeId && node.attempts.length > 0) {
           const leaf = node.attempts[node.attempts.length - 1];
           const isActive = activeSessionKeys.includes(leafKey(leaf));
-          const shouldFollow = shouldEnableConversationAutoFollow(
-            isActive,
-            isAtBottomRef.current,
-          );
-          manualAutoFollowDisabledRef.current = !shouldFollow;
+          manualAutoFollowDisabledRef.current = true;
           debugConversationRunPage('workflow graph requested session switch', {
             runId: run.runId,
             nextSelectedSessionKey: leafKey(leaf),
             nextSessionTone: leaf.runtimeDisplay?.tone,
             isActiveSession: isActive,
             atBottom: isAtBottomRef.current,
-            shouldFollow,
+            shouldFollow: false,
           });
-          onAutoFollowChange?.(shouldFollow);
+          onAutoFollowChange?.(false);
           onSelectSession(leaf);
           setWorkflowSheet({ open: false, mode: workflowSheet.mode });
           return;
@@ -211,20 +220,24 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+    const selectedSessionActive = Boolean(selectedKey && activeSessionKeys.includes(selectedKey));
+    const shouldFollow = atBottom && selectedSessionActive;
+    manualAutoFollowDisabledRef.current = !shouldFollow;
     debugConversationRunPage('chat bottom state changed', {
       runId: run.runId,
       atBottom,
+      selectedSessionActive,
       manualAutoFollowDisabled: manualAutoFollowDisabledRef.current,
-      selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+      selectedSessionKey: selectedKey,
+      shouldFollow,
     });
-    if (!manualAutoFollowDisabledRef.current) {
-      onAutoFollowChange?.(atBottom);
-    }
-  }, [onAutoFollowChange, run.runId, run.sessionTree.selectedSessionKey]);
+    onAutoFollowChange?.(shouldFollow);
+  }, [activeSessionKeys, onAutoFollowChange, run.runId, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
-  const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm) => {
+  const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
     const isActive = activeSessionKeys.includes(leafKey(leaf));
-    const shouldFollow = shouldEnableConversationAutoFollow(
+    const shouldFollow = followActive && shouldEnableConversationAutoFollow(
       isActive,
       isAtBottomRef.current,
     );
@@ -236,10 +249,11 @@ export function ConversationRunPage({
       nextSessionTone: leaf.runtimeDisplay?.tone,
       isActiveSession: isActive,
       atBottom: isAtBottomRef.current,
+      followActive,
       shouldFollow,
     });
     onAutoFollowChange?.(shouldFollow);
-    onSelectSession(leaf);
+    onSelectSession(leaf, shouldFollow);
   }, [activeSessionKeys, onAutoFollowChange, onSelectSession, run.runId, run.sessionTree.selectedSessionKey]);
 
   const handleSessionStopped = useCallback(() => {
@@ -254,14 +268,16 @@ export function ConversationRunPage({
     }
   };
 
+  const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
+  const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
+  const selectedArtifacts = selectedSessionMatchesLeaf ? run.artifacts : [];
+  const selectedAttachments = selectedSessionMatchesLeaf ? run.attachments : [];
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
-  const selectedSessionErrorDetails = run.selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionWaitingForUserInput = selectedSessionPauseReason === 'waiting-for-user-input';
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
-  const selectedSessionFailed = selectedSessionDisplay?.tone === 'danger'
-    && selectedSessionDisplay?.terminal;
-  const selectedRuntimeErrorMessage = selectedSessionFailed || selectedSessionErrorBlocked
+  const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
     ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
     : null;
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
@@ -334,7 +350,7 @@ export function ConversationRunPage({
                   current: true,
                   artifactCount: 0,
                   attachmentCount: 0,
-                })}
+                }, true)}
               >
                 <span className="font-medium">{session.pathLabel}</span>
                 {session.runtimeDisplay.tone === 'running' ? (
@@ -352,7 +368,7 @@ export function ConversationRunPage({
           <ACPChatDialog
             ref={chatDialogRef}
             key={selectedSessionKey ?? 'empty'}
-            session={run.selectedSession}
+            session={selectedSession}
             taskId={run.taskId}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
@@ -364,8 +380,8 @@ export function ConversationRunPage({
             onSessionStopped={handleSessionStopped}
             onAtBottomChange={handleAtBottomChange}
             runtimeComposerContext={runtimeComposerContext}
-            artifacts={run.artifacts}
-            attachments={run.attachments}
+            artifacts={selectedArtifacts}
+            attachments={selectedAttachments}
             usageCompact
           />
         ) : (
@@ -378,8 +394,8 @@ export function ConversationRunPage({
 
       {/* Assets bar — inside flex container so it's visible */}
       <ConversationAssetsBar
-        artifacts={run.artifacts}
-        attachments={run.attachments}
+        artifacts={selectedArtifacts}
+        attachments={selectedAttachments}
         onOpenArtifact={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
         onOpenAttachment={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
       />

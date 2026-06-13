@@ -83,6 +83,8 @@ import {
   deriveAcpRuntimeComposerState,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
+  isSessionCompletedStatus,
+  isSessionTerminalStatus,
 } from "@/lib/acp-runtime-composer-state";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
@@ -514,9 +516,11 @@ export const ACPChatDialog = forwardRef<
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const preservingScrollRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
   const pinToBottomRef = useRef(true);
   const cancelRequestedRef = useRef(false);
   const awaitTerminalStopRef = useRef(false);
+  const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
@@ -623,10 +627,12 @@ export const ACPChatDialog = forwardRef<
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
     preservingScrollRef.current = false;
+    programmaticScrollRef.current = false;
     prependAnchorRef.current = null;
     pinToBottomRef.current = true;
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
+    terminalSessionNotifiedRef.current = false;
     latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
     setCanvasMode("chat");
@@ -646,13 +652,15 @@ export const ACPChatDialog = forwardRef<
   }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
-  const runtimeActive = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const liveSessionShellStatus = runtimeComposerContext?.lifecycle?.acp.status
+    ?? (runtimeActiveFromContext ? "running" : "completed");
   const liveSessionShell = useMemo(
     () =>
-      loadedEvents.length > 0 || runtimeActive
-        ? createLiveAcpSessionShell(loadedEvents)
+      loadedEvents.length > 0 || runtimeActiveFromContext
+        ? createLiveAcpSessionShell(loadedEvents, liveSessionShellStatus)
         : null,
-    [loadedEvents, runtimeActive],
+    [liveSessionShellStatus, loadedEvents, runtimeActiveFromContext],
   );
   const visibleSession = useMemo(
     () =>
@@ -669,9 +677,12 @@ export const ACPChatDialog = forwardRef<
     [visibleSession, optimisticEvents],
   );
   const effectiveEvents = effective?.events ?? [];
+  const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
-    !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+    !hasResponseAfterActiveTurn;
+  const localSubmissionPending = sending || waitingForOptimisticPrompt;
+  const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
   const pendingPermission =
     effective?.pendingPermissions?.find(
       (request) => !dismissedPermissionIds.has(request.requestId),
@@ -815,7 +826,7 @@ export const ACPChatDialog = forwardRef<
     : runtimeComposerContext?.lifecycle;
   const composerLatestEvent = timeline.at(-1) ?? null;
   const turnAccepted = Boolean(activeTurnStartedAt);
-  const hasTurnResponse = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+  const hasTurnResponse = hasResponseAfterActiveTurn;
   const composerState = deriveAcpRuntimeComposerState({
     lifecycle: localLifecycle,
     legacyRuntimeStatus: runtimeStopAccepted ? "paused" : runtimeComposerContext?.runtimeStatus,
@@ -881,7 +892,7 @@ export const ACPChatDialog = forwardRef<
   const lastEvent = effectiveEvents.at(-1);
 
   useEffect(() => {
-    debugAcpComposer("composer stop state", {
+    const payload = {
       taskId,
       runId,
       roundId,
@@ -889,10 +900,28 @@ export const ACPChatDialog = forwardRef<
       attemptId,
       outerNodeId: outerNodeId ?? null,
       outerAttemptId: outerAttemptId ?? null,
+      propSessionStatus: session?.status ?? null,
+      currentSessionStatus: currentSession?.status ?? null,
+      baseSessionStatus: baseSession?.status ?? null,
+      visibleSessionStatus: visibleSession?.status ?? null,
+      effectiveSessionStatus: effective?.status ?? null,
+      effectiveSessionId: effective?.sessionId ?? null,
+      effectiveEventCount: effectiveEvents.length,
       runtimeStatus: runtimeComposerContext?.runtimeStatus ?? null,
+      runtimeActiveFromContext,
+      runtimeActive,
       runtimeDisplay: runtimeComposerContext?.runtimeDisplay?.code ?? null,
+      runtimeDisplayTerminal: runtimeComposerContext?.runtimeDisplay?.terminal ?? null,
+      lifecycleRuntimeStatus: runtimeComposerContext?.lifecycle?.runtime.status ?? null,
+      lifecycleRuntimeActive: runtimeComposerContext?.lifecycle?.runtime.active ?? null,
+      lifecycleRuntimeContinuable: runtimeComposerContext?.lifecycle?.runtime.continuable ?? null,
+      lifecycleAcpStatus: runtimeComposerContext?.lifecycle?.acp.status ?? null,
+      lifecycleAcpActive: runtimeComposerContext?.lifecycle?.acp.active ?? null,
+      lifecycleAcpTerminal: runtimeComposerContext?.lifecycle?.acp.terminal ?? null,
       lifecycleContinueKind: runtimeComposerContext?.lifecycle?.continueKind ?? null,
-      sessionStatus: effective?.status ?? null,
+      hasResponseAfterActiveTurn,
+      waitingForOptimisticPrompt,
+      localSubmissionPending,
       mode: composerState.mode,
       submitTarget: composerState.submitTarget,
       cancelling,
@@ -901,35 +930,72 @@ export const ACPChatDialog = forwardRef<
       awaitingResponse,
       acpSessionActive,
       sessionActive,
+      composerSessionActive: composerState.sessionActive,
+      composerAcpActive: composerState.acpActive,
+      composerRuntimeActive: composerState.runtimeActive,
+      composerStatusActive,
+      composerProcessingKind,
+      showComposerStatus,
       composerInputDisabled,
+      canStopSession,
       canSubmitPrompt,
       placeholder: composerPlaceholder,
       inputHint: composerInputHint,
-    });
+    };
+    debugAcpComposer("composer state", payload);
+    if (isSessionCompletedStatus(effective?.status) && (runtimeActiveFromContext || sessionActive || composerStatusActive || awaitingResponse)) {
+      console.warn("[gb-acp] completed session still active", payload);
+    }
   }, [
     acpSessionActive,
     attemptId,
     awaitingResponse,
+    baseSession?.status,
+    canStopSession,
     canSubmitPrompt,
     cancelling,
     composerInputDisabled,
     composerInputHint,
     composerPlaceholder,
-    effective?.status,
+    composerProcessingKind,
+    composerSessionSeconds,
+    composerState.acpActive,
     composerState.mode,
+    composerState.runtimeActive,
+    composerState.sessionActive,
     composerState.submitTarget,
+    composerStatusActive,
+    currentSession?.status,
+    effective?.sessionId,
+    effective?.status,
+    effectiveEvents.length,
+    hasResponseAfterActiveTurn,
+    localSubmissionPending,
     nodeId,
     outerAttemptId,
     outerNodeId,
     roundId,
     runId,
+    runtimeActive,
+    runtimeActiveFromContext,
+    runtimeComposerContext?.lifecycle?.acp.active,
+    runtimeComposerContext?.lifecycle?.acp.status,
+    runtimeComposerContext?.lifecycle?.acp.terminal,
     runtimeComposerContext?.lifecycle?.continueKind,
+    runtimeComposerContext?.lifecycle?.runtime.active,
+    runtimeComposerContext?.lifecycle?.runtime.continuable,
+    runtimeComposerContext?.lifecycle?.runtime.status,
     runtimeComposerContext?.runtimeDisplay?.code,
+    runtimeComposerContext?.runtimeDisplay?.terminal,
     runtimeComposerContext?.runtimeStatus,
+    session?.status,
     sessionActive,
+    showComposerStatus,
     stopCommandPending,
     stopInProgress,
     taskId,
+    visibleSession?.status,
+    waitingForOptimisticPrompt,
   ]);
 
   const normalizeSessionUpdate = (updated: AcpSessionVm | null) =>
@@ -944,7 +1010,23 @@ export const ACPChatDialog = forwardRef<
   const applySessionUpdate = (updated: AcpSessionVm | null) => {
     const normalized = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
-    if (sessionsEquivalent(previous, normalized)) return;
+    const equivalent = sessionsEquivalent(previous, normalized);
+    debugAcpComposer("apply session update", {
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId: outerNodeId ?? null,
+      outerAttemptId: outerAttemptId ?? null,
+      previousStatus: previous?.status ?? null,
+      incomingStatus: updated?.status ?? null,
+      normalizedStatus: normalized?.status ?? null,
+      previousSessionId: previous?.sessionId ?? null,
+      normalizedSessionId: normalized?.sessionId ?? null,
+      equivalent,
+    });
+    if (equivalent) return;
     latestSessionRef.current = normalized;
     setCurrentSession(normalized);
     if (!normalized) return;
@@ -1058,7 +1140,13 @@ export const ACPChatDialog = forwardRef<
     if (pinToBottomRef.current) {
       requestAnimationFrame(() => {
         const el = scrollerElementRef.current;
-        if (el && pinToBottomRef.current) el.scrollTop = el.scrollHeight;
+        if (el && pinToBottomRef.current) {
+          programmaticScrollRef.current = true;
+          el.scrollTop = el.scrollHeight;
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+          });
+        }
       });
     }
   }, [timeline]);
@@ -1095,6 +1183,20 @@ export const ACPChatDialog = forwardRef<
         if (event.event) enqueueLiveEventUpdate(event.event);
         else {
           flushPendingLiveEvents();
+          debugAcpComposer("live session update received", {
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            outerNodeId: outerNodeId ?? null,
+            outerAttemptId: outerAttemptId ?? null,
+            incomingStatus: event.session?.status ?? null,
+            incomingSessionId: event.session?.sessionId ?? null,
+            currentStatus: latestSessionRef.current?.status ?? null,
+            cancelling: cancelRequestedRef.current,
+            awaitTerminalStop: awaitTerminalStopRef.current,
+          });
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
@@ -1156,11 +1258,48 @@ export const ACPChatDialog = forwardRef<
   }, [runtimeComposerContext?.lifecycle?.runtime.active, runtimeComposerContext?.runtimeStatus, runtimeStopAccepted]);
 
   useEffect(() => {
-    if (stopCommandPending || sending || waitingForOptimisticPrompt) return;
-    if (!awaitingResponse && !cancelling) return;
-    if (cancelling && awaitTerminalStopRef.current && acpSessionActive) return;
-    if (cancelling && acpSessionActive) return;
-    if (!cancelling && sessionActive) return;
+    const terminalSession = isSessionTerminalStatus(effective?.status);
+    const payload = {
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId: outerNodeId ?? null,
+      outerAttemptId: outerAttemptId ?? null,
+      effectiveStatus: effective?.status ?? null,
+      terminalSession,
+      stopCommandPending,
+      sending,
+      waitingForOptimisticPrompt,
+      awaitingResponse,
+      cancelling,
+      acpSessionActive,
+      sessionActive,
+      awaitTerminalStop: awaitTerminalStopRef.current,
+      cancelRequested: cancelRequestedRef.current,
+    };
+    if (stopCommandPending || sending || waitingForOptimisticPrompt) {
+      debugAcpComposer("stop cleanup skipped: command or submit pending", payload);
+      return;
+    }
+    if (!awaitingResponse && !cancelling) {
+      debugAcpComposer("stop cleanup skipped: no local stop state", payload);
+      return;
+    }
+    if (!terminalSession && cancelling && awaitTerminalStopRef.current && acpSessionActive) {
+      debugAcpComposer("stop cleanup skipped: waiting terminal session", payload);
+      return;
+    }
+    if (!terminalSession && cancelling && acpSessionActive) {
+      debugAcpComposer("stop cleanup skipped: acp still active", payload);
+      return;
+    }
+    if (!terminalSession && !cancelling && sessionActive) {
+      debugAcpComposer("stop cleanup skipped: session still active", payload);
+      return;
+    }
+    debugAcpComposer("stop cleanup accepted", payload);
     setAwaitingResponse(false);
     setCancelling(false);
     awaitTerminalStopRef.current = false;
@@ -1169,15 +1308,31 @@ export const ACPChatDialog = forwardRef<
     if (shouldNotifyStopped) onSessionStopped?.();
   }, [
     acpSessionActive,
+    attemptId,
     awaitingResponse,
     cancelling,
     effective?.status,
+    nodeId,
     onSessionStopped,
+    outerAttemptId,
+    outerNodeId,
+    roundId,
+    runId,
     sending,
     sessionActive,
     stopCommandPending,
+    taskId,
     waitingForOptimisticPrompt,
   ]);
+
+  useEffect(() => {
+    if (terminalSessionNotifiedRef.current) return;
+    if (!isSessionCompletedStatus(effective?.status)) return;
+    if (!runtimeActiveFromContext && !awaitingResponse && !cancelling) return;
+    if (localSubmissionPending) return;
+    terminalSessionNotifiedRef.current = true;
+    onSessionStopped?.();
+  }, [awaitingResponse, cancelling, effective?.status, localSubmissionPending, onSessionStopped, runtimeActiveFromContext]);
 
   useEffect(() => {
     const acceptedPrompt = findMatchingGoldBandUserPrompt(
@@ -1624,12 +1779,10 @@ export const ACPChatDialog = forwardRef<
     if (scroller && !preservingScrollRef.current) {
       const distanceFromBottom =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      // Release pin generously — any scroll away from bottom should stop auto-follow
-      if (distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
+      if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
         pinToBottomRef.current = false;
       }
-      // Re-engage pin only at exact bottom, so mid-scroll users don't get snapped
-      if (distanceFromBottom <= 1) {
+      if (distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX) {
         pinToBottomRef.current = true;
       }
     }
@@ -4450,13 +4603,13 @@ function acpEventKey(event: AcpUiEventVm) {
   return `${attemptId}:${event.kind}:${event.id}`;
 }
 
-function createLiveAcpSessionShell(events: AcpUiEventVm[]): AcpSessionVm {
+function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
   return {
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
     provider: "acp",
-    status: "running",
+    status,
     sessionStartedAt: first?.startedAt ?? first?.timestamp ?? null,
     sessionUpdatedAt: last?.endedAt ?? last?.timestamp ?? null,
     restored: false,

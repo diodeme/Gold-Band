@@ -26,10 +26,16 @@ export function conversationSessionKeyFromParts(parts: {
   return `${parts.roundId}/${parts.nodeId}/${parts.attemptId}`;
 }
 
+export interface ConversationRunSnapshotMergeOptions {
+  selectedSessionKey?: string | null;
+  preserveSelectedSession?: boolean;
+}
+
 export function mergeConversationRunSnapshot(
   current: ConversationRunVm | null,
   incoming: ConversationRunVm,
-  _source: ConversationRunSnapshotSource,
+  source: ConversationRunSnapshotSource,
+  options: ConversationRunSnapshotMergeOptions = {},
 ): ConversationRunVm {
   if (!current || current.runId !== incoming.runId || current.taskId !== incoming.taskId) {
     return incoming;
@@ -37,7 +43,26 @@ export function mergeConversationRunSnapshot(
 
   const currentKey = current.sessionTree.selectedSessionKey ?? null;
   const incomingKey = incoming.sessionTree.selectedSessionKey ?? null;
-  const selectedKey = incomingKey ?? currentKey;
+  const preferredKey = options.selectedSessionKey ?? null;
+  const canPreserveSelection = options.preserveSelectedSession && source !== 'create' && source !== 'rerun';
+  const validPreferredKey = preferredKey && findConversationLeafByKey(incoming.sessionTree, preferredKey)
+    ? preferredKey
+    : null;
+  const preservedKey = canPreserveSelection && currentKey && findConversationLeafByKey(incoming.sessionTree, currentKey)
+    ? currentKey
+    : null;
+  const validIncomingKey = incomingKey && findConversationLeafByKey(incoming.sessionTree, incomingKey)
+    ? incomingKey
+    : null;
+  const validCurrentKey = currentKey && findConversationLeafByKey(incoming.sessionTree, currentKey)
+    ? currentKey
+    : null;
+  const defaultIncomingLeaf = findDefaultConversationLeaf(incoming.sessionTree);
+  const selectedKey = validPreferredKey
+    ?? preservedKey
+    ?? validIncomingKey
+    ?? validCurrentKey
+    ?? (defaultIncomingLeaf ? conversationSessionKeyFromParts(defaultIncomingLeaf) : null);
   const currentLeaf = findConversationLeafByKey(current.sessionTree, selectedKey) ?? selectedLeafForRun(current);
   let merged: ConversationRunVm = {
     ...incoming,
@@ -47,6 +72,28 @@ export function mergeConversationRunSnapshot(
     },
   };
   const incomingLeaf = findConversationLeafByKey(merged.sessionTree, selectedKey);
+  if (selectedKey !== validIncomingKey) {
+    merged = selectedKey && selectedKey === currentKey && current.selectedSession
+      ? {
+          ...merged,
+          selectedSession: current.selectedSession,
+          artifacts: current.artifacts,
+          attachments: current.attachments,
+        }
+      : {
+          ...merged,
+          selectedSession: null,
+          artifacts: [],
+          attachments: [],
+        };
+  } else if (!merged.selectedSession && selectedKey && selectedKey === currentKey && current.selectedSession) {
+    merged = {
+      ...merged,
+      selectedSession: current.selectedSession,
+      artifacts: current.artifacts,
+      attachments: current.attachments,
+    };
+  }
   if (
     selectedKey &&
     currentLeaf &&

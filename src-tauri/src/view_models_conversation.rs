@@ -5,18 +5,18 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_vm, dynamic_acp_session_vm,
-    round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    acp_session_vm, dynamic_acp_session_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm,
 };
+use gold_band::app::is_run_continuable;
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
-use gold_band::app::is_run_continuable;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
-    AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
-    EdgeOutcome, NodeDsl, WorkflowDsl,
+    AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, EdgeDsl,
+    EdgeOutcome, NodeDsl, WorkflowDsl, END_NODE,
 };
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::storage::{read_json, write_json};
@@ -719,7 +719,13 @@ fn normalize_lifecycle_code(value: &str) -> String {
 fn is_active_session_status(status: &str) -> bool {
     matches!(
         normalize_lifecycle_code(status).as_str(),
-        "pending" | "running" | "in-progress" | "active" | "sending" | "cancelling" | "cancel-requested"
+        "pending"
+            | "running"
+            | "in-progress"
+            | "active"
+            | "sending"
+            | "cancelling"
+            | "cancel-requested"
     )
 }
 
@@ -733,7 +739,14 @@ fn is_stopping_session_status(status: &str) -> bool {
 fn is_terminal_session_status(status: &str) -> bool {
     matches!(
         normalize_lifecycle_code(status).as_str(),
-        "completed" | "complete" | "cancelled" | "canceled" | "failed" | "failure" | "error" | "killed"
+        "completed"
+            | "complete"
+            | "cancelled"
+            | "canceled"
+            | "failed"
+            | "failure"
+            | "error"
+            | "killed"
     )
 }
 
@@ -771,31 +784,57 @@ fn derive_conversation_attempt_lifecycle(
         .map(str::trim)
         .filter(|status| !status.is_empty() && !status.eq_ignore_ascii_case("unknown"))
         .map(str::to_string);
+    let normalized_runtime_status = normalize_lifecycle_code(runtime_status);
     let runtime_active = is_active_session_status(runtime_status);
-    let acp_active = session_status
-        .as_deref()
-        .is_some_and(is_active_session_status);
     let acp_stopping = session_status
         .as_deref()
         .is_some_and(is_stopping_session_status);
-    let acp_terminal = session_status
-        .as_deref()
-        .is_some_and(is_terminal_session_status);
+    let runtime_terminal = !runtime_active
+        && !acp_stopping
+        && matches!(
+            normalized_runtime_status.as_str(),
+            "completed"
+                | "complete"
+                | "failed"
+                | "failure"
+                | "error"
+                | "killed"
+                | "cancelled"
+                | "canceled"
+        );
+    let suppress_stale_acp_active = runtime_terminal && !run_resumable;
+    let acp_active = !suppress_stale_acp_active
+        && session_status
+            .as_deref()
+            .is_some_and(is_active_session_status);
+    let acp_terminal = suppress_stale_acp_active
+        || session_status
+            .as_deref()
+            .is_some_and(is_terminal_session_status);
     let runtime_continue_pause = run_resumable
         && normalize_lifecycle_code(runtime_status) == "paused"
         && (is_runtime_continue_pause_reason(pause_reason)
-            || matches!(pause_reason.map(normalize_lifecycle_code).as_deref(), Some("error-blocked")));
+            || matches!(
+                pause_reason.map(normalize_lifecycle_code).as_deref(),
+                Some("error-blocked")
+            ));
 
     let display_status = if acp_stopping {
-        session_status.clone().unwrap_or_else(|| "cancelling".to_string())
-    } else if runtime_active {
+        session_status
+            .clone()
+            .unwrap_or_else(|| "cancelling".to_string())
+    } else if runtime_active || suppress_stale_acp_active {
         runtime_status.to_string()
     } else if acp_active {
-        session_status.clone().unwrap_or_else(|| runtime_status.to_string())
+        session_status
+            .clone()
+            .unwrap_or_else(|| runtime_status.to_string())
     } else if runtime_continue_pause {
         runtime_status.to_string()
     } else {
-        session_status.clone().unwrap_or_else(|| runtime_status.to_string())
+        session_status
+            .clone()
+            .unwrap_or_else(|| runtime_status.to_string())
     };
     let runtime_display = runtime_display_vm(
         Some(&display_status),
@@ -2092,7 +2131,10 @@ pub fn switch_conversation_session_vm(
 
 #[cfg(test)]
 mod tests {
-    use super::{conversation_status_from_session, derive_conversation_attempt_lifecycle, lifecycle_is_active};
+    use super::{
+        conversation_status_from_session, derive_conversation_attempt_lifecycle,
+        lifecycle_is_active,
+    };
 
     #[test]
     fn paused_runtime_keeps_paused_status_after_process_interrupt() {
@@ -2150,6 +2192,42 @@ mod tests {
         assert!(lifecycle.acp.active);
         assert!(lifecycle.acp.stopping);
         assert!(lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn completed_runtime_suppresses_stale_acp_running() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("running"),
+            "completed",
+            Some("success"),
+            false,
+            None,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "completed");
+        assert!(!lifecycle.runtime.active);
+        assert!(!lifecycle.acp.active);
+        assert!(lifecycle.acp.terminal);
+        assert!(!lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn workflow_failure_runtime_suppresses_stale_acp_running() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("running"),
+            "completed",
+            Some("failure"),
+            false,
+            None,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "completed");
+        assert_eq!(lifecycle.runtime_display.tone, "danger");
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert!(!lifecycle.acp.active);
+        assert!(!lifecycle_is_active(&lifecycle));
     }
 
     #[test]

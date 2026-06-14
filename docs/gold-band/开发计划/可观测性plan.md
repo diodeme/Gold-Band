@@ -31,6 +31,9 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
   - `runtime.log`（当前活动日志）
   - `runtime.yyyy-mm-dd.log` 或按小时/日期滚动出来的归档文件
 - 系统日志只记录 runtime / CLI / provider / worker 的内部行为与异常
+- 桌面端启动时先 best-effort 预创建 `runtime.log`，不能等到第一条业务 tracing 事件出现后才生成；这样首次启动、未选 workspace、目录选择器卡死等问题也能留下排障入口
+- workspace 选择相关命令需要补结构化日志：打开目录选择器、取消、返回路径、切换完成
+- 所有桌面端主线程目录选择链路统一改用非阻塞 dialog API，并通过异步回调回传结果；`blocking_*` 只允许出现在非 UI 主线程场景
 - run 内继续记录：
   - `run-progress.json`
   - `events.jsonl`

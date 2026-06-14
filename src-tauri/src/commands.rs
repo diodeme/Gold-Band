@@ -22,7 +22,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -35,7 +35,8 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, FileDialogBuilder, FilePath};
+use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
@@ -59,6 +60,32 @@ const ACP_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
+
+type DialogCallback<T> = Box<dyn FnOnce(Option<T>) + Send>;
+
+pub(crate) async fn await_dialog_result<T, F>(register: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce(DialogCallback<T>),
+{
+    let (tx, rx) = mpsc::sync_channel(1);
+    register(Box::new(move |selection| {
+        let _ = tx.send(selection);
+    }));
+    tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .ok()
+        .flatten()
+}
+
+pub(crate) async fn pick_folder_result<R: tauri::Runtime>(
+    dialog: FileDialogBuilder<R>,
+) -> Option<FilePath> {
+    await_dialog_result(|callback| {
+        dialog.pick_folder(move |path| callback(path));
+    })
+    .await
+}
 
 fn resolve_acp_attempt_dir(
     app: &gold_band::app::App,
@@ -406,17 +433,20 @@ pub fn delete_profile(
 }
 
 #[tauri::command]
-pub fn choose_workspace(
+pub async fn choose_workspace(
     app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> CommandResult<Option<AppBootstrapVm>> {
     let current = state.context().map_err(command_error)?.repo_root;
-    let Some(path) = app
-        .dialog()
-        .file()
-        .set_directory(current.as_std_path())
-        .blocking_pick_folder()
+    info!(current_repo_root = %current, "opening workspace picker");
+    let Some(path) = pick_folder_result(
+        app.dialog()
+            .file()
+            .set_directory(current.as_std_path()),
+    )
+    .await
     else {
+        info!(current_repo_root = %current, "workspace picker cancelled");
         return Ok(None);
     };
     let path = path
@@ -424,7 +454,13 @@ pub fn choose_workspace(
         .map_err(|_| CommandErrorVm::new("workspace.path-resolve-failed", serde_json::json!({})))?;
     let repo_root = Utf8PathBuf::from_path_buf(path)
         .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
+    info!(selected_repo_root = %repo_root, "workspace picker returned selection");
     let context = state.set_workspace(repo_root).map_err(command_error)?;
+    info!(
+        active_repo_root = %context.repo_root,
+        recent_workspace_count = context.recent_workspaces.len(),
+        "workspace selection applied"
+    );
     let update_status = state.update_status().map_err(command_error)?;
     Ok(Some(bootstrap_vm(
         &context.app(),
@@ -441,8 +477,14 @@ pub fn select_recent_workspace(
     state: State<'_, DesktopState>,
     workspace: String,
 ) -> CommandResult<AppBootstrapVm> {
+    info!(selected_repo_root = %workspace, "switching to recent workspace");
     let repo_root = Utf8PathBuf::from(workspace);
     let context = state.set_workspace(repo_root).map_err(command_error)?;
+    info!(
+        active_repo_root = %context.repo_root,
+        recent_workspace_count = context.recent_workspaces.len(),
+        "recent workspace selection applied"
+    );
     let update_status = state.update_status().map_err(command_error)?;
     Ok(bootstrap_vm(
         &context.app(),
@@ -2735,4 +2777,24 @@ pub fn open_in_file_manager(
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn await_dialog_result_returns_selected_value() {
+        let selected = tauri::async_runtime::block_on(super::await_dialog_result(|callback| {
+            callback(Some(String::from("/tmp/workspace")));
+        }));
+        assert_eq!(selected.as_deref(), Some("/tmp/workspace"));
+    }
+
+    #[test]
+    fn await_dialog_result_returns_none_for_cancelled_picker() {
+        let selected =
+            tauri::async_runtime::block_on(super::await_dialog_result::<String, _>(|callback| {
+                callback(None);
+            }));
+        assert_eq!(selected, None);
+    }
 }

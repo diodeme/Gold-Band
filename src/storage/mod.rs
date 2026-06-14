@@ -741,7 +741,12 @@ fn project_id(repo_root: &Utf8Path) -> String {
             id.push('-');
         }
     }
-    id.trim_matches('-').to_string()
+    let trimmed = id.trim_matches('-');
+    if trimmed.is_empty() {
+        "root".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
@@ -1003,5 +1008,23 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(after, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_workspace_uses_stable_non_empty_project_id() {
+        let temp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
+        let paths =
+            GoldBandPaths::new_with_path_config(Utf8PathBuf::from("/"), DEFAULT_STORAGE_PATH_CONFIG);
+
+        assert_eq!(paths.project_id, "root");
+        assert!(
+            paths
+                .runtime_log_file()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/projects/root/logs/runtime.log")
+        );
     }
 }

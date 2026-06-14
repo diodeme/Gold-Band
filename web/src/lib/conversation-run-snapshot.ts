@@ -56,6 +56,42 @@ export function applyConversationSelectedSessionSnapshot(
   };
 }
 
+export function applyConversationBackgroundSessionRuntimeSnapshot(
+  current: ConversationRunVm | null,
+  snapshot: {
+    taskId: string;
+    runId: string;
+    roundId: string;
+    nodeId: string;
+    attemptId: string;
+    outerNodeId?: string | null;
+    outerAttemptId?: string | null;
+    session?: AcpSessionVm | null;
+  },
+): ConversationRunVm | null {
+  if (!current || !snapshot.session) return current;
+  if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
+  const snapshotKey = conversationSessionKeyFromParts(snapshot);
+  if (current.sessionTree.selectedSessionKey === snapshotKey) return current;
+  const currentLeaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
+  if (!currentLeaf) return current;
+
+  const nextLeaf = mergeLeafRuntimeSession(currentLeaf, snapshot.session);
+  const leafChanged = nextLeaf !== currentLeaf;
+  const nextActiveSessions = isConversationActiveLeaf(nextLeaf)
+    ? upsertActiveSession(current.activeSessions, nextLeaf)
+    : current.activeSessions;
+  if (!leafChanged && nextActiveSessions === current.activeSessions) return current;
+
+  return {
+    ...current,
+    sessionTree: leafChanged
+      ? mapConversationTreeLeaf(current.sessionTree, snapshotKey, () => nextLeaf)
+      : current.sessionTree,
+    activeSessions: nextActiveSessions,
+  };
+}
+
 export function mergeConversationRunSnapshot(
   current: ConversationRunVm | null,
   incoming: ConversationRunVm,
@@ -275,4 +311,61 @@ function activeSessionFromLeaf(leaf: ConversationSessionLeafVm): ConversationRun
     sessionId: leaf.sessionId,
     startedAt: leaf.startedAt,
   };
+}
+
+function mergeLeafRuntimeSession(leaf: ConversationSessionLeafVm, session: AcpSessionVm) {
+  const nextStatus = isConversationActiveStatus(session.status) &&
+    !isConversationActiveStatus(leaf.status) &&
+    !isConversationTerminalLeafStatus(leaf.status)
+    ? session.status
+    : leaf.status;
+  const nextSessionId = session.sessionId ?? leaf.sessionId ?? null;
+  const nextStartedAt = session.sessionStartedAt ?? leaf.startedAt ?? null;
+  if (
+    nextStatus === leaf.status &&
+    nextSessionId === (leaf.sessionId ?? null) &&
+    nextStartedAt === (leaf.startedAt ?? null)
+  ) {
+    return leaf;
+  }
+  return {
+    ...leaf,
+    status: nextStatus,
+    sessionId: nextSessionId,
+    startedAt: nextStartedAt,
+  };
+}
+
+function isConversationTerminalLeafStatus(status?: string | null) {
+  return ['completed', 'complete', 'success', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(
+    status?.trim().toLowerCase().replace(/_/g, '-') ?? '',
+  );
+}
+
+function upsertActiveSession(
+  current: ConversationRunVm['activeSessions'],
+  leaf: ConversationSessionLeafVm,
+): ConversationRunVm['activeSessions'] {
+  const next = activeSessionFromLeaf(leaf);
+  const index = current.findIndex((item) => conversationSessionKeyFromParts(item) === conversationSessionKeyFromParts(leaf));
+  if (index < 0) return [...current, next];
+  if (sameActiveSession(current[index], next)) return current;
+  return current.map((item, itemIndex) => (itemIndex === index ? next : item));
+}
+
+function sameActiveSession(
+  left: ConversationRunVm['activeSessions'][number],
+  right: ConversationRunVm['activeSessions'][number],
+) {
+  return left.roundId === right.roundId &&
+    left.nodeId === right.nodeId &&
+    left.attemptId === right.attemptId &&
+    (left.outerNodeId ?? null) === (right.outerNodeId ?? null) &&
+    (left.outerAttemptId ?? null) === (right.outerAttemptId ?? null) &&
+    left.pathLabel === right.pathLabel &&
+    left.status === right.status &&
+    (left.sessionId ?? null) === (right.sessionId ?? null) &&
+    (left.startedAt ?? null) === (right.startedAt ?? null) &&
+    left.runtimeDisplay === right.runtimeDisplay &&
+    left.lifecycle === right.lifecycle;
 }

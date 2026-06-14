@@ -39,12 +39,77 @@ export function isTerminalConversationSessionStatus(status?: string | null) {
   );
 }
 
+export function needsInteractiveConversationRunRefresh(status?: string | null, pendingPermissionCount = 0) {
+  const normalized = status?.trim().toLowerCase().replace(/_/g, '-') ?? '';
+  return pendingPermissionCount > 0
+    || ['paused', 'waiting', 'waiting-for-user-input', 'blocked', 'error-blocked'].includes(normalized);
+}
+
+export interface ConversationAcpRunUpdatePlan {
+  patchSelectedSession: boolean;
+  patchBackgroundSession: boolean;
+  queueRunRefresh: boolean;
+}
+
+export function planConversationAcpRunUpdate(args: {
+  treeHasSession: boolean;
+  alreadySelected: boolean;
+  hasSessionSnapshot: boolean;
+  hasLiveEvent: boolean;
+  sessionStatus?: string | null;
+  pendingPermissionCount?: number;
+}): ConversationAcpRunUpdatePlan {
+  const {
+    treeHasSession,
+    alreadySelected,
+    hasSessionSnapshot,
+    sessionStatus,
+    pendingPermissionCount = 0,
+  } = args;
+  const terminal = isTerminalConversationSessionStatus(sessionStatus);
+  const interactive = needsInteractiveConversationRunRefresh(sessionStatus, pendingPermissionCount);
+  if (!treeHasSession) {
+    return {
+      patchSelectedSession: false,
+      patchBackgroundSession: false,
+      queueRunRefresh: true,
+    };
+  }
+  if (alreadySelected) {
+    return {
+      patchSelectedSession: hasSessionSnapshot,
+      patchBackgroundSession: false,
+      queueRunRefresh: terminal || interactive,
+    };
+  }
+  if (!hasSessionSnapshot) {
+    return {
+      patchSelectedSession: false,
+      patchBackgroundSession: false,
+      queueRunRefresh: false,
+    };
+  }
+  return {
+    patchSelectedSession: false,
+    patchBackgroundSession: !terminal && !interactive,
+    queueRunRefresh: terminal || interactive,
+  };
+}
+
 export function shouldQueueConversationRunRefreshForAcpUpdate(args: {
   treeHasSession: boolean;
   alreadySelected: boolean;
+  hasSessionSnapshot?: boolean;
+  hasLiveEvent?: boolean;
   sessionStatus?: string | null;
+  pendingPermissionCount?: number;
 }) {
-  const { treeHasSession, alreadySelected, sessionStatus } = args;
-  if (!treeHasSession || !alreadySelected) return true;
-  return isTerminalConversationSessionStatus(sessionStatus);
+  return planConversationAcpRunUpdate({
+    treeHasSession: args.treeHasSession,
+    alreadySelected: args.alreadySelected,
+    hasSessionSnapshot: args.hasSessionSnapshot ?? Boolean(args.sessionStatus),
+    hasLiveEvent: args.hasLiveEvent ?? false,
+    sessionStatus: args.sessionStatus,
+    pendingPermissionCount: args.pendingPermissionCount,
+  }).queueRunRefresh;
 }

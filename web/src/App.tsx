@@ -52,13 +52,14 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import {
+  planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
-  shouldQueueConversationRunRefreshForAcpUpdate,
   type ConversationSessionFollowMode,
   type ConversationSessionFollowState,
 } from '@/lib/conversation-session-follow';
 import {
+  applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
   conversationSessionKeyFromParts,
   mergeConversationRunSnapshot,
@@ -419,19 +420,29 @@ export function App() {
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
       const alreadySelected = currentSelectedKey === sessionKey;
-      if (event.session && alreadySelected) {
+      const updatePlan = planConversationAcpRunUpdate({
+        treeHasSession,
+        alreadySelected,
+        hasSessionSnapshot: Boolean(event.session),
+        hasLiveEvent: Boolean(event.event),
+        sessionStatus: event.session?.status,
+        pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
+      });
+      if (event.session && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
           const patched = applyConversationSelectedSessionSnapshot(current, event);
           conversationRunRef.current = patched;
           return patched;
         });
       }
-      const shouldQueueRunRefresh = shouldQueueConversationRunRefreshForAcpUpdate({
-        treeHasSession,
-        alreadySelected,
-        sessionStatus: event.session?.status,
-      });
-      if (!shouldQueueRunRefresh) {
+      if (event.session && updatePlan.patchBackgroundSession) {
+        setConversationRun((current) => {
+          const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, event);
+          conversationRunRef.current = patched;
+          return patched;
+        });
+      }
+      if (!updatePlan.queueRunRefresh) {
         return;
       }
       const followState = conversationSessionFollowRef.current;

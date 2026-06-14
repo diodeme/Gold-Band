@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { applyConversationSelectedSessionSnapshot, mergeConversationRunSnapshot } from '@/lib/conversation-run-snapshot';
+import {
+  applyConversationBackgroundSessionRuntimeSnapshot,
+  applyConversationSelectedSessionSnapshot,
+  mergeConversationRunSnapshot,
+} from '@/lib/conversation-run-snapshot';
 import type { ConversationRunVm, ConversationSessionLeafVm, RuntimeDisplayVm } from '@/types';
 
 const runningDisplay: RuntimeDisplayVm = {
@@ -166,6 +170,122 @@ describe('applyConversationSelectedSessionSnapshot', () => {
 
     expect(patched?.selectedSession?.sessionId).toBe('dev-session');
     expect(patched?.selectedSession?.status).toBe('cancelled');
+  });
+});
+
+describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
+  it('patches only background runtime identity fields and preserves the selected completed session payload', () => {
+    const completedAttempt = leaf('completed', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-001', current: false });
+    const runningAttempt = leaf('running', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: true, sessionId: null });
+    const current = run({
+      selectedSession: { sessionId: 'dev-session', status: 'completed', events: [{ content: 'done' }] } as any,
+      sessionTree: {
+        ...run({}, [completedAttempt, runningAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-001',
+      },
+    }, [completedAttempt, runningAttempt]);
+
+    const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'test',
+      attemptId: 'attempt-001',
+      session: {
+        sessionId: 'test-session',
+        status: 'running',
+        sessionStartedAt: '2026-06-12T00:01:00Z',
+        events: [],
+      } as any,
+    });
+
+    expect(patched).not.toBe(current);
+    expect(patched?.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-001');
+    expect(patched?.selectedSession?.sessionId).toBe('dev-session');
+    const testLeaf = patched?.sessionTree.rounds[0].nodes.find((node) => node.nodeId === 'test')?.attempts[0];
+    expect(testLeaf?.sessionId).toBe('test-session');
+    expect(patched?.activeSessions.find((session) => session.nodeId === 'test')?.sessionId).toBe('test-session');
+  });
+
+  it('returns the same run object when a repeated background snapshot does not change runtime identity', () => {
+    const completedAttempt = leaf('completed', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-001', current: false });
+    const runningAttempt = leaf('running', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: true, sessionId: 'test-session' });
+    const current = run({
+      sessionTree: {
+        ...run({}, [completedAttempt, runningAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-001',
+      },
+      activeSessions: [{
+        roundId: 'round-001',
+        nodeId: 'test',
+        attemptId: 'attempt-001',
+        outerNodeId: null,
+        outerAttemptId: null,
+        pathLabel: 'test/attempt-001',
+        status: 'running',
+        runtimeDisplay: runningDisplay,
+        sessionId: 'test-session',
+        startedAt: '2026-06-12T00:00:00Z',
+      }],
+    }, [completedAttempt, runningAttempt]);
+
+    const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'test',
+      attemptId: 'attempt-001',
+      session: {
+        sessionId: 'test-session',
+        status: 'running',
+        sessionStartedAt: '2026-06-12T00:00:00Z',
+        events: [],
+      } as any,
+    });
+
+    expect(patched).toBe(current);
+  });
+
+  it('does not patch the selected session through the background path', () => {
+    const current = run();
+    const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      session: { sessionId: 'session-2', status: 'running', events: [] } as any,
+    });
+
+    expect(patched).toBe(current);
+  });
+
+  it('does not revive a terminal background leaf from a stale running snapshot', () => {
+    const selectedAttempt = leaf('completed', runningDisplay, { nodeId: 'dev', attemptId: 'attempt-001', current: false });
+    const terminalAttempt = leaf('completed', runningDisplay, { nodeId: 'test', attemptId: 'attempt-001', current: false, sessionId: 'test-session' });
+    const current = run({
+      sessionTree: {
+        ...run({}, [selectedAttempt, terminalAttempt]).sessionTree,
+        selectedSessionKey: 'round-001/dev/attempt-001',
+      },
+      activeSessions: [],
+    }, [selectedAttempt, terminalAttempt]);
+
+    const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'test',
+      attemptId: 'attempt-001',
+      session: {
+        sessionId: 'test-session',
+        status: 'running',
+        sessionStartedAt: terminalAttempt.startedAt,
+        events: [],
+      } as any,
+    });
+
+    expect(patched).toBe(current);
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
   shouldEnableConversationAutoFollow,
@@ -83,14 +84,71 @@ describe('conversation session follow helpers', () => {
       expect(shouldQueueConversationRunRefreshForAcpUpdate({
         treeHasSession: true,
         alreadySelected: true,
+        hasSessionSnapshot: true,
         sessionStatus,
       })).toBe(true);
     }
     expect(shouldQueueConversationRunRefreshForAcpUpdate({
       treeHasSession: true,
       alreadySelected: true,
+      hasSessionSnapshot: true,
       sessionStatus: 'cancel_requested',
     })).toBe(false);
+  });
+
+  it('ignores high-frequency live events from a known background session', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasSessionSnapshot: false,
+      hasLiveEvent: true,
+      sessionStatus: null,
+    })).toEqual({
+      patchSelectedSession: false,
+      patchBackgroundSession: false,
+      queueRunRefresh: false,
+    });
+  });
+
+  it('lightly patches non-terminal background session snapshots without queueing a full refresh', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasSessionSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: 'running',
+    })).toEqual({
+      patchSelectedSession: false,
+      patchBackgroundSession: true,
+      queueRunRefresh: false,
+    });
+  });
+
+  it('queues a full refresh when a background session reaches an interactive or terminal state', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasSessionSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: 'running',
+      pendingPermissionCount: 1,
+    })).toMatchObject({ patchBackgroundSession: false, queueRunRefresh: true });
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasSessionSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: 'completed',
+    })).toMatchObject({ patchBackgroundSession: false, queueRunRefresh: true });
+  });
+
+  it('queues a full refresh when a live event belongs to a session missing from the tree', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: false,
+      alreadySelected: false,
+      hasSessionSnapshot: false,
+      hasLiveEvent: true,
+    })).toMatchObject({ queueRunRefresh: true });
   });
 
   it('resets run-page auto-follow only when the run id changes', () => {

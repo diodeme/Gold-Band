@@ -12,8 +12,10 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+    ManagedAgentType, McpServerConfig, McpServerHealthResult, ProjectAppConfig, RuntimeConfig,
+    SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
+use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
@@ -676,6 +678,68 @@ impl App {
         let mut agents = self.config.agents.clone();
         agents.remove(&agent_type);
         self.set_user_agents(agents)
+    }
+
+    // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
+
+    fn mcp_manager(&self) -> McpManager {
+        McpManager::new(self.paths.user_settings_file())
+    }
+
+    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().list()?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().add(json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().update(id, json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().delete(id)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().toggle(id, enabled)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
+        self.mcp_manager().check_health(id)
+    }
+
+    pub fn enabled_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        self.mcp_manager().enabled_servers()
+    }
+
+    pub fn acp_mcp_servers(&self) -> Result<Vec<serde_json::Value>> {
+        self.mcp_manager().to_acp_mcp_servers()
+    }
+
+    // ── SKILL (delegates to skill::SkillManager) ──
+
+    pub fn skill_manager(&self) -> crate::skill::SkillManager {
+        crate::skill::SkillManager::new(self.paths.clone())
+    }
+
+    pub fn list_skills(&self) -> Result<crate::skill::SkillListResult> {
+        self.skill_manager().list()
+    }
+
+    pub fn read_skill(&self, name: &str, source: SkillSource) -> Result<crate::skill::SkillContent> {
+        self.skill_manager().read(name, source)
+    }
+
+    pub fn write_skill(&self, name: &str, source: SkillSource, content: &str) -> Result<SkillMeta> {
+        self.skill_manager().write(name, source, content)
+    }
+
+    pub fn delete_skill(&self, name: &str, source: SkillSource) -> Result<()> {
+        self.skill_manager().delete(name, source)
     }
 
     pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {

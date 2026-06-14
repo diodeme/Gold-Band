@@ -112,7 +112,7 @@ pub fn doctor(config: &AcpAdapterConfig, cwd: Utf8PathBuf, use_local_claude: boo
         AcpRuntime::start(config, cwd.clone(), paths.runtime_root.join("doctor/acp"), use_local_claude, None)?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, "", false)?;
+        runtime.setup_session(cwd, None, None, "", false, &[])?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
@@ -133,6 +133,7 @@ pub fn run_prompt(
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
+    mcp_servers: &[Value],
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(config, workspace_dir.clone(), attempt_dir, use_local_claude, live_update)?;
@@ -144,6 +145,7 @@ pub fn run_prompt(
         permission_mode.as_deref(),
         &prompt.system_prompt,
         strict_continue,
+        mcp_servers,
     )?;
     let session_id = runtime
         .session_id
@@ -225,10 +227,10 @@ pub fn run_prompt(
     Ok(run)
 }
 
-fn session_new_params(cwd: &Utf8Path, system_prompt: &str) -> Value {
+fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
     });
     if !system_prompt.trim().is_empty() {
         params["_meta"] = json!({
@@ -240,10 +242,10 @@ fn session_new_params(cwd: &Utf8Path, system_prompt: &str) -> Value {
     params
 }
 
-fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) -> Value {
+fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str, mcp_servers: &[Value]) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
         "sessionId": session_id,
     });
     if !system_prompt.trim().is_empty() {
@@ -452,6 +454,7 @@ impl<'a> AcpRuntime<'a> {
         permission_mode: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
+        mcp_servers: &[Value],
     ) -> Result<bool> {
         if let Some(session_id) = continue_ref
             .as_ref()
@@ -461,7 +464,7 @@ impl<'a> AcpRuntime<'a> {
             self.suppress_session_updates = true;
             let load = self.request(
                 "session/load",
-                session_load_params(&cwd, session_id, system_prompt),
+                session_load_params(&cwd, session_id, system_prompt, mcp_servers),
             );
             self.suppress_session_updates = false;
             match load {
@@ -493,7 +496,7 @@ impl<'a> AcpRuntime<'a> {
             bail!("ACP continue requires an existing session id");
         }
 
-        let result = self.request("session/new", session_new_params(&cwd, system_prompt))?;
+        let result = self.request("session/new", session_new_params(&cwd, system_prompt, mcp_servers))?;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")
@@ -1413,7 +1416,7 @@ mod tests {
 
     #[test]
     fn session_setup_params_append_system_prompt() {
-        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "node constraints");
+        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "node constraints", &[]);
         assert_eq!(
             new_params["_meta"]["systemPrompt"]["append"],
             "node constraints"
@@ -1423,6 +1426,7 @@ mod tests {
             camino::Utf8Path::new("/repo"),
             "session-123",
             "node constraints",
+            &[],
         );
         assert_eq!(load_params["sessionId"], "session-123");
         assert_eq!(

@@ -75,6 +75,12 @@ pub struct WorkerInvocation {
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+    #[serde(default)]
+    pub mcp_tools_catalog: String,
+    #[serde(default)]
+    pub mcp_servers: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub skill_catalog: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,6 +353,7 @@ impl ProviderAdapter for AcpProvider {
             self.use_local_claude,
             self.acp_session_title_refresh_enabled,
             live_update,
+            &req.mcp_servers,
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {
@@ -481,6 +488,10 @@ struct RuntimePromptTemplateContext {
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
+    #[serde(default)]
+    mcp_tools: String,
+    #[serde(default)]
+    skill_catalog: String,
 }
 
 #[derive(Serialize)]
@@ -544,6 +555,8 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
             .output_contract
             .as_ref()
             .map(runtime_output_contract_context),
+        mcp_tools: req.mcp_tools_catalog.clone(),
+        skill_catalog: req.skill_catalog.clone(),
     }
 }
 
@@ -788,6 +801,9 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
+            mcp_tools_catalog: String::new(),
+            mcp_servers: Vec::new(),
+            skill_catalog: String::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

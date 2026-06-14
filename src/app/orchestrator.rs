@@ -3740,6 +3740,9 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
+        mcp_tools_catalog: String::new(),
+        mcp_servers: Vec::new(),
+        skill_catalog: String::new(),
     })
 }
 

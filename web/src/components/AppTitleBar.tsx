@@ -3,13 +3,15 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Copy, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
-import type { DesktopUiMode } from '../types';
+import type { DesktopPlatform, DesktopUiMode } from '../types';
 import { isTauriRuntime } from '../api/shared';
+import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
   appName: string;
+  platform: DesktopPlatform;
   uiMode: DesktopUiMode;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
@@ -18,6 +20,7 @@ interface AppTitleBarProps {
 
 export function AppTitleBar({
   appName,
+  platform,
   uiMode,
   sidebarCollapsed,
   onToggleSidebar,
@@ -26,6 +29,7 @@ export function AppTitleBar({
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
   const tauriRuntime = isTauriRuntime();
+  const policy = resolveWindowControlsPolicy(platform);
 
   useEffect(() => {
     if (!tauriRuntime) return undefined;
@@ -88,7 +92,7 @@ export function AppTitleBar({
 
   return (
     <header className="flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground" onDoubleClick={handleTitleBarDoubleClick}>
-      <div className="flex items-center gap-2 px-2.5">
+      <div className={cn('flex items-center gap-2 px-2.5', policy.leadingInsetClassName)}>
         <Button
           variant="ghost"
           size="icon"
@@ -145,35 +149,37 @@ export function AppTitleBar({
         onMouseDown={handleDragMouseDown}
       />
 
-      <div className="flex h-full items-stretch pl-2">
-        <button
-          type="button"
-          className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
-          onClick={handleMinimize}
-          aria-label={t('common.minimizeWindow')}
-          title={t('common.minimizeWindow')}
-        >
-          <Minus className="size-4" />
-        </button>
-        <button
-          type="button"
-          className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
-          onClick={handleToggleMaximize}
-          aria-label={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
-          title={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
-        >
-          {isMaximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
-        </button>
-        <button
-          type="button"
-          className="flex h-full w-12 items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
-          onClick={handleClose}
-          aria-label={t('common.closeWindow')}
-          title={t('common.closeWindow')}
-        >
-          <X className="size-4" />
-        </button>
-      </div>
+      {policy.showCustomControls ? (
+        <div className="flex h-full items-stretch pl-2">
+          <button
+            type="button"
+            className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+            onClick={handleMinimize}
+            aria-label={t('common.minimizeWindow')}
+            title={t('common.minimizeWindow')}
+          >
+            <Minus className="size-4" />
+          </button>
+          <button
+            type="button"
+            className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+            onClick={handleToggleMaximize}
+            aria-label={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
+            title={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
+          >
+            {isMaximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
+          </button>
+          <button
+            type="button"
+            className="flex h-full w-12 items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
+            onClick={handleClose}
+            aria-label={t('common.closeWindow')}
+            title={t('common.closeWindow')}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      ) : null}
     </header>
   );
 }

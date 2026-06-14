@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConversationPage, ConversationSidebarVm } from '../../types';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform } from '../../types';
 import { ConversationSidebar } from './ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 
 interface ConversationShellProps {
   appName: string;
+  platform: DesktopPlatform;
   vm: ConversationSidebarVm;
   active: ConversationPage;
   sidebarCollapsed: boolean;
@@ -50,6 +51,7 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 
 export function ConversationShell({
   appName,
+  platform,
   vm,
   active,
   sidebarCollapsed,
@@ -122,6 +124,7 @@ export function ConversationShell({
     >
       <AppTitleBar
         appName={appName}
+        platform={platform}
         uiMode="conversation"
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}

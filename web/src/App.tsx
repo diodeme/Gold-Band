@@ -62,6 +62,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { resolveWindowControlsPolicy } from './lib/window-controls';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -212,9 +213,15 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    getCurrentWindow().setDecorations(false).catch(() => {});
-  }, []);
+    if (!isTauriRuntime() || !bootstrap) return;
+    const currentWindow = getCurrentWindow();
+    const policy = resolveWindowControlsPolicy(bootstrap.platform);
+
+    currentWindow.setDecorations(policy.decorations).catch(() => {});
+    if (policy.titleBarStyle) {
+      currentWindow.setTitleBarStyle(policy.titleBarStyle).catch(() => {});
+    }
+  }, [bootstrap]);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
@@ -684,6 +691,7 @@ export function App() {
       conversationPage={conversationPage}
       conversationSidebar={conversationSidebar}
       appName={appInfo.appName}
+      platform={bootstrap?.platform ?? 'windows'}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}

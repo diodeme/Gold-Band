@@ -1,6 +1,6 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ConversationPage, ConversationSidebarVm, DesktopUiMode, PrimaryModule } from '../types';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -14,6 +14,7 @@ interface ShellProps {
   conversationPage: ConversationPage;
   conversationSidebar: ConversationSidebarVm;
   appName: string;
+  platform: DesktopPlatform;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -36,11 +37,12 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
         appName={appName}
+        platform={platform}
         vm={conversationSidebar}
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}
@@ -66,6 +68,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
     <WorkbenchShell
       active={active}
       appName={appName}
+      platform={platform}
       repoRoot={repoRoot}
       needsWorkspace={needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -85,6 +88,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
 interface WorkbenchShellProps {
   active: PrimaryModule;
   appName: string;
+  platform: DesktopPlatform;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -96,13 +100,14 @@ interface WorkbenchShellProps {
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onToggleUiMode, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onToggleUiMode, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
         <AppTitleBar
           appName={appName}
+          platform={platform}
           uiMode="workbench"
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}

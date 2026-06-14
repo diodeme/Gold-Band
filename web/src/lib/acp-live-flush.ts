@@ -42,3 +42,10 @@ export function decideAcpLiveEventFlush(
       : null,
   };
 }
+
+export function shouldAutoScrollAfterAcpTimelineUpdate(input: {
+  pinned: boolean;
+  deferRemainingMs?: number;
+}) {
+  return input.pinned && Math.max(0, input.deferRemainingMs ?? 0) === 0;
+}

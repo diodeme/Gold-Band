@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     sync::{LazyLock, Mutex},
+    time::SystemTime,
 };
 
 use anyhow::Result;
@@ -3541,12 +3542,19 @@ struct AcpTimelinePatchVm {
 const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
 
 struct CachedTimeline {
+    file_signature: Option<TimelineFileSignature>,
     all_events: Vec<AcpUiEventVm>,
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimelineFileSignature {
+    len: u64,
+    modified: Option<SystemTime>,
 }
 
 struct TimelineCache {
@@ -3563,6 +3571,17 @@ static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
 
 fn timeline_cache_key(path: &camino::Utf8Path) -> String {
     path.as_str().to_string()
+}
+
+fn timeline_file_signature(path: &camino::Utf8Path) -> Result<Option<TimelineFileSignature>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(path.as_std_path())?;
+    Ok(Some(TimelineFileSignature {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    }))
 }
 
 fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
@@ -3614,8 +3633,10 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+    let file_signature = timeline_file_signature(path)?;
 
-    // Check cache for completed sessions (timeline file is immutable once complete)
+    // Completed sessions may still receive a final timeline flush shortly after
+    // the snapshot flips terminal, so cache only while the file signature matches.
     let cache_key = timeline_cache_key(path);
     let (
         all_events,
@@ -3626,7 +3647,11 @@ fn scan_acp_timeline(
         usage,
     ) = if !session_active {
         let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache.entries.get(&cache_key) {
+        if let Some(cached) = cache
+            .entries
+            .get(&cache_key)
+            .filter(|cached| cached.file_signature == file_signature)
+        {
             let all_events = cached.all_events.clone();
             let event_count = cached.event_count;
             let session_elapsed_seconds = cached.session_elapsed_seconds;
@@ -3652,6 +3677,7 @@ fn scan_acp_timeline(
         cache.entries.insert(
             cache_key.clone(),
             CachedTimeline {
+                file_signature,
                 all_events: result.0.clone(),
                 event_count: result.1,
                 session_elapsed_seconds: result.2,
@@ -3927,8 +3953,9 @@ fn scan_acp_events(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+    let file_signature = timeline_file_signature(path)?;
 
-    // Cache via the same pool as scan_acp_timeline
+    // Cache via the same pool as scan_acp_timeline and invalidate on file writes.
     let cache_key = timeline_cache_key(path);
     let (
         all_events,
@@ -3939,7 +3966,11 @@ fn scan_acp_events(
         usage,
     ) = if !session_active {
         let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache.entries.get(&cache_key) {
+        if let Some(cached) = cache
+            .entries
+            .get(&cache_key)
+            .filter(|cached| cached.file_signature == file_signature)
+        {
             let all_events = cached.all_events.clone();
             let raw_event_count = cached.event_count;
             let session_elapsed_seconds = cached.session_elapsed_seconds;
@@ -3965,6 +3996,7 @@ fn scan_acp_events(
         cache.entries.insert(
             cache_key.clone(),
             CachedTimeline {
+                file_signature,
                 all_events: result.0.clone(),
                 event_count: result.1,
                 session_elapsed_seconds: result.2,
@@ -5790,6 +5822,27 @@ mod tests {
             .collect()
     }
 
+    fn tool_event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
+        (0..count)
+            .map(|i| AcpUiEventVm {
+                id: format!("tool-{i}"),
+                seq: i as u64 + 1,
+                timestamp: format!("{}Z", base_ts + i as u64),
+                kind: "toolCall".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("tool {i}")),
+                title: Some(format!("Tool {i}")),
+                tool_call_id: Some(format!("call-{i}")),
+                status: Some("completed".to_string()),
+                started_seq: Some(i as u64 + 1),
+                ended_seq: Some(i as u64 + 1),
+                started_at: Some(format!("{}Z", base_ts + i as u64)),
+                ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                raw: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn parse_timeline_file_all_events() {
         let dir = std::env::temp_dir().join(format!("gb-tl-parse-{}", std::process::id()));
@@ -5878,30 +5931,32 @@ mod tests {
     }
 
     #[test]
+    fn scan_timeline_cache_invalidates_when_file_changes() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(5, 2500));
+
+        let r1 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        assert_eq!(r1.events.len(), 5);
+
+        let rewritten_path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(8, 2500));
+        assert_eq!(rewritten_path, path);
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+
+        assert_eq!(r2.events.len(), 8);
+        assert_eq!(r2.event_page.total, 8);
+        assert_eq!(r2.events[7].content.as_deref(), Some("message 7"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn scan_events_cache_hit_on_repeat() {
         let dir = std::env::temp_dir().join(format!("gb-ev-hit-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        // Use unique kinds so events don't get merged by delta logic
-        let events: Vec<_> = (0..15)
-            .map(|i| AcpUiEventVm {
-                id: format!("evt-{i}"),
-                seq: 0,
-                timestamp: format!("{}Z", 3000 + i),
-                kind: "toolCall".to_string(),
-                session_id: Some("s1".to_string()),
-                content: Some(format!("tool {i}")),
-                title: Some(format!("Tool {i}")),
-                tool_call_id: Some(format!("call-{i}")),
-                status: Some("completed".to_string()),
-                started_seq: None,
-                ended_seq: None,
-                started_at: None,
-                ended_at: None,
-                raw: None,
-            })
-            .collect();
-        let path = write_events_file(&db, "acp.events.jsonl", &events);
+        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(15, 3000));
 
         let r1 = scan_acp_events(&path, None, false, 360).unwrap();
         let r2 = scan_acp_events(&path, None, false, 360).unwrap();
@@ -5909,6 +5964,27 @@ mod tests {
         assert_eq!(r1.events.len(), 15);
         assert_eq!(r2.events.len(), 15);
         assert_eq!(r2.event_count, r1.event_count);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_events_cache_invalidates_when_file_changes() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(4, 3500));
+
+        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
+        assert_eq!(r1.events.len(), 4);
+
+        let rewritten_path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(7, 3500));
+        assert_eq!(rewritten_path, path);
+        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
+
+        assert_eq!(r2.events.len(), 7);
+        assert_eq!(r2.event_page.total, 7);
+        assert_eq!(r2.events[6].content.as_deref(), Some("tool 6"));
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -89,6 +89,8 @@ Agent Cards
 - 后台每 60 秒自动诊断一次当前 workspace 下已配置 agent
 - 手动诊断和自动诊断都必须在诊断结束、初始化失败、超时或客户端关闭时关闭 ACP adapter 进程树
 - 诊断对当前已配置的 ACP adapter 通用执行，不再限定 Claude；首次运行 npx 或本地二进制 adapter 可能需要安装依赖，耗时可达到 1 分钟以上
+- 桌面端启动 ACP adapter 前需要自动补全常见用户 bin 目录到子进程 PATH，例如 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.opencode/bin`、`/opt/homebrew/bin`、`/usr/local/bin`，避免 macOS GUI 进程未继承 shell PATH 时 `npx`、`node`、`claude`、`codex` 无法启动
+- 若 adapter 启动失败，诊断原因必须保留底层 OS 错误文本，例如 `No such file or directory (os error 2)`，不能只显示泛化的“failed to start ACP adapter”
 - 当前固定参考 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` 中的 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`opencode` 五类 registry agent
 - 诊断 initialize 设置 5 分钟超时，超时视为异常诊断并返回页面，不允许阻塞客户端
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用

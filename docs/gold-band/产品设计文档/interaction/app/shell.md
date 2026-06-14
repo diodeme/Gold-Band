@@ -169,6 +169,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；前端启动后通过 Tauri window API 关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制。
+- 2026-06-14 起桌面 bootstrap 额外暴露 `platform` 字段，作为前端唯一的平台事实源；后续所有窗口控制分流（如 macOS 原生 title bar style 与非 macOS 自定义控制）都必须基于该字段判断，而不是在前端各处自行读取运行时平台。
 
 ---
 

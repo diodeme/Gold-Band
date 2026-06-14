@@ -83,8 +83,8 @@
 - 活跃会话 live update 不应按 token 级别驱动完整 React 渲染；文本、thought、plan 等高频更新需要在前端或后端合并为短时间窗口内的最新 item，tool、permission、error、terminal 状态仍需即时反馈。
 - 后端 `acp.timeline.jsonl` 对 streaming timeline item 的 patch 写入也应短窗口合并，非 streaming item、session 写入、shutdown 和 runtime drop 前必须 flush pending patch，避免长输出时把每个 chunk 都落为一条 patch。
 - 后端对 completed ACP timeline/events 的读取缓存必须绑定文件签名（至少文件长度与修改时间）。会话 snapshot 进入 terminal/completed 后仍可能存在最后一批 timeline flush 或 compact 写入，缓存不得仅以路径命中，否则会把缺尾部消息的中间状态长期返回给前端。
-- 系统提示、产物预览、工作流编辑等覆盖式交互打开时，ACP 主消息流应暂停非关键 streaming UI flush，仅在内存中保留同一 text/thought/plan item 的最新帧；权限、错误、工具终态和 session 终态仍即时处理，覆盖式交互关闭后再低优先级补 flush 最新帧。
-- 前端必须把 text/thought/plan streaming flush 视为低优先级、可合并的后台 UI 任务，而不是固定定时器任务。覆盖式交互打开、消息列表用户滚动、wheel 等滚动输入期间都应进入同一套 interaction quiet window：取消已排队但尚未执行的 streaming flush timer，只缓存最新帧；交互安静后再 trailing flush。不得为每种交互单独散落补丁式暂停逻辑，也不得在消息容器上用 pointer/touch 起手事件拦截所有按钮点击。
+- 系统提示、产物预览、工作流编辑等覆盖式交互打开时，ACP 主消息流应暂停非关键 streaming UI flush，仅在内存中保留同一 text/thought/plan item 与同一 `toolCallId` 非终态工具事件的最新合并帧；权限、错误、工具终态和 session 终态仍即时处理，覆盖式交互关闭后再低优先级补 flush 最新帧。
+- 前端必须把 text/thought/plan 与非终态 toolCall/toolCallUpdate streaming flush 视为低优先级、可合并的后台 UI 任务，而不是固定定时器任务。覆盖式交互打开、消息列表用户滚动、wheel 等滚动输入期间都应进入同一套 interaction quiet window：取消已排队但尚未执行的 streaming flush timer，只缓存最新帧；交互安静后再 trailing flush。不得为每种交互单独散落补丁式暂停逻辑，也不得在消息容器上用 pointer/touch 起手事件拦截所有按钮点击。
 - ACP 消息滚动容器的 `scroll` 事件不得同步读取 `scrollHeight/clientHeight/getBoundingClientRect`。滚动期间只允许记录交互和排一个 `requestAnimationFrame`，在 rAF 中合并完成贴底状态、历史分页触发和 `isAtBottom` 更新；timeline 更新后的自动贴底也必须尊重 interaction quiet window，用户正在滚动时不得抢写 `scrollTop`。
 - 关闭状态的系统提示弹窗、产物弹窗和工作流 sheet 不应解析大文本或 workflow JSON；打开时再计算内容，并尽量使用 memo 化结果，避免被 live stream render 带着重复执行。
 - 正在流式增长的 assistant 文本以轻量纯文本草稿形态展示，避免每个 chunk 都重新执行完整 Markdown 解析；消息稳定后再切换为 Markdown 渲染。
@@ -95,7 +95,7 @@
 - shadcn/Radix `asChild` 触发器内使用的基础交互组件必须稳定转发 DOM ref。`Button` 作为 Tooltip、Collapsible、AlertDialog、Dropdown 等触发器的通用承载组件时必须保持 `forwardRef` 形态；项目封装的 TooltipTrigger、CollapsibleTrigger、PopoverTrigger、DialogTrigger、SheetTrigger、DropdownMenuTrigger、AlertDialogTrigger、SelectTrigger 等 Radix trigger wrapper 也必须保持 `forwardRef`，避免 Radix composed refs 在流式渲染与全局重绘期间反复 detach/attach 并触发最大更新深度错误。
 - ACP composer 输入框工具栏属于 live streaming 热路径，`PromptInputAction` 不得使用会把 trigger ref 写入状态的 Radix TooltipTrigger；该区域图标按钮使用无状态原生 title 提示，避免输入框 value/status 高频刷新时 Tooltip trigger ref 参与 React 更新循环。
 - ACP composer 的模型、权限等低频配置控件属于冷路径。配置控件不得直接订阅完整 `AcpSessionVm` 或 timeline events；必须先统一归一化为 ACP session config view model，并以 `currentModelId/currentModeId/options` 生成配置签名。普通 text/thought/plan live event 只允许更新消息热路径；配置签名、会话 scope 或稳定 handler 变化时，配置栏才允许重渲染。
-- 工作流图只允许真正 running 的边使用流动动画，普通虚线边保持静态；running node 的高亮优先使用 opacity / transform 类合成属性，不使用持续变化的 box-shadow、layout 或大面积 paint 动画。
+- 工作流图边必须保留 success / failure 等 label 标识，并使用 CSS stroke-dashoffset 表达轻量流动感；running 边可以使用更快的流动节奏和轻量 glow，但不得通过 React state、JS timer 或重新布局驱动画布动画。running node 的高亮优先使用 opacity / transform 类合成属性，不使用持续变化的 box-shadow、layout 或大面积 paint 动画。
 
 ### canonical lifecycle
 

@@ -25,6 +25,8 @@ import {
   computeBackwardLanes,
   isRuntimePrimaryEdge,
   layoutSuccessPath,
+  runtimeGraphEdgeClassName,
+  runtimeGraphEdgeDisplayLabel,
   runtimeGraphTopologySignature,
   runtimeEdgeColor,
   topLeft,
@@ -307,11 +309,9 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
   const edges: Edge[] = graph.edges.map((edge, index) => {
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
-    const label = edge.blockedReason
-      ? `${edge.label || ''} · ${edge.blockedReason.proposedCount ?? '-'}/${edge.blockedReason.limit ?? '-'}`
-      : edge.traversalCount && edge.traversalCount > 1
-        ? `${edge.label || ''} ×${edge.traversalCount}`
-        : edge.label || undefined;
+    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || layout.backwardLanes.has(index);
+    const label = runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value));
+    const edgeClassName = runtimeGraphEdgeClassName(activeEdge, branch);
     return {
       id: `${edge.from}-${edge.to}-${index}`,
       source: edge.from,
@@ -320,11 +320,12 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
       type: 'runtimeEdge',
       markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color },
       style: { stroke: color, strokeWidth: activeEdge ? 2.4 : 1.8 },
-      className: activeEdge ? 'workflow-edge-running' : undefined,
+      className: edgeClassName,
       data: {
         color,
         label,
         lane: layout.backwardLanes.get(index),
+        edgeClassName,
       },
     };
   });
@@ -336,6 +337,7 @@ function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
   const lane = typeof data?.lane === 'number' ? data.lane : null;
   const color = typeof data?.color === 'string' ? data.color : style?.stroke;
   const label = typeof data?.label === 'string' ? data.label : null;
+  const edgeClassName = typeof data?.edgeClassName === 'string' ? data.edgeClassName : null;
   const [smoothPath, smoothLabelX, smoothLabelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const laneY = lane === null ? null : Math.min(sourceY, targetY) - 88 - lane * 38;
   const sourceOffsetX = sourceX + 34;
@@ -347,11 +349,11 @@ function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
   const labelY = laneY === null ? smoothLabelY : laneY;
   return (
     <>
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
+      <BaseEdge path={path} markerEnd={markerEnd} style={style} className={cn('workflow-edge-flow', edgeClassName)} />
       {label ? (
         <EdgeLabelRenderer>
           <span
-            className="pointer-events-none absolute rounded-full border bg-background/95 px-2 py-0.5 font-mono text-[11px] shadow-sm"
+            className="workflow-edge-label pointer-events-none absolute z-10 rounded-full border bg-background/95 px-2 py-0.5 font-mono text-[11px] font-semibold shadow-sm"
             style={{ color, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {label}

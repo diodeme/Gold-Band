@@ -71,6 +71,9 @@ import {
 import { cn } from "@/lib/utils";
 import {
   decideAcpLiveEventFlush,
+  isAcpLiveToolEvent,
+  isCoalescableAcpLiveEvent,
+  mergeAcpLiveToolEvent,
   shouldAutoScrollAfterAcpTimelineUpdate,
 } from "@/lib/acp-live-flush";
 import {
@@ -1137,7 +1140,7 @@ export const ACPChatDialog = forwardRef<
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
       const decision = decideAcpLiveEventFlush({
-        coalescable: isCoalescableLiveEvent(event),
+        coalescable: isCoalescableAcpLiveEvent(event),
         paused: liveUpdatesPausedRef.current,
         deferRemainingMs: liveFlushDeferRemainingMs(),
         flushDelayMs: LIVE_EVENT_FLUSH_MS,
@@ -1145,13 +1148,29 @@ export const ACPChatDialog = forwardRef<
       });
 
       if (decision.applyImmediately) {
+        const bufferedToolKey = liveToolEventBufferKey(event);
+        const pendingToolEvent = bufferedToolKey
+          ? pendingLiveEventsRef.current.get(bufferedToolKey)
+          : null;
+        const eventToApply = pendingToolEvent
+          ? mergeAcpLiveToolEvent(pendingToolEvent, event, mergeRaw)
+          : event;
+        if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
         if (decision.flushPendingBeforeApply) flushPendingLiveEvents("sync");
-        applyEventUpdate(event);
+        applyEventUpdate(eventToApply);
         return;
       }
 
       if (!decision.buffer) return;
-      pendingLiveEventsRef.current.set(liveEventBufferKey(event), event);
+      const bufferKey = liveEventBufferKey(event);
+      pendingLiveEventsRef.current.set(
+        bufferKey,
+        mergeAcpLiveToolEvent(
+          pendingLiveEventsRef.current.get(bufferKey),
+          event,
+          mergeRaw,
+        ),
+      );
       if (decision.scheduleDelayMs !== null) {
         schedulePendingLiveFlush(decision.scheduleDelayMs);
       }
@@ -4068,12 +4087,14 @@ function isNormalResponseAfterError(event: AcpUiEventVm, errorAt: number) {
   return toolStatusTone(event.status) !== "danger";
 }
 
-function isCoalescableLiveEvent(event: AcpUiEventVm) {
-  return ["textDelta", "thoughtDelta", "plan"].includes(event.kind);
+function liveEventBufferKey(event: AcpUiEventVm) {
+  return liveToolEventBufferKey(event) ?? acpEventKey(event);
 }
 
-function liveEventBufferKey(event: AcpUiEventVm) {
-  return acpEventKey(event);
+function liveToolEventBufferKey(event: AcpUiEventVm) {
+  if (!isAcpLiveToolEvent(event) || !event.toolCallId) return null;
+  const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
+  return `${attemptId}:tool:${event.toolCallId}`;
 }
 
 function useStableAcpTimeline(timeline: AcpTimelineItem[]) {

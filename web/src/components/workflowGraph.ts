@@ -144,6 +144,29 @@ export function runtimeGraphTopologySignature(
   return `${variant}:${nodes}:${edges}`;
 }
 
+export function runtimeGraphEdgeDisplayLabel(
+  edge: Pick<GraphEdgeVm, 'label' | 'traversalCount' | 'blockedReason'>,
+  translate: (value: string) => string,
+): string | undefined {
+  const baseLabel = edge.label ? translate(edge.label) : '';
+  if (edge.blockedReason) {
+    const limitLabel = `${edge.blockedReason.proposedCount ?? '-'}/${edge.blockedReason.limit ?? '-'}`;
+    return baseLabel ? `${baseLabel} · ${limitLabel}` : limitLabel;
+  }
+  if (edge.traversalCount && edge.traversalCount > 1) {
+    return baseLabel ? `${baseLabel} ×${edge.traversalCount}` : `×${edge.traversalCount}`;
+  }
+  return baseLabel || undefined;
+}
+
+export function runtimeGraphEdgeClassName(active: boolean, branch: boolean) {
+  return [
+    'workflow-edge-flow',
+    branch ? 'workflow-edge-branch' : '',
+    active ? 'workflow-edge-running' : '',
+  ].filter(Boolean).join(' ');
+}
+
 /**
  * Determine which runtime edges are "primary" (success-like / forward)
  * vs "branch" (failure / backward) for layout purposes.

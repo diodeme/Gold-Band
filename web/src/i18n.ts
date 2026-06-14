@@ -565,6 +565,7 @@ const resources = {
           newRound: '新 Round',
         },
         edgeLabels: {
+          success: '成功',
           failure: '失败',
         },
         successPath: '成功字段路径',
@@ -1553,6 +1554,7 @@ const resources = {
           newRound: 'New Round',
         },
         edgeLabels: {
+          success: 'Success',
           failure: 'Failure',
         },
         successPath: 'Success Field Path',

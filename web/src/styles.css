@@ -362,7 +362,8 @@
   stroke: transparent;
 }
 
-.workflow-edge-branch .react-flow__edge-path {
+.workflow-edge-branch .react-flow__edge-path,
+.workflow-edge-branch.react-flow__edge-path {
   opacity: 0.86;
 }
 
@@ -448,8 +449,10 @@
   will-change: opacity, transform;
 }
 
-.workflow-edge-running .react-flow__edge-path {
+.workflow-edge-running .react-flow__edge-path,
+.workflow-edge-running.react-flow__edge-path {
   stroke-dasharray: 7 9;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--gold-running) 55%, transparent));
 }
 
 .workflow-timeline-dot-running {
@@ -471,7 +474,13 @@
     animation: workflow-running-pulse 1.35s ease-in-out infinite;
   }
 
-  .workflow-edge-running .react-flow__edge-path {
+  .workflow-edge-flow .react-flow__edge-path,
+  .workflow-edge-flow.react-flow__edge-path {
+    animation: workflow-edge-flow 3.6s linear infinite;
+  }
+
+  .workflow-edge-running .react-flow__edge-path,
+  .workflow-edge-running.react-flow__edge-path {
     animation: workflow-edge-flow 2.4s linear infinite;
   }
 

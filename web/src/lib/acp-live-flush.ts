@@ -14,6 +14,80 @@ export interface AcpLiveEventFlushDecision {
   scheduleDelayMs: number | null;
 }
 
+export interface AcpLiveEventLike {
+  kind: string;
+  toolCallId?: string | null;
+  status?: string | null;
+}
+
+export interface AcpMergeableLiveToolEvent extends AcpLiveEventLike {
+  id?: string;
+  seq?: number;
+  timestamp?: string;
+  title?: string | null;
+  content?: string | null;
+  startedSeq?: number | null;
+  endedSeq?: number | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  raw?: unknown;
+}
+
+const coalescableTextEventKinds = new Set(["textDelta", "thoughtDelta", "plan"]);
+const toolEventKinds = new Set(["toolCall", "toolCallUpdate"]);
+const terminalToolStatuses = new Set([
+  "completed",
+  "success",
+  "succeeded",
+  "failed",
+  "error",
+  "cancelled",
+  "canceled",
+]);
+
+export function isTerminalAcpToolStatus(status?: string | null) {
+  return terminalToolStatuses.has(status?.toLowerCase() ?? "");
+}
+
+export function isAcpLiveToolEvent(event: AcpLiveEventLike) {
+  return toolEventKinds.has(event.kind) && Boolean(event.toolCallId);
+}
+
+export function isCoalescableAcpLiveEvent(event: AcpLiveEventLike) {
+  if (coalescableTextEventKinds.has(event.kind)) return true;
+  return isAcpLiveToolEvent(event) && !isTerminalAcpToolStatus(event.status);
+}
+
+export function mergeAcpLiveToolEvent<T extends AcpMergeableLiveToolEvent>(
+  previous: T | null | undefined,
+  next: T,
+  mergeRaw?: (previous: unknown, next: unknown) => unknown,
+): T {
+  if (!previous || !isSameAcpLiveToolEvent(previous, next)) return next;
+  return {
+    ...previous,
+    ...next,
+    title: next.title ?? previous.title,
+    content: next.content ?? previous.content,
+    startedSeq: previous.startedSeq ?? next.startedSeq,
+    startedAt: previous.startedAt ?? next.startedAt,
+    endedSeq: next.endedSeq ?? previous.endedSeq,
+    endedAt: next.endedAt ?? next.timestamp ?? previous.endedAt,
+    raw: mergeRaw ? mergeRaw(previous.raw, next.raw) : next.raw ?? previous.raw,
+  } as T;
+}
+
+function isSameAcpLiveToolEvent(
+  previous: AcpLiveEventLike,
+  next: AcpLiveEventLike,
+) {
+  return (
+    isAcpLiveToolEvent(previous) &&
+    isAcpLiveToolEvent(next) &&
+    previous.toolCallId === next.toolCallId
+  );
+}
+
 export function decideAcpLiveEventFlush(
   input: AcpLiveEventFlushPolicyInput,
 ): AcpLiveEventFlushDecision {

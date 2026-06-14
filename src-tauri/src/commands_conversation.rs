@@ -9,8 +9,11 @@ use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+use tracing::info;
 
-use crate::commands::{CommandErrorVm, CommandResult, command_error};
+use crate::commands::{
+    CommandErrorVm, CommandResult, command_error, pick_folder_result,
+};
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
 
@@ -416,14 +419,15 @@ pub fn choose_conversation_workspace(
 }
 
 #[tauri::command]
-pub fn add_conversation_workspace(
+pub async fn add_conversation_workspace(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let gold_band_app = state.app().map_err(command_error)?;
+    info!(repo_root = %gold_band_app.paths.repo_root, "opening conversation workspace picker");
 
-    // Open directory picker via Tauri dialog plugin
-    let Some(path) = app_handle.dialog().file().blocking_pick_folder() else {
+    let Some(path) = pick_folder_result(app_handle.dialog().file()).await else {
+        info!(repo_root = %gold_band_app.paths.repo_root, "conversation workspace picker cancelled");
         return Err(CommandErrorVm::new(
             "workspace.cancelled",
             serde_json::json!({}),
@@ -435,6 +439,7 @@ pub fn add_conversation_workspace(
     let workspace_path = Utf8PathBuf::from_path_buf(path)
         .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
     let workspace_path_str = workspace_path.as_str().to_string();
+    info!(workspace_path = %workspace_path_str, "conversation workspace picker returned selection");
 
     let name = std::path::Path::new(&workspace_path_str)
         .file_name()
@@ -493,6 +498,11 @@ pub fn add_conversation_workspace(
         });
     state.last_conversation_workspace = Some(project_id.clone());
     gold_band_app.save_state(&state).map_err(command_error)?;
+    info!(
+        project_id = %project_id,
+        workspace_count = state.conversation_workspaces.len(),
+        "conversation workspace added"
+    );
 
     Ok(crate::view_models_conversation::conversation_sidebar_vm(
         &gold_band_app,

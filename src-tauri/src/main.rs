@@ -38,12 +38,13 @@ use commands_conversation::{
     sync_conversation_workspace, unpin_conversation, update_task_metadata,
     validate_conversation_create,
 };
-use gold_band::observability::init_tracing;
+use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use state::{DesktopContext, DesktopState};
 use metrics::start_heartbeat_polling;
 use tauri::{Manager, WindowEvent};
+use tracing::info;
 use updater::{retry_pending_startup_install, start_update_polling};
 
 fn main() {
@@ -70,7 +71,14 @@ fn run() -> anyhow::Result<()> {
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                touch_log_file_best_effort(&paths);
                 init_tracing(&paths, &ctx.config, true);
+                info!(
+                    repo_root = %paths.repo_root,
+                    project_id = %paths.project_id,
+                    needs_workspace = ctx.needs_workspace,
+                    "desktop runtime initialized"
+                );
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();

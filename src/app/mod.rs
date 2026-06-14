@@ -2662,6 +2662,7 @@ mod tests {
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
+    use crate::observability::touch_log_file_best_effort;
     use camino::Utf8PathBuf;
     use tempfile::tempdir;
 
@@ -2693,6 +2694,21 @@ mod tests {
 
         let tail = app.runtime_log_tail_show(3).unwrap().unwrap();
         assert_eq!(tail, "line-998\nline-999\nline-1000");
+    }
+
+    #[test]
+    fn touch_runtime_log_creates_file_before_first_event() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root);
+        touch_log_file_best_effort(&app.paths);
+
+        assert!(app.paths.runtime_log_file().as_std_path().exists());
     }
 
     #[test]

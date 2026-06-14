@@ -22,6 +22,40 @@ use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
 
+fn workspace_project_id(path: &str) -> String {
+    path.to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+}
+
+fn app_for_conversation_project(
+    state: &DesktopState,
+    project_id: &str,
+) -> CommandResult<gold_band::app::App> {
+    let context = state.context().map_err(command_error)?;
+    let current_workspace_path = context.repo_root.to_string();
+    let current_project_id = workspace_project_id(&current_workspace_path);
+    if project_id == current_project_id {
+        return Ok(context.app());
+    }
+
+    let current_app = context.app();
+    let app_state = current_app.load_state().map_err(command_error)?;
+    let workspace = app_state
+        .conversation_workspaces
+        .iter()
+        .find(|workspace| workspace.project_id == project_id)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            )
+        })?;
+    let repo_root = Utf8PathBuf::from(workspace.workspace_path.clone());
+    let target_context =
+        crate::state::DesktopContext::from_workspace(repo_root).map_err(command_error)?;
+    Ok(target_context.app())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunModeSettingsVm {
@@ -61,7 +95,7 @@ pub fn get_conversation_run(
     run_id: String,
     selected_session_key: Option<String>,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = app_for_conversation_project(state.inner(), &project_id)?;
     let result = crate::view_models_conversation::conversation_run_vm(
         &app,
         &project_id,
@@ -78,7 +112,7 @@ pub fn validate_conversation_create(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationValidationResultVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = app_for_conversation_project(state.inner(), &input.project_id)?;
     crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
         .map_err(command_error)
 }
@@ -89,12 +123,12 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
-        crate::metrics::create_metrics_callback(app_handle),
-    );
+    let workspace_app = app_for_conversation_project(state.inner(), &input.project_id)?;
+    let session_app = workspace_app.clone_for_background();
+    let app = workspace_app
+        .with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), session_app))
+        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle));
     tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -110,12 +144,12 @@ pub fn rerun_conversation_task(
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
-        crate::metrics::create_metrics_callback(app_handle),
-    );
+    let workspace_app = app_for_conversation_project(state.inner(), &project_id)?;
+    let session_app = workspace_app.clone_for_background();
+    let app = workspace_app
+        .with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), session_app))
+        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle));
     crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
         .map_err(command_error)
 }
@@ -153,7 +187,7 @@ pub fn update_task_metadata(
     title: String,
     description: Option<String>,
 ) -> CommandResult<()> {
-    let app = state.app().map_err(command_error)?;
+    let app = app_for_conversation_project(state.inner(), &project_id)?;
     crate::view_models_conversation::update_task_metadata_vm(
         &app,
         &project_id,
@@ -1067,11 +1101,61 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use super::{app_for_conversation_project, workspace_project_id};
     use super::{
         MaterializeAttachmentFileInput, base64_encode, materialize_attachment_files_to_dir,
     };
     use camino::Utf8PathBuf;
+    use gold_band::config::ConversationWorkspaceEntry;
+    use crate::state::DesktopState;
     use uuid::Uuid;
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
+    #[test]
+    fn app_for_conversation_project_uses_selected_workspace() {
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-commands-conversation-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current_repo = Utf8PathBuf::from_path_buf(root.join("workspace-a")).unwrap();
+        let other_repo = Utf8PathBuf::from_path_buf(root.join("workspace-b")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(root.join("gold-band-home")).unwrap();
+        std::fs::create_dir_all(current_repo.as_std_path()).unwrap();
+        std::fs::create_dir_all(other_repo.as_std_path()).unwrap();
+        std::fs::create_dir_all(home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", home.as_str()) };
+
+        let desktop_state = DesktopState::new(
+            crate::state::DesktopContext::from_workspace(current_repo.clone()).unwrap(),
+        );
+        let current_app = desktop_state.app().unwrap();
+        let mut app_state = current_app.load_state().unwrap_or_default();
+        app_state.conversation_workspaces.push(ConversationWorkspaceEntry {
+            project_id: workspace_project_id(other_repo.as_str()),
+            workspace_path: other_repo.to_string(),
+            name: "workspace-b".to_string(),
+            added_at: "2026-06-14T00:00:00Z".to_string(),
+        });
+        current_app.save_state(&app_state).unwrap();
+
+        let selected =
+            app_for_conversation_project(&desktop_state, &workspace_project_id(other_repo.as_str()))
+                .unwrap();
+        assert_eq!(selected.paths.repo_root, other_repo);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn materializes_memory_attachments_with_unique_names() {

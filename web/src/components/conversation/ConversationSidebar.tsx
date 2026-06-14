@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Pencil, Plus, Trash2, ChevronsUpDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
@@ -13,8 +13,11 @@ import { cn } from '@/lib/utils';
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
+  repoRoot?: string;
+  needsWorkspace?: boolean;
   onSelect: (page: ConversationPage) => void;
   onToggleUiMode: () => void;
+  onChooseWorkspace?: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string) => void;
@@ -31,8 +34,11 @@ interface ConversationSidebarProps {
 export function ConversationSidebar({
   vm,
   active,
+  repoRoot,
+  needsWorkspace,
   onSelect,
   onToggleUiMode: _onToggleUiMode,
+  onChooseWorkspace,
   onNewConversation,
   onSearch,
   onSelectTask,
@@ -120,6 +126,31 @@ export function ConversationSidebar({
   return (
     <TooltipProvider>
       <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
+        {onChooseWorkspace ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                className="mb-2 h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent"
+                onClick={onChooseWorkspace}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}
+                  </span>
+                  <small className="mt-1 block text-xs font-semibold text-primary">
+                    {needsWorkspace ? t('common.selectWorkspace') : t('common.switchWorkspace')}
+                  </small>
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>
+              {needsWorkspace ? t('common.selectWorkspace') : (repoRoot ?? t('common.switchWorkspace'))}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton

@@ -43,6 +43,8 @@
 - 桌面端启动时优先恢复用户上次选择的 workspace。
 - 若无用户记忆，则从当前进程目录向上查找包含 `.gold-band/` 的项目根目录，避免 Tauri dev 从 `src-tauri/` 启动时误读子目录。
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
+- Conversation 形态下也必须保留可见的当前 workspace / 切换入口，避免用户只能在首次启动时选择、后续找不到查看与修改路径。
+- 切换桌面 workspace 时，除了刷新当前页面，还必须同步更新会话侧 `conversation_workspaces` 与 `last_conversation_workspace`，确保会话列表、composer 默认 workspace 和任务落盘目录一致。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
 
@@ -163,6 +165,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
 - 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置。
+- `choose_workspace` / `select_recent_workspace` 切换成功后，必须同步修正会话侧当前 workspace 选择，避免新建会话仍落到旧 workspace。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。

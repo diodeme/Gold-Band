@@ -44,10 +44,13 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         appName={appName}
         vm={conversationSidebar}
         active={conversationPage}
+        repoRoot={repoRoot}
+        needsWorkspace={needsWorkspace}
         sidebarCollapsed={sidebarCollapsed}
         onSelect={onSelectConversation}
         onToggleUiMode={onToggleUiMode}
         onToggleSidebar={onToggleSidebar}
+        onChooseWorkspace={onChooseWorkspace}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
         onSelectTask={onConversationSelectTask}

@@ -69,6 +69,12 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { decideAcpLiveEventFlush } from "@/lib/acp-live-flush";
+import {
+  createAcpSessionConfigViewModel,
+  findAcpConfigOption,
+  type AcpSessionConfigViewModel,
+} from "@/lib/acp-session-config";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -134,35 +140,6 @@ export type AcpRuntimeComposerContext = {
   onRepair?: () => void;
   continueLabel?: string;
 };
-
-function debugAcpComposer(message: string, payload?: Record<string, unknown>) {
-  if (
-    localStorage.getItem("gold-band-acp-debug") !== "true" &&
-    localStorage.getItem("gold-band-session-follow-debug") !== "true"
-  ) {
-    return;
-  }
-  const timestamp = new Date().toISOString();
-  const summary = payload ? ` ${debugPayloadSummary(payload)}` : "";
-  console.log(`[gb-acp] ${timestamp} ${message}${summary}`);
-}
-
-function debugPayloadSummary(payload: Record<string, unknown>) {
-  return Object.entries(payload)
-    .map(([key, value]) => `${key}=${debugPayloadValue(value)}`)
-    .join(" ");
-}
-
-function debugPayloadValue(value: unknown) {
-  if (value == null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
 
 export interface ACPChatDialogHandle {
   openArtifactsDialog: (asset?: AssetItemVm) => void;
@@ -243,6 +220,7 @@ const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
+const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -540,6 +518,7 @@ export const ACPChatDialog = forwardRef<
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
   const liveEventFlushTimerRef = useRef<number | null>(null);
+  const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
   const liveUpdatesPaused = Boolean(
     externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
@@ -646,6 +625,7 @@ export const ACPChatDialog = forwardRef<
     preservingScrollRef.current = false;
     programmaticScrollRef.current = false;
     prependAnchorRef.current = null;
+    liveUpdatesDeferredUntilRef.current = 0;
     pinToBottomRef.current = true;
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
@@ -694,6 +674,10 @@ export const ACPChatDialog = forwardRef<
   const effective = useMemo(
     () => mergeOptimisticSession(visibleSession, optimisticEvents),
     [visibleSession, optimisticEvents],
+  );
+  const sessionConfigViewModel = useMemo(
+    () => createAcpSessionConfigViewModel(effective?.config),
+    [effective?.config],
   );
   const effectiveEvents = effective?.events ?? [];
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
@@ -910,141 +894,25 @@ export const ACPChatDialog = forwardRef<
     (sending || waitingForOptimisticPrompt) && !planInterventionOption;
   const lastEvent = effectiveEvents.at(-1);
 
-  useEffect(() => {
-    const payload = {
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId: outerNodeId ?? null,
-      outerAttemptId: outerAttemptId ?? null,
-      propSessionStatus: session?.status ?? null,
-      currentSessionStatus: currentSession?.status ?? null,
-      baseSessionStatus: baseSession?.status ?? null,
-      visibleSessionStatus: visibleSession?.status ?? null,
-      effectiveSessionStatus: effective?.status ?? null,
-      effectiveSessionId: effective?.sessionId ?? null,
-      effectiveEventCount: effectiveEvents.length,
-      runtimeStatus: runtimeComposerContext?.runtimeStatus ?? null,
-      runtimeActiveFromContext,
-      runtimeActive,
-      runtimeDisplay: runtimeComposerContext?.runtimeDisplay?.code ?? null,
-      runtimeDisplayTerminal: runtimeComposerContext?.runtimeDisplay?.terminal ?? null,
-      lifecycleRuntimeStatus: runtimeComposerContext?.lifecycle?.runtime.status ?? null,
-      lifecycleRuntimeActive: runtimeComposerContext?.lifecycle?.runtime.active ?? null,
-      lifecycleRuntimeContinuable: runtimeComposerContext?.lifecycle?.runtime.continuable ?? null,
-      lifecycleAcpStatus: runtimeComposerContext?.lifecycle?.acp.status ?? null,
-      lifecycleAcpActive: runtimeComposerContext?.lifecycle?.acp.active ?? null,
-      lifecycleAcpTerminal: runtimeComposerContext?.lifecycle?.acp.terminal ?? null,
-      lifecycleContinueKind: runtimeComposerContext?.lifecycle?.continueKind ?? null,
-      hasResponseAfterActiveTurn,
-      waitingForOptimisticPrompt,
-      localSubmissionPending,
-      mode: composerState.mode,
-      submitTarget: composerState.submitTarget,
-      cancelling,
-      stopCommandPending,
-      stopInProgress,
-      awaitingResponse,
-      acpSessionActive,
-      sessionActive,
-      composerSessionActive: composerState.sessionActive,
-      composerAcpActive: composerState.acpActive,
-      composerRuntimeActive: composerState.runtimeActive,
-      composerStatusActive,
-      composerProcessingKind,
-      showComposerStatus,
-      composerInputDisabled,
-      canStopSession,
-      canSubmitPrompt,
-      placeholder: composerPlaceholder,
-      inputHint: composerInputHint,
-    };
-    debugAcpComposer("composer state", payload);
-    if (isSessionCompletedStatus(effective?.status) && (runtimeActiveFromContext || sessionActive || composerStatusActive || awaitingResponse)) {
-      console.warn("[gb-acp] completed session still active", payload);
-    }
-  }, [
-    acpSessionActive,
-    attemptId,
-    awaitingResponse,
-    baseSession?.status,
-    canStopSession,
-    canSubmitPrompt,
-    cancelling,
-    composerInputDisabled,
-    composerInputHint,
-    composerPlaceholder,
-    composerProcessingKind,
-    composerSessionSeconds,
-    composerState.acpActive,
-    composerState.mode,
-    composerState.runtimeActive,
-    composerState.sessionActive,
-    composerState.submitTarget,
-    composerStatusActive,
-    currentSession?.status,
-    effective?.sessionId,
-    effective?.status,
-    effectiveEvents.length,
-    hasResponseAfterActiveTurn,
-    localSubmissionPending,
-    nodeId,
-    outerAttemptId,
-    outerNodeId,
-    roundId,
-    runId,
-    runtimeActive,
-    runtimeActiveFromContext,
-    runtimeComposerContext?.lifecycle?.acp.active,
-    runtimeComposerContext?.lifecycle?.acp.status,
-    runtimeComposerContext?.lifecycle?.acp.terminal,
-    runtimeComposerContext?.lifecycle?.continueKind,
-    runtimeComposerContext?.lifecycle?.runtime.active,
-    runtimeComposerContext?.lifecycle?.runtime.continuable,
-    runtimeComposerContext?.lifecycle?.runtime.status,
-    runtimeComposerContext?.runtimeDisplay?.code,
-    runtimeComposerContext?.runtimeDisplay?.terminal,
-    runtimeComposerContext?.runtimeStatus,
-    session?.status,
-    sessionActive,
-    showComposerStatus,
-    stopCommandPending,
-    stopInProgress,
-    taskId,
-    visibleSession?.status,
-    waitingForOptimisticPrompt,
-  ]);
+  const normalizeSessionUpdate = useCallback(
+    (updated: AcpSessionVm | null) =>
+      eventIdPrefix
+        ? normalizeAcpSessionForAttempt(updated, eventIdPrefix)
+        : updated,
+    [eventIdPrefix],
+  );
+  const normalizeEventUpdate = useCallback(
+    (event: AcpUiEventVm | null | undefined) =>
+      event && eventIdPrefix
+        ? normalizeAcpEventForAttempt(event, eventIdPrefix)
+        : (event ?? null),
+    [eventIdPrefix],
+  );
 
-  const normalizeSessionUpdate = (updated: AcpSessionVm | null) =>
-    eventIdPrefix
-      ? normalizeAcpSessionForAttempt(updated, eventIdPrefix)
-      : updated;
-  const normalizeEventUpdate = (event: AcpUiEventVm | null | undefined) =>
-    event && eventIdPrefix
-      ? normalizeAcpEventForAttempt(event, eventIdPrefix)
-      : (event ?? null);
-
-  const applySessionUpdate = (updated: AcpSessionVm | null) => {
+  const applySessionUpdate = useCallback((updated: AcpSessionVm | null) => {
     const normalized = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
     const equivalent = sessionsEquivalent(previous, normalized);
-    debugAcpComposer("apply session update", {
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId: outerNodeId ?? null,
-      outerAttemptId: outerAttemptId ?? null,
-      previousStatus: previous?.status ?? null,
-      incomingStatus: updated?.status ?? null,
-      normalizedStatus: normalized?.status ?? null,
-      previousSessionId: previous?.sessionId ?? null,
-      normalizedSessionId: normalized?.sessionId ?? null,
-      equivalent,
-    });
     if (equivalent) return;
     latestSessionRef.current = normalized;
     setCurrentSession(normalized);
@@ -1063,10 +931,10 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  };
+  }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate]);
 
-  const patchSessionConfig = (patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
-    const base = latestSessionRef.current ?? currentSession ?? effective ?? null;
+  const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
+    const base = latestSessionRef.current;
     if (!base) return;
     const updated: AcpSessionVm = {
       ...base,
@@ -1078,9 +946,97 @@ export const ACPChatDialog = forwardRef<
     configGenerationRef.current += 1;
     latestSessionRef.current = updated;
     setCurrentSession(updated);
-  };
+  }, []);
 
-  const applyEventUpdates = (updates: AcpUiEventVm[]) => {
+  const handleAcpSessionModelChange = useCallback((modelId: string) => {
+    const config = latestSessionRef.current?.config;
+    const selected = findAcpConfigOption(
+      config?.models,
+      config?.configOptions,
+      "model",
+      modelId,
+    );
+    patchSessionConfig({
+      currentModelId: modelId,
+      currentModelName: selected.name,
+    });
+    setAcpSessionModel(
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      modelId,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session model:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string) => {
+    const config = latestSessionRef.current?.config;
+    const selected = findAcpConfigOption(
+      config?.modes,
+      config?.configOptions,
+      "mode",
+      permissionModeId,
+    );
+    patchSessionConfig({
+      currentModeId: permissionModeId,
+      currentModeName: selected.name,
+    });
+    setAcpSessionPermissionMode(
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      permissionModeId,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session permission mode:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
     const normalizedUpdates = updates
       .map((event) => normalizeEventUpdate(event))
       .filter((event): event is AcpUiEventVm => {
@@ -1100,12 +1056,12 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  };
+  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
 
-  const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
+  const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
     if (!event) return;
     applyEventUpdates([event]);
-  };
+  }, [applyEventUpdates]);
 
   const flushPendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
     if (liveEventFlushTimerRef.current !== null) {
@@ -1120,29 +1076,96 @@ export const ACPChatDialog = forwardRef<
       return;
     }
     startTransition(() => applyEventUpdates(updates));
-  }, [effectiveLoadedEventBufferLimit, eventIdPrefix]);
+  }, [applyEventUpdates]);
+
+  const liveFlushDeferRemainingMs = useCallback(() => (
+    Math.max(0, liveUpdatesDeferredUntilRef.current - performance.now())
+  ), []);
+
+  const schedulePendingLiveFlush = useCallback((delayMs: number) => {
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+
+    const schedule = (nextDelayMs: number) => {
+      liveEventFlushTimerRef.current = window.setTimeout(() => {
+        liveEventFlushTimerRef.current = null;
+        if (liveUpdatesPausedRef.current || pendingLiveEventsRef.current.size === 0) return;
+        const deferRemainingMs = liveFlushDeferRemainingMs();
+        if (deferRemainingMs > 0) {
+          schedule(deferRemainingMs);
+          return;
+        }
+        flushPendingLiveEvents();
+      }, Math.max(0, Math.ceil(nextDelayMs)));
+    };
+
+    schedule(delayMs);
+  }, [flushPendingLiveEvents, liveFlushDeferRemainingMs]);
+
+  const flushOrSchedulePendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+    if (pendingLiveEventsRef.current.size === 0 || liveUpdatesPausedRef.current) return;
+    const deferRemainingMs = liveFlushDeferRemainingMs();
+    if (deferRemainingMs > 0) {
+      schedulePendingLiveFlush(deferRemainingMs);
+      return;
+    }
+    flushPendingLiveEvents(priority);
+  }, [flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush]);
+
+  const deferPendingLiveFlush = useCallback((durationMs = LIVE_EVENT_INTERACTION_QUIET_MS) => {
+    const nextDeferredUntil = performance.now() + durationMs;
+    liveUpdatesDeferredUntilRef.current = Math.max(
+      liveUpdatesDeferredUntilRef.current,
+      nextDeferredUntil,
+    );
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+    flushOrSchedulePendingLiveEvents();
+  }, [flushOrSchedulePendingLiveEvents]);
+
+  const handleLiveStreamUserInteraction = useCallback(() => {
+    deferPendingLiveFlush();
+  }, [deferPendingLiveFlush]);
 
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
-      if (!isCoalescableLiveEvent(event)) {
-        if (!liveUpdatesPausedRef.current) flushPendingLiveEvents("sync");
+      const decision = decideAcpLiveEventFlush({
+        coalescable: isCoalescableLiveEvent(event),
+        paused: liveUpdatesPausedRef.current,
+        deferRemainingMs: liveFlushDeferRemainingMs(),
+        flushDelayMs: LIVE_EVENT_FLUSH_MS,
+        hasScheduledFlush: liveEventFlushTimerRef.current !== null,
+      });
+
+      if (decision.applyImmediately) {
+        if (decision.flushPendingBeforeApply) flushPendingLiveEvents("sync");
         applyEventUpdate(event);
         return;
       }
+
+      if (!decision.buffer) return;
       pendingLiveEventsRef.current.set(liveEventBufferKey(event), event);
-      if (liveUpdatesPausedRef.current) return;
-      if (liveEventFlushTimerRef.current !== null) return;
-      liveEventFlushTimerRef.current = window.setTimeout(() => {
-        liveEventFlushTimerRef.current = null;
-        flushPendingLiveEvents();
-      }, LIVE_EVENT_FLUSH_MS);
+      if (decision.scheduleDelayMs !== null) {
+        schedulePendingLiveFlush(decision.scheduleDelayMs);
+      }
     },
-    [flushPendingLiveEvents],
+    [applyEventUpdate, flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush],
   );
 
   useEffect(() => {
-    if (!liveUpdatesPaused) flushPendingLiveEvents();
-  }, [flushPendingLiveEvents, liveUpdatesPaused]);
+    if (liveUpdatesPaused) {
+      if (liveEventFlushTimerRef.current !== null) {
+        window.clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      return;
+    }
+    flushOrSchedulePendingLiveEvents();
+  }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
 
   useEffect(() => {
     latestSessionRef.current = effective ?? currentSession ?? session ?? null;
@@ -1217,21 +1240,7 @@ export const ACPChatDialog = forwardRef<
         if (!active || !matchesSessionEvent(event)) return;
         if (event.event) enqueueLiveEventUpdate(event.event);
         else {
-          flushPendingLiveEvents("sync");
-          debugAcpComposer("live session update received", {
-            taskId,
-            runId,
-            roundId,
-            nodeId,
-            attemptId,
-            outerNodeId: outerNodeId ?? null,
-            outerAttemptId: outerAttemptId ?? null,
-            incomingStatus: event.session?.status ?? null,
-            incomingSessionId: event.session?.sessionId ?? null,
-            currentStatus: latestSessionRef.current?.status ?? null,
-            cancelling: cancelRequestedRef.current,
-            awaitTerminalStop: awaitTerminalStopRef.current,
-          });
+          flushOrSchedulePendingLiveEvents("sync");
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
@@ -1277,10 +1286,12 @@ export const ACPChatDialog = forwardRef<
       pendingLiveEventsRef.current.clear();
     };
   }, [
+    applySessionUpdate,
     attemptId,
     enqueueLiveEventUpdate,
     eventWindowKey,
-    flushPendingLiveEvents,
+    effectiveEventPageSize,
+    flushOrSchedulePendingLiveEvents,
     nodeId,
     outerAttemptId,
     outerNodeId,
@@ -1297,47 +1308,21 @@ export const ACPChatDialog = forwardRef<
 
   useEffect(() => {
     const terminalSession = isSessionTerminalStatus(effective?.status);
-    const payload = {
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId: outerNodeId ?? null,
-      outerAttemptId: outerAttemptId ?? null,
-      effectiveStatus: effective?.status ?? null,
-      terminalSession,
-      stopCommandPending,
-      sending,
-      waitingForOptimisticPrompt,
-      awaitingResponse,
-      cancelling,
-      acpSessionActive,
-      sessionActive,
-      awaitTerminalStop: awaitTerminalStopRef.current,
-      cancelRequested: cancelRequestedRef.current,
-    };
     if (stopCommandPending || sending || waitingForOptimisticPrompt) {
-      debugAcpComposer("stop cleanup skipped: command or submit pending", payload);
       return;
     }
     if (!awaitingResponse && !cancelling) {
-      debugAcpComposer("stop cleanup skipped: no local stop state", payload);
       return;
     }
     if (!terminalSession && cancelling && awaitTerminalStopRef.current && acpSessionActive) {
-      debugAcpComposer("stop cleanup skipped: waiting terminal session", payload);
       return;
     }
     if (!terminalSession && cancelling && acpSessionActive) {
-      debugAcpComposer("stop cleanup skipped: acp still active", payload);
       return;
     }
     if (!terminalSession && !cancelling && sessionActive) {
-      debugAcpComposer("stop cleanup skipped: session still active", payload);
       return;
     }
-    debugAcpComposer("stop cleanup accepted", payload);
     setAwaitingResponse(false);
     setCancelling(false);
     awaitTerminalStopRef.current = false;
@@ -1346,20 +1331,13 @@ export const ACPChatDialog = forwardRef<
     if (shouldNotifyStopped) onSessionStopped?.();
   }, [
     acpSessionActive,
-    attemptId,
     awaitingResponse,
     cancelling,
     effective?.status,
-    nodeId,
     onSessionStopped,
-    outerAttemptId,
-    outerNodeId,
-    roundId,
-    runId,
     sending,
     sessionActive,
     stopCommandPending,
-    taskId,
     waitingForOptimisticPrompt,
   ]);
 
@@ -1623,17 +1601,6 @@ export const ACPChatDialog = forwardRef<
 
   const stopSession = async () => {
     if (stopInProgress || !canStopSession) return;
-    debugAcpComposer("stop requested", {
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId: outerNodeId ?? null,
-      outerAttemptId: outerAttemptId ?? null,
-      runtimeStatus: runtimeComposerContext?.runtimeStatus ?? null,
-      sessionStatus: effective?.status ?? null,
-    });
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
@@ -1650,17 +1617,6 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      debugAcpComposer("stop command resolved", {
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        kind: result.kind,
-        returnedRunStatus: result.run?.status ?? null,
-        returnedSessionStatus: result.session?.status ?? null,
-        returnedSessionId: result.session?.sessionId ?? null,
-      });
       awaitTerminalStopRef.current = Boolean(result.session?.sessionId);
       setRuntimeStopAccepted(Boolean(result.run));
       applySessionUpdate(result.session ?? null);
@@ -1670,14 +1626,6 @@ export const ACPChatDialog = forwardRef<
       setActiveTurnPromptId(null);
       setActiveTurnStartedAt(null);
     } catch (error) {
-      debugAcpComposer("stop command failed", {
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        error: displayAppError(t, error),
-      });
       setCancelError(displayAppError(t, error));
       setCancelling(false);
       setStopCommandPending(false);
@@ -1815,6 +1763,7 @@ export const ACPChatDialog = forwardRef<
   const handleScroll = useCallback(() => {
     const scroller = scrollerElementRef.current;
     if (scroller && !preservingScrollRef.current) {
+      if (!programmaticScrollRef.current) handleLiveStreamUserInteraction();
       const distanceFromBottom =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
       if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
@@ -1829,7 +1778,7 @@ export const ACPChatDialog = forwardRef<
       scrollFrameRef.current = null;
       handleScrollRef.current?.();
     });
-  }, []);
+  }, [handleLiveStreamUserInteraction]);
 
   const sessionShellState = resolveAcpSessionShellState({
     hasBaseSession: Boolean(baseSession),
@@ -1898,6 +1847,7 @@ export const ACPChatDialog = forwardRef<
               ref={scrollerElementRef}
               className="h-full min-w-0 overflow-y-auto"
               onScroll={handleScroll}
+              onWheel={handleLiveStreamUserInteraction}
             >
               {loadingOlder ? (
                 <AcpListLoading label={t("acp.loadingOlderEvents")} />
@@ -2145,71 +2095,10 @@ export const ACPChatDialog = forwardRef<
                         </PromptInputActions>
                       </div>
                       <AcpSessionConfigBar
-                        session={effective}
-                        onModelChange={(modelId) => {
-                          const selected = findAcpConfigOption(
-                            effective.config?.models,
-                            effective.config?.configOptions,
-                            "model",
-                            modelId,
-                          );
-                          patchSessionConfig({
-                            currentModelId: modelId,
-                            currentModelName: selected?.name ?? modelId,
-                          });
-                          setAcpSessionModel(
-                            taskId,
-                            runId,
-                            roundId,
-                            nodeId,
-                            attemptId,
-                            modelId,
-                            outerNodeId,
-                            outerAttemptId,
-                          )
-                            .then((updated) => {
-                              if (updated) {
-                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                                applySessionUpdate(updated);
-                              }
-                            })
-                            .catch((error) => {
-                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                              console.error('Failed to set ACP session model:', error);
-                            });
-                        }}
-                        onPermissionModeChange={(permissionModeId) => {
-                          const selected = findAcpConfigOption(
-                            effective.config?.modes,
-                            effective.config?.configOptions,
-                            "mode",
-                            permissionModeId,
-                          );
-                          patchSessionConfig({
-                            currentModeId: permissionModeId,
-                            currentModeName: selected?.name ?? permissionModeId,
-                          });
-                          setAcpSessionPermissionMode(
-                            taskId,
-                            runId,
-                            roundId,
-                            nodeId,
-                            attemptId,
-                            permissionModeId,
-                            outerNodeId,
-                            outerAttemptId,
-                          )
-                            .then((updated) => {
-                              if (updated) {
-                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                                applySessionUpdate(updated);
-                              }
-                            })
-                            .catch((error) => {
-                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                              console.error('Failed to set ACP session permission mode:', error);
-                            });
-                        }}
+                        scopeKey={sessionIdentity}
+                        viewModel={sessionConfigViewModel}
+                        onModelChange={handleAcpSessionModelChange}
+                        onPermissionModeChange={handleAcpSessionPermissionModeChange}
                       />
                     </PromptInput>
                   </div>
@@ -2508,129 +2397,28 @@ function AcpErrorBanner({ reason }: { reason: string }) {
   );
 }
 
-function findAcpConfigOption(
-  groupedOptions: unknown,
-  configOptions: unknown,
-  category: "model" | "mode",
-  id: string,
-) {
-  const grouped = rawObject(groupedOptions);
-  const groupedList = arrayValue(
-    grouped?.[category === "model" ? "availableModels" : "availableModes"],
-  );
-  const groupedMatch = groupedList
-    ?.map(rawObject)
-    .find((option) => {
-      const optionId =
-        stringValue(option?.modelId) ??
-        stringValue(option?.id) ??
-        stringValue(option?.value);
-      return optionId === id;
-    });
-  if (groupedMatch) {
-    return {
-      id,
-      name: stringValue(groupedMatch.name) ?? id,
-    };
-  }
-  const configOption = arrayValue(configOptions)
-    ?.map(rawObject)
-    .find(
-      (option) =>
-        stringValue(option?.id) === category ||
-        stringValue(option?.category) === category,
-    );
-  const configMatch = arrayValue(configOption?.options)
-    ?.map(rawObject)
-    .find((option) => stringValue(option?.value) === id);
-  return {
-    id,
-    name: stringValue(configMatch?.name) ?? id,
-  };
-}
-
-function AcpSessionConfigBar({
-  session,
-  onModelChange,
-  onPermissionModeChange,
-}: {
-  session: AcpSessionVm;
+type AcpSessionConfigBarProps = {
+  scopeKey: string;
+  viewModel: AcpSessionConfigViewModel;
   onModelChange?: (modelId: string) => void;
   onPermissionModeChange?: (permissionModeId: string) => void;
-}) {
+};
+
+const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
+  viewModel,
+  onModelChange,
+  onPermissionModeChange,
+}: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
-  const currentModelId = session.config?.currentModelId ?? null;
-  const currentModelName = session.config?.currentModelName ?? null;
-  const currentModeId = session.config?.currentModeId ?? null;
-  const currentModeName = session.config?.currentModeName ?? null;
-  const mode = currentModeName ?? currentModeId;
-
-  const availableModels: { id: string; name: string; description?: string | null }[] = useMemo(() => {
-    // prefer models.availableModels from session/set_mode responses;
-    // fallback: configOptions[?category="model"].options from session/new or capabilities
-    const models = session.config?.models as Record<string, unknown> | null | undefined;
-    const configOptions = session.config?.configOptions as Array<{
-      category?: string;
-      options?: Array<{ value?: string; name?: string; description?: string | null }>;
-    }> | null | undefined;
-
-    const listFromModels =
-      models ? (models.availableModels ?? models.availableModes) : null;
-
-    const listFromConfig = configOptions?.find(o => o.category === 'model')?.options;
-
-    const list = Array.isArray(listFromModels) && listFromModels.length > 0
-      ? listFromModels
-      : listFromConfig;
-
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (m: unknown): m is { modelId?: string; id?: string; value?: string; name?: string; description?: string | null } =>
-          typeof m === 'object' && m !== null && !Array.isArray(m),
-      )
-      .map((m) => {
-        const id = typeof m.modelId === 'string' ? m.modelId
-          : typeof m.value === 'string' ? m.value
-          : typeof m.id === 'string' ? m.id : '';
-        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
-        return { id, name, description };
-      })
-      .filter((m) => m.id);
-  }, [session.config?.models, session.config?.configOptions]);
-
-  const availablePermissionModes: { id: string; name: string; description?: string | null }[] = useMemo(() => {
-    const modes = session.config?.modes as Record<string, unknown> | null | undefined;
-    const configOptions = session.config?.configOptions as Array<{
-      category?: string;
-      options?: Array<{ value?: string; name?: string; description?: string | null }>;
-    }> | null | undefined;
-
-    const listFromModes =
-      modes ? (modes.availableModes ?? modes.availableModels) : null;
-
-    const listFromConfig = configOptions?.find(o => o.category === 'mode')?.options;
-
-    const list = Array.isArray(listFromModes) && listFromModes.length > 0
-      ? listFromModes
-      : listFromConfig;
-
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (m: unknown): m is { id?: string; value?: string; name?: string; description?: string | null } =>
-          typeof m === 'object' && m !== null && !Array.isArray(m),
-      )
-      .map((m) => {
-        const id = typeof m.id === 'string' ? m.id
-          : typeof m.value === 'string' ? m.value : '';
-        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
-        return { id, name, description };
-      })
-      .filter((m) => m.id);
-  }, [session.config?.modes, session.config?.configOptions]);
+  const {
+    currentModelId,
+    currentModelName,
+    currentModeId,
+    currentModeName,
+    modeLabel,
+    availableModels,
+    availablePermissionModes,
+  } = viewModel;
 
   const handleModelSelect = useCallback(
     (modelId: string) => {
@@ -2646,7 +2434,7 @@ function AcpSessionConfigBar({
     [onPermissionModeChange],
   );
 
-  if (!currentModelId && !mode) return null;
+  if (!currentModelId && !modeLabel) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
@@ -2683,7 +2471,7 @@ function AcpSessionConfigBar({
           <span className="min-w-0 truncate text-foreground">{currentModelName ?? currentModelId}</span>
         </Badge>
       ) : null}
-      {mode ? (
+      {modeLabel ? (
         availablePermissionModes.length > 1 ? (
           <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
             <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
@@ -2714,11 +2502,23 @@ function AcpSessionConfigBar({
         ) : (
           <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-            <span className="min-w-0 truncate text-foreground">{mode}</span>
+            <span className="min-w-0 truncate text-foreground">{modeLabel}</span>
           </Badge>
         )
       ) : null}
     </div>
+  );
+}, areAcpSessionConfigBarPropsEqual);
+
+function areAcpSessionConfigBarPropsEqual(
+  previous: AcpSessionConfigBarProps,
+  next: AcpSessionConfigBarProps,
+) {
+  return (
+    previous.scopeKey === next.scopeKey &&
+    previous.viewModel.signature === next.viewModel.signature &&
+    previous.onModelChange === next.onModelChange &&
+    previous.onPermissionModeChange === next.onPermissionModeChange
   );
 }
 

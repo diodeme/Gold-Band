@@ -17,16 +17,6 @@ import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
 type WorkflowSheetMode = 'edit' | 'repair' | 'view';
 
-function debugConversationRunPage(message: string, payload?: Record<string, unknown>) {
-  if (localStorage.getItem('gold-band-session-follow-debug') !== 'true') return;
-  const timestamp = new Date().toISOString();
-  if (payload) {
-    console.log(`[gb-session-follow] ${timestamp} ${message}`, payload);
-    return;
-  }
-  console.log(`[gb-session-follow] ${timestamp} ${message}`);
-}
-
 function activeSessionKey(session: {
   roundId: string;
   nodeId: string;
@@ -114,7 +104,10 @@ export function ConversationRunPage({
   const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const chatDialogRef = useRef<ACPChatDialogHandle>(null);
-  const activeSessionKeys = run.activeSessions.map((session) => activeSessionKey(session));
+  const activeSessionKeys = useMemo(
+    () => run.activeSessions.map((session) => activeSessionKey(session)),
+    [run.activeSessions],
+  );
 
   useEffect(() => {
     onAutoFollowChangeRef.current = onAutoFollowChange;
@@ -122,10 +115,6 @@ export function ConversationRunPage({
 
   useEffect(() => {
     manualAutoFollowDisabledRef.current = false;
-    debugConversationRunPage('run page reset manual auto-follow flag', {
-      runId: run.runId,
-      selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
-    });
     onAutoFollowChangeRef.current?.(true);
   }, [run.runId]);
 
@@ -173,6 +162,14 @@ export function ConversationRunPage({
     setWorkflowSheet({ open: true, mode: 'view' });
   }, []);
 
+  const handleWorkflowValidationIssues = useCallback(() => {
+    setWorkflowValidationRequestId((value) => value + 1);
+  }, []);
+
+  const handleWorkflowSheetClose = useCallback(() => {
+    setWorkflowSheet((current) => ({ ...current, open: false }));
+  }, []);
+
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
     const nodeId = graphNode.nodeId;
     if (!nodeId) return;
@@ -181,16 +178,7 @@ export function ConversationRunPage({
       for (const node of round.nodes) {
         if (node.nodeId === nodeId && node.attempts.length > 0) {
           const leaf = node.attempts[node.attempts.length - 1];
-          const isActive = activeSessionKeys.includes(leafKey(leaf));
           manualAutoFollowDisabledRef.current = true;
-          debugConversationRunPage('workflow graph requested session switch', {
-            runId: run.runId,
-            nextSelectedSessionKey: leafKey(leaf),
-            nextSessionTone: leaf.runtimeDisplay?.tone,
-            isActiveSession: isActive,
-            atBottom: isAtBottomRef.current,
-            shouldFollow: false,
-          });
           onAutoFollowChange?.(false);
           onSelectSession(leaf);
           setWorkflowSheet({ open: false, mode: workflowSheet.mode });
@@ -198,7 +186,7 @@ export function ConversationRunPage({
         }
       }
     }
-  }, [activeSessionKeys, run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
+  }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';
   const selectedLeaf = findSelectedLeaf(run);
@@ -224,16 +212,8 @@ export function ConversationRunPage({
     const selectedSessionActive = Boolean(selectedKey && activeSessionKeys.includes(selectedKey));
     const shouldFollow = atBottom && selectedSessionActive;
     manualAutoFollowDisabledRef.current = !shouldFollow;
-    debugConversationRunPage('chat bottom state changed', {
-      runId: run.runId,
-      atBottom,
-      selectedSessionActive,
-      manualAutoFollowDisabled: manualAutoFollowDisabledRef.current,
-      selectedSessionKey: selectedKey,
-      shouldFollow,
-    });
     onAutoFollowChange?.(shouldFollow);
-  }, [activeSessionKeys, onAutoFollowChange, run.runId, run.sessionTree.selectedSessionKey, selectedLeaf]);
+  }, [activeSessionKeys, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
     const isActive = activeSessionKeys.includes(leafKey(leaf));
@@ -242,19 +222,9 @@ export function ConversationRunPage({
       isAtBottomRef.current,
     );
     manualAutoFollowDisabledRef.current = !shouldFollow;
-    debugConversationRunPage('session selection requested from run page', {
-      runId: run.runId,
-      previousSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
-      nextSelectedSessionKey: leafKey(leaf),
-      nextSessionTone: leaf.runtimeDisplay?.tone,
-      isActiveSession: isActive,
-      atBottom: isAtBottomRef.current,
-      followActive,
-      shouldFollow,
-    });
     onAutoFollowChange?.(shouldFollow);
     onSelectSession(leaf, shouldFollow);
-  }, [activeSessionKeys, onAutoFollowChange, onSelectSession, run.runId, run.sessionTree.selectedSessionKey]);
+  }, [activeSessionKeys, onAutoFollowChange, onSelectSession]);
 
   const handleSessionStopped = useCallback(() => {
     onSessionStopped();
@@ -429,9 +399,9 @@ export function ConversationRunPage({
         workflowValid={run.workflowValid}
         workflowErrorMessage={!run.workflowValid ? t('conversation.runtime.workflowInvalid') : selectedRuntimeErrorMessage}
         validationRequestId={workflowValidationRequestId}
-        onShowValidationIssues={() => setWorkflowValidationRequestId((value) => value + 1)}
+        onShowValidationIssues={handleWorkflowValidationIssues}
         onSave={onSaveWorkflow}
-        onClose={() => setWorkflowSheet({ open: false, mode: workflowSheet.mode })}
+        onClose={handleWorkflowSheetClose}
         onNodeOpenSession={handleWorkflowNodeOpenSession}
         t={t}
       />

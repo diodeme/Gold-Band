@@ -5,7 +5,7 @@
  */
 import dagre from 'dagre';
 import { Position } from '@xyflow/react';
-import type { GraphNodeVm, GraphEdgeVm, WorkflowDsl, WorkflowEdgeDsl } from '../types';
+import type { GraphNodeVm, GraphEdgeVm, GraphVm, WorkflowDsl, WorkflowEdgeDsl } from '../types';
 
 // ── Node sizing (authoring editor values – used as canonical) ──────────────
 export const NODE_WIDTH = 220;
@@ -129,6 +129,19 @@ export function authoringEdgeColor(outcome: WorkflowEdgeDsl['on']): string {
 export function runtimeNodeOrder(nodes: GraphNodeVm[]): Map<string, number> {
   const sorted = [...nodes].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
   return new Map(sorted.map((n, i) => [n.id, i]));
+}
+
+export function runtimeGraphTopologySignature(
+  graph: GraphVm,
+  variant: string,
+): string {
+  const nodes = graph.nodes
+    .map((node) => `${node.id}:${node.sequence ?? ''}`)
+    .join('|');
+  const edges = graph.edges
+    .map((edge) => `${edge.from}>${edge.to}:${edge.label?.toLowerCase() ?? ''}`)
+    .join('|');
+  return `${variant}:${nodes}:${edges}`;
 }
 
 /**

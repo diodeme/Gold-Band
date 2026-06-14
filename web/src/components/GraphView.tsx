@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
@@ -25,9 +25,9 @@ import {
   computeBackwardLanes,
   isRuntimePrimaryEdge,
   layoutSuccessPath,
+  runtimeGraphTopologySignature,
   runtimeEdgeColor,
   topLeft,
-  type DagreNodeSpec,
 } from './workflowGraph';
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
@@ -75,17 +75,25 @@ interface GraphViewProps {
 }
 
 const nodeTypes = {
-  workflowNode: WorkflowNode,
+  workflowNode: memo(WorkflowNode),
 };
 
 const edgeTypes = {
-  runtimeEdge: RuntimeEdge,
+  runtimeEdge: memo(RuntimeEdge),
+};
+
+type RuntimeGraphLayout = {
+  layoutPositions: Map<string, { x: number; y: number }>;
+  backwardLanes: Map<number, number>;
+  bounds: { x: number; y: number; width: number; height: number } | null;
 };
 
 export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeContextMenuStart, variant = 'grid' }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
-  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, selectedNodeId, activeNodeId, mode, t), [graph, selectedNodeId, activeNodeId, mode, t]);
+  const graphSignature = useMemo(() => runtimeGraphTopologySignature(graph, variant), [graph, variant]);
+  const graphLayout = useMemo(() => createRuntimeGraphLayout(graph), [graphSignature]);
+  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, t), [activeNodeId, graph, graphLayout, mode, selectedNodeId, t]);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const contextMenuTimerRef = useRef<number | null>(null);
@@ -94,8 +102,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   const viewportHorizontalAnchor = variant === 'actual' ? 0.40 : 0.5;
   const viewportVerticalAnchor = variant === 'actual' ? 0.32 : 0.5;
-  const graphSignature = useMemo(() => `${variant}:${graph.nodes.map((node) => node.id).join('|')}:${graph.edges.map((edge) => `${edge.from}>${edge.to}`).join('|')}`, [graph.nodes, graph.edges, variant]);
-  const graphBounds = useMemo(() => boundsForNodes(nodes), [graphSignature]);
+  const graphBounds = graphLayout.bounds;
   const centeredViewport = useMemo(() => {
     if (viewportSize.width === 0 || viewportSize.height === 0 || !graphBounds) return null;
     return calculateCenteredViewport(graphBounds, viewportSize, fitViewOptions.padding, fitViewOptions.maxZoom, viewportHorizontalAnchor, viewportVerticalAnchor);
@@ -217,12 +224,13 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   );
 }
 
-function boundsForNodes(nodes: Node<WorkflowNodeData>[]) {
-  if (nodes.length === 0) return null;
-  const left = Math.min(...nodes.map((node) => node.position.x));
-  const top = Math.min(...nodes.map((node) => node.position.y));
-  const right = Math.max(...nodes.map((node) => node.position.x + NODE_WIDTH));
-  const bottom = Math.max(...nodes.map((node) => node.position.y + RUNTIME_NODE_HEIGHT));
+function boundsForPositions(layoutPositions: Map<string, { x: number; y: number }>) {
+  const positions = [...layoutPositions.values()];
+  if (positions.length === 0) return null;
+  const left = Math.min(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).x));
+  const top = Math.min(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).y));
+  const right = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).x + NODE_WIDTH));
+  const bottom = Math.max(...positions.map((position) => topLeft(position.x, position.y, NODE_WIDTH, RUNTIME_NODE_HEIGHT).y + RUNTIME_NODE_HEIGHT));
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
@@ -240,7 +248,7 @@ function calculateCenteredViewport(bounds: { x: number; y: number; width: number
   };
 }
 
-function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, t: TFunction) {
+function createRuntimeGraphLayout(graph: GraphVm): RuntimeGraphLayout {
   const nodeOrder = runtimeNodeOrder(graph.nodes);
   const nodeIds = new Set(graph.nodes.map((n) => n.id));
   const layoutPositions = layoutSuccessPath(
@@ -249,12 +257,23 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
     nodeIds,
     nodeOrder,
   );
+  const backwardLanes = computeBackwardLanes(
+    graph.edges.map((edge) => ({ from: edge.from, to: edge.to, on: edge.label?.toLowerCase() ?? '' })),
+    nodeOrder,
+  );
+  return {
+    layoutPositions,
+    backwardLanes,
+    bounds: boundsForPositions(layoutPositions),
+  };
+}
 
+function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, t: TFunction) {
   const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
   const runningActiveNode = activeNode?.runtimeDisplay?.tone === 'running';
   const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((node) => {
-    const pos = layoutPositions.get(node.id) ?? { x: 0, y: 0 };
+    const pos = layout.layoutPositions.get(node.id) ?? { x: 0, y: 0 };
     const displayStatusValue = node.runtimeDisplay?.code ?? null;
     const displayTone = node.runtimeDisplay?.tone ?? 'neutral';
     const displayIcon = node.runtimeDisplay?.icon ?? 'dot';
@@ -285,10 +304,6 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
     };
   });
 
-  const backwardLanes = computeBackwardLanes(
-    graph.edges.map((edge) => ({ from: edge.from, to: edge.to, on: edge.label?.toLowerCase() ?? '' })),
-    nodeOrder,
-  );
   const edges: Edge[] = graph.edges.map((edge, index) => {
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
@@ -309,7 +324,7 @@ function createLayoutedGraph(graph: GraphVm, selectedNodeId: string | null | und
       data: {
         color,
         label,
-        lane: backwardLanes.get(index),
+        lane: layout.backwardLanes.get(index),
       },
     };
   });

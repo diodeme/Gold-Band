@@ -86,7 +86,6 @@ import type {
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
-  ConversationSessionLeafVm,
   ConversationSessionTreeVm,
   WorkflowTemplateStore,
   ConversationSidebarVm,
@@ -149,16 +148,6 @@ const defaultAppConfig: AppConfigVm = {
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
 
-function debugConversationSession(message: string, payload?: Record<string, unknown>) {
-  if (localStorage.getItem('gold-band-session-follow-debug') !== 'true') return;
-  const timestamp = new Date().toISOString();
-  if (payload) {
-    console.log(`[gb-session-follow] ${timestamp} ${message}`, payload);
-    return;
-  }
-  console.log(`[gb-session-follow] ${timestamp} ${message}`);
-}
-
 function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: string) {
   for (const round of tree.rounds) {
     for (const node of round.nodes) {
@@ -173,42 +162,6 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
     }
   }
   return false;
-}
-
-function findConversationLeafDebug(tree: ConversationSessionTreeVm, key?: string | null): ConversationSessionLeafVm | null {
-  if (!key) return null;
-  for (const round of tree.rounds) {
-    for (const node of round.nodes) {
-      for (const attempt of node.attempts) {
-        if (conversationSessionKeyFromParts(attempt) === key) return attempt;
-      }
-      for (const outer of node.outerNodes ?? []) {
-        for (const attempt of outer.attempts) {
-          if (conversationSessionKeyFromParts(attempt) === key) return attempt;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function conversationLeafDebugSummary(leaf: ConversationSessionLeafVm | null) {
-  if (!leaf) return null;
-  return {
-    key: conversationSessionKeyFromParts(leaf),
-    status: leaf.status,
-    outcome: leaf.outcome ?? null,
-    displayCode: leaf.runtimeDisplay?.code ?? null,
-    displayTone: leaf.runtimeDisplay?.tone ?? null,
-    displayBlockingError: leaf.runtimeDisplay?.blockingError ?? null,
-    lifecycleRuntimeStatus: leaf.lifecycle?.runtime.status ?? null,
-    lifecycleRuntimeActive: leaf.lifecycle?.runtime.active ?? null,
-    lifecycleRuntimeContinuable: leaf.lifecycle?.runtime.continuable ?? null,
-    lifecycleAcpStatus: leaf.lifecycle?.acp.status ?? null,
-    lifecycleAcpActive: leaf.lifecycle?.acp.active ?? null,
-    lifecycleAcpTerminal: leaf.lifecycle?.acp.terminal ?? null,
-    current: leaf.current,
-  };
 }
 
 export function App() {
@@ -256,32 +209,6 @@ export function App() {
         ...conversationSessionFollowRef.current,
         selectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
       };
-      const incomingSelectedKey = snapshot.sessionTree.selectedSessionKey ?? null;
-      const appliedSelectedKey = merged.sessionTree.selectedSessionKey ?? null;
-      debugConversationSession('conversation run snapshot applied', {
-        source,
-        runId: merged.runId,
-        runStatus: merged.runStatus,
-        runOutcome: merged.runOutcome ?? null,
-        incomingSelectedSessionKey: incomingSelectedKey,
-        appliedSelectedSessionKey: appliedSelectedKey,
-        optionsSelectedSessionKey: options?.selectedSessionKey ?? null,
-        preserveSelectedSession: options?.preserveSelectedSession ?? false,
-        incomingSelectedLeaf: conversationLeafDebugSummary(findConversationLeafDebug(snapshot.sessionTree, incomingSelectedKey)),
-        appliedSelectedLeaf: conversationLeafDebugSummary(findConversationLeafDebug(merged.sessionTree, appliedSelectedKey)),
-        incomingSelectedSessionStatus: snapshot.selectedSession?.status ?? null,
-        appliedSelectedSessionStatus: merged.selectedSession?.status ?? null,
-        incomingSelectedSessionId: snapshot.selectedSession?.sessionId ?? null,
-        appliedSelectedSessionId: merged.selectedSession?.sessionId ?? null,
-        incomingEventCount: snapshot.selectedSession?.events.length ?? null,
-        appliedEventCount: merged.selectedSession?.events.length ?? null,
-        incomingActiveSessions: snapshot.activeSessions.map((session) =>
-          conversationSessionKeyFromParts(session),
-        ),
-        appliedActiveSessions: merged.activeSessions.map((session) =>
-          conversationSessionKeyFromParts(session),
-        ),
-      });
       return merged;
     });
   }, []);
@@ -313,45 +240,18 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
-    if (conversationRun) {
-      const selectedKey = conversationRun.sessionTree.selectedSessionKey ?? null;
-      debugConversationSession('conversationRun state synced', {
-        runId: conversationRun.runId,
-        selectedSessionKey: selectedKey,
-        runStatus: conversationRun.runStatus,
-        runOutcome: conversationRun.runOutcome ?? null,
-        selectedLeaf: conversationLeafDebugSummary(findConversationLeafDebug(conversationRun.sessionTree, selectedKey)),
-        selectedSessionStatus: conversationRun.selectedSession?.status ?? null,
-        selectedSessionId: conversationRun.selectedSession?.sessionId ?? null,
-        selectedSessionEventCount: conversationRun.selectedSession?.events.length ?? null,
-        activeSessions: conversationRun.activeSessions.map((session) =>
-          conversationSessionKeyFromParts(session),
-        ),
-      });
-    }
   }, [conversationRun]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
     conversationSelectedSessionKeyRef.current = null;
     updateConversationSessionFollow('auto', null);
-    debugConversationSession('conversation page entered, reset follow state', {
-      projectId: conversationPage.projectId,
-      taskId: conversationPage.taskId,
-      runId: conversationPage.runId,
-    });
   }, [conversationPage]);
 
   const handleConversationAutoFollowChange = useCallback((enabled: boolean) => {
     if (conversationPage.kind !== 'conversation-run') return;
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
-    debugConversationSession('auto follow changed', {
-      runId: conversationPage.runId,
-      mode,
-      selectedSessionKey: conversationSelectedSessionKeyRef.current,
-      followVersion: conversationSessionFollowRef.current.version,
-    });
   }, [conversationPage, updateConversationSessionFollow]);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
@@ -460,18 +360,8 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId } = conversationPage;
-    debugConversationSession('initial conversation run load start', {
-      projectId,
-      taskId,
-      runId,
-    });
     getConversationRun(projectId, taskId, runId)
       .then((run) => {
-        debugConversationSession('initial conversation run load resolved', {
-          runId,
-          requestedSelectedSessionKey: null,
-          returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
-        });
         applyConversationRunSnapshot(run, 'initial-load');
       })
       .catch(() => setConversationRun(null));
@@ -496,14 +386,6 @@ export function App() {
         pendingEventSessionKey,
         currentSelectedKey,
       });
-      debugConversationSession('live refresh scheduled fetch', {
-        runId,
-        followMode: followStateAtRequest.mode,
-        followVersion: followStateAtRequest.version,
-        pendingEventSessionKey,
-        currentSelectedSessionKey: currentSelectedKey,
-        requestedSelectedSessionKey: selectedKey,
-      });
       pendingEventSessionKey = null;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
@@ -512,14 +394,6 @@ export function App() {
           const effectiveSelectedKey = latestFollowState.version === followStateAtRequest.version
             ? selectedKey
             : (latestFollowState.selectedSessionKey ?? conversationSelectedSessionKeyRef.current ?? selectedKey);
-          debugConversationSession('live refresh resolved', {
-            runId,
-            requestedSelectedSessionKey: selectedKey,
-            effectiveSelectedSessionKey: effectiveSelectedKey,
-            returnedSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
-            followMode: latestFollowState.mode,
-            followVersion: latestFollowState.version,
-          });
           applyConversationRunSnapshot(run, 'live-refresh', {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
@@ -558,13 +432,6 @@ export function App() {
         sessionStatus: event.session?.status,
       });
       if (!shouldQueueRunRefresh) {
-        debugConversationSession('live event ignored because session already selected', {
-          runId,
-          sessionKey,
-          updateKind: event.session ? 'session' : event.event ? 'event' : 'unknown',
-          sessionStatus: event.session?.status ?? null,
-          eventKind: event.event?.kind ?? null,
-        });
         return;
       }
       const followState = conversationSessionFollowRef.current;
@@ -572,19 +439,6 @@ export function App() {
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         followMode: followState.mode,
-      });
-      debugConversationSession('live event queued', {
-        runId,
-        eventSessionKey: sessionKey,
-        currentSelectedSessionKey: currentSelectedKey,
-        treeHasSession,
-        alreadySelected,
-        shouldQueueRunRefresh,
-        sessionStatus: event.session?.status ?? null,
-        eventKind: event.event?.kind ?? null,
-        followMode: followState.mode,
-        followVersion: followState.version,
-        queuedSelectedSessionKey: pendingEventSessionKey,
       });
       if (refreshTimer !== null) return;
       refreshTimer = window.setTimeout(refreshConversationRun, 120);
@@ -1300,10 +1154,6 @@ export function App() {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[1];
             await saveTaskWorkflow(conversationPage.taskId, dsl);
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
-            debugConversationSession('workflow save refreshed conversation run', {
-              runId: conversationPage.runId,
-              returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
-            });
             applyConversationRunSnapshot(refreshed, 'workflow-save', {
               selectedSessionKey: conversationSelectedSessionKeyRef.current,
               preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
@@ -1314,12 +1164,6 @@ export function App() {
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
-            debugConversationSession('session switch requested', {
-              runId: conversationPage.runId,
-              previousSelectedSessionKey: conversationSelectedSessionKeyRef.current,
-              nextSelectedSessionKey: key,
-              followMode,
-            });
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
             switchConversationSession(
@@ -1332,20 +1176,8 @@ export function App() {
               leaf.outerAttemptId,
             ).then((switched) => {
               if (conversationSelectedSessionKeyRef.current !== key) {
-                debugConversationSession('stale manual session switch ignored', {
-                  runId: conversationPage.runId,
-                  selectedSessionKey: key,
-                  currentSelectedSessionKey: conversationSelectedSessionKeyRef.current,
-                });
                 return;
               }
-              debugConversationSession('manual session switch resolved', {
-                runId: conversationPage.runId,
-                selectedSessionKey: key,
-                switchedSessionId: switched.selectedSession?.sessionId ?? null,
-                switchedSessionStatus: switched.selectedSession?.status ?? null,
-                switchedEventCount: switched.selectedSession?.events.length ?? null,
-              });
               startTransition(() => {
                 setConversationRun((prev) => {
                   if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
@@ -1377,24 +1209,8 @@ export function App() {
           }}
           onSessionStopped={() => {
             const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
-            debugConversationSession('session stopped refresh requested', {
-              runId: conversationPage.runId,
-              selectedSessionKey: selectedKey,
-            });
             getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
               .then((refreshed) => {
-                const returnedKey = refreshed.sessionTree.selectedSessionKey ?? null;
-                debugConversationSession('session stopped refresh resolved', {
-                  runId: conversationPage.runId,
-                  requestedSelectedSessionKey: selectedKey,
-                  returnedSelectedSessionKey: returnedKey,
-                  returnedRunStatus: refreshed.runStatus,
-                  returnedRunOutcome: refreshed.runOutcome ?? null,
-                  returnedSelectedLeaf: conversationLeafDebugSummary(findConversationLeafDebug(refreshed.sessionTree, returnedKey)),
-                  returnedSelectedSessionStatus: refreshed.selectedSession?.status ?? null,
-                  returnedSelectedSessionId: refreshed.selectedSession?.sessionId ?? null,
-                  returnedEventCount: refreshed.selectedSession?.events.length ?? null,
-                });
                 applyConversationRunSnapshot(refreshed, 'session-stopped', {
                   selectedSessionKey: selectedKey,
                   preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
@@ -1413,11 +1229,6 @@ export function App() {
                 ?? conversationRunRef.current?.sessionTree.selectedSessionKey
                 ?? null;
               const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey);
-              debugConversationSession('continue run refreshed conversation run', {
-                runId: conversationPage.runId,
-                requestedSelectedSessionKey: selectedKey,
-                returnedSelectedSessionKey: refreshed.sessionTree.selectedSessionKey ?? null,
-              });
               applyConversationRunSnapshot(refreshed, 'continue', {
                 selectedSessionKey: selectedKey,
                 preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',

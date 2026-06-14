@@ -83,10 +83,17 @@
 - 活跃会话 live update 不应按 token 级别驱动完整 React 渲染；文本、thought、plan 等高频更新需要在前端或后端合并为短时间窗口内的最新 item，tool、permission、error、terminal 状态仍需即时反馈。
 - 后端 `acp.timeline.jsonl` 对 streaming timeline item 的 patch 写入也应短窗口合并，非 streaming item、session 写入、shutdown 和 runtime drop 前必须 flush pending patch，避免长输出时把每个 chunk 都落为一条 patch。
 - 系统提示、产物预览、工作流编辑等覆盖式交互打开时，ACP 主消息流应暂停非关键 streaming UI flush，仅在内存中保留同一 text/thought/plan item 的最新帧；权限、错误、工具终态和 session 终态仍即时处理，覆盖式交互关闭后再低优先级补 flush 最新帧。
+- 前端必须把 text/thought/plan streaming flush 视为低优先级、可合并的后台 UI 任务，而不是固定定时器任务。覆盖式交互打开、消息列表用户滚动、wheel 等滚动输入期间都应进入同一套 interaction quiet window：取消已排队但尚未执行的 streaming flush timer，只缓存最新帧；交互安静后再 trailing flush。不得为每种交互单独散落补丁式暂停逻辑，也不得在消息容器上用 pointer/touch 起手事件拦截所有按钮点击。
 - 关闭状态的系统提示弹窗、产物弹窗和工作流 sheet 不应解析大文本或 workflow JSON；打开时再计算内容，并尽量使用 memo 化结果，避免被 live stream render 带着重复执行。
 - 正在流式增长的 assistant 文本以轻量纯文本草稿形态展示，避免每个 chunk 都重新执行完整 Markdown 解析；消息稳定后再切换为 Markdown 渲染。
 - timeline item 必须保持稳定 id；未变化的历史 item 应尽量复用对象引用，让消息、工具卡、thought 和子 Agent 分组的 memo 化渲染有效。
 - Raw frames 面板默认只展示行摘要；展开单条 frame 时才做 JSON pretty print 和长段落换行，不允许折叠态批量解析完整 raw 内容。
+- 会话式运行页的工作流 Sheet 与 `GraphView` 必须把拓扑布局和运行态映射分开：布局只依赖节点 id/order 与边 from/to/label，ACP live payload、selected session、node status/current 等运行态刷新只能映射到既有坐标，不得重复执行布局。
+- 会话 follow、ACP composer 与 GraphView 运行态不得在普通运行中输出持续性 console 日志；排障日志必须面向具体错误，且不能挂在 token/live event 热路径上。排查 `Maximum update depth exceeded` 时，只保留全局 `[gb-ui-error]` 诊断：命中该错误后输出当前 active element、最近 pointer 目标和截断 stack，用于定位 Radix/prompt-kit composed refs 触发源。
+- shadcn/Radix `asChild` 触发器内使用的基础交互组件必须稳定转发 DOM ref。`Button` 作为 Tooltip、Collapsible、AlertDialog、Dropdown 等触发器的通用承载组件时必须保持 `forwardRef` 形态；项目封装的 TooltipTrigger、CollapsibleTrigger、PopoverTrigger、DialogTrigger、SheetTrigger、DropdownMenuTrigger、AlertDialogTrigger、SelectTrigger 等 Radix trigger wrapper 也必须保持 `forwardRef`，避免 Radix composed refs 在流式渲染与全局重绘期间反复 detach/attach 并触发最大更新深度错误。
+- ACP composer 输入框工具栏属于 live streaming 热路径，`PromptInputAction` 不得使用会把 trigger ref 写入状态的 Radix TooltipTrigger；该区域图标按钮使用无状态原生 title 提示，避免输入框 value/status 高频刷新时 Tooltip trigger ref 参与 React 更新循环。
+- ACP composer 的模型、权限等低频配置控件属于冷路径。配置控件不得直接订阅完整 `AcpSessionVm` 或 timeline events；必须先统一归一化为 ACP session config view model，并以 `currentModelId/currentModeId/options` 生成配置签名。普通 text/thought/plan live event 只允许更新消息热路径；配置签名、会话 scope 或稳定 handler 变化时，配置栏才允许重渲染。
+- 工作流图只允许真正 running 的边使用流动动画，普通虚线边保持静态；running node 的高亮优先使用 opacity / transform 类合成属性，不使用持续变化的 box-shadow、layout 或大面积 paint 动画。
 
 ### canonical lifecycle
 
@@ -131,7 +138,7 @@ composer 只消费 lifecycle + ACP session live status + 少量本地 optimistic
 - `stop_active_session` 返回成功只代表“停止请求已被接收并进入停止流程”，不代表 provider 已退出。若当前 attempt 已存在 ACP session，前端必须保持 `stopping / cancelling` 中间态，直到收到 ACP session terminal/非 active 终态快照后，才把当前会话视为停止完成并触发上层 run/session 刷新；后端写入 terminal snapshot 前必须清理 `acp.cancel-requested`，VM 也不得让残留 cancel-request 覆盖 terminal metadata；若当前还没有 ACP session，则以 runtime 不再 active 作为停止完成信号。
 - 停止过程中可能同时出现 `run paused/process-interrupted` 与 `ACP session active/cancelling` 两个事实；composer 展示优先级必须以 ACP 是否仍在停止流程为准：`cancel-request` 仍存在且 `provider.pid` 未消失、session 为 `cancelling/cancel_requested`、或 runtime 已 paused 但 ACP session 仍 active 时，都显示“正在停止当前会话…”并保持输入锁定；停止完成判断以 ACP terminal snapshot 或 ACP 非 active 为准，不用可能滞后的 `runtimeStatus=running` 阻塞完成；确认 ACP 已 terminal/非 active 后才显示 runtime pause/continue 或普通会话态
 - composer semantic state 的优先级固定为：permission blocked → stopping → submitting → invalid workflow（仅 runtime continue 路径）→ runtime error → `process-interrupted` 输入继续 → `waiting-for-user-input` 按钮继续 → runtime active lock → normal ACP prompt。后续新增状态必须先进入该派生表和矩阵测试，不能在组件里局部追加布尔判断。
-- 排查停止状态时，前端可通过 `localStorage.setItem('gold-band-acp-debug','true')` 打开 ACP composer 状态日志；日志需以可复制的一行摘要输出 lifecycle runtime status、ACP session status、composer mode、submit target、local cancelling、stopCommandPending、stopInProgress、输入锁定、placeholder 与提交可用状态
+- 排查停止状态不得恢复持续性 ACP composer console 日志；如需再次定位停止链路，应优先补充状态矩阵测试或临时一次性断点式诊断，完成排查后必须移除。
 
 ### 停止
 - 停止并重跑在顶部操作区
@@ -187,6 +194,7 @@ composer 只消费 lifecycle + ACP session live status + 少量本地 optimistic
 - 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
 - 后续同一 ACP session 的每次追问都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 必须继续带上最新选择，而不是回退到节点初始配置。
 - 模型选中态只在触发器展示模型名称，长描述只在下拉项中换行展示，不允许撑破触发器或越出窗口边界
+- 配置栏解析逻辑统一收敛在前端 ACP session config 工具中：优先读取 provider 返回的 `models.availableModels / modes.availableModes`，缺失时回退 `configOptions[category=model|mode].options`。展示组件只消费归一化后的 id/name/description，不在 JSX 内重复解析协议 payload。
 
 ## 工具调用参数展示
 

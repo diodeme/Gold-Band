@@ -69,7 +69,10 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
-import { decideAcpLiveEventFlush } from "@/lib/acp-live-flush";
+import {
+  decideAcpLiveEventFlush,
+  shouldAutoScrollAfterAcpTimelineUpdate,
+} from "@/lib/acp-live-flush";
 import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
@@ -1189,7 +1192,10 @@ export const ACPChatDialog = forwardRef<
       }
       return;
     }
-    if (pinToBottomRef.current) {
+    if (shouldAutoScrollAfterAcpTimelineUpdate({
+      pinned: pinToBottomRef.current,
+      deferRemainingMs: liveFlushDeferRemainingMs(),
+    })) {
       requestAnimationFrame(() => {
         const el = scrollerElementRef.current;
         if (el && pinToBottomRef.current) {
@@ -1201,7 +1207,7 @@ export const ACPChatDialog = forwardRef<
         }
       });
     }
-  }, [timeline]);
+  }, [liveFlushDeferRemainingMs, timeline]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -1753,32 +1759,29 @@ export const ACPChatDialog = forwardRef<
     if (preservingScrollRef.current) return;
     const scroller = scrollerElementRef.current;
     if (!scroller) return;
-    if (scroller.scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    if (!programmaticScrollRef.current) handleLiveStreamUserInteraction();
+    const scrollTop = scroller.scrollTop;
+    if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    const distanceFromBottom =
+      scroller.scrollHeight - scrollTop - scroller.clientHeight;
+    if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
+      pinToBottomRef.current = false;
+    }
+    if (distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX) {
+      pinToBottomRef.current = true;
+    }
     const atBottom =
-      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
-      BOTTOM_STICK_THRESHOLD_PX;
+      distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX;
     setIsAtBottom((current) => (current === atBottom ? current : atBottom));
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
   const handleScroll = useCallback(() => {
-    const scroller = scrollerElementRef.current;
-    if (scroller && !preservingScrollRef.current) {
-      if (!programmaticScrollRef.current) handleLiveStreamUserInteraction();
-      const distanceFromBottom =
-        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
-        pinToBottomRef.current = false;
-      }
-      if (distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX) {
-        pinToBottomRef.current = true;
-      }
-    }
     if (scrollFrameRef.current != null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
       handleScrollRef.current?.();
     });
-  }, [handleLiveStreamUserInteraction]);
+  }, []);
 
   const sessionShellState = resolveAcpSessionShellState({
     hasBaseSession: Boolean(baseSession),

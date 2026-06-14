@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { decideAcpLiveEventFlush } from '@/lib/acp-live-flush';
+import {
+  decideAcpLiveEventFlush,
+  shouldAutoScrollAfterAcpTimelineUpdate,
+} from '@/lib/acp-live-flush';
 
 describe('ACP live event flush policy', () => {
   it('buffers coalescable streaming events while live updates are paused', () => {
@@ -80,5 +83,20 @@ describe('ACP live event flush policy', () => {
       scheduleFlush: false,
       scheduleDelayMs: null,
     });
+  });
+
+  it('does not auto-scroll timeline updates during the interaction quiet window', () => {
+    expect(shouldAutoScrollAfterAcpTimelineUpdate({
+      pinned: true,
+      deferRemainingMs: 100,
+    })).toBe(false);
+    expect(shouldAutoScrollAfterAcpTimelineUpdate({
+      pinned: true,
+      deferRemainingMs: 0,
+    })).toBe(true);
+    expect(shouldAutoScrollAfterAcpTimelineUpdate({
+      pinned: false,
+      deferRemainingMs: 0,
+    })).toBe(false);
   });
 });

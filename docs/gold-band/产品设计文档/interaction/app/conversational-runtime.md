@@ -27,6 +27,9 @@
 - AUTO / WORKFLOW 中选中 AI-DYNAMIC 内部 session 时也显示查看按钮（Eye 图标），查看该 AI-DYNAMIC attempt 生成的运行态工作流；暂不提供编辑入口
 - 查看工作流：打开 Sheet，复用旧 UI 的运行态工作图组件与数据链路，展示当前选中 session 所在 round 的实际路径图
 - 查看工作流中的节点状态、暂停/成功图标、产物数、附件数、agent 标识等信息应与旧 UI 保持一致
+- AI-DYNAMIC 内部 session 的查看工作流图必须绑定 `outerNodeId/outerAttemptId`，run 结束后的终态刷新也不能退回外层 AI-DYNAMIC 容器图
+- 查看工作流中的 AI-DYNAMIC 内部节点点击后应切换到对应内部 session；匹配顺序为 `outerNodeId/outerAttemptId + nodeId/attemptId`，普通工作流节点仍按顶层 `nodeId/attemptId` 匹配
+- 当当前选中 AI-DYNAMIC 内部 session 时，外层 AI-DYNAMIC 容器的 terminal/live refresh 只触发 run VM 刷新，不得覆盖当前 `selectedSessionKey`；刷新请求必须继续携带内部 session key
 - 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器
 - 修改只影响未来 run，不影响当前 run snapshot
 

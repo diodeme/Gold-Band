@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_vm, dynamic_acp_session_vm,
-    round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    dynamic_runtime_graph_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
 };
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
@@ -1475,12 +1475,30 @@ pub fn conversation_run_vm(
         (true, None)
     };
 
-    // Build workflow graph from the selected session's round so the conversation view
-    // matches the old runtime graph, including status/icons/counts.
+    // Build workflow graph from the selected session's runtime locator so the
+    // conversation view keeps AI-DYNAMIC internal graphs even after terminal refreshes.
     let workflow_graph = selected_leaf
         .as_ref()
-        .and_then(|leaf| round_detail_vm(app, task_id, run_id, &leaf.round_id, None).ok())
-        .map(|detail| detail.graph)
+        .and_then(|leaf| {
+            leaf.outer_node_id
+                .as_deref()
+                .zip(leaf.outer_attempt_id.as_deref())
+                .and_then(|(outer_node_id, outer_attempt_id)| {
+                    dynamic_runtime_graph_vm(
+                        app,
+                        task_id,
+                        run_id,
+                        &leaf.round_id,
+                        outer_node_id,
+                        outer_attempt_id,
+                    )
+                })
+                .or_else(|| {
+                    round_detail_vm(app, task_id, run_id, &leaf.round_id, None)
+                        .ok()
+                        .map(|detail| detail.graph)
+                })
+        })
         .or_else(|| workflow_snapshot.as_ref().map(|dsl| workflow_graph_vm(dsl)))
         .unwrap_or_else(|| GraphVm {
             nodes: Vec::new(),

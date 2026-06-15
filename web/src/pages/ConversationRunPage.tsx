@@ -13,7 +13,7 @@ import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
 import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
 import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
-import { canViewConversationRuntimeWorkflow } from '@/lib/conversation-runtime-workflow';
+import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
@@ -173,21 +173,12 @@ export function ConversationRunPage({
   }, []);
 
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
-    const nodeId = graphNode.nodeId;
-    if (!nodeId) return;
-    for (let r = run.sessionTree.rounds.length - 1; r >= 0; r--) {
-      const round = run.sessionTree.rounds[r];
-      for (const node of round.nodes) {
-        if (node.nodeId === nodeId && node.attempts.length > 0) {
-          const leaf = node.attempts[node.attempts.length - 1];
-          manualAutoFollowDisabledRef.current = true;
-          onAutoFollowChange?.(false);
-          onSelectSession(leaf);
-          setWorkflowSheet({ open: false, mode: workflowSheet.mode });
-          return;
-        }
-      }
-    }
+    const leaf = conversationSessionLeafForGraphNode(run.sessionTree, graphNode);
+    if (!leaf) return;
+    manualAutoFollowDisabledRef.current = true;
+    onAutoFollowChange?.(false);
+    onSelectSession(leaf);
+    setWorkflowSheet({ open: false, mode: workflowSheet.mode });
   }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';

@@ -17,12 +17,12 @@ AI-DYNAMIC filesystem rules:
 - Workspace path: {{ workspace_path }}
 - Upstream refs:
 {{ upstream_refs }}
+- Treat Workspace path as the current workspace for all reads and writes; `worktree` mode may only modify that worktree, and `main` mode is for merging or acceptance in the main workspace.
+- Fan-out branches must not modify other branch worktrees; merge nodes only merge the current group branches listed in the kind-specific context.
 - Do not scan the dynamic root or run directory for undeclared context.
 - Only read paths explicitly listed in this prompt.
 
-AI-DYNAMIC remaining budget:
-- Allowed workflow snapshots:
-{{ allowed_workflow_snapshots }}
+AI-DYNAMIC agent and model strategy:
 - Dynamic node agent strategy: {{ agent_strategy_mode }}
 - Bootstrap agent: {{ bootstrap_provider }}
 {% if agent_strategy_mode == "dynamic" %}- Agent and model routing guidance:
@@ -33,6 +33,10 @@ AI-DYNAMIC remaining budget:
 {{ available_providers }}
 {% endif %}- Available profiles:
 {{ available_profiles }}
+
+AI-DYNAMIC remaining budget:
+- Allowed workflow snapshots:
+{{ allowed_workflow_snapshots }}
 - Remaining budget:
 {{ remaining_budget }}
 

@@ -81,6 +81,7 @@ const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
     OnceLock::new();
+static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn dynamic_validation_error(
     code: &str,
@@ -2009,6 +2010,9 @@ fn drive_dynamic_graph(
             continue;
         }
         if dynamic_graph_completed(graph) {
+            for node in &graph.nodes {
+                teardown_dynamic_workspace_best_effort(ctx, node);
+            }
             graph.run.status = DynamicRunStatus::Completed;
             graph.run.outcome = Some(RunOutcome::Success);
             graph.run.updated_at = now_rfc3339_like();
@@ -2573,6 +2577,7 @@ fn execute_dynamic_agent_stage(
             proposals: Vec::new(),
         });
     }
+    teardown_dynamic_workspace_best_effort(ctx, &node);
     if node.outcome != Some(NodeOutcome::Success) {
         bail!("dynamic stage `{}` failed", node.id);
     }
@@ -2714,9 +2719,13 @@ fn execute_dynamic_workflow_invocation(
                     proposals: Vec::new(),
                 });
             }
-            _ => bail!("child workflow invocation `{}` failed", node.id),
+            _ => {
+                teardown_dynamic_workspace_best_effort(ctx, &node);
+                bail!("child workflow invocation `{}` failed", node.id);
+            }
         }
     }
+    teardown_dynamic_workspace_best_effort(ctx, &node);
     let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&node.id));
     let completion = DynamicNodeCompletion {
         version: VERSION.to_string(),
@@ -4358,6 +4367,11 @@ fn advance_dynamic_groups(
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Closed;
                 graph.groups[group_index].updated_at = now_rfc3339_like();
+                for node in &graph.nodes {
+                    if node.group_id.as_deref() == Some(group_id.as_str()) {
+                        teardown_dynamic_workspace_best_effort(ctx, node);
+                    }
+                }
                 attach_closed_child_group_to_parent(graph, group_index);
                 append_dynamic_event(
                     ctx,
@@ -4547,8 +4561,8 @@ fn create_dynamic_merge_node(
         group.merge.task,
         group.id,
         group.terminal_node_ids.join(", "),
-        graph.run.parent_run_id,
-        dynamic_group_workspace_summary(graph, group),
+        ctx.app.paths.repo_root,
+        dynamic_group_workspace_summary(ctx, graph, group),
     );
     let node = DynamicNodeState {
         version: VERSION.to_string(),
@@ -4650,18 +4664,46 @@ fn create_dynamic_acceptance_node(
     Ok(node)
 }
 
-fn dynamic_group_workspace_summary(graph: &DynamicGraphState, group: &DynamicGroupState) -> String {
-    graph
+fn dynamic_group_workspace_summary(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    group: &DynamicGroupState,
+) -> String {
+    let lines = graph
         .nodes
         .iter()
         .filter(|node| node.group_id.as_deref() == Some(group.id.as_str()))
-        .filter_map(|node| {
-            node.workspace_path
-                .as_ref()
-                .map(|path| format!("- {}: {}", node.id, path))
+        .filter_map(|node| node.workspace_path.as_ref().map(|path| (node, path)))
+        .map(|(node, path)| {
+            let mode = format!("{:?}", node.workspace.mode);
+            if node.workspace.mode != WorkspaceMode::Worktree {
+                return format!("- {}: mode={} path={}", node.id, mode, path);
+            }
+            let branch = dynamic_worktree_branch_name(ctx, &node.id);
+            let actual_branch = git_capture(path, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .unwrap_or_else(|| branch.clone());
+            let head =
+                git_capture(path, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+            let merge_base = git_capture(
+                &ctx.app.paths.repo_root,
+                &["merge-base", "HEAD", actual_branch.as_str()],
+            )
+            .unwrap_or_else(|| "unknown".to_string());
+            let status = git_capture(path, &["status", "--short"])
+                .map(|value| value.lines().collect::<Vec<_>>().join("; "))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "clean".to_string());
+            format!(
+                "- {}: mode={} path={} branch={} head={} mergeBase={} status={}",
+                node.id, mode, path, actual_branch, head, merge_base, status
+            )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        "none".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn dynamic_graph_completed(graph: &DynamicGraphState) -> bool {
@@ -5449,7 +5491,7 @@ fn dynamic_upstream_refs_summary(
 }
 
 fn dynamic_kind_specific_summary(
-    _ctx: &DynamicExecutionContext<'_>,
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
 ) -> String {
@@ -5490,7 +5532,7 @@ fn dynamic_kind_specific_summary(
                 } else {
                     group.terminal_node_ids.join(", ")
                 },
-                dynamic_group_workspace_summary(graph, group),
+                dynamic_group_workspace_summary(ctx, graph, group),
                 child_runs,
             )
         }
@@ -5621,6 +5663,60 @@ fn prepare_dynamic_attempt_dirs(
     Ok(())
 }
 
+fn dynamic_worktree_branch_name(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
+    format!(
+        "gb-dynamic-{}-{}-{}",
+        safe_dynamic_ref(ctx.run_id),
+        safe_dynamic_ref(ctx.outer_node_id),
+        safe_dynamic_ref(node_id)
+    )
+}
+
+fn normalized_path_text(path: &Utf8Path) -> String {
+    path.to_string().replace('\\', "/").to_ascii_lowercase()
+}
+
+fn dynamic_worktree_base_dir(ctx: &DynamicExecutionContext<'_>) -> Utf8PathBuf {
+    let runtime_base = ctx.app.paths.runtime_root.join("worktrees");
+    if !normalized_path_text(&runtime_base).starts_with(&format!(
+        "{}/",
+        normalized_path_text(&ctx.app.paths.repo_root)
+    )) {
+        return runtime_base;
+    }
+    let repo_name = ctx
+        .app
+        .paths
+        .repo_root
+        .file_name()
+        .unwrap_or("repo")
+        .to_string();
+    ctx.app
+        .paths
+        .repo_root
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_else(|| ctx.app.paths.repo_root.clone())
+        .join(format!(
+            "{}-dynamic-worktrees",
+            safe_dynamic_ref(&repo_name)
+        ))
+}
+
+fn git_capture(cwd: &Utf8Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd.as_str())
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn ensure_dynamic_workspace(
     ctx: &DynamicExecutionContext<'_>,
     node: &mut DynamicNodeState,
@@ -5634,17 +5730,11 @@ fn ensure_dynamic_workspace(
             if node.workspace_path.is_some() {
                 return Ok(());
             }
-            let worktree_dir = ctx
-                .app
-                .paths
-                .dynamic_dir(
-                    ctx.task_id,
-                    ctx.run_id,
-                    ctx.round_id,
-                    ctx.outer_node_id,
-                    ctx.outer_attempt_id,
-                )
-                .join("worktrees")
+            let worktree_dir = dynamic_worktree_base_dir(ctx)
+                .join(safe_dynamic_ref(ctx.task_id))
+                .join(safe_dynamic_ref(ctx.run_id))
+                .join(safe_dynamic_ref(ctx.outer_node_id))
+                .join(safe_dynamic_ref(ctx.outer_attempt_id))
                 .join(safe_dynamic_ref(&node.id));
             if !worktree_dir.exists() {
                 std::fs::create_dir_all(
@@ -5653,12 +5743,11 @@ fn ensure_dynamic_workspace(
                         .ok_or_else(|| anyhow!("dynamic worktree path has no parent"))?
                         .as_std_path(),
                 )?;
-                let branch = format!(
-                    "gb-dynamic-{}-{}-{}",
-                    safe_dynamic_ref(ctx.run_id),
-                    safe_dynamic_ref(ctx.outer_node_id),
-                    safe_dynamic_ref(&node.id)
-                );
+                let branch = dynamic_worktree_branch_name(ctx, &node.id);
+                let _git_guard = DYNAMIC_WORKTREE_GIT_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
                 let status = std::process::Command::new("git")
                     .arg("-C")
                     .arg(ctx.app.paths.repo_root.as_str())
@@ -5679,6 +5768,34 @@ fn ensure_dynamic_workspace(
             Ok(())
         }
     }
+}
+
+fn teardown_dynamic_workspace_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) {
+    if node.workspace.mode != WorkspaceMode::Worktree {
+        return;
+    }
+    let Some(worktree_dir) = node.workspace_path.as_ref() else {
+        return;
+    };
+    let branch = dynamic_worktree_branch_name(ctx, &node.id);
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(ctx.app.paths.repo_root.as_str())
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(worktree_dir.as_str())
+        .status();
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(ctx.app.paths.repo_root.as_str())
+        .arg("branch")
+        .arg("-D")
+        .arg(&branch)
+        .status();
 }
 
 fn persist_dynamic_graph(

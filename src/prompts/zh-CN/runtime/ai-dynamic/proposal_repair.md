@@ -6,5 +6,8 @@
 校验错误：
 {{ validation_errors }}
 
+当前合法值参考：
+{{ repair_reference }}
+
 当前剩余预算：
 {{ remaining_budget }}

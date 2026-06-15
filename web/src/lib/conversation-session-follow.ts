@@ -12,6 +12,9 @@ export function resolveConversationEventSelectedSessionKey(args: {
   followMode: ConversationSessionFollowMode;
 }) {
   const { currentSelectedKey, incomingSessionKey, followMode } = args;
+  if (currentSelectedKey && isNestedConversationSessionKey(currentSelectedKey, incomingSessionKey)) {
+    return currentSelectedKey;
+  }
   if (!currentSelectedKey || followMode === 'auto') return incomingSessionKey;
   return currentSelectedKey;
 }
@@ -22,8 +25,19 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   currentSelectedKey?: string | null;
 }) {
   const { followMode, pendingEventSessionKey, currentSelectedKey } = args;
+  if (
+    currentSelectedKey &&
+    pendingEventSessionKey &&
+    isNestedConversationSessionKey(currentSelectedKey, pendingEventSessionKey)
+  ) {
+    return currentSelectedKey;
+  }
   if (followMode === 'auto' && pendingEventSessionKey) return pendingEventSessionKey;
   return currentSelectedKey ?? pendingEventSessionKey ?? null;
+}
+
+export function isNestedConversationSessionKey(currentSelectedKey: string, incomingSessionKey: string) {
+  return currentSelectedKey.startsWith(`${incomingSessionKey}/`);
 }
 
 export function shouldEnableConversationAutoFollow(

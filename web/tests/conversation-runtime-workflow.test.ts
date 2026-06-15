@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { canViewConversationRuntimeWorkflow, isAiDynamicInnerSession } from '../src/lib/conversation-runtime-workflow';
-import type { ConversationRunVm, ConversationSessionLeafVm, GraphVm, RuntimeDisplayVm } from '../src/types';
+import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode, isAiDynamicInnerSession } from '../src/lib/conversation-runtime-workflow';
+import type { ConversationRunVm, ConversationSessionLeafVm, ConversationSessionTreeVm, GraphVm, RuntimeDisplayVm } from '../src/types';
 
 const successDisplay: RuntimeDisplayVm = {
   code: 'success',
@@ -57,6 +57,57 @@ function leaf(overrides: Partial<ConversationSessionLeafVm> = {}) {
   };
 }
 
+function tree(): ConversationSessionTreeVm {
+  const topAttempt = leaf({
+    nodeId: 'review',
+    attemptId: 'attempt-002',
+    pathLabel: 'review/attempt-002',
+  });
+  const dynamicAttempt = leaf({
+    nodeId: 'bootstrap',
+    attemptId: 'attempt-001',
+    outerNodeId: 'ai-dynamic',
+    outerAttemptId: 'attempt-001',
+    pathLabel: 'bootstrap/attempt-001',
+  });
+  return {
+    selectedSessionKey: null,
+    rounds: [{
+      roundId: 'round-001',
+      index: 1,
+      label: 'round-001',
+      status: 'completed',
+      runtimeDisplay: successDisplay,
+      nodes: [
+        {
+          nodeId: 'review',
+          label: 'Review',
+          nodeType: 'worker',
+          status: 'completed',
+          runtimeDisplay: successDisplay,
+          attempts: [topAttempt],
+        },
+        {
+          nodeId: 'ai-dynamic',
+          label: 'AI Dynamic',
+          nodeType: 'ai-dynamic',
+          status: 'completed',
+          runtimeDisplay: successDisplay,
+          attempts: [],
+          outerNodes: [{
+            nodeId: 'bootstrap',
+            label: 'AI-DYNAMIC bootstrap',
+            nodeType: 'dynamic-bootstrap',
+            status: 'completed',
+            runtimeDisplay: successDisplay,
+            attempts: [dynamicAttempt],
+          }],
+        },
+      ],
+    }],
+  };
+}
+
 describe('conversation runtime workflow actions', () => {
   it('keeps workflow runs viewable even before a runtime graph is available', () => {
     expect(canViewConversationRuntimeWorkflow(run('workflow'), null)).toBe(true);
@@ -74,5 +125,27 @@ describe('conversation runtime workflow actions', () => {
 
     expect(canViewConversationRuntimeWorkflow(run('auto'), selectedLeaf)).toBe(false);
     expect(canViewConversationRuntimeWorkflow(run('auto', runtimeGraph), leaf())).toBe(false);
+  });
+
+  it('resolves top-level workflow graph nodes to their session leaf', () => {
+    const resolved = conversationSessionLeafForGraphNode(tree(), {
+      nodeId: 'review',
+      attemptId: 'attempt-002',
+    });
+
+    expect(resolved?.pathLabel).toBe('review/attempt-002');
+  });
+
+  it('resolves AI-DYNAMIC internal graph nodes by outer attempt scope', () => {
+    const resolved = conversationSessionLeafForGraphNode(tree(), {
+      nodeId: 'bootstrap',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+    });
+
+    expect(resolved?.pathLabel).toBe('bootstrap/attempt-001');
+    expect(resolved?.outerNodeId).toBe('ai-dynamic');
+    expect(resolved?.outerAttemptId).toBe('attempt-001');
   });
 });

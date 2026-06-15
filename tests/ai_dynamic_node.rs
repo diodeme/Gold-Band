@@ -19,6 +19,7 @@ use tempfile::tempdir;
 #[derive(Clone)]
 enum DynamicScenario {
     Fanout,
+    WorktreeFanout,
     NestedFanout,
     InvalidWorkflowInvocation,
     FanoutRepair,
@@ -47,6 +48,10 @@ impl DynamicProvider {
 
     fn fanout() -> Self {
         Self::new(DynamicScenario::Fanout)
+    }
+
+    fn worktree_fanout() -> Self {
+        Self::new(DynamicScenario::WorktreeFanout)
     }
 
     fn nested_fanout() -> Self {
@@ -186,6 +191,18 @@ impl DynamicProvider {
             (DynamicScenario::Fanout, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
             }
+            (DynamicScenario::WorktreeFanout, "bootstrap") => {
+                Some(worktree_fanout_completion(profile))
+            }
+            (DynamicScenario::WorktreeFanout, "branch-a" | "branch-b") => {
+                std::fs::write(
+                    req.workspace_dir
+                        .join(format!("{}.txt", req.runtime_context.node_id)),
+                    format!("{} done", req.runtime_context.node_id),
+                )
+                .unwrap();
+                Some(end_completion("branch done"))
+            }
             (DynamicScenario::NestedFanout, "bootstrap") => Some(fanout_completion(profile)),
             (DynamicScenario::NestedFanout, "branch-a") => Some(nested_fanout_completion(profile)),
             (DynamicScenario::NestedFanout, "branch-b" | "branch-a-1" | "branch-a-2") => {
@@ -296,6 +313,48 @@ fn fanout_completion(_profile: &str) -> String {
                 "acceptance": {
                     "title": "Accept core",
                     "task": "Accept merged branch outputs"
+                }
+            }
+        }"#
+    .to_string()
+}
+
+fn worktree_fanout_completion(_profile: &str) -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "split into two writable branches",
+            "next": {
+                "type": "fanout",
+                "groupId": "group-core",
+                "nodes": [
+                    {
+                        "id": "branch-a",
+                        "kind": "worker",
+                        "title": "Branch A",
+                        "task": "Write branch A",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "worktree" },
+                        "dependsOn": ["bootstrap"]
+                    },
+                    {
+                        "id": "branch-b",
+                        "kind": "worker",
+                        "title": "Branch B",
+                        "task": "Write branch B",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "worktree" },
+                        "dependsOn": ["bootstrap"]
+                    }
+                ],
+                "merge": {
+                    "title": "Merge writable branches",
+                    "task": "Merge branch worktrees"
+                },
+                "acceptance": {
+                    "title": "Accept writable branches",
+                    "task": "Accept merged branch worktrees"
                 }
             }
         }"#
@@ -769,6 +828,39 @@ fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
     .unwrap()
 }
 
+fn init_git_repo(repo_root: &camino::Utf8Path) {
+    let init = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root.as_str())
+        .arg("init")
+        .status()
+        .unwrap();
+    assert!(init.success());
+    std::fs::write(repo_root.join("README.md"), "fixture").unwrap();
+    let add = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root.as_str())
+        .args(["add", "README.md"])
+        .status()
+        .unwrap();
+    assert!(add.success());
+    let commit = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root.as_str())
+        .args([
+            "-c",
+            "user.name=Gold Band Test",
+            "-c",
+            "user.email=gold-band@example.test",
+            "commit",
+            "-m",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(commit.success());
+}
+
 #[test]
 fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     let temp = tempdir().unwrap();
@@ -835,6 +927,62 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(merge.system_prompt.contains("group-core"));
     assert!(merge.system_prompt.contains("branch-a"));
     assert!(merge.system_prompt.contains("branch-b"));
+}
+
+#[test]
+fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+    std::fs::create_dir_all(&repo_root).unwrap();
+    init_git_repo(&repo_root);
+    let task_id = "task-ai-dynamic-worktree-fanout";
+    let provider = DynamicProvider::worktree_fanout();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let graph = dynamic_graph(&app, task_id);
+    let branch_a = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "branch-a")
+        .unwrap();
+    let branch_b = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "branch-b")
+        .unwrap();
+    assert!(!branch_a.workspace_path.as_ref().unwrap().exists());
+    assert!(!branch_b.workspace_path.as_ref().unwrap().exists());
+
+    let invocations = provider.invocations.lock().unwrap();
+    let merge_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.runtime_context.node_id == "group-core-merge")
+        .unwrap();
+    let merge = render_prompt_bundle(merge_invocation).unwrap();
+    assert!(merge.system_prompt.contains("branch workspaces"));
+    assert!(
+        merge
+            .system_prompt
+            .contains("branch=gb-dynamic-run-001-router-branch-a")
+    );
+    assert!(
+        merge
+            .system_prompt
+            .contains("branch=gb-dynamic-run-001-router-branch-b")
+    );
+    assert!(merge.system_prompt.contains("head="));
+    assert!(merge.system_prompt.contains("mergeBase="));
+    assert!(merge.system_prompt.contains("status=?? branch-a.txt"));
+    assert!(merge.system_prompt.contains("status=?? branch-b.txt"));
+    assert!(merge.user_prompt.contains("Main workspace:"));
+    assert!(merge.user_prompt.contains(repo_root.as_str()));
 }
 
 #[test]

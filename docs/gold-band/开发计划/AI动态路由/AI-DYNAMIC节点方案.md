@@ -13,6 +13,7 @@
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
 - AI-DYNAMIC internal worker 的 system prompt 会额外注入“当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。
+- AI-DYNAMIC fanout 可写分支已采用 worktree 隔离协议：proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、provider/model 需求、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema，并同时用于 prompt、provider output contract、runtime 结构校验与 repair 诊断。
 - proposal repair 已统一使用结构化诊断：JSON Schema 结构错误、serde parse 错误与业务校验错误都会渲染 code、path、actual、expected、allowed values、suggested repair，并附带当前 provider/model、worker profile ID、allowed workflow ID 参考；缺失字段会尽量补细到 `next.merge.task` 这类可执行 JSON path。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
@@ -877,10 +878,11 @@ type WorkspaceMode = 'readonly' | 'worktree' | 'main';
 
 runtime 负责：
 
-- 创建 worktree
+- 为 `workspace.mode=worktree` 的分支创建独立 worktree 与稳定 branch
 - 记录 workspace path
 - 把 workspace path 注入 prompt
-- 在 merge 节点输入里列出相关 worktree
+- 在 merge 节点输入里列出当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status
+- 让 merge / acceptance 使用 main workspace，普通 fanout 可写分支使用独立 worktree
 - 成功后按策略清理 worktree
 
 runtime 不负责：

@@ -17,23 +17,26 @@ AI-DYNAMIC 文件系统规则：
 - Workspace 路径：{{ workspace_path }}
 - 上游引用：
 {{ upstream_refs }}
+- 所有读写操作都必须以 Workspace 路径为当前工作区；`worktree` 模式只能修改该 worktree，`main` 模式只能在主工作区合并或验收。
+- fan-out 分支不要修改其他分支的 worktree；merge 节点只合并类型特定上下文中列出的当前 group 分支。
 - 不要主动扫描 dynamic 根目录或 run 目录来寻找未声明上下文。
 - 只读取本 prompt 明确列出的路径。
 
-AI-DYNAMIC 当前剩余预算：
-- Allowed workflow snapshots：
-{{ allowed_workflow_snapshots }}
+AI-DYNAMIC Agent 与模型决策：
 - 动态节点 agent 策略：{{ agent_strategy_mode }}
 - 初始分发节点 agent：{{ bootstrap_provider }}
-{% if agent_strategy_mode == "dynamic" %}- agent 和模型决策指南：
+{% if agent_strategy_mode == "dynamic" %}- Agent 和模型决策指南：
 {{ agent_routing_prompt }}
 - merge / acceptance 模型策略：
 {{ acceptance_model_policy }}
 - 可用 agent 及模型：
 {{ available_providers }}
-{% endif %}
-- 可用 profiles：
+{% endif %}- 可用 profiles：
 {{ available_profiles }}
+
+AI-DYNAMIC 当前剩余预算：
+- Allowed workflow snapshots：
+{{ allowed_workflow_snapshots }}
 - 剩余预算：
 {{ remaining_budget }}
 

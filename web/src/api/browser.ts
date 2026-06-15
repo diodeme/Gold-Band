@@ -253,6 +253,15 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
   },
   showConversationAttachment(_taskId: string, name: string) {
+    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) {
+      return Promise.resolve({
+        ...mockContent,
+        title: name,
+        kind: 'input-attachment',
+        content: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+        metadata: { mimeType: 'image/png', isImage: true, encoding: 'data-url' },
+      });
+    }
     return Promise.resolve({ ...mockContent, title: name, kind: 'input-attachment' });
   },
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
@@ -420,6 +429,13 @@ export const browserApi: RuntimeApi = {
   },
   pickAttachmentFiles() {
     return Promise.resolve([]);
+  },
+  materializeConversationAttachments(files) {
+    return Promise.resolve(files.map((file, index) => ({
+      path: `browser-memory://attachments/${Date.now()}-${index}-${encodeURIComponent(file.name)}`,
+      name: file.name,
+      size: file.size,
+    })));
   },
   getSupportedAttachmentExtensions() {
     return Promise.resolve([

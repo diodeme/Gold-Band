@@ -335,6 +335,10 @@ export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
 }
 
+export function materializeConversationAttachments(files: Parameters<ReturnType<typeof getRuntimeApi>['materializeConversationAttachments']>[0]) {
+  return getRuntimeApi().materializeConversationAttachments(files);
+}
+
 export function getSupportedAttachmentExtensions() {
   return getRuntimeApi().getSupportedAttachmentExtensions();
 }

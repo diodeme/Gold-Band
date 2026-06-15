@@ -74,6 +74,34 @@ fn logical_artifact_name(name: &str) -> &str {
     name.strip_suffix(".json").unwrap_or(name)
 }
 
+pub(crate) fn task_inputs_dir(app: &App, task_id: &str) -> Utf8PathBuf {
+    app.paths.task_dir(task_id).join("authoring").join("inputs")
+}
+
+pub(crate) fn existing_task_inputs_dir(app: &App, task_id: &str) -> Option<Utf8PathBuf> {
+    let dir = task_inputs_dir(app, task_id);
+    dir.exists().then_some(dir)
+}
+
+pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<String> {
+    let inputs_dir = task_inputs_dir(app, task_id);
+    if !inputs_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut paths = std::fs::read_dir(inputs_dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
+                .map(|entry| entry.path().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    paths.sort();
+    paths
+}
+
 fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {

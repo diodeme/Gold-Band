@@ -1,8 +1,8 @@
 {
   "acpSessionTitleRefreshEnabled": false,
   "acpChatEventPageSize": 200,
-  "acpRawMaxSizeBytes": 2048,
-  "acpRawTargetSizeBytes": 1024,
+  "acpRawMaxSizeBytes": 1048576,
+  "acpRawTargetSizeBytes": 786432,
   "permissionModeMapping": {
     "claude-acp": {
       "read_only": "plan",

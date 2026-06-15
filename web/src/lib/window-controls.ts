@@ -7,6 +7,10 @@ export interface WindowControlsPolicy {
   leadingInsetClassName: string;
 }
 
+export function shouldApplyRuntimeWindowPolicy(platform: DesktopPlatform): boolean {
+  return platform !== 'macos';
+}
+
 export function resolveWindowControlsPolicy(platform: DesktopPlatform): WindowControlsPolicy {
   if (platform === 'macos') {
     return {

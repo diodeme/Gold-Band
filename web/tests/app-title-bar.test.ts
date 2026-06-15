@@ -21,6 +21,7 @@ describe('AppTitleBar', () => {
     }));
 
     expect(html).toContain('pl-[72px]');
+    expect(html).toMatch(/aria-hidden="true"[^>]*pl-\[72px\][\s\S]*lucide-panel-left[\s\S]*logo\.svg[\s\S]*Gold Band[\s\S]*common\.workbench/);
     expect(html).not.toContain('common.minimizeWindow');
     expect(html).not.toContain('common.closeWindow');
   });
@@ -50,6 +51,7 @@ describe('AppTitleBar', () => {
     }));
 
     expect(html).toContain('pl-[72px]');
+    expect(html).toContain('aria-hidden="true"');
     expect(html).not.toContain('common.minimizeWindow');
     expect(html).not.toContain('common.closeWindow');
   });

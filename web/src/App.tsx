@@ -62,7 +62,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
-import { resolveWindowControlsPolicy } from './lib/window-controls';
+import { resolveWindowControlsPolicy, shouldApplyRuntimeWindowPolicy } from './lib/window-controls';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -214,6 +214,7 @@ export function App() {
 
   useEffect(() => {
     if (!isTauriRuntime() || !bootstrap?.platform) return;
+    if (!shouldApplyRuntimeWindowPolicy(bootstrap.platform)) return;
     const currentWindow = getCurrentWindow();
     const policy = resolveWindowControlsPolicy(bootstrap.platform);
 

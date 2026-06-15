@@ -96,10 +96,12 @@ export function AppTitleBar({
   };
 
   const modeLabel = uiMode === 'conversation' ? t('common.conversation') : t('common.workbench');
+  const hasLeadingInset = policy.leadingInsetClassName.length > 0;
 
   return (
     <header className="flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground" onDoubleClick={handleTitleBarDoubleClick}>
-      <div className={cn('flex items-center gap-2 px-2.5', policy.leadingInsetClassName)}>
+      <div className="flex items-center gap-2 px-2.5">
+        {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <Button
           variant="ghost"
           size="icon"
@@ -110,7 +112,7 @@ export function AppTitleBar({
         >
           <PanelLeft className="size-4" />
         </Button>
-        <div data-tauri-drag-region className="flex h-full items-center gap-2 pr-2" onMouseDown={handleDragMouseDown}>
+        <div data-tauri-drag-region className="flex h-full items-center gap-2 pr-1" onMouseDown={handleDragMouseDown}>
           <span data-tauri-drag-region className="grid h-7 w-10 shrink-0 place-items-center rounded-lg border border-titlebar-border bg-background/55 p-1">
             <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
           </span>

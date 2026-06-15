@@ -9,7 +9,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ 自定义顶栏：折叠按钮 / 品牌 icon+标题 / Workbench·Conversation toggle / 窗口控制 │
+│ 自定义顶栏：traffic lights / 折叠按钮 / 品牌 icon / Gold Band / Workbench·Conversation toggle / 窗口控制 │
 ├───────────────┬──────────────────────────────────────────────┤
 │ Logo          │ 当前一级功能区                                │
 │               │                                              │
@@ -43,6 +43,8 @@
 - 桌面端启动时优先恢复用户上次选择的 workspace。
 - 若无用户记忆，则从当前进程目录向上查找包含 `.gold-band/` 的项目根目录，避免 Tauri dev 从 `src-tauri/` 启动时误读子目录。
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
+- Conversation 形态下也必须保留可见的当前 workspace / 切换入口，避免用户只能在首次启动时选择、后续找不到查看与修改路径。
+- 切换桌面 workspace 时，除了刷新当前页面，还必须同步更新会话侧 `conversation_workspaces` 与 `last_conversation_workspace`，确保会话列表、composer 默认 workspace 和任务落盘目录一致。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
 
@@ -142,12 +144,16 @@ round 详情
 - 大屏展示更多列
 - 小窗口下保留左侧一级导航和当前页面核心内容
 - 应用整窗统一使用共享顶栏；macOS 保留原生左上角 traffic lights，并通过 overlay 标题栏与共享顶栏共存；Windows 与其他非 macOS 平台继续关闭原生 decorations，仅保留共享顶栏中的自定义窗口控制
+- macOS 主窗口需同时隐藏系统原生标题文本，仅保留 traffic lights；品牌 icon、Gold Band 标题与形态切换统一由共享顶栏自行绘制，避免与系统标题重叠
+- 该 macOS 标题栏策略必须在 Tauri 建主窗口前生效，不能等前端 bootstrap 后再切换；否则系统原生标题会先绘制出来并与共享顶栏短暂或持续叠画
+- 前端运行时窗口分流仅继续作用于 Windows 与其他非 macOS 平台；macOS 不应在 bootstrap 后再次调用 decorations 类窗口切换，以免把已隐藏的系统标题重新带回
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
 - 顶栏左侧只保留一个侧边栏折叠按钮；Workbench / Conversation 形态切换集中到顶栏中部
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
 - 非 macOS 平台的顶栏右侧统一承载窗口最小化、最大化/还原、关闭操作；macOS 不再渲染这组自定义按钮，最小化等行为交由原生 traffic lights 处理
 - 在平台事实源尚未解析完成的启动瞬间，共享顶栏不应提前渲染 Windows 风格自定义窗口按钮，避免与原生 chrome 重叠；同时顶栏左侧继续保留安全间距，确保后续 macOS 原生按钮出现时不与品牌区和折叠按钮相撞
+- macOS 下共享顶栏左侧元素顺序固定为：原生 traffic lights、侧边栏折叠按钮、品牌 icon、Gold Band 标题、Workbench / Conversation 切换；这些元素必须在同一水平线上顺序排开，不能与 traffic lights 或彼此重叠
 
 ### 6.4 运行态生命周期
 - Round 详情页的“继续运行”只在当前 run / round / node 处于可恢复暂停态时出现；成功、失败或 killed 的终局 round 不展示该入口。
@@ -164,6 +170,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
 - 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置。
+- `choose_workspace` / `select_recent_workspace` 切换成功后，必须同步修正会话侧当前 workspace 选择，避免新建会话仍落到旧 workspace。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
@@ -171,7 +178,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏，统一承载侧边栏折叠与形态切换；自 2026-06-14 起，窗口 decorations 与窗口控制再按 `bootstrap.platform` 分流，非 macOS 由共享顶栏承载右侧自定义窗口控制，macOS 改用原生左上角 traffic lights。
 - 2026-06-14 起桌面 bootstrap 额外暴露 `platform` 字段，作为前端唯一的平台事实源；后续所有窗口控制分流（如 macOS 原生 title bar style 与非 macOS 自定义控制）都必须基于该字段判断，而不是在前端各处自行读取运行时平台。
-- 2026-06-14 起窗口控制按 `bootstrap.platform` 实际分流：macOS 恢复原生左上角 traffic lights，并启用 overlay 标题栏与共享顶栏共存；Windows 与其他非 macOS 平台继续关闭原生 decorations，保留右侧自定义窗口控制按钮。平台尚未解析时，顶栏先隐藏自定义按钮，但保留左侧安全间距，避免启动瞬间与原生 chrome 重叠。
+- 2026-06-14 起窗口控制按 `bootstrap.platform` 实际分流：macOS 恢复原生左上角 traffic lights，并启用 overlay 标题栏与共享顶栏共存，同时隐藏系统原生标题文本；左侧顺序固定为 traffic lights、侧边栏折叠按钮、品牌 icon、Gold Band 标题、Workbench / Conversation 切换，且通过独立安全间距避免与原生 chrome 重叠。Windows 与其他非 macOS 平台继续关闭原生 decorations，保留右侧自定义窗口控制按钮。平台尚未解析时，顶栏先隐藏自定义按钮，但保留左侧安全间距，避免启动瞬间与原生 chrome 重叠。
 
 ---
 

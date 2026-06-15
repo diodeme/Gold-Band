@@ -44,6 +44,7 @@ export function ConversationComposer({
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
+  const [submittingAttachments, setSubmittingAttachments] = useState(false);
 
   const {
     attachments,
@@ -53,7 +54,7 @@ export function ConversationComposer({
     handleFilesFromInput,
     removeAttachment,
     clearAttachments,
-    getAttachmentPaths,
+    resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
     previewImage,
@@ -68,7 +69,7 @@ export function ConversationComposer({
   const isAuto = runMode.mode === 'auto';
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  const canSubmit = content.trim().length > 0 && !busy;
+  const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
   const agentOptions = selectableAgentOptions(agentRegistry, t);
   const agents = agentOptions.filter((item) => item.selectable).map((item) => item.agent);
   const selectedAgentObj = agents.find((a) => a.agentType === selectedAgent);
@@ -111,38 +112,48 @@ export function ConversationComposer({
     onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) });
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!canSubmit) return;
-    const paths = getAttachmentPaths();
-    const input: ConversationCreateInput = {
+    const trimmed = content.trim();
+    const inputBase: ConversationCreateInput = {
       projectId,
-      content: content.trim(),
+      content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
       autoConfig: isAuto
         ? autoConfigWithSession()
         : undefined,
-      attachmentPaths: paths.length > 0 ? paths : undefined,
     };
     const localIssues = isAuto
-      ? validateAutoConfig(input.autoConfig, agentRegistry, workflowTemplates, t)
-      : !input.workflowTemplateId
+      ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
+      : !inputBase.workflowTemplateId
         ? [t('conversation.home.selectWorkflowTemplate')]
         : [];
     if (localIssues.length > 0) {
       setRunModeError(localIssues.join('\n'));
       return;
     }
-    setRunModeError(null);
-    onSubmit(input);
-    setContent('');
-    clearAttachments();
+    setSubmittingAttachments(true);
+    try {
+      const paths = await resolveAttachmentPaths();
+      setRunModeError(null);
+      onSubmit({
+        ...inputBase,
+        attachmentPaths: paths.length > 0 ? paths : undefined,
+      });
+      setContent('');
+      clearAttachments();
+    } catch {
+      // Attachment hook owns the user-facing file error.
+    } finally {
+      setSubmittingAttachments(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   };
 
@@ -165,7 +176,7 @@ export function ConversationComposer({
             onDragEnter={dropZoneHandlers.onDragEnter}
             onDragOver={dropZoneHandlers.onDragOver}
             onDrop={dropZoneHandlers.onDrop}
-            disabled={busy}
+            disabled={busy || submittingAttachments}
           />
           <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/40 pt-3">
@@ -182,7 +193,7 @@ export function ConversationComposer({
                 size="icon"
                 className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
                 onClick={() => { void pickFiles(); }}
-                disabled={busy}
+                disabled={busy || submittingAttachments}
               >
                 <Paperclip className="size-4" />
               </Button>
@@ -212,7 +223,7 @@ export function ConversationComposer({
                 </div>
               )}
             </div>
-            <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={handleSubmit}>
+            <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
               <Send className="size-3.5" />
               {t('acp.send')}
             </Button>

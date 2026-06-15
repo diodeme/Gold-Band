@@ -5,7 +5,7 @@ vi.mock('../src/api/client', () => ({
 }));
 
 import { getRuntimeApi } from '../src/api/client';
-import { deleteProfile } from '../src/api';
+import { deleteProfile, materializeConversationAttachments } from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {
@@ -28,5 +28,18 @@ describe('api facade', () => {
     await deleteProfile('pf-456');
 
     expect(deleteProfileImpl).toHaveBeenCalledWith('pf-456', false);
+  });
+
+  it('passes materialized attachment files through to the selected runtime API', async () => {
+    const materializeImpl = vi.fn().mockResolvedValue([
+      { path: 'C:/tmp/shot.png', name: 'shot.png', size: 4 },
+    ]);
+    vi.mocked(getRuntimeApi).mockReturnValue({ materializeConversationAttachments: materializeImpl } as never);
+    const files = [{ name: 'shot.png', mime: 'image/png', size: 4, dataBase64: 'AQIDBA==' }];
+
+    const result = await materializeConversationAttachments(files);
+
+    expect(materializeImpl).toHaveBeenCalledWith(files);
+    expect(result).toEqual([{ path: 'C:/tmp/shot.png', name: 'shot.png', size: 4 }]);
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from './attachments';
-import { pickAttachmentFiles } from '@/api';
+import { materializeConversationAttachments, pickAttachmentFiles } from '@/api';
 import { isTauriRuntime } from '@/api/shared';
 
 // ── Types ──
@@ -22,7 +22,7 @@ export interface AttachmentItem {
 
 // ── Constants ──
 
-export const MAX_ATTACHMENT_COUNT = 20;
+export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024; // 50 MB
 
 // ── Helpers ──
@@ -90,15 +90,38 @@ function generateId(): string {
 
 function filesToItems(files: File[], source: AttachmentItem['source']): AttachmentItem[] {
   return files.map((file) => ({
+    ...fileToItem(file, source),
+  }));
+}
+
+function fileToItem(file: File, source: AttachmentItem['source']): AttachmentItem {
+  const mime = file.type || guessMimeFromExtension(file.name);
+  return {
     id: generateId(),
     name: file.name,
     size: file.size,
-    mime: file.type || 'application/octet-stream',
+    mime,
     path: isTauriRuntime() ? ((file as any).path as string | undefined) : undefined,
-    previewUrl: isImageMime(file.type) ? URL.createObjectURL(file) : undefined,
+    previewUrl: isImageMime(mime) ? URL.createObjectURL(file) : undefined,
     file,
     source,
-  }));
+  };
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('attachment read failed'));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('attachment read failed'));
+        return;
+      }
+      resolve(result.split(',', 2)[1] ?? result);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // ── Hook ──
@@ -291,10 +314,51 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     };
   }, [attachments]);
 
-  // ── Get paths for sending ──
+  const showTransientFileError = useCallback((message: string) => {
+    setFileError(message);
+    setTimeout(() => setFileError(null), 4000);
+  }, []);
+
+  // ── Resolve paths for sending ──
   const getAttachmentPaths = useCallback((): string[] => {
     return attachments.filter((a) => !!a.path).map((a) => a.path!);
   }, [attachments]);
+
+  const resolveAttachmentPaths = useCallback(async (): Promise<string[]> => {
+    const pendingFiles = attachments.filter((a) => !a.path && !!a.file);
+    const unresolved = attachments.filter((a) => !a.path && !a.file);
+    if (unresolved.length > 0) {
+      const message = t('conversation.attachmentMaterializeFailed');
+      showTransientFileError(message);
+      throw new Error(message);
+    }
+    if (pendingFiles.length === 0) {
+      return attachments.filter((a) => !!a.path).map((a) => a.path!);
+    }
+    try {
+      const files = await Promise.all(
+        pendingFiles.map(async (item) => ({
+          name: item.name,
+          mime: item.mime,
+          size: item.size,
+          dataBase64: await fileToBase64(item.file!),
+        })),
+      );
+      const materialized = await materializeConversationAttachments(files);
+      let materializedIndex = 0;
+      return attachments.flatMap((item) => {
+        if (item.path) return [item.path];
+        if (!item.file) return [];
+        const path = materialized[materializedIndex]?.path;
+        materializedIndex += 1;
+        return path ? [path] : [];
+      });
+    } catch (error) {
+      const message = t('conversation.attachmentMaterializeFailed');
+      showTransientFileError(message);
+      throw error;
+    }
+  }, [attachments, showTransientFileError, t]);
 
   // ── Preview ──
   const handlePreviewAttachment = useCallback((item: AttachmentItem) => {
@@ -320,6 +384,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     removeAttachment,
     clearAttachments,
     getAttachmentPaths,
+    resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
     previewImage,

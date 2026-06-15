@@ -72,7 +72,9 @@
 
 - **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端文件进入 WebView 后即声明可拖拽，拖入 composer 时应稳定显示可投放状态
 - **预览**：图片文件在 composer 内显示缩略图，点击可打开沉浸式大图预览；预览使用单层深色遮罩按合适尺寸展示原图，不支持缩放或拖拽，点击空白遮罩关闭
-- **传输**：输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录
+- **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。
+- **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`；发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后继续走现有 `attachmentPaths -> authoring/inputs -> provider task-inputs` 链路。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。
+- **AI-DYNAMIC**：AUTO / WORKFLOW 中的 AI-DYNAMIC 内部 worker、merge、acceptance 节点必须与普通 worker 复用同一 task input attachment 数据源；动态节点不得把 `input_attachment_paths` 清空，也不得要求 agent 主动扫描 run 目录寻找图片。
 
 ## Composer 状态
 
@@ -171,16 +173,16 @@ composer 只消费 lifecycle + ACP session live status + 少量本地 optimistic
 - composer 底部状态栏与资源条之间不额外保留大块过渡留白，输入区、模型权限信息与资源条保持连续的紧凑垂直节奏
 - 资源条不单独增加顶部边线，直接承接 composer 自身底边，避免连续双分隔线把输入区与文件区切得过碎
 - 资源条首行内容尽量贴近 composer 底边，优先压缩资源条自身顶部内边距，而不是继续压缩文件 chip 点击热区
-- 输入附件来源于 task 级 authoring/attachments/，创建会话时设定，重跑自动复用
+- 输入附件来源于 task 级 `authoring/inputs/`，创建会话时设定，重跑自动复用
 - 输入附件使用 Upload 图标 + 蓝色标记，与输出产物/附件区分
 - 当前选中 session 的产物 / 输出附件统一通过底部文件项进入弹窗查看，点击文件项直接打开该文件详情，不再经过单独列表页，也不再保留顶部重复入口
-- 点击查看详情，图片类附件以 base64 预览展示
+- 点击查看详情，图片类附件必须以图片元素渲染原图预览；base64/data URL 不直接展示为文本
 
 ## 附件生命周期
 
-- 新会话附件绑定 task，作为初始输入的一部分，持久化到 authoring/attachments/
-- 重跑复用 task-level 附件（同一 task 的 authoring/attachments/ 在多次 run 间共享）
-- 继续对话新附件进入当前 ACP session，发送后以文本形式告知 agent 文件名
+- 新会话附件绑定 task，作为初始输入的一部分，持久化到 `authoring/inputs/`
+- 重跑复用 task-level 附件（同一 task 的 `authoring/inputs/` 在多次 run 间共享）
+- 继续对话新附件进入当前 ACP session 的 user-inputs 链路，不写入 task 初始输入附件目录
 - 输入附件展示为独立层级，不与 agent 运行产物和输出附件混合
 
 ## Todo/Plan 任务面板

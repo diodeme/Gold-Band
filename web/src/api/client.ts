@@ -62,6 +62,19 @@ export interface AcpSessionUpdatedEventVm {
   event?: AcpUiEventVm | null;
 }
 
+export interface AttachmentFileRef {
+  path: string;
+  name: string;
+  size: number;
+}
+
+export interface MaterializeAttachmentFileInput {
+  name: string;
+  mime?: string | null;
+  size: number;
+  dataBase64: string;
+}
+
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
@@ -146,7 +159,8 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
-  pickAttachmentFiles(): Promise<Array<{ path: string; name: string; size: number }>>;
+  pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
+  materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
 }

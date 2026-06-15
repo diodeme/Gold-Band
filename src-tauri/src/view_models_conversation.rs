@@ -1511,44 +1511,17 @@ pub fn conversation_run_vm(
 
 // ── Attachment validation helpers ──
 
-const MAX_ATTACHMENT_COUNT: usize = 10;
-const MAX_ATTACHMENT_PER_FILE: u64 = 25 * 1024 * 1024; // 25 MB
-const MAX_ATTACHMENT_TOTAL: u64 = 100 * 1024 * 1024; // 100 MB
+pub(crate) const MAX_ATTACHMENT_COUNT: usize = 10;
+pub(crate) const MAX_ATTACHMENT_PER_FILE: u64 = 25 * 1024 * 1024; // 25 MB
+pub(crate) const MAX_ATTACHMENT_TOTAL: u64 = 100 * 1024 * 1024; // 100 MB
 
-fn allowed_attachment_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "txt"
-            | "md"
-            | "json"
-            | "jsonl"
-            | "csv"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "webp"
-            | "rs"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "py"
-            | "go"
-            | "java"
-            | "c"
-            | "cpp"
-            | "h"
-            | "hpp"
-            | "html"
-            | "css"
-            | "xml"
-            | "yaml"
-            | "yml"
-            | "toml"
-    )
+pub(crate) fn allowed_attachment_ext(ext: &str) -> bool {
+    gold_band::provider::supported_attachment_extensions()
+        .into_iter()
+        .any(|supported| supported == ext)
 }
 
-fn validate_attachment_paths(paths: &[String]) -> Vec<String> {
+pub(crate) fn validate_attachment_paths(paths: &[String]) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
     if paths.len() > MAX_ATTACHMENT_COUNT {
         errors.push("conversation.attachment-count-exceeded".to_string());

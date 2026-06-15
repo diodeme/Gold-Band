@@ -81,6 +81,11 @@ import {
   findAcpConfigOption,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
+import {
+  imageSrcFromContent,
+  isImageMessageAttachment,
+  type MessageAttachmentPreview,
+} from "@/lib/asset-preview";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -489,6 +494,10 @@ export const ACPChatDialog = forwardRef<
     null,
   );
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const [messageImagePreview, setMessageImagePreview] = useState<{
+    name: string;
+    src: string;
+  } | null>(null);
   const {
     attachments: pendingAttachments,
     fileError,
@@ -497,7 +506,7 @@ export const ACPChatDialog = forwardRef<
     handleFilesFromInput,
     removeAttachment,
     clearAttachments,
-    getAttachmentPaths,
+    resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
     previewImage,
@@ -786,6 +795,34 @@ export const ACPChatDialog = forwardRef<
       setArtifactLoading(false);
     }
   }, []);
+
+  const handleOpenMessageAttachment = useCallback(
+    async (attachment: MessageAttachmentPreview) => {
+      if (isImageMessageAttachment(attachment)) {
+        try {
+          const content = await showConversationAttachment(taskId, attachment.name);
+          const src = imageSrcFromContent(content);
+          if (src) {
+            setMessageImagePreview({ name: attachment.name, src });
+            return;
+          }
+        } catch {
+          // Fall through to the attachment detail dialog.
+        }
+      }
+      await handleOpenArtifactDetail({
+        kind: 'input-attachment',
+        name: attachment.name,
+        title: attachment.name,
+        tone: 'neutral',
+        preview: '',
+        roundId: '',
+        nodeId: '',
+        attemptId: '',
+      });
+    },
+    [handleOpenArtifactDetail, taskId],
+  );
 
   useImperativeHandle(
     ref,
@@ -1508,10 +1545,17 @@ export const ACPChatDialog = forwardRef<
 
   const submitPrompt = async (trimmed: string) => {
     if (sending || awaitingResponse || sessionActive || cancelling) return;
+    setSending(true);
+    setSendError(null);
+    let attPaths: string[];
+    try {
+      attPaths = await resolveAttachmentPaths();
+    } catch {
+      setSending(false);
+      return;
+    }
     const optimisticEvent = optimisticUserEvent(trimmed);
     const promptId = promptIdFromEvent(optimisticEvent);
-    // Collect attachment paths
-    const attPaths = getAttachmentPaths();
     const effectivePrompt = trimmed;
     setPrompt("");
     clearAttachments();
@@ -1522,7 +1566,6 @@ export const ACPChatDialog = forwardRef<
     setActiveTurnStartedAt(null);
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
-    setSending(true);
     try {
       const updated = await sendAcpPrompt(
         taskId,
@@ -1851,6 +1894,10 @@ export const ACPChatDialog = forwardRef<
           setArtifactContent(null);
         }}
       />
+      <MessageImagePreviewDialog
+        preview={messageImagePreview}
+        onClose={() => setMessageImagePreview(null)}
+      />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
@@ -1900,16 +1947,7 @@ export const ACPChatDialog = forwardRef<
                         expansionControls={expansionControls}
                         streamingTextItemKey={streamingTextItemKey}
                         taskId={taskId}
-                        onMessageAttachmentClick={(att) => handleOpenArtifactDetail({
-                          kind: 'input-attachment',
-                          name: att.name,
-                          title: att.name,
-                          tone: 'neutral',
-                          preview: '',
-                          roundId: '',
-                          nodeId: '',
-                          attemptId: '',
-                        })}
+                        onMessageAttachmentClick={handleOpenMessageAttachment}
                       />
                     </div>
                   ))}
@@ -2719,6 +2757,7 @@ function ACPArtifactsDialog({
   ];
 
   if (selectedArtifact) {
+    const imagePreviewSrc = imageSrcFromContent(artifactContent);
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
@@ -2758,9 +2797,20 @@ function ACPArtifactsDialog({
                   </Badge>
                   <span>{artifactContent.kind}</span>
                 </div>
-                <pre className="max-h-[60vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-                  {artifactContent.content}
-                </pre>
+                {imagePreviewSrc ? (
+                  <div className="flex max-h-[64vh] items-center justify-center overflow-hidden rounded-xl border border-border/45 bg-black/5 p-2">
+                    <img
+                      src={imagePreviewSrc}
+                      alt={selectedArtifact.title}
+                      draggable={false}
+                      className="max-h-[60vh] max-w-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <pre className="max-h-[60vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
+                    {artifactContent.content}
+                  </pre>
+                )}
               </div>
             ) : (
               <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
@@ -2940,7 +2990,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   expansionControls: AcpExpansionControls;
   streamingTextItemKey?: string | null;
   taskId?: string;
-  onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
+  onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
   if (isChildAgentGroup(event))
     return (
@@ -3236,14 +3286,14 @@ const MessageBubble = memo(function MessageBubble({
   event: AcpTimelineEvent;
   streamingTextItemKey?: string | null;
   taskId?: string;
-  onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
+  onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
   const { t } = useTranslation();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
   const streamingDraft =
     !isUser && timelineEventKey(event) === streamingTextItemKey;
-  const rawAttachments: Array<{ name: string; path: string; type: string; size: number }> =
+  const rawAttachments: MessageAttachmentPreview[] =
     rawObject(event.raw)?.attachments as any ?? [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
   return (
@@ -3280,20 +3330,12 @@ const MessageBubble = memo(function MessageBubble({
         {hasAttachments ? (
           <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
             {rawAttachments.map((att) => (
-              <button
+              <MessageAttachmentPreviewButton
                 key={att.path}
-                type="button"
-                className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
-                title={`${att.name} (${formatAttachmentSize(att.size)})`}
-                onClick={() => onMessageAttachmentClick?.(att)}
-              >
-                {att.type.startsWith("image/") ? (
-                  <ImageIcon className="size-3 text-blue-400" />
-                ) : (
-                  <FileText className="size-3 text-muted-foreground" />
-                )}
-                <span className="max-w-[120px] truncate">{att.name}</span>
-              </button>
+                attachment={att}
+                taskId={taskId}
+                onClick={onMessageAttachmentClick}
+              />
             ))}
           </div>
         ) : null}
@@ -3321,6 +3363,107 @@ const MessageBubble = memo(function MessageBubble({
         <AcpAvatarWithTime tone="user" timestamp={event.timestamp} />
       ) : null}
     </Message>
+  );
+});
+
+const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
+  attachment,
+  taskId,
+  onClick,
+}: {
+  attachment: MessageAttachmentPreview;
+  taskId?: string;
+  onClick?: (attachment: MessageAttachmentPreview) => void;
+}) {
+  const isImage = isImageMessageAttachment(attachment);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isImage || !taskId) {
+      setPreviewSrc(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewSrc(null);
+    showConversationAttachment(taskId, attachment.name)
+      .then((content) => {
+        if (!cancelled) setPreviewSrc(imageSrcFromContent(content));
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewSrc(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.name, isImage, taskId]);
+
+  if (isImage) {
+    return (
+      <button
+        type="button"
+        className="group relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
+        aria-label={attachment.name}
+        onClick={() => onClick?.(attachment)}
+      >
+        {previewSrc ? (
+          <img
+            src={previewSrc}
+            alt={attachment.name}
+            loading="lazy"
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : (
+          <span className="flex size-full items-center justify-center bg-muted/40">
+            <ImageIcon className="size-5 text-blue-400" />
+          </span>
+        )}
+        <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-[10px] font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
+          {attachment.name}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
+      onClick={() => onClick?.(attachment)}
+    >
+      <FileText className="size-3 text-muted-foreground" />
+      <span className="max-w-[120px] truncate">{attachment.name}</span>
+    </button>
+  );
+});
+
+const MessageImagePreviewDialog = memo(function MessageImagePreviewDialog({
+  preview,
+  onClose,
+}: {
+  preview: { name: string; src: string } | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        showCloseButton={false}
+        overlayClassName="bg-black/70"
+        className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
+      >
+        <DialogTitle className="sr-only">{preview?.name ?? 'Image Preview'}</DialogTitle>
+        {preview ? (
+          <img
+            src={preview.src}
+            alt={preview.name}
+            draggable={false}
+            className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
+          />
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 });
 

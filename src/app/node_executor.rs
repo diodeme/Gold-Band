@@ -60,7 +60,6 @@ fn runtime_prompt_context(
     node_id: &str,
     attempt_id: &str,
 ) -> PromptRuntimeContext {
-    let task_inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     PromptRuntimeContext {
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
@@ -78,7 +77,7 @@ fn runtime_prompt_context(
         attachments_dir: app
             .paths
             .attachments_dir(task_id, run_id, round_id, node_id, attempt_id),
-        task_inputs_dir: task_inputs_dir.exists().then_some(task_inputs_dir),
+        task_inputs_dir: super::existing_task_inputs_dir(app, task_id),
     }
 }
 
@@ -326,22 +325,7 @@ pub(crate) fn build_worker_invocation(
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
 
-    let input_attachment_paths: Vec<String> = {
-        let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
-        if inputs_dir.exists() {
-            std::fs::read_dir(inputs_dir.as_std_path())
-                .map(|entries| {
-                    entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                        .map(|e| e.path().to_string_lossy().to_string())
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    };
+    let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
 
     Ok(WorkerInvocation {
         invocation_kind,

@@ -1548,7 +1548,7 @@ fn dynamic_runtime_context(
         node_dir,
         attempt_dir,
         attachments_dir,
-        task_inputs_dir: None,
+        task_inputs_dir: super::existing_task_inputs_dir(ctx.app, ctx.task_id),
     }
 }
 
@@ -4760,7 +4760,7 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
-        input_attachment_paths: Vec::new(),
+        input_attachment_paths: super::task_input_attachment_paths(ctx.app, ctx.task_id),
     })
 }
 

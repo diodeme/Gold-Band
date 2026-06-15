@@ -8,9 +8,9 @@ use gold_band::dynamic::{
     dynamic_completion_effective_schema,
 };
 use gold_band::provider::{
-    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
-    render_prompt_bundle,
+    AcpContentBlock, DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities,
+    ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
+    WorkerInvocation, render_prompt_bundle,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -696,6 +696,14 @@ fn write_task_file(app: &App, task_id: &str) {
     .unwrap();
 }
 
+fn write_task_input_image(app: &App, task_id: &str, name: &str) -> Utf8PathBuf {
+    let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
+    std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
+    let path = inputs_dir.join(name);
+    std::fs::write(path.as_std_path(), b"\x89PNG\r\n\x1a\nimage").unwrap();
+    path
+}
+
 fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_workflows: &str) {
     std::fs::write(
         app.paths.workflow_file(task_id).as_std_path(),
@@ -812,6 +820,53 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(merge.system_prompt.contains("group-core"));
     assert!(merge.system_prompt.contains("branch-a"));
     assert!(merge.system_prompt.contains("branch-b"));
+}
+
+#[test]
+fn ai_dynamic_invocations_receive_task_input_attachments() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-input-attachments";
+    let provider = DynamicProvider::fanout();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    let image_path = write_task_input_image(&app, task_id, "image.png");
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let image_path_string = image_path.to_string();
+    let invocations = provider.invocations.lock().unwrap();
+    assert!(!invocations.is_empty());
+    assert!(
+        invocations
+            .iter()
+            .all(|invocation| invocation.input_attachment_paths == vec![image_path_string.clone()])
+    );
+    assert!(invocations.iter().all(|invocation| {
+        invocation
+            .runtime_context
+            .task_inputs_dir
+            .as_ref()
+            .map(|dir| dir == &app.paths.task_dir(task_id).join("authoring").join("inputs"))
+            .unwrap_or(false)
+    }));
+
+    let prompt = render_prompt_bundle(&invocations[0]).unwrap();
+    assert_eq!(prompt.attachment_metas.len(), 1);
+    assert_eq!(prompt.attachment_metas[0].name, "image.png");
+    assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
+    match prompt.content_blocks.first() {
+        Some(AcpContentBlock::Image(block)) => {
+            let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
+            assert_eq!(block.mime_type, "image/png");
+            assert_eq!(block.uri.as_deref(), Some(expected_uri.as_str()));
+        }
+        _ => panic!("expected image content block"),
+    }
 }
 
 #[test]

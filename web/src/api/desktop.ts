@@ -269,7 +269,10 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('save_last_conversation_workspace', { projectId });
   },
   pickAttachmentFiles() {
-    return invokeCommand<Array<{ path: string; name: string; size: number }>>('pick_attachment_files');
+    return invokeCommand('pick_attachment_files');
+  },
+  materializeConversationAttachments(files) {
+    return invokeCommand('materialize_conversation_attachments', { input: { files } });
   },
   getSupportedAttachmentExtensions() {
     return invokeCommand<string[]>('get_supported_attachment_extensions');

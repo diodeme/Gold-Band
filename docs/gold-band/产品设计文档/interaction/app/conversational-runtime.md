@@ -24,6 +24,7 @@
 
 ### 编辑工作流
 - WORKFLOW 模式下显示查看按钮（Eye 图标）和编辑按钮（Workflow 图标）
+- AUTO / WORKFLOW 中选中 AI-DYNAMIC 内部 session 时也显示查看按钮（Eye 图标），查看该 AI-DYNAMIC attempt 生成的运行态工作流；暂不提供编辑入口
 - 查看工作流：打开 Sheet，复用旧 UI 的运行态工作图组件与数据链路，展示当前选中 session 所在 round 的实际路径图
 - 查看工作流中的节点状态、暂停/成功图标、产物数、附件数、agent 标识等信息应与旧 UI 保持一致
 - 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器

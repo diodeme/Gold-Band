@@ -12,6 +12,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
 import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
+import { canViewConversationRuntimeWorkflow } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
@@ -250,6 +251,7 @@ export function ConversationRunPage({
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
     ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
     : null;
+  const canViewWorkflow = canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         lifecycle: selectedLeaf.lifecycle,
@@ -274,6 +276,8 @@ export function ConversationRunPage({
           <ConversationRunHeader
             run={run}
             selectedSessionLeaf={selectedLeaf}
+            canViewWorkflow={canViewWorkflow}
+            canEditWorkflow={run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}

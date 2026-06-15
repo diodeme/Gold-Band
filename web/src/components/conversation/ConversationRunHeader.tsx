@@ -15,6 +15,8 @@ interface ConversationRunHeaderProps {
   onToggleSessionSwitcher: () => void;
   sessionSwitcherOpen: boolean;
   selectedSessionLeaf?: ConversationSessionLeafVm | null;
+  canViewWorkflow?: boolean;
+  canEditWorkflow?: boolean;
   onTitleChange?: (title: string) => void;
 }
 
@@ -27,6 +29,8 @@ export function ConversationRunHeader({
   onToggleSessionSwitcher,
   sessionSwitcherOpen,
   selectedSessionLeaf,
+  canViewWorkflow,
+  canEditWorkflow,
   onTitleChange,
 }: ConversationRunHeaderProps) {
   const { t } = useTranslation();
@@ -109,25 +113,26 @@ export function ConversationRunHeader({
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-0.5">
-          {run.runMode === 'workflow' ? (
-            <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="size-5.5" onClick={onViewWorkflow}>
-                    <Eye className="size-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{t('conversation.runtime.viewWorkflow')}</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="size-5.5" onClick={onEditWorkflow}>
-                    <Workflow className="size-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{t('conversation.runtime.editWorkflow')}</TooltipContent>
-              </Tooltip>
-            </>
+          {canViewWorkflow ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-5.5" onClick={onViewWorkflow}>
+                  <Eye className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('conversation.runtime.viewWorkflow')}</TooltipContent>
+            </Tooltip>
+          ) : null}
+
+          {canEditWorkflow ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-5.5" onClick={onEditWorkflow}>
+                  <Workflow className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('conversation.runtime.editWorkflow')}</TooltipContent>
+            </Tooltip>
           ) : null}
 
           <Tooltip>

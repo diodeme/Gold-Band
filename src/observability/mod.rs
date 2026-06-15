@@ -212,7 +212,8 @@ pub fn runtime_log_filter(metadata: &tracing::Metadata<'_>) -> bool {
     if metadata.target() == PROGRESS_TARGET {
         return false;
     }
-    if !matches!(metadata.target(), target if target.starts_with("gold_band") || target.starts_with("gold_band_desktop")) {
+    if !matches!(metadata.target(), target if target.starts_with("gold_band") || target.starts_with("gold_band_desktop"))
+    {
         return false;
     }
     runtime_log_level().allows(metadata.level())

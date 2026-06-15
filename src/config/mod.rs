@@ -47,7 +47,10 @@ impl RuntimeLogLevel {
             Self::Warn => matches!(*level, Level::ERROR | Level::WARN),
             Self::Info => matches!(*level, Level::ERROR | Level::WARN | Level::INFO),
             Self::Debug => {
-                matches!(*level, Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG)
+                matches!(
+                    *level,
+                    Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG
+                )
             }
             Self::Trace => true,
         }

@@ -5940,7 +5940,8 @@ mod tests {
         let r1 = scan_acp_timeline(&path, None, false, 360).unwrap();
         assert_eq!(r1.events.len(), 5);
 
-        let rewritten_path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(8, 2500));
+        let rewritten_path =
+            write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(8, 2500));
         assert_eq!(rewritten_path, path);
         let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
 
@@ -5978,7 +5979,8 @@ mod tests {
         let r1 = scan_acp_events(&path, None, false, 360).unwrap();
         assert_eq!(r1.events.len(), 4);
 
-        let rewritten_path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(7, 3500));
+        let rewritten_path =
+            write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(7, 3500));
         assert_eq!(rewritten_path, path);
         let r2 = scan_acp_events(&path, None, false, 360).unwrap();
 

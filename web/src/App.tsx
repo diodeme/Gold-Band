@@ -57,7 +57,7 @@ import { ConversationSearchDialog } from './components/conversation/Conversation
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { TaskListPage } from './pages/TaskListPage';
+import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
@@ -162,6 +162,7 @@ export function App() {
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
+  const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
   const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -326,6 +327,7 @@ export function App() {
     setRoundSelection({ kind: 'round' });
     setAgentRegistry(null);
     setTaskList(null);
+    setCreateTaskDraft(createInitialCreateTaskDraft());
     setWorkflow(null);
     setRoundDetail(null);
     setPrimaryModule('task-orchestration');
@@ -990,7 +992,19 @@ export function App() {
   function renderTaskContent() {
     const pageBreadcrumbs = <Breadcrumbs page={taskPage} onNavigate={navigate} />;
     if (taskPage.kind === 'task-list') {
-      return <TaskListPage vm={taskList} loading={loading} breadcrumbs={pageBreadcrumbs} onNavigate={navigate} onRefresh={() => void refresh('manual')} onCreateTask={onCreateTask} onOpenProfileManagement={openProfileManagement} />;
+      return (
+        <TaskListPage
+          vm={taskList}
+          loading={loading}
+          breadcrumbs={pageBreadcrumbs}
+          onNavigate={navigate}
+          onRefresh={() => void refresh('manual')}
+          onCreateTask={onCreateTask}
+          onOpenProfileManagement={openProfileManagement}
+          createTaskDraft={createTaskDraft}
+          onCreateTaskDraftChange={setCreateTaskDraft}
+        />
+      );
     }
     if (taskPage.kind === 'workflow') {
       return (

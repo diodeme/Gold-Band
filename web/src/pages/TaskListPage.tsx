@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { Check, ChevronDown, Copy, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +37,22 @@ interface TaskListPageProps {
   onRefresh: () => void;
   onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>;
   onOpenProfileManagement: () => void;
+  createTaskDraft: CreateTaskDraftState;
+  onCreateTaskDraftChange: Dispatch<SetStateAction<CreateTaskDraftState>>;
+}
+
+export interface CreateTaskDraftState {
+  open: boolean;
+  selectedTemplateId: string | null;
+  lastUsedHintDismissed: boolean;
+  baseWorkflow: WorkflowDsl | null;
+  saveTemplateName: string;
+  title: string;
+  description: string;
+  requirementFileName: string;
+  requirementContent: string;
+  workflow: WorkflowDsl | null;
+  initialized: boolean;
 }
 
 type TaskFilter = 'all' | 'running' | 'completed' | 'resumable' | 'failed' | 'invalid';
@@ -45,7 +61,23 @@ type SortDir = 'asc' | 'desc';
 
 const pageSizes = [10, 20, 50];
 
-export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, onCreateTask, onOpenProfileManagement }: TaskListPageProps) {
+export function createInitialCreateTaskDraft(): CreateTaskDraftState {
+  return {
+    open: false,
+    selectedTemplateId: null,
+    lastUsedHintDismissed: false,
+    baseWorkflow: null,
+    saveTemplateName: '',
+    title: '',
+    description: '',
+    requirementFileName: '',
+    requirementContent: '',
+    workflow: null,
+    initialized: false,
+  };
+}
+
+export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, onCreateTask, onOpenProfileManagement, createTaskDraft, onCreateTaskDraftChange }: TaskListPageProps) {
   const { t } = useTranslation();
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -55,7 +87,6 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(10);
-  const [createOpen, setCreateOpen] = useState(false);
   const isInitialLoading = loading === 'initial';
   const isManualRefreshing = loading === 'manual' && vm !== null;
 
@@ -132,7 +163,7 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
               <RefreshCw className={cn(isManualRefreshing && 'animate-spin')} />
               {t('common.refresh')}
             </Button>
-            <Button disabled={isInitialLoading} onClick={() => setCreateOpen(true)}>{t('taskList.createTask')}</Button>
+            <Button disabled={isInitialLoading} onClick={() => onCreateTaskDraftChange((draft) => ({ ...draft, open: true }))}>{t('taskList.createTask')}</Button>
           </>
         )}
       />
@@ -241,13 +272,13 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
         </div>
       ) : null}
       <CreateTaskSheet
-        open={createOpen}
-        onOpenChange={setCreateOpen}
+        draft={createTaskDraft}
+        onDraftChange={onCreateTaskDraftChange}
         onOpenProfileManagement={onOpenProfileManagement}
         onCreateTask={async (input) => {
           const created = await onCreateTask(input);
           if (created) {
-            setCreateOpen(false);
+            onCreateTaskDraftChange(createInitialCreateTaskDraft());
             onNavigate({ kind: 'workflow', taskId: created.task.id });
           }
           return created;
@@ -257,30 +288,45 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
   );
 }
 
-function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManagement }: { open: boolean; onOpenChange: (open: boolean) => void; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>; onOpenProfileManagement: () => void }) {
+function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileManagement }: { draft: CreateTaskDraftState; onDraftChange: Dispatch<SetStateAction<CreateTaskDraftState>>; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>; onOpenProfileManagement: () => void }) {
   const { t } = useTranslation();
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<WorkflowTemplate | null>(null);
-  const [lastUsedHintDismissed, setLastUsedHintDismissed] = useState(false);
-  const [baseWorkflow, setBaseWorkflow] = useState<WorkflowDsl | null>(null);
-  const [saveTemplateName, setSaveTemplateName] = useState('');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [requirementFileName, setRequirementFileName] = useState('');
-  const [requirementContent, setRequirementContent] = useState('');
-  const [workflow, setWorkflow] = useState<WorkflowDsl | null>(null);
   const requirementInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
   const [confirmRequirementImportOpen, setConfirmRequirementImportOpen] = useState(false);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const {
+    open,
+    selectedTemplateId,
+    lastUsedHintDismissed,
+    baseWorkflow,
+    saveTemplateName,
+    title,
+    description,
+    requirementFileName,
+    requirementContent,
+    workflow,
+  } = draft;
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
+  const updateDraft = (patch: Partial<CreateTaskDraftState>) => {
+    onDraftChange((current) => ({ ...current, ...patch }));
+  };
+  const hasEditedDraft = Boolean(
+    title.trim()
+    || description.trim()
+    || requirementFileName.trim()
+    || requirementContent.trim()
+    || saveTemplateName.trim()
+    || workflowDirty
+  );
 
   useEffect(() => {
     if (!workflowNotice) return;
@@ -298,20 +344,28 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         setAgentRegistry(registry);
         setTemplateStore(templates);
         setProfileList(profiles);
-        const selectedTemplate = templates.templates[0] ?? null;
-        const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? null;
-        setSelectedTemplateId(selectedTemplate?.id ?? null);
-        setLastUsedHintDismissed(false);
-        setBaseWorkflow(initialWorkflow);
-        setWorkflow(initialWorkflow);
-        setSaveTemplateName('');
-        if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
+        if (!draft.initialized) {
+          const selectedTemplate = templates.templates[0] ?? null;
+          const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? null;
+          onDraftChange((current) => ({
+            ...current,
+            selectedTemplateId: selectedTemplate?.id ?? null,
+            lastUsedHintDismissed: false,
+            baseWorkflow: initialWorkflow,
+            workflow: initialWorkflow,
+            saveTemplateName: '',
+            initialized: true,
+          }));
+          if (!initialWorkflow) setFormError(t('taskList.create.noWorkflowTemplate'));
+        } else if (!draft.workflow) {
+          setFormError(t('taskList.create.noWorkflowTemplate'));
+        }
       })
       .catch((err) => {
         setFormError(displayAppError(t, err));
         setWorkflowError(displayAppError(t, err));
       });
-  }, [open]);
+  }, [draft.initialized, onDraftChange, open, t]);
 
   const applyImportedRequirement = async (file: File) => {
     if (!/\.(txt|md)$/i.test(file.name)) {
@@ -319,15 +373,17 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       return;
     }
     const content = await file.text();
-    setRequirementFileName(file.name);
-    setTitle(file.name.replace(/\.(txt|md)$/i, ''));
-    setDescription('');
-    setRequirementContent(content);
+    updateDraft({
+      requirementFileName: file.name,
+      title: file.name.replace(/\.(txt|md)$/i, ''),
+      description: '',
+      requirementContent: content,
+    });
     setFormError(null);
   };
 
   const clearRequirementFile = () => {
-    setRequirementFileName('');
+    updateDraft({ requirementFileName: '' });
     setFormError(null);
     if (requirementInputRef.current) requirementInputRef.current.value = '';
   };
@@ -358,22 +414,28 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     if (!templateStore) return;
     const template = templateStore.templates.find((item) => item.id === templateId);
     if (!template) return;
-    setSelectedTemplateId(template.id);
-    setBaseWorkflow(template.workflow);
-    setWorkflow(template.workflow);
-    setLastUsedHintDismissed(template.id === templateStore.lastUsedTemplateId);
-    setSaveTemplateName('');
+    updateDraft({
+      selectedTemplateId: template.id,
+      baseWorkflow: template.workflow,
+      workflow: template.workflow,
+      lastUsedHintDismissed: template.id === templateStore.lastUsedTemplateId,
+      saveTemplateName: '',
+      initialized: true,
+    });
     setWorkflowError(null);
     setWorkflowNotice(null);
   };
 
   const startBlankWorkflowTemplate = () => {
     const blankWorkflow = createBlankWorkflowDraft();
-    setSelectedTemplateId(null);
-    setBaseWorkflow(blankWorkflow);
-    setWorkflow(blankWorkflow);
-    setLastUsedHintDismissed(false);
-    setSaveTemplateName('');
+    updateDraft({
+      selectedTemplateId: null,
+      baseWorkflow: blankWorkflow,
+      workflow: blankWorkflow,
+      lastUsedHintDismissed: false,
+      saveTemplateName: '',
+      initialized: true,
+    });
     setTemplatePickerOpen(false);
     setFormError(null);
     setWorkflowError(null);
@@ -382,10 +444,13 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
 
   const applyDefaultWorkflow = (next: WorkflowDsl) => {
     const matchedTemplate = templateStore?.templates.find((template) => canonicalWorkflow(template.workflow) === canonicalWorkflow(next)) ?? null;
-    setSelectedTemplateId(matchedTemplate?.id ?? null);
-    setBaseWorkflow(next);
-    setWorkflow(next);
-    setSaveTemplateName('');
+    updateDraft({
+      selectedTemplateId: matchedTemplate?.id ?? null,
+      baseWorkflow: next,
+      workflow: next,
+      saveTemplateName: '',
+      initialized: true,
+    });
     setWorkflowError(null);
     setWorkflowNotice(null);
   };
@@ -415,10 +480,13 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       const selected = nextStore.templates.at(-1) ?? null;
       const savedWorkflow = selected?.workflow ?? validatedWorkflow;
       setTemplateStore(nextStore);
-      setSelectedTemplateId(selected?.id ?? nextStore.lastUsedTemplateId ?? null);
-      setBaseWorkflow(savedWorkflow);
-      setWorkflow(savedWorkflow);
-      setSaveTemplateName('');
+      updateDraft({
+        selectedTemplateId: selected?.id ?? nextStore.lastUsedTemplateId ?? null,
+        baseWorkflow: savedWorkflow,
+        workflow: savedWorkflow,
+        saveTemplateName: '',
+        initialized: true,
+      });
       setWorkflowError(null);
       setWorkflowNotice(t('taskList.create.workflowTemplateSaved'));
     } catch (err) {
@@ -439,9 +507,12 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       const selected = nextStore.templates.find((template) => template.id === selectedTemplateId) ?? null;
       const savedWorkflow = selected?.workflow ?? validatedWorkflow;
       setTemplateStore(nextStore);
-      setBaseWorkflow(savedWorkflow);
-      setWorkflow(savedWorkflow);
-      setSaveTemplateName('');
+      updateDraft({
+        baseWorkflow: savedWorkflow,
+        workflow: savedWorkflow,
+        saveTemplateName: '',
+        initialized: true,
+      });
       setWorkflowError(null);
       setWorkflowNotice(t('taskList.create.workflowTemplateUpdated'));
     } catch (err) {
@@ -460,11 +531,14 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
       const nextStore = await deleteWorkflowTemplate(deletedTemplateId);
       const selected = selectedTemplateId === deletedTemplateId ? nextStore.templates[0] ?? null : nextStore.templates.find((template) => template.id === selectedTemplateId) ?? nextStore.templates[0] ?? null;
       setTemplateStore(nextStore);
-      setSelectedTemplateId(selected?.id ?? null);
-      setBaseWorkflow(selected?.workflow ?? null);
-      setWorkflow(selected?.workflow ?? null);
+      updateDraft({
+        selectedTemplateId: selected?.id ?? null,
+        baseWorkflow: selected?.workflow ?? null,
+        workflow: selected?.workflow ?? null,
+        saveTemplateName: '',
+        initialized: true,
+      });
       setDeleteTemplateTarget(null);
-      setSaveTemplateName('');
       setWorkflowError(null);
       setWorkflowNotice(t('taskList.create.workflowTemplateDeleted'));
     } catch (err) {
@@ -500,11 +574,6 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
         workflowTemplateId: selectedTemplateId,
       });
       if (!created) return;
-      setTitle('');
-      setDescription('');
-      setRequirementContent('');
-      clearRequirementFile();
-      setWorkflow(null);
     } catch (err) {
       setWorkflowNotice(null);
       setWorkflowError(displayAppError(t, err));
@@ -520,8 +589,31 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
     await submit(validatedWorkflow);
   };
 
+  const requestOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      updateDraft({ open: true });
+      return;
+    }
+    if (hasEditedDraft) {
+      setConfirmDiscardOpen(true);
+      return;
+    }
+    onDraftChange(createInitialCreateTaskDraft());
+  };
+
+  const confirmDiscardDraft = () => {
+    setConfirmDiscardOpen(false);
+    setFormError(null);
+    setWorkflowError(null);
+    setWorkflowNotice(null);
+    setPendingImportFile(null);
+    setConfirmRequirementImportOpen(false);
+    setTemplatePickerOpen(false);
+    onDraftChange(createInitialCreateTaskDraft());
+  };
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={requestOpenChange}>
       <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="task-list/create-task" defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-9">
@@ -567,11 +659,11 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                 <div className="grid gap-2 text-sm">
                   <div className="grid gap-1">
                     <Label className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskTitle')}</Label>
-                    <Input className="h-10" value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('taskList.create.taskTitlePlaceholder')} />
+                    <Input className="h-10" value={title} onChange={(event) => updateDraft({ title: event.target.value })} placeholder={t('taskList.create.taskTitlePlaceholder')} />
                   </div>
                   <div className="grid gap-1.5">
                     <Label className="text-xs font-medium text-muted-foreground">{t('taskList.create.taskDescription')}</Label>
-                    <Textarea className="min-h-36 resize-none" value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('taskList.create.taskDescriptionPlaceholder')} />
+                    <Textarea className="min-h-36 resize-none" value={description} onChange={(event) => updateDraft({ description: event.target.value })} placeholder={t('taskList.create.taskDescriptionPlaceholder')} />
                   </div>
                 </div>
                 <div className="grid gap-1 text-sm">
@@ -585,7 +677,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   />
                   <Textarea
                     value={requirementContent}
-                    onChange={(event) => setRequirementContent(event.target.value)}
+                    onChange={(event) => updateDraft({ requirementContent: event.target.value })}
                     placeholder={t('taskList.create.requirementContentPlaceholder')}
                     className="min-h-[220px] bg-background"
                   />
@@ -667,7 +759,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   {workflowDirty ? (
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
-                      <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => setSaveTemplateName(event.target.value)} />
+                      <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
                       <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
                     </div>
                   ) : null}
@@ -693,7 +785,7 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
                   allowAiDynamic
                   saving={saving}
                   onChange={(next) => {
-                    setWorkflow(next);
+                    updateDraft({ workflow: next, initialized: true });
                     setWorkflowError(null);
                     setWorkflowNotice(null);
                   }}
@@ -718,6 +810,18 @@ function CreateTaskSheet({ open, onOpenChange, onCreateTask, onOpenProfileManage
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
             <AlertDialogAction onClick={() => void confirmRequirementImport()}>{t('taskList.create.confirmImportAction')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={confirmDiscardOpen} onOpenChange={setConfirmDiscardOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('taskList.create.confirmDiscardTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('taskList.create.confirmDiscardDescription')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDiscardDraft}>{t('taskList.create.confirmDiscardAction')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -36,6 +36,14 @@ describe('conversation session follow helpers', () => {
     })).toBe('round-001/node-b/attempt-001');
   });
 
+  it('does not let an outer AI-DYNAMIC event steal an internal selection', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+      incomingSessionKey: 'round-001/ai-dynamic/attempt-001',
+      followMode: 'auto',
+    })).toBe('round-001/ai-dynamic/attempt-001/bootstrap/attempt-001');
+  });
+
   it('preserves the current selection while manual mode is active', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: 'round-001/node-a/attempt-001',
@@ -64,6 +72,14 @@ describe('conversation session follow helpers', () => {
       pendingEventSessionKey: 'round-001/node-b/attempt-001',
       currentSelectedKey: 'round-001/node-a/attempt-001',
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('refreshes an outer AI-DYNAMIC event with the selected internal session key', () => {
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/ai-dynamic/attempt-001',
+      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+    })).toBe('round-001/ai-dynamic/attempt-001/bootstrap/attempt-001');
   });
 
   it('does not queue a run refresh for non-terminal updates from the selected session', () => {

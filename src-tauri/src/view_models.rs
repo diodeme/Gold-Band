@@ -2293,6 +2293,35 @@ fn dynamic_internal_graph_vm(
     GraphVm { nodes, edges }
 }
 
+pub fn dynamic_runtime_graph_vm(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> Option<GraphVm> {
+    dynamic_graph_state_optional(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    )
+    .map(|graph| {
+        dynamic_internal_graph_vm(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &graph,
+        )
+    })
+}
+
 fn dynamic_detail_vm(
     app: &App,
     task_id: &str,

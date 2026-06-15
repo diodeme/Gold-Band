@@ -105,6 +105,7 @@ import {
   isSessionTerminalStatus,
 } from "@/lib/acp-runtime-composer-state";
 import {
+  hasAcpSessionMetadata,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -535,6 +536,8 @@ export const ACPChatDialog = forwardRef<
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
+  const hydratedSessionKeysRef = useRef(new Set<string>());
+  const hydrationInflightRef = useRef(false);
   const liveUpdatesPaused = Boolean(
     externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
   );
@@ -647,6 +650,8 @@ export const ACPChatDialog = forwardRef<
     terminalSessionNotifiedRef.current = false;
     latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
+    hydratedSessionKeysRef.current.clear();
+    hydrationInflightRef.current = false;
     setCanvasMode("chat");
   }, [effectiveLoadedEventBufferLimit, sessionIdentity]);
 
@@ -1298,10 +1303,53 @@ export const ACPChatDialog = forwardRef<
       (event.outerNodeId ?? null) === (outerNodeId ?? null) &&
       (event.outerAttemptId ?? null) === (outerAttemptId ?? null);
     void (async () => {
+      const sessionKey = `${taskId}/${runId}/${roundId}/${nodeId}/${attemptId}/${outerNodeId ?? ""}/${outerAttemptId ?? ""}`;
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
-        if (event.event) enqueueLiveEventUpdate(event.event);
-        else {
+        if (event.event) {
+          enqueueLiveEventUpdate(event.event);
+          const latest = latestSessionRef.current;
+          const missingMetadata = !hasAcpSessionMetadata(
+            latest
+              ? {
+                  systemPromptAppend: latest.systemPromptAppend,
+                  currentModelId: latest.config?.currentModelId,
+                  currentModeId: latest.config?.currentModeId,
+                }
+              : null,
+          );
+          if (
+            missingMetadata &&
+            !hydratedSessionKeysRef.current.has(sessionKey) &&
+            !hydrationInflightRef.current
+          ) {
+            hydrationInflightRef.current = true;
+            getAcpSession(
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              {
+                pageSize: effectiveEventPageSize,
+                eventLimit: effectiveEventPageSize,
+              },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            )
+              .then((updated) => {
+                if (active && sessionRefreshSeqRef.current === refreshSeq) {
+                  applySessionUpdate(updated);
+                }
+              })
+              .catch(() => {})
+              .finally(() => {
+                hydrationInflightRef.current = false;
+                hydratedSessionKeysRef.current.add(sessionKey);
+              });
+          }
+        } else {
           flushOrSchedulePendingLiveEvents("sync");
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
@@ -4713,6 +4761,7 @@ function sessionsEquivalent(
   if (previous.status !== next.status) return false;
   if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
   if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
+  if (acpSessionMetadataSignature(previous) !== acpSessionMetadataSignature(next)) return false;
   if (previous.events.length !== next.events.length) return false;
   const previousLast = previous.events.at(-1);
   const nextLast = next.events.at(-1);
@@ -4725,6 +4774,17 @@ function sessionsEquivalent(
     previous.eventPage.hasOlder === next.eventPage.hasOlder &&
     previous.eventPage.hasNewer === next.eventPage.hasNewer
   );
+}
+
+function acpSessionMetadataSignature(session: AcpSessionVm) {
+  return JSON.stringify({
+    sessionId: session.sessionId ?? null,
+    title: session.title ?? null,
+    adapterId: session.adapterId ?? null,
+    adapterDisplayName: session.adapterDisplayName ?? null,
+    systemPromptAppend: session.systemPromptAppend ?? null,
+    config: session.config ?? null,
+  });
 }
 
 export {

@@ -177,6 +177,7 @@ pub fn run_prompt(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
+    session_update: Option<&dyn Fn() -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(
@@ -212,6 +213,9 @@ pub fn run_prompt(
             None,
             &capabilities,
         );
+    }
+    if let Some(session_update) = session_update {
+        let _ = session_update();
     }
     let prompt_result = runtime.prompt(
         provider_id,

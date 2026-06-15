@@ -715,6 +715,14 @@ impl App {
         })
     }
 
+    pub fn acp_session_update_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn() -> Result<()> + 'a> {
+        let session_update = self.acp_session_update.as_ref()?.clone();
+        Some(move || session_update(context.clone()))
+    }
+
     pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
         if let Some(session_update) = &self.acp_session_update {
             session_update(context)?;
@@ -2777,6 +2785,43 @@ mod tests {
         assert_eq!(calls[0].run_id, "run-001");
         assert_eq!(calls[0].node_id, "验收");
         assert_eq!(calls[0].attempt_id, "attempt-001");
+    }
+
+    #[test]
+    fn acp_session_update_for_emits_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+            seen_for_callback.lock().unwrap().push(context);
+            Ok(())
+        }));
+
+        let context = AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-002".to_string(),
+            outer_node_id: Some("outer-node".to_string()),
+            outer_attempt_id: Some("outer-attempt".to_string()),
+        };
+        let callback = app.acp_session_update_for(context.clone()).unwrap();
+        callback().unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].task_id, context.task_id);
+        assert_eq!(calls[0].run_id, context.run_id);
+        assert_eq!(calls[0].round_id, context.round_id);
+        assert_eq!(calls[0].node_id, context.node_id);
+        assert_eq!(calls[0].attempt_id, context.attempt_id);
+        assert_eq!(calls[0].outer_node_id, context.outer_node_id);
+        assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
     }
 
     #[test]

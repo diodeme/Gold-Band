@@ -1235,6 +1235,7 @@ pub async fn send_acp_prompt(
                     );
                     Ok(())
                 }),
+                None, // session_update
             )
             .map_err(command_error)?;
             return dynamic_acp_session_vm(
@@ -1346,6 +1347,7 @@ pub async fn send_acp_prompt(
                 );
                 Ok(())
             }),
+            None, // session_update
         )
         .map_err(command_error)?;
         acp_session_vm(

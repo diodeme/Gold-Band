@@ -2317,7 +2317,8 @@ fn execute_dynamic_worker(
 
     loop {
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
-        let live_update = ctx.app.acp_live_update_for(live_update_context);
+        let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
+        let session_update = ctx.app.acp_session_update_for(live_update_context);
         let invocation = build_dynamic_worker_invocation(
             ctx,
             graph,
@@ -2361,9 +2362,10 @@ fn execute_dynamic_worker(
                     node.id
                 )
             })?
-            .run_worker_with_live_update(
+            .run_worker_with_callbacks(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
+                session_update.as_ref().map(|callback| callback as _),
             )
             .map_err(|error| {
                 anyhow!(
@@ -2538,7 +2540,8 @@ fn execute_dynamic_agent_stage(
         None
     };
     let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
-    let live_update = ctx.app.acp_live_update_for(live_update_context);
+    let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
+    let session_update = ctx.app.acp_session_update_for(live_update_context);
     let invocation = build_dynamic_worker_invocation(
         ctx,
         graph,
@@ -2566,9 +2569,10 @@ fn execute_dynamic_agent_stage(
     let result = ctx
         .app
         .provider_for_id(provider_id)?
-        .run_worker_with_live_update(
+        .run_worker_with_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
+            session_update.as_ref().map(|callback| callback as _),
         )?;
     finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
     if node.status == DynamicNodeStatus::Paused {

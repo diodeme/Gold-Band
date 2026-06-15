@@ -416,12 +416,14 @@ pub(crate) fn execute_ai_node(
         outer_attempt_id: None,
     };
     let attempt_dir_for_index = invocation.attempt_dir.clone();
-    let live_update = app.acp_live_update_for(live_update_context);
+    let live_update = app.acp_live_update_for(live_update_context.clone());
+    let session_update = app.acp_session_update_for(live_update_context);
     let result = app
         .provider_for_id(provider_id)?
-        .run_worker_with_live_update(
+        .run_worker_with_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
+            session_update.as_ref().map(|callback| callback as _),
         )?;
 
     // Fire-and-forget: index this attempt for cross-session search

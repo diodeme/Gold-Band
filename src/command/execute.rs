@@ -29,7 +29,7 @@ fn execute_run(app: &App, command: RunCommand) -> Result<CommandResult> {
             app.run_status(&task_id, &run_id)?,
         )?)),
         RunCommand::Continue { task_id, run_id } => Ok(CommandResult::Json(serde_json::to_value(
-            app.run_continue(&task_id, &run_id, None)?,
+            app.run_continue(&task_id, &run_id, None, None)?,
         )?)),
         RunCommand::Retry { task_id, run_id } => Ok(CommandResult::Json(serde_json::to_value(
             app.run_retry(&task_id, &run_id)?,

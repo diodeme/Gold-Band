@@ -1,4 +1,5 @@
 import { getRuntimeApi } from './api/client';
+import type { RuntimeApi } from './api/client';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -130,8 +131,16 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(taskId: string, runId: string, promptId?: string | null) {
-  return getRuntimeApi().continueRun(taskId, runId, promptId);
+export function continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
+  return getRuntimeApi().continueRun(taskId, runId, promptId, prompt);
+}
+
+export function pauseRun(taskId: string, runId: string) {
+  return getRuntimeApi().pauseRun(taskId, runId);
+}
+
+export function stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().stopActiveSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
 export function submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
@@ -152,6 +161,10 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
 
 export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[5], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
+}
+
+export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
+  return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
@@ -194,8 +207,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
-export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3]) {
-  return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude);
+export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
+  return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -266,6 +279,10 @@ export function updateTaskMetadata(projectId: string, taskId: string, title: str
   return getRuntimeApi().updateTaskMetadata(projectId, taskId, title, description);
 }
 
+export function deleteConversationTask(projectId: string, taskId: string) {
+  return getRuntimeApi().deleteConversationTask(projectId, taskId);
+}
+
 export function pinConversation(projectId: string, taskId: string) {
   return getRuntimeApi().pinConversation(projectId, taskId);
 }
@@ -308,6 +325,10 @@ export function syncConversationWorkspace(workspacePath: string) {
 
 export function saveConversationPreference(key: string, value: unknown) {
   return getRuntimeApi().saveConversationPreference(key, value);
+}
+
+export function saveLastConversationWorkspace(projectId: string) {
+  return getRuntimeApi().saveLastConversationWorkspace(projectId);
 }
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {

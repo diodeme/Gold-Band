@@ -2,8 +2,10 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
+use tracing::Level;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeLogLevel {
     Error,
@@ -14,13 +16,40 @@ pub enum RuntimeLogLevel {
 }
 
 impl RuntimeLogLevel {
-    pub fn as_directive(self) -> &'static str {
+    pub const fn as_directive(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
             Self::Info => "info",
             Self::Debug => "debug",
             Self::Trace => "trace",
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Error,
+            1 => Self::Warn,
+            2 => Self::Info,
+            3 => Self::Debug,
+            4 => Self::Trace,
+            _ => Self::Info,
+        }
+    }
+
+    pub const fn allows(self, level: &Level) -> bool {
+        match self {
+            Self::Error => matches!(*level, Level::ERROR),
+            Self::Warn => matches!(*level, Level::ERROR | Level::WARN),
+            Self::Info => matches!(*level, Level::ERROR | Level::WARN | Level::INFO),
+            Self::Debug => {
+                matches!(*level, Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG)
+            }
+            Self::Trace => true,
         }
     }
 }
@@ -326,6 +355,8 @@ pub struct StateConfig {
 pub struct ProjectAppConfig {
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    pub acp_raw_max_size_bytes: Option<u64>,
+    pub acp_raw_target_size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
@@ -352,6 +383,8 @@ pub struct RuntimeConfig {
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_raw_max_size_bytes: u64,
+    pub acp_raw_target_size_bytes: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -363,7 +396,7 @@ impl Default for RuntimeConfig {
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
         Self {
-            log_level: RuntimeLogLevel::Debug,
+            log_level: RuntimeLogLevel::Info,
             log_prompts: true,
             log_provider_command: true,
             log_retention_days: 30,
@@ -383,6 +416,8 @@ impl Default for RuntimeConfig {
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
+            acp_raw_max_size_bytes: 5 * 1024 * 1024,
+            acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
         }
     }
@@ -438,6 +473,12 @@ impl RuntimeConfig {
         }
         if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
+            self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
+        }
+        if let Some(acp_raw_target_size_bytes) = app_config.acp_raw_target_size_bytes {
+            self.acp_raw_target_size_bytes = acp_raw_target_size_bytes;
         }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
@@ -695,7 +736,7 @@ mod tests {
         assert_eq!(config.desktop_theme, DesktopThemePreference::System);
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
-        assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+        assert!(matches!(config.log_level, RuntimeLogLevel::Info));
     }
 
     #[test]

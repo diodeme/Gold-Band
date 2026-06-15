@@ -1,8 +1,9 @@
-import type { AppBootstrapVm, AutoTemplateStore, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
+import type { AppBootstrapVm, AutoTemplateStore, PreferencesVm, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
 import { mockBootstrap, mockProfileList, mockUpdateBadges, mockUpdateStatus, mockUpdaterSettings, mockWorkflowTemplates } from '../mockData';
 
 export class BrowserPreviewState {
   private profiles: ProfileVm[] = cloneProfiles(mockProfileList.profiles);
+  private preferences: PreferencesVm = clonePreferences(mockBootstrap.preferences);
   private updaterSettings: UpdaterSettingsVm = cloneUpdaterSettings(mockUpdaterSettings);
   private updateStatus: UpdateStatusVm = cloneUpdateStatus(mockUpdateStatus);
   private updateBadges: UpdateBadgeStateVm = cloneUpdateBadges(mockUpdateBadges);
@@ -12,12 +13,22 @@ export class BrowserPreviewState {
   getAppBootstrap(): AppBootstrapVm {
     return {
       ...mockBootstrap,
+      preferences: this.getPreferences(),
       updaterSettings: this.getUpdaterSettings(),
       updateStatus: this.getUpdateStatus(),
       updateBadges: this.getUpdateBadges(),
       persistedAvailableUpdate: this.updateStatus.update ?? null,
       clientVersion: mockBootstrap.clientVersion,
     };
+  }
+
+  getPreferences(): PreferencesVm {
+    return clonePreferences(this.preferences);
+  }
+
+  setPreferences(preferences: PreferencesVm) {
+    this.preferences = clonePreferences(preferences);
+    return this.getPreferences();
   }
 
   getProfiles(): ProfileListVm {
@@ -98,6 +109,10 @@ function cloneProfile(profile: ProfileVm): ProfileVm {
 
 function cloneProfiles(profiles: ProfileVm[]): ProfileVm[] {
   return profiles.map(cloneProfile);
+}
+
+function clonePreferences(preferences: PreferencesVm): PreferencesVm {
+  return { ...preferences };
 }
 
 function cloneUpdaterSettings(settings: UpdaterSettingsVm): UpdaterSettingsVm {

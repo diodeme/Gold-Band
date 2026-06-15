@@ -17,32 +17,32 @@ use commands::{
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
     download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
     get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
-    get_profiles, get_round_detail, get_run_detail, get_system_fonts,
-    get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
-    kill_run, mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_in_file_manager, replace_auto_templates, respond_acp_permission, retry_run,
-    save_auto_template, save_desktop_preferences, save_metrics_settings, save_task_workflow,
-    save_updater_settings, save_workflow_template, search_acp_prompts, search_acp_sessions,
-    search_tasks, select_recent_workspace, send_acp_prompt, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact,
-    show_attachment, show_worker_ref, start_run, submit_manual_check, update_agent,
-    update_auto_template, update_profile, update_workflow_template,
+    get_profiles, get_round_detail, get_run_detail, get_system_fonts, get_task_detail,
+    get_task_list, get_update_status, get_workflow, get_workflow_templates, kill_run,
+    mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
+    replace_auto_templates, respond_acp_permission, retry_run, save_auto_template,
+    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
+    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    select_recent_workspace, send_acp_prompt, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
+    stop_active_session, submit_manual_check, update_agent, update_auto_template, update_profile,
+    update_workflow_template,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
-    get_conversation_run, get_conversation_run_mode, get_conversation_sidebar,
-    get_supported_attachment_extensions, pick_attachment_files, pin_conversation,
-    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
-    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
-    search_conversation_tasks, show_conversation_attachment, switch_conversation_session,
-    sync_conversation_workspace, unpin_conversation, update_task_metadata,
-    validate_conversation_create,
+    delete_conversation_task, get_conversation_run, get_conversation_run_mode,
+    get_conversation_sidebar, get_supported_attachment_extensions, pick_attachment_files,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, save_conversation_preference, save_conversation_run_mode,
+    save_desktop_ui_mode, save_last_conversation_workspace, search_conversation_tasks,
+    show_conversation_attachment, switch_conversation_session, sync_conversation_workspace,
+    unpin_conversation, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::init_tracing;
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
-use state::{DesktopContext, DesktopState};
 use metrics::start_heartbeat_polling;
+use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
 use updater::{retry_pending_startup_install, start_update_polling};
 
@@ -144,6 +144,8 @@ fn run() -> anyhow::Result<()> {
             get_acp_raw_frames,
             start_run,
             continue_run,
+            pause_run,
+            stop_active_session,
             submit_manual_check,
             retry_run,
             kill_run,
@@ -174,6 +176,7 @@ fn run() -> anyhow::Result<()> {
             pick_attachment_files,
             show_conversation_attachment,
             update_task_metadata,
+            delete_conversation_task,
             pin_conversation,
             unpin_conversation,
             reorder_pinned_conversations,
@@ -185,6 +188,7 @@ fn run() -> anyhow::Result<()> {
             remove_conversation_workspace,
             sync_conversation_workspace,
             save_conversation_preference,
+            save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
         ])

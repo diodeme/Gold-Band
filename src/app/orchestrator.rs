@@ -50,7 +50,7 @@ use crate::runtime::{
 };
 use crate::storage::{append_jsonl, read_json, write_json};
 
-use super::ids::{generate_uuid, next_attempt_id, next_run_id, now_rfc3339_like};
+use super::ids::{generate_uuid, next_attempt_id, now_rfc3339_like, reserve_next_run_dir};
 use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
@@ -96,6 +96,13 @@ fn localized_continue_prompt(language: DesktopLanguage) -> String {
         DesktopLanguage::ZhCn => "继续".to_string(),
         DesktopLanguage::En => "Continue".to_string(),
     }
+}
+
+fn continue_prompt_or_default(language: DesktopLanguage, prompt: Option<String>) -> String {
+    prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| localized_continue_prompt(language))
 }
 
 fn output_schema_for_node<'a>(
@@ -208,7 +215,7 @@ fn prepare_run(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let run_id = next_run_id(&app.paths.runs_dir(task_id))?;
+    let (run_id, _) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
@@ -277,6 +284,11 @@ fn prepare_run(
         entry_node,
         entry_profile,
     );
+    write_json(
+        &app.paths
+            .node_file(task_id, &run_id, &round_id, &node.node_id, &node.attempt_id),
+        &node,
+    )?;
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
         .with_node(node.node_id.clone())
@@ -333,6 +345,7 @@ pub(crate) fn run_continue(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -416,7 +429,10 @@ pub(crate) fn run_continue(
                     (
                         SessionMode::Continue,
                         Some(continue_ref),
-                        Some(localized_continue_prompt(app.config.desktop_language)),
+                        Some(continue_prompt_or_default(
+                            app.config.desktop_language,
+                            prompt,
+                        )),
                         prompt_id,
                     )
                 }
@@ -450,6 +466,7 @@ pub(crate) fn run_continue_background(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
@@ -463,10 +480,11 @@ pub(crate) fn run_continue_background(
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
+    let prompt = prompt.clone();
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id) {
+        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -890,6 +908,58 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
         )
 }
 
+fn completed_node_snapshot(
+    round: &RoundState,
+    node: &NodeState,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    total_tokens: u64,
+) -> crate::runtime::LastExecutedNode {
+    let status = match node.outcome {
+        Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
+        Some(crate::domain::NodeOutcome::Failure)
+        | Some(crate::domain::NodeOutcome::Killed)
+        | Some(crate::domain::NodeOutcome::Invalid)
+        | None => "FAILED",
+    };
+    let node_name = node
+        .resolved_config
+        .get("profileName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let seq = round
+        .trace
+        .iter()
+        .filter(|t| t.node_id == node.node_id)
+        .map(|t| t.sequence)
+        .last();
+    let agent_type = node
+        .resolved_config
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    crate::runtime::LastExecutedNode {
+        node_id: node.node_id.clone(),
+        uuid: node.uuid.clone().unwrap_or_default(),
+        round_uuid: round.uuid.clone().unwrap_or_default(),
+        node_name,
+        seq,
+        agent_type,
+        status: status.to_string(),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        total_tokens,
+    }
+}
+
 fn apply_control_decision(
     app: &App,
     task_id: &str,
@@ -1011,6 +1081,7 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: session,
@@ -1125,6 +1196,7 @@ fn apply_control_decision(
                 ),
             );
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: SessionMode::New,
@@ -1210,7 +1282,17 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            let completed_node_id = node.node_id.clone();
+            let completed_attempt_id = node.attempt_id.clone();
             persist_runtime_state(app, task_id, run, round, node)?;
+            emit_completed_acp_session_update_best_effort(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                &completed_node_id,
+                &completed_attempt_id,
+            );
             Ok(None)
         }
     }
@@ -1294,6 +1376,25 @@ fn freeze_allowed_workflow_snapshots(
         });
     }
     Ok(snapshots)
+}
+
+fn emit_completed_acp_session_update_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) {
+    let _ = app.emit_acp_session_update(AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    });
 }
 
 fn dynamic_acp_live_event_context(
@@ -1567,7 +1668,15 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         workspace_path: Some(ctx.app.paths.repo_root.clone()),
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
-        permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
+        permission_mode: ctx
+            .dynamic
+            .bootstrap_provider()
+            .and_then(|provider| {
+                ctx.dynamic
+                    .permission_mode()
+                    .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+            })
+            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -2258,7 +2367,9 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     let child_run = match node.child_run_id.as_deref() {
-        Some(child_run_id) => ctx.app.run_continue(ctx.task_id, child_run_id, None)?,
+        Some(child_run_id) => ctx
+            .app
+            .run_continue(ctx.task_id, child_run_id, None, None)?,
         None => ctx
             .app
             .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
@@ -3272,6 +3383,7 @@ fn materialize_dynamic_next(
         DynamicNext::Single { node } => {
             let source = graph.nodes[source_index].clone();
             let new_node = dynamic_node_state_from_spec(
+                ctx,
                 graph,
                 &source,
                 node,
@@ -3326,6 +3438,7 @@ fn materialize_dynamic_next(
             for node in nodes {
                 let chain_id = node.id.clone();
                 let new_node = dynamic_node_state_from_spec(
+                    ctx,
                     graph,
                     &source,
                     node,
@@ -3361,6 +3474,7 @@ fn materialize_dynamic_next(
 }
 
 fn dynamic_node_state_from_spec(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     source: &DynamicNodeState,
     spec: DynamicNodeSpec,
@@ -3380,6 +3494,15 @@ fn dynamic_node_state_from_spec(
             .find(|snapshot| snapshot.workflow_id == *workflow_id)
             .map(|snapshot| snapshot.snapshot_id.clone())
     });
+    let resolved_permission_mode = spec
+        .provider
+        .as_deref()
+        .and_then(|provider| {
+            inherited_permission_mode
+                .as_deref()
+                .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+        })
+        .or(inherited_permission_mode);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         id: spec.id,
@@ -3398,7 +3521,7 @@ fn dynamic_node_state_from_spec(
         provider: spec.provider,
         profile: spec.profile,
         model: spec.model.clone(),
-        permission_mode: inherited_permission_mode,
+        permission_mode: resolved_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -3471,7 +3594,7 @@ fn advance_dynamic_groups(
         let status = graph.groups[group_index].status;
         match status {
             DynamicGroupStatus::Open if dynamic_group_ready(graph, group_index) => {
-                let merge_node = create_dynamic_merge_node(graph, group_index)?;
+                let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Merging;
                 graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
@@ -3492,7 +3615,7 @@ fn advance_dynamic_groups(
                     graph.groups[group_index].merge_node_id.as_deref(),
                 ) =>
             {
-                let acceptance_node = create_dynamic_acceptance_node(graph, group_index)?;
+                let acceptance_node = create_dynamic_acceptance_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Accepting;
                 graph.groups[group_index].acceptance_node_id = Some(acceptance_node.id.clone());
@@ -3687,6 +3810,7 @@ fn group_node_completed(graph: &DynamicGraphState, node_id: Option<&str>) -> boo
 }
 
 fn create_dynamic_merge_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3727,7 +3851,11 @@ fn create_dynamic_merge_node(
         provider: Some(group.merge.provider.clone()),
         profile: None,
         model: group.merge.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.merge.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3741,6 +3869,7 @@ fn create_dynamic_merge_node(
 }
 
 fn create_dynamic_acceptance_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3785,7 +3914,11 @@ fn create_dynamic_acceptance_node(
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
         model: group.acceptance.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.acceptance.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -4840,16 +4973,22 @@ fn drive_from_node_with_initial_session(
 
         // ── Metrics: notify node started (predecessor + current) ──
         if let Some(metrics_cb) = &app.metrics_callback {
-            let seq = round.trace.iter()
+            let seq = round
+                .trace
+                .iter()
                 .filter(|t| t.node_id == node.node_id)
                 .map(|t| t.sequence)
                 .last();
-            let node_name = node.resolved_config.get("profileName")
+            let node_name = node
+                .resolved_config
+                .get("profileName")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
-            let agent_type = node.resolved_config.get("provider")
+            let agent_type = node
+                .resolved_config
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let metrics_ctx = super::MetricsEventContext {
@@ -4872,11 +5011,17 @@ fn drive_from_node_with_initial_session(
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 total_tokens: 0,
+                acp_session_path: None,
                 outcome: None,
             };
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeStarted {
-                predecessor: run.last_executed_node.clone(),
-            });
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(
+                    metrics_ctx,
+                    super::MetricsEvent::NodeStarted {
+                        predecessor: run.last_executed_node.clone(),
+                    },
+                );
+            }));
         }
 
         let current_node_dsl = workflow
@@ -5203,50 +5348,7 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // ── Metrics: update last_executed_node and notify node completed ──
-        {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                Some(crate::domain::NodeOutcome::Failure) => "FAILED",
-                Some(crate::domain::NodeOutcome::Killed) => "FAILED",
-                Some(crate::domain::NodeOutcome::Invalid) => "FAILED",
-                None => "FAILED",
-            };
-            let node_name = node.resolved_config.get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            // Read real token data from ACP session metadata
-            let attempt_dir = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
-            let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                crate::acp::events::read_session_tokens(&session_paths.session);
-            let seq = round.trace.iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            let agent_type = node.resolved_config.get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name,
-                seq,
-                agent_type,
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                total_tokens,
-            });
-        }
-
+        let completed_snapshot = completed_node_snapshot(round, &node, 0, 0, 0, 0);
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -5259,6 +5361,7 @@ fn drive_from_node_with_initial_session(
             &node,
             decision,
         )? {
+            run.last_executed_node = Some(completed_snapshot);
             node = next.node;
             session_mode = next.session_mode;
             continue_ref = next.continue_ref;
@@ -5269,43 +5372,12 @@ fn drive_from_node_with_initial_session(
             continue;
         }
         // Workflow ended — send final metrics for the last completed node
+        run.last_executed_node = Some(completed_snapshot.clone());
         if let Some(metrics_cb) = &app.metrics_callback {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                _ => "FAILED",
-            };
-            let node_name = node.resolved_config.get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            let agent_type = node.resolved_config.get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let seq = round.trace.iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            // Update last_executed_node with final state (read real token data from ACP session)
-            let ad = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let sp = crate::acp::events::AcpAttemptPaths::from_attempt_dir(ad);
-            let (it, ot, cr, tt) = crate::acp::events::read_session_tokens(&sp.session);
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name: node_name.clone(),
-                seq,
-                agent_type: agent_type.clone(),
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-            });
+            let attempt_dir =
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
             let metrics_ctx = super::MetricsEventContext {
                 repo_root: app.paths.repo_root.to_string(),
                 task_id: task_id.to_string(),
@@ -5317,19 +5389,22 @@ fn drive_from_node_with_initial_session(
                 run_uuid: run.uuid.clone(),
                 round_uuid: round.uuid.clone(),
                 node_uuid: node.uuid.clone(),
-                seq,
-                node_name: Some(node_name),
-                agent_type,
+                seq: completed_snapshot.seq,
+                node_name: Some(completed_snapshot.node_name.clone()),
+                agent_type: completed_snapshot.agent_type.clone(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-                outcome: Some(status_str.to_string()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 0,
+                acp_session_path: Some(session_paths.session.to_string()),
+                outcome: Some(completed_snapshot.status.clone()),
             };
             // Send with predecessor = this node's final state
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            }));
         }
         return Ok(());
     }

@@ -136,7 +136,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。
 - 2026-05-07 起设置页从多张独立卡片收敛为一个主工作面，外观、字体、语言通过 section 与低对比分隔线组织；主题摘要、字体选项和本地字体预览降级为低对比选项行，避免盒中盒和浅黑色块过多。
 - 2026-05-25 起设置页改为 `通用 / 外观 / 高级` 三个 tab：语言进入通用，主题和字体进入外观；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。
-- 设置页中的问号帮助入口（如“使用本地 Claude”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；避免页面同时出现主题色 tooltip 与白底说明面板混用。
+- 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传，release publish 后才对客户端 latest 检查可见。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。
 - 桌面端启动后后台定时检查更新，发现新版本只更新状态并提示用户，不自动下载或安装；用户可在高级页手动检查，有新版本时再点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。

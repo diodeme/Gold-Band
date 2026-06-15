@@ -15,12 +15,16 @@ fn session_path(dir: &TempDir) -> camino::Utf8PathBuf {
 #[test]
 fn reads_token_data_from_snapshot_file() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+    std::fs::write(
+        dir.path().join("acp.snapshot.json"),
+        r#"{
         "adapterId":"test","adapterDisplayName":"Test","cwd":".",
         "status":"completed","restored":false,"capabilities":{},
         "createdAt":"2026-01-01T00:00:00","updatedAt":"2026-01-01T00:00:00",
         "inputTokens":5000,"outputTokens":2000,"cachedReadTokens":1000,"totalTokens":8000
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
     let (i, o, cr, t) = read_session_tokens(&session_path(&dir));
     assert_eq!((i, o, cr, t), (5000, 2000, 1000, 8000));
 }
@@ -58,7 +62,11 @@ fn timeline_takes_max_values() {
 fn ignores_non_usage_events() {
     let dir = TempDir::new().unwrap();
     let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
-    writeln!(f, r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#).unwrap();
+    writeln!(
+        f,
+        r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#
+    )
+    .unwrap();
     writeln!(f, r#"{{"item":{{"kind":"availableCommands"}}}}"#).unwrap();
     writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":777,"outputTokens":33,"totalTokens":810}}}}"#).unwrap();
     let (i, o, _cr, t) = read_session_tokens(&session_path(&dir));
@@ -70,11 +78,15 @@ fn ignores_non_usage_events() {
 #[test]
 fn snapshot_overridden_by_higher_timeline() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+    std::fs::write(
+        dir.path().join("acp.snapshot.json"),
+        r#"{
         "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
         "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
         "inputTokens":100,"outputTokens":50,"cachedReadTokens":10,"totalTokens":160
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
     let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
     writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":500,"outputTokens":200,"cachedReadTokens":50,"totalTokens":750}}}}"#).unwrap();
     let (i, o, cr, t) = read_session_tokens(&session_path(&dir));
@@ -87,11 +99,15 @@ fn snapshot_overridden_by_higher_timeline() {
 #[test]
 fn snapshot_preserved_when_timeline_lower() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("acp.snapshot.json"), r#"{
+    std::fs::write(
+        dir.path().join("acp.snapshot.json"),
+        r#"{
         "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
         "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
         "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
     let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
     writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":100,"outputTokens":50,"totalTokens":150}}}}"#).unwrap();
     let (i, o, cr, t) = read_session_tokens(&session_path(&dir));

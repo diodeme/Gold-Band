@@ -6,7 +6,7 @@ use gold_band::provider::{
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use tempfile::tempdir;
 
 #[derive(Clone, Default)]
@@ -38,25 +38,7 @@ impl ProviderAdapter for RecordingProvider {
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         self.invocations.lock().unwrap().push(req);
-        Ok(ProviderRunResult {
-            status: ProviderRunStatus::Success,
-            exit_code: Some(0),
-            result_payload: Some(ProviderResultPayload {
-                output_artifact: Some(OutputArtifactPayload {
-                    name: "implementation-result".to_string(),
-                    content: r#"{"version":"0.1","commands":[{"id":"build","run":"cargo test","purpose":"validate"}]}"#.to_string(),
-                }),
-            }),
-            worker_ref_seed: Some(SessionRef {
-                provider: "claude-acp".to_string(),
-                mode: SessionMode::New,
-                supports_open_session: true,
-                supports_continue_session: true,
-                continue_ref: Some(serde_json::json!({"sessionId":"session-123"})),
-                open_command: Some("claude -c session-123".to_string()),
-            }),
-            stream_path: None,
-        })
+        Ok(success_result())
     }
 
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
@@ -68,6 +50,70 @@ impl ProviderAdapter for RecordingProvider {
         _worker_ref: &gold_band::domain::SessionRef,
     ) -> anyhow::Result<Option<String>> {
         Ok(Some("claude -c session-123".to_string()))
+    }
+}
+
+#[derive(Clone)]
+struct BlockingSuccessProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+    release: Arc<Barrier>,
+}
+
+impl BlockingSuccessProvider {
+    fn new(participants: usize) -> Self {
+        Self {
+            invocations: Arc::new(Mutex::new(Vec::new())),
+            release: Arc::new(Barrier::new(participants)),
+        }
+    }
+}
+
+impl ProviderAdapter for BlockingSuccessProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        self.invocations.lock().unwrap().push(req);
+        self.release.wait();
+        Ok(success_result())
+    }
+
+    fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(
+        &self,
+        _worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(Some("claude -c session-123".to_string()))
+    }
+}
+
+fn success_result() -> ProviderRunResult {
+    ProviderRunResult {
+        status: ProviderRunStatus::Success,
+        exit_code: Some(0),
+        result_payload: Some(ProviderResultPayload {
+            output_artifact: Some(OutputArtifactPayload {
+                name: "implementation-result".to_string(),
+                content: r#"{"version":"0.1","commands":[{"id":"build","run":"cargo test","purpose":"validate"}]}"#.to_string(),
+            }),
+        }),
+        worker_ref_seed: Some(SessionRef {
+            provider: "claude-acp".to_string(),
+            mode: SessionMode::New,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(serde_json::json!({"sessionId":"session-123"})),
+            open_command: Some("claude -c session-123".to_string()),
+        }),
+        stream_path: None,
     }
 }
 
@@ -379,7 +425,9 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
               "output": {{ "kind": "json", "artifact": "implementation-result" }}
             }}
           ],
-          "edges": []
+          "edges": [
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
         }}"#,
             dev_profile
         ),
@@ -415,6 +463,103 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
         app.paths
             .worker_ref_file(task_id, "run-001", "round-001", "dev", "attempt-001");
     assert!(worker_ref_path.exists());
+}
+
+#[test]
+fn run_start_background_allocates_from_max_run_id_under_concurrency() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-concurrent-rerun";
+
+    let provider = BlockingSuccessProvider::new(2);
+    let app = Arc::new(App::with_provider(
+        repo_root.clone(),
+        Box::new(provider.clone()),
+    ));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let dev_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Implement feature",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "dev-only",
+          "entry": "dev",
+          "control": {{
+            "max_attempts": 1,
+            "max_rounds": 1
+          }},
+          "nodes": [
+            {{
+              "id": "dev",
+              "type": "worker",
+              "provider": "claude-acp",
+              "profile": "{}",
+              "goal": "Create an implementation result",
+              "output": {{ "kind": "json", "artifact": "implementation-result" }}
+            }}
+          ],
+          "edges": [
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            dev_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-concurrent-rerun"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.paths.run_dir(task_id, "run-001").as_std_path()).unwrap();
+    std::fs::create_dir_all(app.paths.run_dir(task_id, "run-002").as_std_path()).unwrap();
+    std::fs::create_dir_all(app.paths.run_dir(task_id, "run-005").as_std_path()).unwrap();
+
+    let start = Arc::new(Barrier::new(3));
+    let handles = (0..2)
+        .map(|_| {
+            let app = app.clone();
+            let start = start.clone();
+            let task_id = task_id.to_string();
+            std::thread::spawn(move || {
+                start.wait();
+                app.run_start_background(&task_id, None).unwrap().id
+            })
+        })
+        .collect::<Vec<_>>();
+    start.wait();
+    let mut run_ids = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+
+    run_ids.sort();
+
+    assert_eq!(run_ids, vec!["run-006".to_string(), "run-007".to_string()]);
+    assert!(app.paths.run_file(task_id, "run-006").exists());
+    assert!(app.paths.run_file(task_id, "run-007").exists());
+
+    for _ in 0..100 {
+        if provider.invocations.lock().unwrap().len() == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(provider.invocations.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -509,7 +654,12 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     );
 
     let completed = app
-        .run_continue(task_id, "run-001", Some("prompt-continue-001".to_string()))
+        .run_continue(
+            task_id,
+            "run-001",
+            Some("prompt-continue-001".to_string()),
+            None,
+        )
         .unwrap();
     assert_eq!(completed.outcome, Some(RunOutcome::Success));
 

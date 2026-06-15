@@ -32,7 +32,7 @@
 ## 3. 关键语义
 - `provider` 是 fan-out agent 的 provider，用于 bootstrap internal worker；fan-out agent 的角色与目标由 runtime 内置 prompt 提供，不在 DSL 中配置。
 - `agentStrategy` 中 agent 对应的 `model` 是可选字段。若作者态已经给 agent 选定模型，AI-DYNAMIC 输出 DSL 不再重复输出 `model`；若作者态未配置模型且 provider 暴露可选模型列表，runtime 会在 prompt 中提供模型 `name / description`，并要求 proposal 为对应 worker / merge / acceptance 输出 `model`，值必须使用列表中的模型 name。
-- `permissionMode` 复用普通 worker 节点的权限模式选择；它作为外层 AI-DYNAMIC 节点的统一默认权限，runtime 会把该值继承到 bootstrap、派生 worker、merge 和 acceptance 等内部节点，并在 provider 能力已知时提前校验兼容性。
+- `permissionMode` 复用普通 worker 节点的权限模式选择；作者态 DSL 中该字段仍表达统一的规范权限级别，runtime 会在 materialize bootstrap、派生 worker、merge 和 acceptance 等内部节点时按各自 provider 解析成真实 mode id 后再落盘，并在 provider 能力已知时提前校验兼容性。
 - `control` 是 runtime validation 的硬限制，不只是 prompt 提示。
 - `allowedWorkflows.workflowId` 引用 workflow DSL 内的 `workflow.id`，不是模板外层 `template.id`；run start 时冻结为 allowed workflow snapshots。
 - `allowedWorkflows` 引用的模板必须满足模板库级唯一性约束：若某个模板的 `workflow.id` 与其他模板重复，则任何包含该模板引用的 AI-DYNAMIC 工作流都不能保存，用户需手动修改模板 JSON 中的 `workflow.id` 后再试。

@@ -105,7 +105,10 @@ fn main() {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or(config.metrics_api_key);
-    println!("cargo:rustc-env=GOLD_BAND_METRICS_API_KEY={}", metrics_api_key);
+    println!(
+        "cargo:rustc-env=GOLD_BAND_METRICS_API_KEY={}",
+        metrics_api_key
+    );
     println!(
         "cargo:rustc-env=GOLD_BAND_SILENT_UPDATE_ENABLED={}",
         config.silent_update_enabled

@@ -1,20 +1,47 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpExternalComposerState } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type ACPChatDialogHandle, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
+import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
 
 type WorkflowSheetMode = 'edit' | 'repair' | 'view';
+
+function activeSessionKey(session: {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}) {
+  if (session.outerNodeId && session.outerAttemptId) {
+    return `${session.roundId}/${session.outerNodeId}/${session.outerAttemptId}/${session.nodeId}/${session.attemptId}`;
+  }
+  return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
+}
+
+function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
+  if (!session || !leaf || !session.cwd) return true;
+  const cwd = normalizeSessionPath(session.cwd);
+  const expected = leaf.outerNodeId && leaf.outerAttemptId
+    ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
+    : normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.nodeId}/${leaf.attemptId}`);
+  return cwd.endsWith(expected);
+}
+
+function normalizeSessionPath(path: string) {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+}
 
 interface ConversationRunPageProps {
   run: ConversationRunVm;
@@ -23,9 +50,10 @@ interface ConversationRunPageProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string) => Promise<void>;
-  onSelectSession: (leaf: ConversationSessionLeafVm) => void;
+  onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onSessionStopped: () => void;
-  onContinueRun: () => void;
+  onAutoFollowChange?: (enabled: boolean) => void;
+  onContinueRun: (promptId?: string | null, prompt?: string | null) => Promise<void>;
   onTitleChange?: (title: string) => void;
 }
 
@@ -38,6 +66,7 @@ export function ConversationRunPage({
   onSaveWorkflow,
   onSelectSession,
   onSessionStopped,
+  onAutoFollowChange,
   onContinueRun,
   onTitleChange,
 }: ConversationRunPageProps) {
@@ -54,11 +83,13 @@ export function ConversationRunPage({
     if (reason === 'error-blocked') return t('conversation.runtime.runtimeErrorBlocked');
     return t('conversation.runtime.runError');
   };
-  const translateSelectedRuntimeError = (code?: string | null, reason?: string | null) => {
-    if (code === 'error-blocked' || reason === 'error-blocked') return t('conversation.runtime.runtimeErrorBlocked');
-    if (code === 'killed') return t('conversation.runtime.runtimeSessionKilled');
-    if (code === 'failure' || code === 'invalid') return t('conversation.runtime.runtimeSessionFailed');
-    return translateRuntimeError(reason);
+  const translateSelectedRuntimeError = (code?: string | null, reason?: string | null, details?: string | null) => {
+    let message = translateRuntimeError(reason);
+    if (code === 'error-blocked' || reason === 'error-blocked') message = t('conversation.runtime.runtimeErrorBlocked');
+    else if (code === 'killed') message = t('conversation.runtime.runtimeSessionKilled');
+    else if (code === 'failure' || code === 'invalid') message = t('conversation.runtime.runtimeSessionFailed');
+    const normalizedDetails = details?.trim();
+    return normalizedDetails ? `${message}：${normalizedDetails}` : message;
   };
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
@@ -69,8 +100,23 @@ export function ConversationRunPage({
   const effectiveAgentRegistry = workflowAgentRegistry ?? agentRegistry;
   const effectiveProfiles = workflowProfiles ?? [];
   const isAtBottomRef = useRef(true);
+  const manualAutoFollowDisabledRef = useRef(false);
+  const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const chatDialogRef = useRef<ACPChatDialogHandle>(null);
+  const activeSessionKeys = useMemo(
+    () => run.activeSessions.map((session) => activeSessionKey(session)),
+    [run.activeSessions],
+  );
+
+  useEffect(() => {
+    onAutoFollowChangeRef.current = onAutoFollowChange;
+  }, [onAutoFollowChange]);
+
+  useEffect(() => {
+    manualAutoFollowDisabledRef.current = false;
+    onAutoFollowChangeRef.current?.(true);
+  }, [run.runId]);
 
   // Close session switcher on outside click
   useEffect(() => {
@@ -116,6 +162,14 @@ export function ConversationRunPage({
     setWorkflowSheet({ open: true, mode: 'view' });
   }, []);
 
+  const handleWorkflowValidationIssues = useCallback(() => {
+    setWorkflowValidationRequestId((value) => value + 1);
+  }, []);
+
+  const handleWorkflowSheetClose = useCallback(() => {
+    setWorkflowSheet((current) => ({ ...current, open: false }));
+  }, []);
+
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
     const nodeId = graphNode.nodeId;
     if (!nodeId) return;
@@ -123,16 +177,21 @@ export function ConversationRunPage({
       const round = run.sessionTree.rounds[r];
       for (const node of round.nodes) {
         if (node.nodeId === nodeId && node.attempts.length > 0) {
-          onSelectSession(node.attempts[node.attempts.length - 1]);
+          const leaf = node.attempts[node.attempts.length - 1];
+          manualAutoFollowDisabledRef.current = true;
+          onAutoFollowChange?.(false);
+          onSelectSession(leaf);
           setWorkflowSheet({ open: false, mode: workflowSheet.mode });
           return;
         }
       }
     }
-  }, [run.sessionTree, onSelectSession, workflowSheet.mode]);
+  }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';
-  const selectedLeaf = findSelectedLeaf(run.sessionTree);
+  const selectedLeaf = findSelectedLeaf(run);
+  const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+  const showLaunchingSession = isRunning && !selectedLeaf;
 
   const handleOpenInFileManager = useCallback(() => {
     if (!selectedLeaf) return;
@@ -149,33 +208,27 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
-  }, []);
+    const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+    const selectedSessionActive = Boolean(selectedKey && activeSessionKeys.includes(selectedKey));
+    const shouldFollow = atBottom && selectedSessionActive;
+    manualAutoFollowDisabledRef.current = !shouldFollow;
+    onAutoFollowChange?.(shouldFollow);
+  }, [activeSessionKeys, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
+
+  const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
+    const isActive = activeSessionKeys.includes(leafKey(leaf));
+    const shouldFollow = followActive && shouldEnableConversationAutoFollow(
+      isActive,
+      isAtBottomRef.current,
+    );
+    manualAutoFollowDisabledRef.current = !shouldFollow;
+    onAutoFollowChange?.(shouldFollow);
+    onSelectSession(leaf, shouldFollow);
+  }, [activeSessionKeys, onAutoFollowChange, onSelectSession]);
 
   const handleSessionStopped = useCallback(() => {
     onSessionStopped();
-    if (isAtBottomRef.current && run.activeSessions.length > 1) {
-      // Find the next running session to auto-switch
-      const currentKey = run.sessionTree.selectedSessionKey;
-      const nextActive = run.activeSessions.find(
-        (s) => `${s.roundId}/${s.nodeId}/${s.attemptId}` !== currentKey,
-      );
-      if (nextActive) {
-        onSelectSession({
-          roundId: nextActive.roundId,
-          nodeId: nextActive.nodeId,
-          attemptId: nextActive.attemptId,
-          outerNodeId: nextActive.outerNodeId,
-          outerAttemptId: nextActive.outerAttemptId,
-          pathLabel: nextActive.pathLabel,
-          status: nextActive.status,
-          runtimeDisplay: nextActive.runtimeDisplay,
-          current: true,
-          artifactCount: 0,
-          attachmentCount: 0,
-        });
-      }
-    }
-  }, [onSessionStopped, run.activeSessions, run.sessionTree.selectedSessionKey, onSelectSession]);
+  }, [onSessionStopped]);
 
   const handleRerun = () => {
     if (isRunning) {
@@ -185,22 +238,34 @@ export function ConversationRunPage({
     }
   };
 
-  // Composer state is driven by the currently selected session, not the run.
+  const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
+  const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
+  const selectedArtifacts = selectedSessionMatchesLeaf ? run.artifacts : [];
+  const selectedAttachments = selectedSessionMatchesLeaf ? run.attachments : [];
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
+  const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
+  const selectedSessionWaitingForUserInput = selectedSessionPauseReason === 'waiting-for-user-input';
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
-  const selectedSessionPaused = selectedSessionDisplay?.code === 'paused';
-  const selectedSessionFailed = selectedSessionDisplay?.tone === 'danger'
-    && selectedSessionDisplay?.terminal;
-  // Workflow invalidity only blocks runtime-continue (handled by backend); it doesn't lock
-  // an already-completed session's chat composer.
-  const externalComposerState: AcpExternalComposerState | undefined =
-    selectedSessionFailed || selectedSessionErrorBlocked
-      ? { kind: 'runtime-error', errorMessage: translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason), onRepair: handleRepairWorkflow }
-      : run.resumable && !run.workflowValid
-          ? { kind: 'invalid-workflow', workflowError: t('conversation.runtime.workflowInvalid'), onRepair: handleRepairWorkflow }
-          : selectedSessionPaused
-            ? { kind: 'paused', message: translatePauseReason(run.pauseReason), onContinue: onContinueRun }
-            : undefined;
+  const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
+    ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
+    : null;
+  const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
+    ? {
+        lifecycle: selectedLeaf.lifecycle,
+        runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
+        runtimeDisplay: selectedLeaf.runtimeDisplay,
+        workflowValid: run.workflowValid,
+        workflowError: t('conversation.runtime.workflowInvalid'),
+        pauseMessage: translatePauseReason(selectedSessionPauseReason),
+        runtimeError: selectedRuntimeErrorMessage,
+        onContinue: (promptId, prompt) => { void onContinueRun(promptId, prompt); },
+        onRepair: handleRepairWorkflow,
+        continueLabel: selectedSessionWaitingForUserInput
+          ? t('conversation.runtime.composerContinue')
+          : undefined,
+      }
+    : undefined;
 
   return (
     <TooltipProvider>
@@ -225,7 +290,7 @@ export function ConversationRunPage({
                 tree={run.sessionTree}
                 selectedKey={run.sessionTree.selectedSessionKey}
                 onSelectSession={(leaf) => {
-                  onSelectSession(leaf);
+                  handleSessionSelection(leaf);
                   setSessionSwitcherOpen(false);
                 }}
               />
@@ -242,7 +307,7 @@ export function ConversationRunPage({
                 key={`${session.roundId}/${session.nodeId}/${session.attemptId}`}
                 type="button"
                 className="rounded-full border border-border/60 bg-card px-3 py-0.5 text-xs hover:bg-sidebar-accent"
-                onClick={() => onSelectSession({
+                onClick={() => handleSessionSelection({
                   roundId: session.roundId,
                   nodeId: session.nodeId,
                   attemptId: session.attemptId,
@@ -251,10 +316,11 @@ export function ConversationRunPage({
                   pathLabel: session.pathLabel,
                   status: session.status,
                   runtimeDisplay: session.runtimeDisplay,
+                  lifecycle: session.lifecycle,
                   current: true,
                   artifactCount: 0,
                   attachmentCount: 0,
-                })}
+                }, true)}
               >
                 <span className="font-medium">{session.pathLabel}</span>
                 {session.runtimeDisplay.tone === 'running' ? (
@@ -271,8 +337,8 @@ export function ConversationRunPage({
         {selectedLeaf ? (
           <ACPChatDialog
             ref={chatDialogRef}
-            key={run.sessionTree.selectedSessionKey ?? 'empty'}
-            session={run.selectedSession}
+            key={selectedSessionKey ?? 'empty'}
+            session={selectedSession}
             taskId={run.taskId}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
@@ -283,25 +349,27 @@ export function ConversationRunPage({
             eventPageSize={appConfig.acpChatEventPageSize}
             onSessionStopped={handleSessionStopped}
             onAtBottomChange={handleAtBottomChange}
-            externalComposerState={externalComposerState}
-            artifacts={run.artifacts}
-            attachments={run.attachments}
+            allowEventOnlySessionShell={false}
+            runtimeComposerContext={runtimeComposerContext}
+            liveUpdatesPaused={workflowSheet.open}
+            artifacts={selectedArtifacts}
+            attachments={selectedAttachments}
             usageCompact
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t('conversation.runtime.noActiveSession')}
-          </div>
+          <ConversationEmptySessionState
+            label={showLaunchingSession ? t('acp.launchingClaude') : t('conversation.runtime.noActiveSession')}
+            active={showLaunchingSession}
+          />
         )}
       </div>
 
-      {/* Assets bar */}
+      {/* Assets bar — inside flex container so it's visible */}
       <ConversationAssetsBar
-        artifacts={run.artifacts}
-        attachments={run.attachments}
-        inputAttachments={run.inputAttachments}
-        onOpenArtifact={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
-        onOpenAttachment={(a) => chatDialogRef.current?.openArtifactsDialog(a)}
+        artifacts={selectedArtifacts}
+        attachments={selectedAttachments}
+        onOpenArtifact={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
+        onOpenAttachment={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
       />
 
       {/* Rerun confirmation dialog */}
@@ -313,7 +381,7 @@ export function ConversationRunPage({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setRerunConfirmOpen(false); onRerun(); }}>
+            <AlertDialogAction onClick={onRerun}>
               {t('conversation.runtime.rerunConfirmAction')}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -329,16 +397,32 @@ export function ConversationRunPage({
         agentRegistry={effectiveAgentRegistry}
         profiles={effectiveProfiles}
         workflowValid={run.workflowValid}
-        workflowErrorMessage={!run.workflowValid ? t('conversation.runtime.workflowInvalid') : translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason)}
+        workflowErrorMessage={!run.workflowValid ? t('conversation.runtime.workflowInvalid') : selectedRuntimeErrorMessage}
         validationRequestId={workflowValidationRequestId}
-        onShowValidationIssues={() => setWorkflowValidationRequestId((value) => value + 1)}
+        onShowValidationIssues={handleWorkflowValidationIssues}
         onSave={onSaveWorkflow}
-        onClose={() => setWorkflowSheet({ open: false, mode: workflowSheet.mode })}
+        onClose={handleWorkflowSheetClose}
         onNodeOpenSession={handleWorkflowNodeOpenSession}
         t={t}
       />
     </div>
     </TooltipProvider>
+  );
+}
+
+function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        {active ? (
+          <span
+            aria-hidden="true"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+          />
+        ) : null}
+        <span>{label}</span>
+      </div>
+    </div>
   );
 }
 
@@ -349,9 +433,14 @@ function leafKey(leaf: ConversationSessionLeafVm): string {
   return `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
 }
 
-function findSelectedLeaf(tree: ConversationRunVm['sessionTree']): ConversationSessionLeafVm | null {
+function findSelectedLeaf(run: ConversationRunVm): ConversationSessionLeafVm | null {
+  return findSelectedLeafFromTree(run.sessionTree)
+    ?? activeSessionToLeaf(run.activeSessions[0]);
+}
+
+function findSelectedLeafFromTree(tree: ConversationRunVm['sessionTree']): ConversationSessionLeafVm | null {
   const key = tree.selectedSessionKey;
-  if (!key) return null;
+  if (!key) return defaultSessionLeafFromTree(tree);
   for (const round of tree.rounds) {
     for (const node of round.nodes) {
       for (const attempt of node.attempts) {
@@ -366,12 +455,81 @@ function findSelectedLeaf(tree: ConversationRunVm['sessionTree']): ConversationS
       }
     }
   }
-  return null;
+  return defaultSessionLeafFromTree(tree);
+}
+
+function defaultSessionLeafFromTree(tree: ConversationRunVm['sessionTree']): ConversationSessionLeafVm | null {
+  let active: ConversationSessionLeafVm | null = null;
+  let latest: ConversationSessionLeafVm | null = null;
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      for (const attempt of node.attempts) {
+        if (attempt.current) return attempt;
+        if (!active && isActiveSessionLeaf(attempt)) {
+          active = attempt;
+        }
+        if (!latest || leafSortKey(attempt) > leafSortKey(latest)) {
+          latest = attempt;
+        }
+      }
+      for (const outer of node.outerNodes ?? []) {
+        for (const attempt of outer.attempts) {
+          if (attempt.current) return attempt;
+          if (!active && isActiveSessionLeaf(attempt)) {
+            active = attempt;
+          }
+          if (!latest || leafSortKey(attempt) > leafSortKey(latest)) {
+            latest = attempt;
+          }
+        }
+      }
+    }
+  }
+  return active ?? latest;
+}
+
+function leafSortKey(leaf: ConversationSessionLeafVm): string {
+  return [
+    leaf.startedAt ?? leaf.finishedAt ?? '',
+    leaf.roundId,
+    leaf.outerNodeId ?? '',
+    leaf.nodeId,
+    leaf.attemptId,
+  ].join('\u0000');
+}
+
+function activeSessionToLeaf(
+  session: ConversationRunVm['activeSessions'][number] | undefined,
+): ConversationSessionLeafVm | null {
+  if (!session) return null;
+  return {
+    roundId: session.roundId,
+    nodeId: session.nodeId,
+    attemptId: session.attemptId,
+    outerNodeId: session.outerNodeId,
+    outerAttemptId: session.outerAttemptId,
+    pathLabel: session.pathLabel,
+    status: session.status,
+    outcome: null,
+    runtimeDisplay: session.runtimeDisplay,
+    lifecycle: session.lifecycle,
+    current: true,
+    startedAt: session.startedAt,
+    finishedAt: null,
+    sessionId: session.sessionId,
+    artifactCount: 0,
+    attachmentCount: 0,
+  };
+}
+
+function isActiveSessionLeaf(leaf: ConversationSessionLeafVm) {
+  return Boolean(leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
+    || ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(leaf.status?.toLowerCase() ?? '');
 }
 
 // ── Workflow sheet (edit / view) ──
 
-function WorkflowSheet({
+const WorkflowSheet = memo(function WorkflowSheet({
   open,
   mode,
   workflowJson,
@@ -402,7 +560,12 @@ function WorkflowSheet({
   onNodeOpenSession?: (node: GraphNodeVm) => void;
   t: (key: string) => string;
 }) {
-  const workflow = parseWorkflowJson(workflowJson);
+  const workflow = useMemo(
+    () => (open ? parseWorkflowJson(workflowJson) : null),
+    [open, workflowJson],
+  );
+
+  if (!open) return null;
 
   if (mode === 'edit' || mode === 'repair') {
     const repairMode = mode === 'repair';
@@ -476,4 +639,4 @@ function WorkflowSheet({
       </SheetContent>
     </Sheet>
   );
-}
+});

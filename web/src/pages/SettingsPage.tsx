@@ -24,7 +24,7 @@ import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 
@@ -41,7 +41,8 @@ interface SettingsPageProps {
   downloadProgress: { downloaded: number; total: number | null } | null;
   clientVersion: string;
   busy: boolean;
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean) => void;
+  initialTab?: 'general' | 'appearance' | 'advanced';
+  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => void;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -51,24 +52,26 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
   const [font, setFont] = useState(preferences.font);
   const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
+  const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
   const [preferenceVersion, setPreferenceVersion] = useState(0);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>(initialTab ?? 'general');
 
   useEffect(() => setTheme(preferences.theme), [preferences.theme]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setFont(preferences.font), [preferences.font]);
   useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
+  useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
   // ── Metrics ──
@@ -141,7 +144,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const chooseTheme = (value: DesktopThemePreference) => {
     if (value !== 'system') rememberConcreteThemePreference(value);
     setTheme(value);
-    onSave(value, language, font, useLocalClaude);
+    onSave(value, language, font, useLocalClaude, verboseLogging);
   };
 
   const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
@@ -150,23 +153,23 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     if (theme === 'system') {
       applyTheme('system');
       setTheme('system');
-      onSave('system', language, font, useLocalClaude);
+      onSave('system', language, font, useLocalClaude, verboseLogging);
     } else {
       setTheme(value);
-      onSave(value, language, font, useLocalClaude);
+      onSave(value, language, font, useLocalClaude, verboseLogging);
     }
     setThemeSheetOpen(false);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font, useLocalClaude);
+    onSave(theme, value, font, useLocalClaude, verboseLogging);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
     setFont(value);
     applyFont(value);
-    onSave(theme, language, value, useLocalClaude);
+    onSave(theme, language, value, useLocalClaude, verboseLogging);
   };
 
   const openThemeDrawer = (mode: ThemeDrawerMode) => {
@@ -362,18 +365,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             <SettingsSection title={t('settings.advanced')}>
               <div className="flex items-center gap-3 py-2">
                 <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <CircleHelp className="size-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent align="start" side="top" sideOffset={8} className="max-w-64 whitespace-pre-wrap break-words text-xs leading-5">
-                      {t('settings.useLocalClaude.tooltip')}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                <SettingInfoTooltip content={t('settings.useLocalClaude.tooltip')} />
                 <button
                   type="button"
                   role="switch"
@@ -385,7 +377,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !useLocalClaude;
                     setUseLocalClaude(next);
-                    onSave(theme, language, font, next);
+                    onSave(theme, language, font, next, verboseLogging);
                   }}
                 >
                   <span
@@ -398,6 +390,31 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
                   <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
                 ) : null}
+              </div>
+              <div className="flex items-center gap-3 py-2">
+                <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
+                <SettingInfoTooltip content={t('settings.verboseLogging.description')} />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={verboseLogging}
+                  className={cn(
+                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                    verboseLogging ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
+                  )}
+                  onClick={() => {
+                    const next = !verboseLogging;
+                    setVerboseLogging(next);
+                    onSave(theme, language, font, useLocalClaude, next);
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
+                      verboseLogging && 'translate-x-5',
+                    )}
+                  />
+                </button>
               </div>
             </SettingsSection>
             <SettingsSection title={<span className="inline-flex items-center gap-2">{t('settings.updater.title')}{showUpdatesSectionDot ? <UpdateDot /> : null}</span>}>
@@ -458,11 +475,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             {/* Metrics reporting section — always visible from desktop API */}
               <SettingsSection title={t('settings.metrics.title')} divided>
                 <div className="max-w-4xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">{t('settings.metrics.enable')}</p>
-                      <p className="text-xs text-muted-foreground">{t('settings.metrics.enableDescription')}</p>
-                    </div>
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm font-medium text-muted-foreground">{t('settings.metrics.enable')}</p>
+                    <SettingInfoTooltip content={t('settings.metrics.enableDescription')} />
                     <button
                       type="button"
                       role="switch"
@@ -579,6 +594,21 @@ function SettingsSection({ title, children, divided = false }: { title: ReactNod
       <h2 className="text-base font-semibold text-foreground">{title}</h2>
       <div className="min-w-0 space-y-4">{children}</div>
     </section>
+  );
+}
+
+function SettingInfoTooltip({ content }: { content: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <CircleHelp className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent align="start" side="top" sideOffset={8} className="max-w-64 whitespace-pre-wrap break-words text-xs leading-5">
+        {content}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

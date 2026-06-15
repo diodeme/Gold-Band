@@ -189,8 +189,14 @@ export const browserApi: RuntimeApi = {
   startRun(taskId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
-  continueRun(taskId: string, runId: string, _promptId?: string | null) {
+  continueRun(taskId: string, runId: string, _promptId?: string | null, _prompt?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  pauseRun(taskId: string, runId: string) {
+    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
+  },
+  stopActiveSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve({ kind: 'session-cancelled', run: null, session: fallback ?? null });
   },
   submitManualCheck(taskId: string, runId: string, _roundId: string, _nodeId: string, _attemptId: string, _outcome: 'success' | 'failure') {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
@@ -252,8 +258,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, _useLocalClaude: boolean) {
-    return Promise.resolve({ theme, language, font, useLocalClaude: false });
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
+    const preferences = browserPreviewState.setPreferences({ theme, language, font, useLocalClaude, verboseLogging });
+    return Promise.resolve(preferences);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();
@@ -371,6 +378,9 @@ export const browserApi: RuntimeApi = {
   updateTaskMetadata() {
     return Promise.resolve();
   },
+  deleteConversationTask(_projectId, _taskId) {
+    return this.getConversationSidebar();
+  },
   pinConversation(_projectId, _taskId) {
     return this.getConversationSidebar();
   },
@@ -403,6 +413,9 @@ export const browserApi: RuntimeApi = {
     return this.getConversationSidebar();
   },
   saveConversationPreference(_key, _value) {
+    return Promise.resolve();
+  },
+  saveLastConversationWorkspace(_projectId) {
     return Promise.resolve();
   },
   pickAttachmentFiles() {

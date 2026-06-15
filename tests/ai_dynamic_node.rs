@@ -1281,7 +1281,7 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         Some(PauseReason::ProcessInterrupted)
     );
 
-    let resumed = app.run_continue(task_id, "run-001", None).unwrap();
+    let resumed = app.run_continue(task_id, "run-001", None, None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);
     assert_eq!(resumed.outcome, Some(RunOutcome::Success));
 

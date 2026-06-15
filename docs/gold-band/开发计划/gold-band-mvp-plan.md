@@ -82,11 +82,13 @@
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。
 - 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。
+- 2026-06-12：新会话 UI 侧边栏会话行新增删除能力；hover 操作区补齐删除按钮，删除前弹出不可撤销确认，确认后删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站；若存在运行中的 run，则拒绝删除并提示先停止。
 - 2026-05-07：统一压缩桌面端卡片 header 与内容之间的过大空白；Round 详情左下信息流、Workflow 运行记录、Workspace 最近列表、Settings 表单卡片和遗留 Task/Run 详情页均移除 Card 默认 gap、覆盖 border header 大底部 padding，并降低内容区内边距。
 - 2026-05-07：Settings 页面移除标题副文案、范围提示块，以及外观/语言卡片的辅助说明文案，保留主题切换与语言选择两组本地偏好控件。
 - 2026-05-07：Settings 主题选择器升级为 `Sync with OS` 开关 + 条件化主题摘要 + 抽屉式主题选择；`desktopTheme` 扩展为 `system`、`light`、`light-warm`、`dark`、`black`，默认浅色调整为白蓝配色，Gold Band 深色升级为石墨香槟方向，保留暖金浅色并新增终端黑主题；`system` 会保留用户最近选择的浅色/深色变体；新增 `desktopFont` 偏好，浏览器调试模式优先使用 `queryLocalFonts()`，桌面端通过 Tauri `get_system_fonts` 枚举系统字体；前端验证继续通过 `/settings` deep link 使用 agent-browser 完成。
 - 2026-05-08：字体选择模型从三套 CJK 预设收敛为一个内置默认字体 `app-default`（MiSans）+ 一个本机字体下拉列表；前端通过 `web/public/fonts/misans/*.woff2` 内置 `Gold Band MiSans`，默认字体预览保留彩色 sample，本机字体继续走系统枚举与浏览器 fallback 检测。
 - 2026-05-08：Round 详情页移除左下“上下文”Tab，requirement 摘要上移到 Header，round 级状态保留在顶部指标区，节点详情改由工作图双击、右键菜单或详情抽屉按需查看；round 初始态不再展示单独的“编排事件”面板，Header 中“打开详情”替换为“打开日志”，节点日志由工作图右键菜单“查看日志”打开；实际工作图节点统一卡片底色，完成/失败/运行中等状态用圆形状态标记表达，产物/附件改为“产物:1”“附件:1”徽标，底部信息区只按当前选中节点的产物/附件渲染以避免切换闪烁，右键非选中节点时自动切换 selection，非固定详情抽屉用快速收起过渡后再展示菜单，日志详情长文本在抽屉内换行不撑宽容器。
+- 2026-06-11：修复节点完成后 workflow 不推进的问题：ACP timeline / token 读取从 orchestrator 主控制流剥离，指标开关关闭时不读取 token 文件，开启时也只在旁路任务中读取并捕获 panic；同时修复 UTF-8 字符截断 panic、JSONL/raw log 轮转的字节切片 panic、新 UI 首个 attempt 创建前的 `Agent 调起中` 空态、attempt 创建后首个可见消息前的 `处理中...` 占位，以及 ACP 状态旋转标识的 CSS 圆环动画。
 - 2026-05-08：任务工作流页顶部 `Latest Run` 改为统一读取最新 run，右侧 `结果` 改为复用任务列表状态 badge（如“已完成”），并移除顶部 `产物` 聚合卡片；任务列表同步移除 `资源` 列，不再在主表格展示 `Axx / Pxx`，确保首页和工作流页都只保留任务主状态与最新 run 这类高价值字段。运行记录中的 run/round 也收敛为单一状态 badge：优先显示 outcome，无 outcome 时回退到 status，不再并排展示两枚状态标签。
 - 2026-05-08：任务工作流页运行记录改为固定行高摘要列表；Run/Round 主行统一使用单行截断的 current node / pauseReason 摘要，展开后直接进入 round 明细列表，不再插入重复的 run 摘要条，避免不同分页因长文本换行导致列表高度和分页器位置抖动。
 - 2026-05-09：任务工作流页进一步收敛首屏主次关系：新建 Run 移入运行记录 Header，需求摘要改为无轮廓的弱强调同名单行，运行记录增加稳定列头并用中性增强表面、缩进时间线和独立 Round 行背景强化 run -> round 父子层级；随后只压缩运行记录区域自身的 Header 与行高，页面标题区保持与其他详情页统一的 Page Header 间距。
@@ -122,11 +124,17 @@
 - 2026-05-21：AI 输出验证的 JSON 输出约束输入改为本地草稿 + 延迟校验，停止输入约 2 秒或失焦后再写入 DSL；自动 beautify 改为输入框右上角手动美化按钮，避免编辑半截 JSON 时被重排。
 - 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；updater manifest 生成时显式使用 release tag，避免 workflow_dispatch 分支名进入 `version` 或下载 URL；Windows 平台优先选择签名的 setup exe 作为更新安装包；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback，重建时应用源码来自 release tag，发布脚本和 manifest 生成逻辑来自所选 workflow 分支。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON；本地生成 `latest.json` 时必须优先匹配本次构建 version 对应的签名安装包，避免目录残留旧包时 URL 指回历史 exe。
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 2026-06-12：高级设置中“记录详细日志”“开启指标上报”的常驻说明文案改为与“使用本地 Claude”一致的 tips icon tooltip 形式，减少长说明占位；“开启指标上报”标题颜色与相邻设置项统一为 muted heading 样式；这两项开关位置也改为与“使用本地 Claude”一致，放到标题行内而不是远端右对齐。
 - 2026-05-27：更新提示新增分层红点：后台发现当前可更新版本时，左侧 Settings、设置页 Advanced tab 和 Updates 分组标题同时提醒；Settings 和 Advanced 的已读状态按版本号持久化，用户逐层进入时只清当前层，Updates 红点仅在当前无可更新版本时消失。
 - 2026-05-27：右侧主内容区顶部新增一次性更新公告区；首次发现某个新版本时展示公告，点击后弹窗引导用户前往 设置 → 高级 → 更新；公告关闭状态与可用更新快照一并持久化，重启应用后若版本仍可更新则公告继续可见，直到用户关闭或后续检查确认无更新。
 - 2026-05-27：修正更新状态区的缓存展示语义；当重启后仅命中持久化的可用更新快照、实时 `updateStatus` 仍是 `idle` 时，UI 仍按“可更新”态展示状态文案、版本号和安装入口，避免出现“尚未检查”与可更新版本并存。
 - 2026-05-26：Windows release 桌面包使用 GUI subsystem，安装后双击启动不再附带 cmd 窗口；debug/dev 构建仍保留控制台输出。后台子进程统一通过 process helper 设置隐藏窗口，Windows 进程树清理丢弃 `taskkill` stdout/stderr，ACP provider 的 npx/codex 等子进程同样不弹控制台窗口。
 - 2026-06-04：桌面端左右侧 Sheet 抽屉统一支持边缘拖拽调宽与本地宽度记忆；`SheetContent` 负责默认调宽能力、视口边界约束和 localStorage 持久化，各页面只补稳定 `resizeStorageKey` 与宽度上下限；修正首次打开任务预览时拖拽手柄抢占焦点导致的蓝色高亮，要求手柄默认隐藏、悬停弱提示、拖拽中再高亮。
+- 2026-06-11：会话式运行页 compact composer 用量栏恢复具体处理状态标签，运行中必须展示“思考中...”/“工具调用中...”等当前步骤文案；后端工作流在节点完成后立即持久化下一节点或新 round 的 `run.current* / round.trace / node.json`，并隔离 metrics 回调 panic，避免出现当前节点已 completed 但工作流长期停在 running 旧节点的状态裂缝。
+- 2026-06-11：修复新 UI ACP 会话的跨节点自动跳转策略；前端把“是否允许自动跟随 running session”提升为显式状态，只有当前消息窗口贴底且用户仍在跟随当前运行会话时，新的 ACP live event 才会把选中会话切到下一运行节点。用户手动切到其他 session 或滚离底部后，后台节点继续运行，但不会再抢占当前会话视图；run VM 刷新若未命中自动跟随条件，必须保留既有 `selectedSessionKey`，并且手动切换与已排队的 live refresh 冲突时，手动选择优先。
+- 2026-06-12：会话页手动切换后的 auto-follow 判定改为基于 `run.activeSessions` 是否包含当前选中 session，而不是依赖叶子节点自身的 `runtimeDisplay.tone`；这样已完成节点在树状态短暂滞后时，也不会被误判为仍应跟随并再次跳回后台运行节点。
+- 2026-06-12：修复新 UI 默认选错 session 的问题。run VM 无显式 `selectedSessionKey` 时默认按 attempt 开始时间选择最新 session，避免 task-040 这类最新 `开发/attempt-002` 被 workflow 顺序最后的 `测试/attempt-001` 抢占；`process-interrupted` 可继续态仍保留 composer 输入触发 workflow runtime continue 的既有设计。
+- 2026-06-12：补齐会话页运行中停止链路并收敛为统一入口。新 UI composer 不再在前端区分普通 ACP prompt 与 workflow runtime continue，而是统一调用桌面 `stop_active_session`；后端内部判定 run running 时复用既有 `App::run_pause` 完成 run 暂停、当前 attempt cancel、provider pid 清理和 dynamic descendants 暂停，run 已非 running 但 ACP 追问仍活跃时复用 `cancel_acp_session` 停止该 ACP session，避免前端和 Tauri command 层复制第二套停止逻辑。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 
 ---
@@ -340,6 +348,8 @@ MVP 主流程：
 5. 从 `entry` 开始执行 node
 
 桌面端 `start_run` command 需要在第 4 步完成后立即返回初始 run summary，并把第 5 步交给后台线程执行，避免 UI 等待完整 workflow 跑完后才恢复响应。若最新 Run 尚未进入终止态，桌面端不允许继续新建 Run。
+
+run 创建编号规则统一由 runtime 负责：普通启动和会话页重跑都扫描当前 task 的 `runs/` 目录最大 `run-NNN` 后递增，并先原子创建目标 run 目录占位，再写入 `run.json`、`workflow.snapshot.json`、`round.json` 和首个 `node.json`。前端不得根据当前选中的 run 推导新 run id；并发重跑时目录占位失败的一方必须重新扫描最大编号再分配。
 
 ### `run kill`
 MVP 行为：

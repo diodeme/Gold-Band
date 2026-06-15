@@ -109,6 +109,8 @@ USING fts5(text, content=session_prompts, content_rowid=rowid)
 
 所有写入均为 fire-and-forget。
 
+若检测到 `sessions` / `session_prompts` 会话搜索索引 schema 版本落后，则启动时直接重建这组派生表与 FTS/trigger，再从文件系统回填；`tasks` 索引与源文件数据不受影响。
+
 ## 搜索接口
 
 ### `search_tasks`

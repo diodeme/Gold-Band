@@ -12,7 +12,8 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+    ManagedAgentType, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+    StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -419,6 +420,7 @@ pub struct MetricsEventContext {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub acp_session_path: Option<String>,
     // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
     // Used by NodeCompleted to report the real status instead of hardcoding.
     pub outcome: Option<String>,
@@ -439,7 +441,12 @@ pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
-    acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    acp_live_update: Option<
+        Arc<
+            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+        >,
+    >,
+    acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
 }
 
@@ -639,6 +646,7 @@ impl App {
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
+            acp_session_update: self.acp_session_update.clone(),
             metrics_callback: self.metrics_callback.clone(),
         }
     }
@@ -650,6 +658,14 @@ impl App {
         >,
     ) -> Self {
         self.acp_live_update = Some(live_update);
+        self
+    }
+
+    pub fn with_acp_session_update(
+        mut self,
+        session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.acp_session_update = Some(session_update);
         self
     }
 
@@ -669,6 +685,13 @@ impl App {
         Some(move |event: &crate::acp::events::AcpUiEvent| {
             live_update(context.clone(), event.clone())
         })
+    }
+
+    pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
+        if let Some(session_update) = &self.acp_session_update {
+            session_update(context)?;
+        }
+        Ok(())
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -735,6 +758,21 @@ impl App {
         settings.use_local_claude = Some(use_local_claude);
         self.save_settings(&settings)?;
         Ok(settings)
+    }
+
+    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.log_level = Some(log_level);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
+        self.set_user_log_level(if enabled {
+            RuntimeLogLevel::Debug
+        } else {
+            RuntimeLogLevel::Info
+        })
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -1190,6 +1228,8 @@ impl App {
             config,
             self.config.use_local_claude,
             self.config.acp_session_title_refresh_enabled,
+            self.config.acp_raw_max_size_bytes,
+            self.config.acp_raw_target_size_bytes,
         )?))
     }
 
@@ -1233,6 +1273,7 @@ impl App {
             config,
             provider_override: None,
             acp_live_update: None,
+            acp_session_update: None,
             metrics_callback: None,
         }
     }
@@ -1254,6 +1295,7 @@ impl App {
             config,
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
+            acp_session_update: None,
             metrics_callback: None,
         }
     }
@@ -2308,8 +2350,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn run_continue_background(
@@ -2317,8 +2360,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn submit_manual_check(
@@ -2658,11 +2702,12 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{AcpLiveEventContext, App};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
     use camino::Utf8PathBuf;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -2671,6 +2716,38 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    #[test]
+    fn emits_acp_session_update_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+            seen_for_callback.lock().unwrap().push(context);
+            Ok(())
+        }));
+
+        app.emit_acp_session_update(AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "验收".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        })
+        .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].run_id, "run-001");
+        assert_eq!(calls[0].node_id, "验收");
+        assert_eq!(calls[0].attempt_id, "attempt-001");
     }
 
     #[test]

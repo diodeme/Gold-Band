@@ -68,4 +68,3 @@ runtime will evaluate node success using the following condition:
 {% endif %}
 
 {{skill_catalog}}
-{{mcp_tools}}

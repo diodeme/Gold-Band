@@ -326,7 +326,6 @@ pub(crate) fn build_worker_invocation(
 
     // 对标 Zed: 渲染 MCP 工具和 SKILL 目录到 system prompt
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
-    let mcp_tools_catalog = mcp_mgr.render_mcp_tools_catalog();
     let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
@@ -370,7 +369,6 @@ pub(crate) fn build_worker_invocation(
         }),
         cold_artifacts,
         cold_attachments,
-        mcp_tools_catalog,
         mcp_servers,
         skill_catalog,
     })

@@ -2063,6 +2063,9 @@ pub fn write_skill(
         app.write_skill(&name, skill_source, &content).map_err(command_error)?;
     }
 
+    // 同步 symlink 到 .claude/skills/
+    app.sync_skill_symlinks(workspace_path.as_deref());
+
     // 如果改名了，删除旧 SKILL
     if let Some(old) = old_name {
         if old != name {
@@ -2076,6 +2079,8 @@ pub fn write_skill(
             } else {
                 let _ = app.delete_skill(&old, skill_source);
             }
+            // 改名后旧目录已删，再次 sync 清理旧名 symlink
+            app.sync_skill_symlinks(workspace_path.as_deref());
         }
     }
 
@@ -2099,10 +2104,12 @@ pub fn delete_skill(
                 return Err(command_error(anyhow::anyhow!("SKILL `{name}` not found")));
             }
             std::fs::remove_dir_all(skill_dir.as_std_path()).map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            app.sync_skill_symlinks(workspace_path.as_deref());
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
     app.delete_skill(&name, skill_source).map_err(command_error)?;
+    app.sync_skill_symlinks(workspace_path.as_deref());
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 

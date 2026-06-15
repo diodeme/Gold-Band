@@ -227,6 +227,7 @@ impl DesktopState {
         Ok(guard.config.clone())
     }
 
+    #[allow(dead_code)]
     pub fn clear_agent_diagnostics(&self) -> Result<()> {
         let snapshot = {
             let mut diagnostics = self

@@ -13,11 +13,5 @@ You have access to the following Skills — modular capabilities that provide sp
 {{/each}}
 </available_skills>
 
-<skill_instructions>
-{{#each skills}}
-
-### {{name}}
-{{body}}
-{{/each}}
-</skill_instructions>
+To use a Skill, read its SKILL.md file from the listed location. Paths inside a Skill resolve relative to that Skill's directory.
 {{/if}}

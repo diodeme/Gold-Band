@@ -13,11 +13,5 @@
 {{/each}}
 </available_skills>
 
-<skill_instructions>
-{{#each skills}}
-
-### {{name}}
-{{body}}
-{{/each}}
-</skill_instructions>
+要使用某个 Skill，请从其列出的位置目录中读取 SKILL.md 文件。Skill 内的路径相对于该 Skill 的目录解析。
 {{/if}}

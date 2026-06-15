@@ -68,4 +68,3 @@ runtime 将使用以下条件判断节点结果：
 {% endif %}
 
 {{skill_catalog}}
-{{mcp_tools}}

@@ -95,7 +95,6 @@ fn invocation() -> WorkerInvocation {
                 "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../report.md",
             ),
         }],
-        mcp_tools_catalog: String::new(),
         mcp_servers: Vec::new(),
         skill_catalog: String::new(),
     }

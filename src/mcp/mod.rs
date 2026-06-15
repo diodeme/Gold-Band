@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -242,44 +242,6 @@ impl McpManager {
     }
 
     // ── System Prompt ──
-
-    /// 渲染 MCP 工具列表为 system prompt 片段（对标 Zed ContextServerRegistry）
-    /// 优先使用状态缓存中的工具列表，缓存未命中时降级为服务器名称列表
-    pub fn render_mcp_tools_catalog(&self) -> String {
-        let Ok(servers) = self.enabled_servers() else { return String::new() };
-        if servers.is_empty() {
-            return String::new();
-        }
-        let cache = self.state_cache.borrow();
-        let mut lines = vec![
-            "## Available MCP Tools".to_string(),
-            "The following external tools are available from configured MCP servers:".to_string(),
-            String::new(),
-        ];
-        for s in &servers {
-            lines.push(format!("### {}", s.name));
-            match cache.get(&s.id) {
-                Some(McpServerState::Running { tools }) if !tools.is_empty() => {
-                    for tool in tools {
-                        let desc = tool.description.as_deref().unwrap_or("(no description)");
-                        lines.push(format!("- **`{}`** — {}", tool.name, desc));
-                    }
-                }
-                _ => {
-                    match &s.transport {
-                        McpTransportConfig::Stdio { command, args, .. } => {
-                            lines.push(format!("- Type: stdio (command: `{} {}`)", command, args.join(" ")));
-                        }
-                        McpTransportConfig::Http { url, .. } => {
-                            lines.push(format!("- Type: http (url: `{}`)", url));
-                        }
-                    }
-                }
-            }
-            lines.push(String::new());
-        }
-        lines.join("\n")
-    }
 
     // ── ACP 序列化 ──
 

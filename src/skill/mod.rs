@@ -1,5 +1,7 @@
 // ── SKILL Manager ──
 // 对标 Zed crates/agent_skills/src/agent_skills.rs
+
+pub mod symlink;
 //
 // 职责：
 //   1. SKILL 文件系统管理（.agents/skills/ 全局 + 项目级）
@@ -9,7 +11,7 @@
 
 use std::fs;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use camino::Utf8PathBuf;
 
 use crate::config::{
@@ -192,7 +194,7 @@ impl SkillManager {
         Ok(select_catalog_skills(&overridden))
     }
 
-    /// 渲染 SKILL 目录为 system prompt 片段（含 body 嵌入，对标 Zed）
+    /// 渲染 SKILL 目录为 system prompt 片段（仅目录，不含 body — 对标 Zed）
     pub fn render_skill_catalog(&self, language: crate::config::DesktopLanguage) -> Result<String> {
         self.render_skill_catalog_for_workspace(language, None)
     }
@@ -210,38 +212,17 @@ impl SkillManager {
         if skills.is_empty() {
             return Ok(String::new());
         }
-        // 读取每个 SKILL 的 body
-        let skills_with_body: Vec<serde_json::Value> = skills
-            .into_iter()
-            .map(|meta| {
-                let body = self.read_body_for_meta(&meta).unwrap_or_default();
-                serde_json::json!({
-                    "name": meta.name,
-                    "description": meta.description,
-                    "directory_path": meta.directory_path,
-                    "body": body,
-                })
-            })
-            .collect();
         let template = crate::prompts::prompt_by_language(
             language,
             crate::prompts::SKILL_CATALOG_BLOCK_ZH_CN,
             crate::prompts::SKILL_CATALOG_BLOCK_EN,
         );
-        let has_skills = !skills_with_body.is_empty();
+        let has_skills = true;
         let context = serde_json::json!({
             "has_skills": has_skills,
-            "skills": skills_with_body,
+            "skills": skills,
         });
         crate::prompts::render(template, context)
-    }
-
-    fn read_body_for_meta(&self, meta: &SkillMeta) -> Result<String> {
-        let dir = skills_dir_for_source(meta.source, &self.paths)?;
-        let skill_path = dir.join(&meta.name).join(SKILL_FILE_NAME);
-        let raw = std::fs::read_to_string(skill_path.as_std_path())?;
-        let (_, body) = parse_skill_md(&raw, &meta.name, meta.source, skill_path.as_str())?;
-        Ok(body)
     }
 }
 
@@ -258,7 +239,7 @@ fn skills_dir_for_source(
     }
 }
 
-fn scan_skills_dir(dir: &Utf8PathBuf, source: SkillSource) -> Vec<SkillMeta> {
+pub(crate) fn scan_skills_dir(dir: &Utf8PathBuf, source: SkillSource) -> Vec<SkillMeta> {
     let mut skills = Vec::new();
     let Ok(entries) = fs::read_dir(dir.as_std_path()) else {
         return skills;

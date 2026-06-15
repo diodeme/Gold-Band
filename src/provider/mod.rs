@@ -76,8 +76,6 @@ pub struct WorkerInvocation {
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
     #[serde(default)]
-    pub mcp_tools_catalog: String,
-    #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default)]
     pub skill_catalog: String,
@@ -489,8 +487,6 @@ struct RuntimePromptTemplateContext {
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
     #[serde(default)]
-    mcp_tools: String,
-    #[serde(default)]
     skill_catalog: String,
 }
 
@@ -555,7 +551,6 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
             .output_contract
             .as_ref()
             .map(runtime_output_contract_context),
-        mcp_tools: req.mcp_tools_catalog.clone(),
         skill_catalog: req.skill_catalog.clone(),
     }
 }
@@ -801,7 +796,6 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
-            mcp_tools_catalog: String::new(),
             mcp_servers: Vec::new(),
             skill_catalog: String::new(),
         };

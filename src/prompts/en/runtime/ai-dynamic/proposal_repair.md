@@ -6,5 +6,8 @@ Do not output explanations, Markdown, code fences, or any extra text. Output onl
 Validation errors:
 {{ validation_errors }}
 
+Current valid value reference:
+{{ repair_reference }}
+
 Current remaining budget:
 {{ remaining_budget }}

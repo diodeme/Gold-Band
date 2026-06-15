@@ -18,7 +18,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 ### 配置项
 - **节点 ID**：固定为 `ai-dynamic`
 - **Agent 策略**：固定 Agent 或动态 Agent
-- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，可选择该 agent 的模型；模型为空表示由 provider 默认模型或运行时 prompt 引导决定
+- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，可选择该 agent 的模型；模型为空表示由 provider 默认模型或运行时 prompt 引导决定。内部 proposal 不输出 provider，runtime 会把固定 provider 注入到 worker / merge / acceptance。
 - **动态 Agent**：动态策略下配置初始分发节点 Agent、初始分发节点模型、可选动态 Agent 列表、每个可选 Agent 的可选模型，以及 agent / 模型决策指南
 - **允许调用的工作流**：引用工作流 DSL 内的 `workflow.id`
 - **可用角色列表**：引用上下文管理中的 profile id
@@ -42,6 +42,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - AUTO 模板保存和另存必须给出明确反馈；模板名重复、Agent 不可用、动态策略缺少可用 Agent、无决策指南且可选动态 Agent 未选择模型、动态控制参数非法时不允许静默保存
 - 动态 Agent 策略中，初始分发节点 Agent 可以独立选择模型；后续调起 bootstrap 节点时使用该模型，不复用可选动态 Agent 的模型配置
 - 可选动态 Agent 的模型下拉支持清空。若 agent / 模型决策指南为空，则每个可选动态 Agent 必须选择模型，AI-DYNAMIC 内部 proposal DSL 不需要输出 `model`；若决策指南非空，则内部 proposal DSL 必须输出 `model`，但已在配置里选择模型的 Agent 仍固定使用配置模型，忽略 proposal 中对该 Agent 给出的其他模型
+- AUTO 的可用角色列表只作为内部 worker proposal 的可选 profile ID 白名单；worker 不填 profile 时不注入角色内容。merge / acceptance 不接受 proposal profile，始终使用 runtime 内置 merge / acceptance prompt。
 - Agent 列表展示所有已配置 Agent；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
 - 允许调用的工作流按 DSL `workflow.id` 去重判断；重复或空 ID 的工作流直接展示在允许调用工作流列表下方，标签保留名称，感叹号 icon tooltip 展示原因
 

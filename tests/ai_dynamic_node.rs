@@ -3,14 +3,16 @@ use gold_band::app::App;
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
-    DynamicGraphState, DynamicGroupStatus, DynamicNodeKind, DynamicNodeStatus,
-    DynamicProposalValidationStatus, DynamicRunStatus,
+    DynamicCompletionSchemaPolicy, DynamicGraphState, DynamicGroupStatus, DynamicNodeKind,
+    DynamicNodeStatus, DynamicProposalValidationStatus, DynamicRunStatus,
+    dynamic_completion_effective_schema,
 };
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
     render_prompt_bundle,
 };
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
@@ -21,6 +23,8 @@ enum DynamicScenario {
     InvalidWorkflowInvocation,
     FanoutRepair,
     MultiValidationRepair,
+    MergeAcceptanceProfileRepair,
+    ParseRepair,
     SessionContinuePrompt,
     InvalidSessionContinue,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
@@ -59,6 +63,14 @@ impl DynamicProvider {
 
     fn multi_validation_repair() -> Self {
         Self::new(DynamicScenario::MultiValidationRepair)
+    }
+
+    fn merge_acceptance_profile_repair() -> Self {
+        Self::new(DynamicScenario::MergeAcceptanceProfileRepair)
+    }
+
+    fn parse_repair() -> Self {
+        Self::new(DynamicScenario::ParseRepair)
     }
 
     fn session_continue_prompt() -> Self {
@@ -199,7 +211,27 @@ impl DynamicProvider {
                     Some(invalid_profile_and_overflow_completion())
                 }
             }
+            (DynamicScenario::MergeAcceptanceProfileRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(merge_acceptance_profile_completion())
+                }
+            }
+            (DynamicScenario::ParseRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(missing_merge_task_completion())
+                }
+            }
             (DynamicScenario::MultiValidationRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
+            }
+            (DynamicScenario::MergeAcceptanceProfileRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
+            }
+            (DynamicScenario::ParseRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
             }
             (DynamicScenario::SessionContinuePrompt, "bootstrap") => {
@@ -243,7 +275,6 @@ fn fanout_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch A",
                         "task": "Finish branch A",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -253,7 +284,6 @@ fn fanout_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch B",
                         "task": "Finish branch B",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -261,14 +291,10 @@ fn fanout_completion(_profile: &str) -> String {
                 ],
                 "merge": {
                     "title": "Merge core",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Merge branch outputs"
                 },
                 "acceptance": {
                     "title": "Accept core",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Accept merged branch outputs"
                 }
             }
@@ -291,7 +317,6 @@ fn nested_fanout_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch A 1",
                         "task": "Finish branch A part 1",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["branch-a"]
@@ -301,7 +326,6 @@ fn nested_fanout_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch A 2",
                         "task": "Finish branch A part 2",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["branch-a"]
@@ -309,14 +333,10 @@ fn nested_fanout_completion(_profile: &str) -> String {
                 ],
                 "merge": {
                     "title": "Merge branch A",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Merge branch A outputs"
                 },
                 "acceptance": {
                     "title": "Accept branch A",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Accept branch A outputs"
                 }
             }
@@ -349,8 +369,6 @@ fn invalid_workflow_invocation_completion(_profile: &str) -> String {
                     "kind": "workflow-invocation",
                     "title": "Invoke missing workflow",
                     "task": "Run a workflow that is not allowed",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "workspace": { "mode": "readonly" },
                     "dependsOn": ["bootstrap"],
                     "workflowId": "missing-workflow"
@@ -375,7 +393,6 @@ fn too_many_fanout_branches_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch A",
                         "task": "Finish branch A",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -385,7 +402,6 @@ fn too_many_fanout_branches_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch B",
                         "task": "Finish branch B",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -395,7 +411,6 @@ fn too_many_fanout_branches_completion(_profile: &str) -> String {
                         "kind": "worker",
                         "title": "Branch C",
                         "task": "Finish branch C",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -403,14 +418,10 @@ fn too_many_fanout_branches_completion(_profile: &str) -> String {
                 ],
                 "merge": {
                     "title": "Merge overflow",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Merge branch outputs"
                 },
                 "acceptance": {
                     "title": "Accept overflow",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Accept merged branch outputs"
                 }
             }
@@ -433,7 +444,6 @@ fn invalid_profile_and_overflow_completion() -> String {
                         "kind": "worker",
                         "title": "Branch A",
                         "task": "Finish branch A",
-                        "provider": "claude-acp",
                         "profile": "missing-profile",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -443,7 +453,6 @@ fn invalid_profile_and_overflow_completion() -> String {
                         "kind": "worker",
                         "title": "Branch B",
                         "task": "Finish branch B",
-                        "provider": "claude-acp",
                         "profile": "missing-profile",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -453,7 +462,6 @@ fn invalid_profile_and_overflow_completion() -> String {
                         "kind": "worker",
                         "title": "Branch C",
                         "task": "Finish branch C",
-                        "provider": "claude-acp",
                         "profile": "missing-profile",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -461,14 +469,95 @@ fn invalid_profile_and_overflow_completion() -> String {
                 ],
                 "merge": {
                     "title": "Merge overflow",
-                    "provider": "claude-acp",
-                    "profile": "missing-profile",
                     "task": "Merge branch outputs"
                 },
                 "acceptance": {
                     "title": "Accept overflow",
-                    "provider": "claude-acp",
-                    "profile": "missing-profile",
+                    "task": "Accept merged branch outputs"
+                }
+            }
+        }"#
+    .to_string()
+}
+
+fn merge_acceptance_profile_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "split into two branches with unsupported group profiles",
+            "next": {
+                "type": "fanout",
+                "groupId": "group-core",
+                "nodes": [
+                    {
+                        "id": "branch-a",
+                        "kind": "worker",
+                        "title": "Branch A",
+                        "task": "Finish branch A",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    },
+                    {
+                        "id": "branch-b",
+                        "kind": "worker",
+                        "title": "Branch B",
+                        "task": "Finish branch B",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    }
+                ],
+                "merge": {
+                    "title": "Merge core",
+                    "profile": "pf-builtin-review",
+                    "task": "Merge branch outputs"
+                },
+                "acceptance": {
+                    "title": "Accept core",
+                    "profile": "pf-builtin-accept",
+                    "task": "Accept merged branch outputs"
+                }
+            }
+        }"#
+    .to_string()
+}
+
+fn missing_merge_task_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "split into two branches with malformed merge spec",
+            "next": {
+                "type": "fanout",
+                "groupId": "group-core",
+                "nodes": [
+                    {
+                        "id": "branch-a",
+                        "kind": "worker",
+                        "title": "Branch A",
+                        "task": "Finish branch A",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    },
+                    {
+                        "id": "branch-b",
+                        "kind": "worker",
+                        "title": "Branch B",
+                        "task": "Finish branch B",
+                        "profile": "pf-builtin-dev",
+                        "workspace": { "mode": "readonly" },
+                        "dependsOn": ["bootstrap"]
+                    }
+                ],
+                "merge": {
+                    "title": "Merge core"
+                },
+                "acceptance": {
+                    "title": "Accept core",
                     "task": "Accept merged branch outputs"
                 }
             }
@@ -491,7 +580,6 @@ fn session_continue_fanout_completion() -> String {
                         "kind": "worker",
                         "title": "Branch A",
                         "task": "Finish branch A",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -501,7 +589,6 @@ fn session_continue_fanout_completion() -> String {
                         "kind": "worker",
                         "title": "Branch B",
                         "task": "Finish branch B then continue same chat for final wrap-up",
-                        "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "workspace": { "mode": "readonly" },
                         "dependsOn": ["bootstrap"]
@@ -509,14 +596,10 @@ fn session_continue_fanout_completion() -> String {
                 ],
                 "merge": {
                     "title": "Merge core",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Merge branch outputs"
                 },
                 "acceptance": {
                     "title": "Accept core",
-                    "provider": "claude-acp",
-                    "profile": "pf-builtin-dev",
                     "task": "Accept merged branch outputs"
                 }
             }
@@ -537,7 +620,6 @@ fn session_continue_single_completion() -> String {
                     "kind": "worker",
                     "title": "Branch C",
                     "task": "Continue branch B conversation and wrap up remaining branch work",
-                    "provider": "claude-acp",
                     "profile": "pf-builtin-dev",
                     "sessionMode": "continue",
                     "continueFromNodeId": "branch-b",
@@ -629,7 +711,8 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                         "type": "ai-dynamic",
                         "agentStrategy": {{
                             "mode": "fixed",
-                            "provider": "claude-acp"
+                            "provider": "claude-acp",
+                            "model": "test-model"
                         }},
                         "control": {{
                             "maxDynamicNodes": 10,
@@ -848,7 +931,7 @@ fn ai_dynamic_rejects_allowed_workflow_with_duplicate_workflow_id() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::new(repo_root);
     let workflows_path = app.paths.workflow_templates_file();
-    std::fs::create_dir_all(app.paths.authoring_dir().as_std_path()).unwrap();
+    std::fs::create_dir_all(workflows_path.parent().unwrap().as_std_path()).unwrap();
     std::fs::write(
         workflows_path.as_std_path(),
         format!(
@@ -1064,6 +1147,113 @@ fn ai_dynamic_repairs_multiple_validation_errors_in_one_retry() {
     let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
     assert!(resume_prompt.contains("maxFanout"));
     assert!(resume_prompt.contains("unknown profile `missing-profile`"));
+    assert!(resume_prompt.contains("allowed values:"));
+    assert!(resume_prompt.contains("Available worker profile IDs:"));
+}
+
+#[test]
+fn ai_dynamic_rejects_merge_acceptance_profile_fields() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-group-profile-repair";
+    let provider = DynamicProvider::merge_acceptance_profile_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(
+        graph.proposals[0].validation_status,
+        DynamicProposalValidationStatus::Rejected
+    );
+    assert!(graph.proposals[0].validation_errors.iter().any(|error| {
+        error.code == "dynamic.merge.profile.unsupported"
+            && error.path.as_deref() == Some("next.merge.profile")
+            && error.expected.as_deref() == Some("omit this field")
+    }));
+    assert!(graph.proposals[0].validation_errors.iter().any(|error| {
+        error.code == "dynamic.acceptance.profile.unsupported"
+            && error.path.as_deref() == Some("next.acceptance.profile")
+            && error.expected.as_deref() == Some("omit this field")
+    }));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.contains("path: next.merge.profile"));
+    assert!(resume_prompt.contains("expected: omit this field"));
+}
+
+#[test]
+fn ai_dynamic_parse_repair_prompt_includes_json_path() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-parse-repair";
+    let provider = DynamicProvider::parse_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.contains("[dynamic.schema.required]"));
+    assert!(resume_prompt.contains("path: next.merge.task"));
+}
+
+#[test]
+fn ai_dynamic_effective_schema_reflects_runtime_policy() {
+    let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
+        provider_required: false,
+        model_required: false,
+        provider_ids: vec!["claude-acp".to_string()],
+        model_names: Vec::new(),
+        profile_ids: vec!["pf-builtin-dev".to_string()],
+        workflow_ids: vec!["child-flow".to_string()],
+        max_fanout: 2,
+    });
+
+    assert!(schema.pointer("/properties/source").is_none());
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNext/properties/nodes/maxItems"),
+        Some(&json!(2))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNodeSpec/allOf/0/if/properties/kind/enum/0"),
+        Some(&json!("worker"))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNodeSpec/allOf/0/then/properties/provider"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicAgentTaskSpec/allOf/0/properties/provider"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNodeSpec/properties/profile/enum/0"),
+        Some(&json!("pf-builtin-dev"))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNodeSpec/properties/workflowId/enum/0"),
+        Some(&json!("child-flow"))
+    );
 }
 
 #[test]

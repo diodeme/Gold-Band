@@ -705,6 +705,24 @@ fn write_task_input_image(app: &App, task_id: &str, name: &str) -> Utf8PathBuf {
 }
 
 fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_workflows: &str) {
+    write_dynamic_workflow_with_agent_strategy(
+        app,
+        task_id,
+        r#"{
+                            "mode": "fixed",
+                            "provider": "claude-acp",
+                            "model": "test-model"
+                        }"#,
+        allowed_workflows,
+    );
+}
+
+fn write_dynamic_workflow_with_agent_strategy(
+    app: &App,
+    task_id: &str,
+    agent_strategy: &str,
+    allowed_workflows: &str,
+) {
     std::fs::write(
         app.paths.workflow_file(task_id).as_std_path(),
         format!(
@@ -717,11 +735,7 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                     {{
                         "id": "router",
                         "type": "ai-dynamic",
-                        "agentStrategy": {{
-                            "mode": "fixed",
-                            "provider": "claude-acp",
-                            "model": "test-model"
-                        }},
+                        "agentStrategy": {agent_strategy},
                         "control": {{
                             "maxDynamicNodes": 10,
                             "maxFanout": 2,
@@ -737,7 +751,8 @@ fn write_dynamic_workflow(app: &App, task_id: &str, _profile: &str, allowed_work
                 "edges": [
                     {{ "from": "router", "to": "$end", "on": "success" }}
                 ]
-            }}"#
+            }}"#,
+            agent_strategy = agent_strategy,
         ),
     )
     .unwrap();
@@ -1276,7 +1291,9 @@ fn ai_dynamic_parse_repair_prompt_includes_json_path() {
 fn ai_dynamic_effective_schema_reflects_runtime_policy() {
     let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
         provider_required: false,
-        model_required: false,
+        node_model_required: false,
+        agent_task_model_required: false,
+        agent_task_model_visible: true,
         provider_ids: vec!["claude-acp".to_string()],
         model_names: Vec::new(),
         profile_ids: vec!["pf-builtin-dev".to_string()],
@@ -1308,6 +1325,30 @@ fn ai_dynamic_effective_schema_reflects_runtime_policy() {
     assert_eq!(
         schema.pointer("/definitions/DynamicNodeSpec/properties/workflowId/enum/0"),
         Some(&json!("child-flow"))
+    );
+}
+
+#[test]
+fn ai_dynamic_effective_schema_hides_agent_task_model_when_acceptance_model_is_configured() {
+    let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
+        provider_required: true,
+        node_model_required: true,
+        agent_task_model_required: false,
+        agent_task_model_visible: false,
+        provider_ids: vec!["claude-acp".to_string()],
+        model_names: vec!["worker-model-a".to_string()],
+        profile_ids: vec!["pf-builtin-dev".to_string()],
+        workflow_ids: vec![],
+        max_fanout: 2,
+    });
+
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNodeSpec/properties/model/type"),
+        Some(&json!("string"))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicAgentTaskSpec/properties/model"),
+        None
     );
 }
 

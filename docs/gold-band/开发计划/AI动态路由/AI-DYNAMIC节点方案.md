@@ -226,6 +226,15 @@ type NodeDsl = WorkerNode | AiDynamicNode;
 }
 ```
 
+动态 Agent 策略补充：
+
+- 新增可选 `acceptanceModel`，只用于 fanout 配套的 `merge` / `acceptance`。
+- 当 `acceptanceModel` 已配置时：
+  - `merge` / `acceptance` 继续必须输出合法 `provider`。
+  - `merge` / `acceptance` 的 schema 与提示词不再要求输出 `model`，并且不会再暴露这个字段。
+  - runtime 会在 materialize 与实际调用阶段统一注入该模型。
+  - 普通 worker 的 `model` 规则保持不变，仍按原有 routing prompt / 锁模逻辑执行。
+
 外层 edge 仍然普通：
 
 ```json

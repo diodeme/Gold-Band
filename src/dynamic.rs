@@ -320,7 +320,9 @@ pub fn dynamic_completion_schema() -> serde_json::Value {
 #[derive(Debug, Clone, Default)]
 pub struct DynamicCompletionSchemaPolicy {
     pub provider_required: bool,
-    pub model_required: bool,
+    pub node_model_required: bool,
+    pub agent_task_model_required: bool,
+    pub agent_task_model_visible: bool,
     pub provider_ids: Vec<String>,
     pub model_names: Vec<String>,
     pub profile_ids: Vec<String>,
@@ -499,14 +501,14 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
     if policy.provider_required {
         worker_required.push("provider");
     }
-    if policy.model_required {
+    if policy.node_model_required {
         worker_required.push("model");
     }
     let mut worker_forbidden = vec!["workflowId", "permissionMode"];
     if !policy.provider_required {
         worker_forbidden.push("provider");
     }
-    if !policy.model_required {
+    if !policy.node_model_required {
         worker_forbidden.push("model");
     }
     serde_json::json!({
@@ -552,26 +554,35 @@ fn dynamic_agent_task_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> ser
     if policy.provider_required {
         required.push("provider");
     }
-    if policy.model_required {
+    if policy.agent_task_model_required {
         required.push("model");
     }
     let mut forbidden = Vec::new();
     if !policy.provider_required {
         forbidden.push("provider");
     }
-    if !policy.model_required {
+    if policy.agent_task_model_visible && !policy.agent_task_model_required {
         forbidden.push("model");
+    }
+    let mut properties = serde_json::Map::from_iter([
+        ("title".to_string(), string_schema()),
+        (
+            "provider".to_string(),
+            optional_enum_or_string_schema(&policy.provider_ids),
+        ),
+        ("task".to_string(), string_schema()),
+    ]);
+    if policy.agent_task_model_visible {
+        properties.insert(
+            "model".to_string(),
+            optional_enum_or_string_schema(&policy.model_names),
+        );
     }
     let mut schema = serde_json::json!({
         "type": "object",
         "required": required,
         "additionalProperties": false,
-        "properties": {
-            "title": string_schema(),
-            "provider": optional_enum_or_string_schema(&policy.provider_ids),
-            "model": optional_enum_or_string_schema(&policy.model_names),
-            "task": string_schema()
-        }
+        "properties": properties
     });
     if !forbidden.is_empty() {
         if let Some(object) = schema.as_object_mut() {

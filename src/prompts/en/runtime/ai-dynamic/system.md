@@ -27,6 +27,8 @@ AI-DYNAMIC remaining budget:
 - Bootstrap agent: {{ bootstrap_provider }}
 {% if agent_strategy_mode == "dynamic" %}- Agent and model routing guidance:
 {{ agent_routing_prompt }}
+- Merge / acceptance model policy:
+{{ acceptance_model_policy }}
 - Available agents and models:
 {{ available_providers }}
 {% endif %}- Available profiles:

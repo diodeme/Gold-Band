@@ -393,6 +393,8 @@ pub enum AiDynamicAgentStrategy {
         bootstrap_provider: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acceptance_model: Option<String>,
         routing_prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_agents: Vec<DynamicAgentRef>,
@@ -629,6 +631,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model,
+            acceptance_model,
             routing_prompt,
             available_agents,
         } => {
@@ -637,6 +640,13 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                 "ai-dynamic node `{id}` bootstrapProvider cannot be blank"
             );
             if let Some(model) = bootstrap_model {
+                if model.trim().is_empty() {
+                    bail!(WorkflowValidationError::DynamicFixedModelBlank {
+                        node_id: id.to_string(),
+                    });
+                }
+            }
+            if let Some(model) = acceptance_model {
                 if model.trim().is_empty() {
                     bail!(WorkflowValidationError::DynamicFixedModelBlank {
                         node_id: id.to_string(),

@@ -891,6 +891,9 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const nextBootstrapModel = cur.mode === 'dynamic'
               ? cur.bootstrapModel
               : undefined;
+            const nextAcceptanceModel = cur.mode === 'dynamic'
+              ? cur.acceptanceModel
+              : undefined;
             const nextAvailableAgents = cur.mode === 'dynamic'
               ? cur.availableAgents
               : [];
@@ -899,6 +902,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
               mode: 'dynamic',
               bootstrapProvider: nextBootstrapProvider,
               bootstrapModel: nextBootstrapModel,
+              acceptanceModel: nextAcceptanceModel,
               routingPrompt: nextRoutingPrompt,
               availableAgents: nextAvailableAgents,
             });
@@ -961,6 +965,38 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                   className={errorClass(errorsFor('agentStrategy.bootstrapModel'))}
                   clearLabel={t('workflowEditor.clearModel')}
                   onChange={(model) => updateAgentStrategy({ ...dynamicStrategy, bootstrapModel: model || undefined })}
+                />
+              </Field>
+            );
+          })()}
+          {(() => {
+            const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
+            const candidateProviders = new Set((dynamicStrategy.availableAgents ?? []).map((agent) => agent.provider));
+            if (dynamicStrategy.bootstrapProvider?.trim()) {
+              candidateProviders.add(dynamicStrategy.bootstrapProvider.trim());
+            }
+            const acceptanceModels = agents
+              .filter((agent) => candidateProviders.has(agent.agentType))
+              .flatMap((agent) => agent.supportedModels ?? [])
+              .filter((model, index, list) => list.findIndex((item) => item.id === model.id) === index);
+            if (dynamicStrategy.acceptanceModel?.trim()
+              && !acceptanceModels.some((model) => model.id === dynamicStrategy.acceptanceModel)) {
+              acceptanceModels.push({
+                id: dynamicStrategy.acceptanceModel,
+                name: dynamicStrategy.acceptanceModel,
+                description: null,
+              });
+            }
+            if (acceptanceModels.length === 0) return null;
+            return (
+              <Field label={<HelpLabel label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')} />} errors={errorsFor('agentStrategy.acceptanceModel')}>
+                <ModelSelect
+                  value={dynamicStrategy.acceptanceModel ?? ''}
+                  options={acceptanceModels}
+                  placeholder={t('workflowEditor.selectModel')}
+                  className={errorClass(errorsFor('agentStrategy.acceptanceModel'))}
+                  clearLabel={t('workflowEditor.clearModel')}
+                  onChange={(model) => updateAgentStrategy({ ...dynamicStrategy, acceptanceModel: model || undefined })}
                 />
               </Field>
             );
@@ -1920,6 +1956,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           : {
             ...normalizedStrategy,
             bootstrapModel: normalizedStrategy.bootstrapModel?.trim() ? normalizedStrategy.bootstrapModel : undefined,
+            acceptanceModel: normalizedStrategy.acceptanceModel?.trim() ? normalizedStrategy.acceptanceModel : undefined,
             routingPrompt: normalizedStrategy.routingPrompt ?? '',
             availableAgents: (normalizedStrategy.availableAgents ?? []).map((agent) => ({
               ...agent,

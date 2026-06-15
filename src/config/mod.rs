@@ -879,6 +879,7 @@ pub struct ConversationAutoConfig {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    pub acceptance_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,

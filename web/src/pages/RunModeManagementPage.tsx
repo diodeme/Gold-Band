@@ -54,6 +54,7 @@ export function RunModeManagementPage({
   const [agent, setAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [bootstrapAgent, setBootstrapAgent] = useState(runMode.autoConfig?.bootstrapAgentType ?? runMode.autoConfig?.agentType ?? '');
   const [bootstrapModel, setBootstrapModel] = useState(runMode.autoConfig?.bootstrapModelId ?? '');
+  const [acceptanceModel, setAcceptanceModel] = useState(runMode.autoConfig?.acceptanceModelId ?? '');
   const [model, setModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [availableAgents, setAvailableAgents] = useState<DynamicAgentRefDsl[]>(runMode.autoConfig?.availableAgents ?? []);
   const [routingPrompt, setRoutingPrompt] = useState(runMode.autoConfig?.routingPrompt ?? '');
@@ -95,6 +96,26 @@ export function RunModeManagementPage({
   const selectedBootstrapAgent = agents.find((a) => a.agentType === bootstrapAgent) ?? null;
   const bootstrapModels = selectedBootstrapAgent?.supportedModels ?? [];
   const availableAgentMap = useMemo(() => new Map(availableAgents.map((item) => [item.provider, item])), [availableAgents]);
+  const acceptanceModels = useMemo(() => {
+    const options = new Map<string, { id: string; name: string; description?: string | null }>();
+    const candidateProviders = new Set(availableAgents.map((item) => item.provider));
+    if (bootstrapAgent.trim()) {
+      candidateProviders.add(bootstrapAgent.trim());
+    }
+    agents
+      .filter((item) => candidateProviders.has(item.agentType))
+      .forEach((item) => {
+        (item.supportedModels ?? []).forEach((model) => {
+          if (!options.has(model.id)) {
+            options.set(model.id, model);
+          }
+        });
+      });
+    if (acceptanceModel.trim() && !options.has(acceptanceModel.trim())) {
+      options.set(acceptanceModel.trim(), { id: acceptanceModel.trim(), name: acceptanceModel.trim() });
+    }
+    return Array.from(options.values());
+  }, [acceptanceModel, agents, availableAgents, bootstrapAgent]);
 
   useEffect(() => {
     getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
@@ -141,6 +162,7 @@ export function RunModeManagementPage({
         agentType: bootstrapAgent || agent,
         bootstrapAgentType: bootstrapAgent || agent,
         bootstrapModelId: bootstrapModel || undefined,
+        acceptanceModelId: acceptanceModel || undefined,
         availableAgents,
         routingPrompt: routingPrompt.trim() || undefined,
         allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
@@ -171,6 +193,7 @@ export function RunModeManagementPage({
     setAgent(config.agentType ?? '');
     setBootstrapAgent(config.bootstrapAgentType ?? config.agentType ?? '');
     setBootstrapModel(config.bootstrapModelId ?? '');
+    setAcceptanceModel(config.acceptanceModelId ?? '');
     setModel(config.modelId ?? '');
     setAvailableAgents(config.availableAgents ?? []);
     setRoutingPrompt(config.routingPrompt ?? '');
@@ -575,6 +598,19 @@ export function RunModeManagementPage({
                     clearLabel={t('workflowEditor.clearModel')}
                     triggerClassName="w-[180px]"
                     onChange={setBootstrapModel}
+                  />
+                </Field>
+              ) : null}
+
+              {agentStrategy === 'dynamic' && acceptanceModels.length > 0 ? (
+                <Field label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')}>
+                  <ClearableModelSelect
+                    value={acceptanceModel}
+                    models={acceptanceModels}
+                    placeholder={t('conversation.home.selectModel')}
+                    clearLabel={t('workflowEditor.clearModel')}
+                    triggerClassName="w-[220px]"
+                    onChange={setAcceptanceModel}
                   />
                 </Field>
               ) : null}

@@ -335,6 +335,7 @@ pub fn get_conversation_run_mode(
                     agent_type: cfg.agent_type.clone(),
                     bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                     bootstrap_model_id: cfg.bootstrap_model_id.clone(),
+                    acceptance_model_id: cfg.acceptance_model_id.clone(),
                     model_id: cfg.model_id.clone(),
                     permission_mode: cfg.permission_mode.clone(),
                     available_agents: cfg.available_agents.as_ref().map(|agents| {
@@ -398,6 +399,7 @@ pub fn save_conversation_run_mode(
                 agent_type: cfg.agent_type,
                 bootstrap_agent_type: cfg.bootstrap_agent_type,
                 bootstrap_model_id: cfg.bootstrap_model_id,
+                acceptance_model_id: cfg.acceptance_model_id,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
                 available_agents: cfg.available_agents.map(|agents| {

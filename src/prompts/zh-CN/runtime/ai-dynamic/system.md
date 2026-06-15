@@ -27,6 +27,8 @@ AI-DYNAMIC 当前剩余预算：
 - 初始分发节点 agent：{{ bootstrap_provider }}
 {% if agent_strategy_mode == "dynamic" %}- agent 和模型决策指南：
 {{ agent_routing_prompt }}
+- merge / acceptance 模型策略：
+{{ acceptance_model_policy }}
 - 可用 agent 及模型：
 {{ available_providers }}
 {% endif %}

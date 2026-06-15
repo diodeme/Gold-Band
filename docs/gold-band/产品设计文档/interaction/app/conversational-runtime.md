@@ -57,6 +57,15 @@
 - 新会话从会话式主页发起后，run 创建命令只负责落盘 task/run 初始状态并后台启动执行；前端收到该 run 的第一个 ACP live event 后必须立即刷新 session tree，插入对应 attempt，选中该 session，并把右侧详情切到该 session。后续同一 attempt 的普通流式消息由 ACP 会话详情订阅直接合并，不依赖整页轮询；后端应具备向前端推送完整 session snapshot 的基础通道，但当前自动 workflow 只在 run completed 完成态落盘后额外推送 terminal session snapshot，当前已选中 session 的 terminal session snapshot 仍必须触发 run VM 刷新，避免最后节点没有下一跳事件时父级 lifecycle 停留在 active。
 - run 已进入 `running` 但首个 attempt 尚未出现在 session tree 前，右侧主区域显示 `Agent 调起中` 状态，不回退为“暂无活跃会话”。attempt 已出现在 session tree 但尚无可见 thought/text/tool timeline item 时，消息主区域显示 `处理中...`；收到首个 thought 后自然切换为 `思考中...`，避免创建 session 后到首 token 前出现空白。会话式运行页必须把当前 attempt 的外层 runtime status 传入 ACPChatDialog，不能只依赖 ACP snapshot/session status；当前选中 attempt 运行中时必须展示阶段状态、禁用输入并显示停止按钮，当前选中 attempt 已结束时必须恢复正常追问输入且不显示停止按钮。
 
+### 会话元数据展示
+
+会话窗口 header 中的模型名称/选择器、权限模式标签和系统提示词按钮依赖于完整的 `AcpSessionVm` 元数据（`config.currentModelId`、`config.currentModeId`、`systemPromptAppend`）。为保证这些信息在实时流式开始后即可见：
+
+- **后端 session-ready 快照**：provider 在 ACP `session/new` 或 `session/load` 完成、session metadata 已写盘（`acp.snapshot.json` 与 `acp.raw.jsonl` 均已可读）之后、`prompt(...)` 开始流式输出之前，通过 `acp_session_update_emitter` 发送完整 `AcpSessionVm`。此时 `extract_system_prompt_append` 可从 raw frame 提取系统提示词，`acp_session_config_vm` 可从 snapshot 提取模型/模式信息。
+- **前端兜底 hydration**：若第一条 live event 到达时 base session 仍缺少系统提示词或模型信息，前端触发一次性 `getAcpSession` 请求从磁盘补充元数据；同一 session identity 不重复请求。
+- **event-only shell**：`createLiveAcpSessionShell` 只在没有任何 base session 且 runtime 确认为运行中时创建临时渲染壳，不作为稳定元数据来源；壳中不含 system prompt 与 model/config 字段。
+- **session 等价判断**：`sessionsEquivalent` 必须比较 session config 与 adapter 元数据签名，使后端在启动阶段发出的元数据-only session 快照（事件数可能没有变化）能刷新 UI。
+
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史
 - 用户不在底部（正在看历史）→ 不自动切换、不折叠

@@ -22,3 +22,18 @@ export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): A
   if (input.initialSessionLoading) return 'loading';
   return 'missing';
 }
+
+export interface AcpSessionMetadataInput {
+  systemPromptAppend?: string | null;
+  currentModelId?: string | null;
+  currentModeId?: string | null;
+}
+
+export function hasAcpSessionMetadata(session: AcpSessionMetadataInput | null | undefined): boolean {
+  if (!session) return false;
+  return Boolean(
+    session.systemPromptAppend &&
+    session.currentModelId &&
+    session.currentModeId,
+  );
+}

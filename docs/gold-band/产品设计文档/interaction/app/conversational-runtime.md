@@ -43,6 +43,7 @@
 - `completed + outcome=null` 不展示为成功；成功必须来自 `outcome=success` 派生出的 `runtimeDisplay.tone=success`
 - AI-DYNAMIC 内部节点的 session 状态来源于 dynamic graph 中的节点状态（`dynamic/nodes/<node-id>/node.json` 或 `graph.json.nodes`），ACP attempt 目录只代表聊天会话记录，不作为工作流节点成败状态来源
 - 当 runtime attempt 已因 `process-interrupted / waiting-for-user-input / error-blocked` 进入可继续暂停时，session tree 与 composer 的用户态状态必须继续展示为 `paused`；此时 ACP snapshot/session 被写成 `cancelled` 只代表底层会话传输已结束，不能覆盖 runtime 的“可继续”事实
+- 每个 attempt leaf 必须暴露真实 `artifactCount / attachmentCount`，计数来源与当前选中 session 底部资源条使用同一套后端资源列表规则；计数不能写死或由前端推断，避免 session tree 与资源条对同一 attempt 的文件事实不一致。
 
 ### 默认 session 选择
 - 用户已有选中 session 且仍有效时保持
@@ -177,6 +178,7 @@ composer 只消费 lifecycle + ACP session live status + 少量本地 optimistic
 - 输入附件使用 Upload 图标 + 蓝色标记，与输出产物/附件区分
 - 当前选中 session 的产物 / 输出附件统一通过底部文件项进入弹窗查看，点击文件项直接打开该文件详情，不再经过单独列表页，也不再保留顶部重复入口
 - 点击查看详情，图片类附件必须以图片元素渲染原图预览；base64/data URL 不直接展示为文本
+- 当前选中 session 即使没有可展示 ACP 消息内容，只要 attempt 目录下存在 `artifacts/` 或 `attachments/` 文件，底部资源条也必须列出对应文件 chip；资源展示绑定 session locator（round/node/attempt，含 AI-DYNAMIC outer locator），不绑定聊天内容是否成功加载。
 
 ## 附件生命周期
 

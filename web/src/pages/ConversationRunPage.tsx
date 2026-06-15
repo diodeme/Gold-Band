@@ -11,6 +11,7 @@ import { ConversationAssetsBar } from '@/components/conversation/ConversationAss
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
+import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
 import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
 import { canViewConversationRuntimeWorkflow } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
@@ -241,8 +242,8 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedArtifacts = selectedSessionMatchesLeaf ? run.artifacts : [];
-  const selectedAttachments = selectedSessionMatchesLeaf ? run.attachments : [];
+  const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
+  const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;

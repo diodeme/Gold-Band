@@ -578,6 +578,82 @@ fn asset_item_vm(
     }
 }
 
+fn list_file_names_from_dir(
+    dir: &camino::Utf8Path,
+    logical_json_name: bool,
+) -> anyhow::Result<Vec<String>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut names = std::fs::read_dir(dir.as_std_path())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .map(|name| {
+            if logical_json_name {
+                name.strip_suffix(".json").unwrap_or(&name).to_string()
+            } else {
+                name
+            }
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
+}
+
+fn conversation_session_assets(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> anyhow::Result<(Vec<AssetItemVm>, Vec<AssetItemVm>)> {
+    let (artifact_names, attachment_names) =
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
+            let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                node_id,
+                attempt_id,
+            );
+            let attachments_dir = app.paths.dynamic_node_attachments_dir(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                node_id,
+                attempt_id,
+            );
+            (
+                list_file_names_from_dir(&artifacts_dir, true)?,
+                list_file_names_from_dir(&attachments_dir, false)?,
+            )
+        } else {
+            (
+                app.artifact_list(task_id, run_id, round_id, node_id, attempt_id)?,
+                app.attachment_list(task_id, run_id, round_id, node_id, attempt_id)?,
+            )
+        };
+
+    let artifacts = artifact_names
+        .into_iter()
+        .map(|name| asset_item_vm("artifact", round_id, node_id, attempt_id, name))
+        .collect::<Vec<_>>();
+    let attachments = attachment_names
+        .into_iter()
+        .map(|name| asset_item_vm("attachment", round_id, node_id, attempt_id, name))
+        .collect::<Vec<_>>();
+    Ok((artifacts, attachments))
+}
+
 fn find_leaf_by_key(
     rounds: &[ConversationRoundNodeVm],
     key: &str,
@@ -1084,6 +1160,16 @@ pub fn conversation_run_vm(
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
                                 let is_active = lifecycle_is_active(&lifecycle);
+                                let (artifacts, attachments) = conversation_session_assets(
+                                    app,
+                                    task_id,
+                                    run_id,
+                                    &round.id,
+                                    &dyn_node.id,
+                                    dyn_attempt_id,
+                                    Some(&node.node_id),
+                                    Some(&latest_attempt.attempt_id),
+                                )?;
 
                                 dyn_leafs.push(ConversationSessionLeafVm {
                                     round_id: round.id.clone(),
@@ -1100,8 +1186,8 @@ pub fn conversation_run_vm(
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
                                     session_id: None,
-                                    artifact_count: 0,
-                                    attachment_count: 0,
+                                    artifact_count: artifacts.len(),
+                                    attachment_count: attachments.len(),
                                 });
 
                                 if is_active {
@@ -1193,6 +1279,16 @@ pub fn conversation_run_vm(
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
                     let is_active = lifecycle_is_active(&lifecycle);
+                    let (artifacts, attachments) = conversation_session_assets(
+                        app,
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                        None,
+                        None,
+                    )?;
                     leafs.push(ConversationSessionLeafVm {
                         round_id: round.id.clone(),
                         node_id: node.node_id.clone(),
@@ -1208,8 +1304,8 @@ pub fn conversation_run_vm(
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
                         session_id: None,
-                        artifact_count: 0,
-                        attachment_count: 0,
+                        artifact_count: artifacts.len(),
+                        attachment_count: attachments.len(),
                     });
 
                     if is_active {
@@ -1352,106 +1448,16 @@ pub fn conversation_run_vm(
     };
 
     let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
-        if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+        conversation_session_assets(
+            app,
+            task_id,
+            run_id,
+            &leaf.round_id,
+            &leaf.node_id,
+            &leaf.attempt_id,
             leaf.outer_node_id.as_deref(),
             leaf.outer_attempt_id.as_deref(),
-        ) {
-            let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
-                task_id,
-                run_id,
-                &leaf.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &leaf.node_id,
-                &leaf.attempt_id,
-            );
-            let attachments_dir = app.paths.dynamic_node_attachments_dir(
-                task_id,
-                run_id,
-                &leaf.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &leaf.node_id,
-                &leaf.attempt_id,
-            );
-            let artifacts = std::fs::read_dir(artifacts_dir.as_std_path())
-                .map(|entries| {
-                    entries
-                        .filter_map(|entry| entry.ok())
-                        .filter_map(|entry| entry.file_name().into_string().ok())
-                        .map(|name| {
-                            asset_item_vm(
-                                "artifact",
-                                &leaf.round_id,
-                                &leaf.node_id,
-                                &leaf.attempt_id,
-                                name.strip_suffix(".json").unwrap_or(&name).to_string(),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let attachments = std::fs::read_dir(attachments_dir.as_std_path())
-                .map(|entries| {
-                    entries
-                        .filter_map(|entry| entry.ok())
-                        .filter_map(|entry| entry.file_name().into_string().ok())
-                        .map(|name| {
-                            asset_item_vm(
-                                "attachment",
-                                &leaf.round_id,
-                                &leaf.node_id,
-                                &leaf.attempt_id,
-                                name,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            (artifacts, attachments)
-        } else {
-            let artifacts = app
-                .artifact_list(
-                    task_id,
-                    run_id,
-                    &leaf.round_id,
-                    &leaf.node_id,
-                    &leaf.attempt_id,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .map(|name| {
-                    asset_item_vm(
-                        "artifact",
-                        &leaf.round_id,
-                        &leaf.node_id,
-                        &leaf.attempt_id,
-                        name,
-                    )
-                })
-                .collect::<Vec<_>>();
-            let attachments = app
-                .attachment_list(
-                    task_id,
-                    run_id,
-                    &leaf.round_id,
-                    &leaf.node_id,
-                    &leaf.attempt_id,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .map(|name| {
-                    asset_item_vm(
-                        "attachment",
-                        &leaf.round_id,
-                        &leaf.node_id,
-                        &leaf.attempt_id,
-                        name,
-                    )
-                })
-                .collect::<Vec<_>>();
-            (artifacts, attachments)
-        }
+        )?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -2030,69 +2036,16 @@ pub fn switch_conversation_session_vm(
             .flatten()
         };
 
-    let (artifacts, attachments) = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (outer_node_id, outer_attempt_id)
-    {
-        let artifacts_dir = app.paths.dynamic_node_artifacts_dir(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            attempt_id,
-        );
-        let attachments_dir = app.paths.dynamic_node_attachments_dir(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            attempt_id,
-        );
-        let artifacts = std::fs::read_dir(artifacts_dir.as_std_path())
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| entry.ok())
-                    .filter_map(|entry| entry.file_name().into_string().ok())
-                    .map(|name| {
-                        asset_item_vm(
-                            "artifact",
-                            round_id,
-                            node_id,
-                            attempt_id,
-                            name.strip_suffix(".json").unwrap_or(&name).to_string(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let attachments = std::fs::read_dir(attachments_dir.as_std_path())
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| entry.ok())
-                    .filter_map(|entry| entry.file_name().into_string().ok())
-                    .map(|name| asset_item_vm("attachment", round_id, node_id, attempt_id, name))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        (artifacts, attachments)
-    } else {
-        let artifacts = app
-            .artifact_list(task_id, run_id, round_id, node_id, attempt_id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|name| asset_item_vm("artifact", round_id, node_id, attempt_id, name))
-            .collect::<Vec<_>>();
-        let attachments = app
-            .attachment_list(task_id, run_id, round_id, node_id, attempt_id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|name| asset_item_vm("attachment", round_id, node_id, attempt_id, name))
-            .collect::<Vec<_>>();
-        (artifacts, attachments)
-    };
+    let (artifacts, attachments) = conversation_session_assets(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    )?;
 
     let result = ConversationSessionSwitchVm {
         selected_session,
@@ -2105,9 +2058,12 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
-        conversation_status_from_session, derive_conversation_attempt_lifecycle,
-        lifecycle_is_active,
+        conversation_run_vm, conversation_status_from_session,
+        derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
     };
+    use camino::Utf8PathBuf;
+    use gold_band::app::App;
+    use serde_json::json;
 
     #[test]
     fn paused_runtime_keeps_paused_status_after_process_interrupt() {
@@ -2233,6 +2189,167 @@ mod tests {
         assert_eq!(lifecycle.display_status, "paused");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
+    }
+
+    #[test]
+    fn conversation_run_vm_exposes_selected_session_assets_and_leaf_counts() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+
+        assert_eq!(vm.artifacts.len(), 1);
+        assert_eq!(vm.artifacts[0].name, "测试-result");
+        assert_eq!(vm.attachments.len(), 1);
+        assert_eq!(vm.attachments[0].name, "test-report.md");
+
+        let leaf = vm.session_tree.rounds[0].nodes[0]
+            .attempts
+            .iter()
+            .find(|leaf| leaf.attempt_id == "attempt-002")
+            .unwrap();
+        assert_eq!(leaf.artifact_count, 1);
+        assert_eq!(leaf.attachment_count, 1);
+    }
+
+    #[test]
+    fn switch_conversation_session_vm_uses_same_asset_contract() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+
+        let switched = switch_conversation_session_vm(
+            &app,
+            "task-046",
+            "run-060",
+            "round-001",
+            "测试",
+            "attempt-002",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(switched.artifacts.len(), 1);
+        assert_eq!(switched.artifacts[0].name, "测试-result");
+        assert_eq!(switched.attachments.len(), 1);
+        assert_eq!(switched.attachments[0].name, "test-report.md");
+    }
+
+    fn temp_repo_root() -> Utf8PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "gold-band-conversation-assets-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        Utf8PathBuf::from_path_buf(root).unwrap()
+    }
+
+    fn write_conversation_assets_fixture(app: &App) {
+        let task_id = "task-046";
+        let run_id = "run-060";
+        let round_id = "round-001";
+        let node_id = "测试";
+        let attempt_id = "attempt-002";
+
+        std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": "0.1",
+                "id": task_id,
+                "title": "中文节点资源回归",
+                "description": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": "0.1",
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-15T00:00:00Z",
+                "updated_at": "2026-06-15T00:00:02Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": node_id,
+                "current_attempt": attempt_id,
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &json!({
+                "version": "0.1",
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "success",
+                "trigger": "initial",
+                "started_at": "2026-06-15T00:00:00Z",
+                "trace": [
+                    {
+                        "sequence": 1,
+                        "node_id": node_id,
+                        "attempt_id": attempt_id,
+                        "from_node_id": null,
+                        "edge_outcome": null,
+                        "entered_at": "2026-06-15T00:00:00Z"
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+            &json!({
+                "version": "0.1",
+                "node_id": node_id,
+                "node_type": "worker",
+                "run_id": run_id,
+                "round_id": round_id,
+                "attempt_id": attempt_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-15T00:00:00Z",
+                "finished_at": "2026-06-15T00:00:02Z",
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+
+        let artifacts_dir = app
+            .paths
+            .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id);
+        std::fs::create_dir_all(artifacts_dir.as_std_path()).unwrap();
+        std::fs::write(
+            artifacts_dir.join("测试-result.json").as_std_path(),
+            r#"{"result":true}"#,
+        )
+        .unwrap();
+
+        let attachments_dir = app
+            .paths
+            .attachments_dir(task_id, run_id, round_id, node_id, attempt_id);
+        std::fs::create_dir_all(attachments_dir.as_std_path()).unwrap();
+        std::fs::write(attachments_dir.join("test-report.md").as_std_path(), "ok").unwrap();
     }
 }
 

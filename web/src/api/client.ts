@@ -4,6 +4,7 @@ import type {
   AcpSessionQueryInput,
   AcpSessionVm,
   AcpUiEventVm,
+  ActiveSessionStopVm,
   AgentRegistryVm,
   AppBootstrapVm,
   AutoTemplate,
@@ -94,7 +95,9 @@ export interface RuntimeApi {
   getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;
-  continueRun(taskId: string, runId: string, promptId?: string | null): Promise<RunSummaryVm>;
+  continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null): Promise<RunSummaryVm>;
+  pauseRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   killRun(taskId: string, runId: string): Promise<RunSummaryVm>;
@@ -111,7 +114,7 @@ export interface RuntimeApi {
   showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showConversationAttachment(taskId: string, name: string): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean): Promise<PreferencesVm>;
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
@@ -130,6 +133,7 @@ export interface RuntimeApi {
   createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<void>;
+  deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   reorderPinnedConversations(pins: PinRef[]): Promise<ConversationSidebarVm>;
@@ -141,6 +145,7 @@ export interface RuntimeApi {
   removeConversationWorkspace(projectId: string): Promise<ConversationSidebarVm>;
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
+  saveLastConversationWorkspace(projectId: string): Promise<void>;
   pickAttachmentFiles(): Promise<Array<{ path: string; name: string; size: number }>>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;

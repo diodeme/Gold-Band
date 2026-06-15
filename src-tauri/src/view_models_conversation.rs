@@ -5,17 +5,18 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    acp_session_vm, dynamic_acp_session_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm,
 };
+use gold_band::app::is_run_continuable;
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
-use gold_band::app::is_run_continuable;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
-    AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
-    EdgeOutcome, NodeDsl, WorkflowDsl,
+    AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, EdgeDsl,
+    EdgeOutcome, NodeDsl, WorkflowDsl, END_NODE,
 };
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::storage::{read_json, write_json};
@@ -145,12 +146,44 @@ pub struct ConversationSessionLeafVm {
     pub status: String,
     pub outcome: Option<String>,
     pub runtime_display: RuntimeDisplayVm,
+    pub lifecycle: ConversationAttemptLifecycleVm,
     pub current: bool,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
     pub artifact_count: usize,
     pub attachment_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAttemptLifecycleVm {
+    pub runtime: ConversationRuntimeFacetVm,
+    pub acp: ConversationAcpFacetVm,
+    pub display_status: String,
+    pub runtime_display: RuntimeDisplayVm,
+    pub continue_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRuntimeFacetVm {
+    pub status: String,
+    pub outcome: Option<String>,
+    pub pause_reason: Option<String>,
+    pub resumable: bool,
+    pub current: bool,
+    pub active: bool,
+    pub continuable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAcpFacetVm {
+    pub status: Option<String>,
+    pub active: bool,
+    pub stopping: bool,
+    pub terminal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,6 +197,7 @@ pub struct ConversationActiveSessionVm {
     pub path_label: String,
     pub status: String,
     pub runtime_display: RuntimeDisplayVm,
+    pub lifecycle: ConversationAttemptLifecycleVm,
     pub session_id: Option<String>,
     pub started_at: Option<String>,
 }
@@ -443,6 +477,83 @@ fn enum_label<T: Serialize>(value: &T) -> String {
     }
 }
 
+fn display_pause_reason_for_attempt(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    run_pause_reason: Option<&str>,
+) -> Option<String> {
+    if run_pause_reason == Some("error-blocked") {
+        let snapshot_path = app
+            .paths
+            .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
+        let session_path = app
+            .paths
+            .acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
+        if acp_session_file_is_cancelled(&snapshot_path)
+            || acp_session_file_is_cancelled(&session_path)
+        {
+            return Some("process-interrupted".to_string());
+        }
+    }
+    run_pause_reason.map(str::to_string)
+}
+
+fn display_pause_reason_for_dynamic_attempt(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    run_pause_reason: Option<&str>,
+) -> Option<String> {
+    if run_pause_reason == Some("error-blocked") {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
+        );
+        if acp_session_file_is_cancelled(&attempt_dir.join("acp.snapshot.json"))
+            || acp_session_file_is_cancelled(&attempt_dir.join("acp.session.json"))
+        {
+            return Some("process-interrupted".to_string());
+        }
+    }
+    run_pause_reason.map(str::to_string)
+}
+
+fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
+    read_json::<serde_json::Value>(path)
+        .ok()
+        .and_then(|session| {
+            let status = session
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let stop_reason = session
+                .get("stopReason")
+                .or_else(|| session.get("stop_reason"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            (status.eq_ignore_ascii_case("cancelled")
+                || status.eq_ignore_ascii_case("canceled")
+                || stop_reason.eq_ignore_ascii_case("cancelled")
+                || stop_reason.eq_ignore_ascii_case("canceled"))
+            .then_some(())
+        })
+        .is_some()
+}
+
 fn asset_item_vm(
     kind: &str,
     round_id: &str,
@@ -522,6 +633,297 @@ fn find_leaf_by_key(
         }
     }
     None
+}
+
+fn latest_session_leaf(rounds: &[ConversationRoundNodeVm]) -> Option<ConversationSessionLeafVm> {
+    let mut latest: Option<ConversationSessionLeafVm> = None;
+    for round in rounds {
+        for node in &round.nodes {
+            for leaf in &node.attempts {
+                if is_leaf_newer(leaf, latest.as_ref()) {
+                    latest = Some(leaf.clone());
+                }
+            }
+            if let Some(ref outer_nodes) = node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &outer_node.attempts {
+                        if is_leaf_newer(leaf, latest.as_ref()) {
+                            latest = Some(leaf.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn current_session_leaf(rounds: &[ConversationRoundNodeVm]) -> Option<ConversationSessionLeafVm> {
+    for round in rounds {
+        for node in &round.nodes {
+            for leaf in &node.attempts {
+                if leaf.current {
+                    return Some(leaf.clone());
+                }
+            }
+            if let Some(ref outer_nodes) = node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &outer_node.attempts {
+                        if leaf.current {
+                            return Some(leaf.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn active_session_leaf(rounds: &[ConversationRoundNodeVm]) -> Option<ConversationSessionLeafVm> {
+    for round in rounds {
+        for node in &round.nodes {
+            for leaf in &node.attempts {
+                if is_active_session_status(&leaf.status) {
+                    return Some(leaf.clone());
+                }
+            }
+            if let Some(ref outer_nodes) = node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &outer_node.attempts {
+                        if is_active_session_status(&leaf.status) {
+                            return Some(leaf.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn default_session_leaf(rounds: &[ConversationRoundNodeVm]) -> Option<ConversationSessionLeafVm> {
+    if let Some(leaf) = current_session_leaf(rounds) {
+        return Some(leaf);
+    }
+    if let Some(leaf) = active_session_leaf(rounds) {
+        return Some(leaf);
+    }
+    latest_session_leaf(rounds)
+}
+
+fn normalize_lifecycle_code(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+fn is_active_session_status(status: &str) -> bool {
+    matches!(
+        normalize_lifecycle_code(status).as_str(),
+        "pending"
+            | "running"
+            | "in-progress"
+            | "active"
+            | "sending"
+            | "cancelling"
+            | "cancel-requested"
+    )
+}
+
+fn is_stopping_session_status(status: &str) -> bool {
+    matches!(
+        normalize_lifecycle_code(status).as_str(),
+        "cancelling" | "cancel-requested"
+    )
+}
+
+fn is_terminal_session_status(status: &str) -> bool {
+    matches!(
+        normalize_lifecycle_code(status).as_str(),
+        "completed"
+            | "complete"
+            | "cancelled"
+            | "canceled"
+            | "failed"
+            | "failure"
+            | "error"
+            | "killed"
+    )
+}
+
+fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
+    matches!(
+        pause_reason.map(normalize_lifecycle_code).as_deref(),
+        Some("process-interrupted") | Some("waiting-for-user-input")
+    )
+}
+
+fn runtime_continue_kind(
+    runtime_status: &str,
+    pause_reason: Option<&str>,
+    run_resumable: bool,
+) -> Option<String> {
+    if !run_resumable || normalize_lifecycle_code(runtime_status) != "paused" {
+        return None;
+    }
+    match pause_reason.map(normalize_lifecycle_code).as_deref() {
+        Some("process-interrupted") => Some("input".to_string()),
+        Some("waiting-for-user-input") => Some("action".to_string()),
+        _ => None,
+    }
+}
+
+fn derive_conversation_attempt_lifecycle(
+    session_status: Option<&str>,
+    runtime_status: &str,
+    runtime_outcome: Option<&str>,
+    current: bool,
+    pause_reason: Option<&str>,
+    run_resumable: bool,
+) -> ConversationAttemptLifecycleVm {
+    let session_status = session_status
+        .map(str::trim)
+        .filter(|status| !status.is_empty() && !status.eq_ignore_ascii_case("unknown"))
+        .map(str::to_string);
+    let normalized_runtime_status = normalize_lifecycle_code(runtime_status);
+    let runtime_active = is_active_session_status(runtime_status);
+    let acp_stopping = session_status
+        .as_deref()
+        .is_some_and(is_stopping_session_status);
+    let runtime_terminal = !runtime_active
+        && !acp_stopping
+        && matches!(
+            normalized_runtime_status.as_str(),
+            "completed"
+                | "complete"
+                | "failed"
+                | "failure"
+                | "error"
+                | "killed"
+                | "cancelled"
+                | "canceled"
+        );
+    let suppress_stale_acp_active = runtime_terminal && !run_resumable;
+    let acp_active = !suppress_stale_acp_active
+        && session_status
+            .as_deref()
+            .is_some_and(is_active_session_status);
+    let acp_terminal = suppress_stale_acp_active
+        || session_status
+            .as_deref()
+            .is_some_and(is_terminal_session_status);
+    let runtime_continue_pause = run_resumable
+        && normalize_lifecycle_code(runtime_status) == "paused"
+        && (is_runtime_continue_pause_reason(pause_reason)
+            || matches!(
+                pause_reason.map(normalize_lifecycle_code).as_deref(),
+                Some("error-blocked")
+            ));
+
+    let display_status = if acp_stopping {
+        session_status
+            .clone()
+            .unwrap_or_else(|| "cancelling".to_string())
+    } else if runtime_active || suppress_stale_acp_active {
+        runtime_status.to_string()
+    } else if acp_active {
+        session_status
+            .clone()
+            .unwrap_or_else(|| runtime_status.to_string())
+    } else if runtime_continue_pause {
+        runtime_status.to_string()
+    } else {
+        session_status
+            .clone()
+            .unwrap_or_else(|| runtime_status.to_string())
+    };
+    let runtime_display = runtime_display_vm(
+        Some(&display_status),
+        runtime_outcome,
+        current,
+        pause_reason,
+        run_resumable,
+    );
+    let continue_kind = runtime_continue_kind(runtime_status, pause_reason, run_resumable);
+
+    ConversationAttemptLifecycleVm {
+        runtime: ConversationRuntimeFacetVm {
+            status: runtime_status.to_string(),
+            outcome: runtime_outcome.map(str::to_string),
+            pause_reason: pause_reason.map(str::to_string),
+            resumable: run_resumable,
+            current,
+            active: runtime_active,
+            continuable: continue_kind.is_some(),
+        },
+        acp: ConversationAcpFacetVm {
+            status: session_status,
+            active: acp_active,
+            stopping: acp_stopping,
+            terminal: acp_terminal,
+        },
+        display_status,
+        runtime_display,
+        continue_kind,
+    }
+}
+
+fn conversation_status_from_session(
+    session_status: Option<&str>,
+    runtime_status: &str,
+    run_pause_reason: Option<&str>,
+    run_resumable: bool,
+) -> String {
+    derive_conversation_attempt_lifecycle(
+        session_status,
+        runtime_status,
+        None,
+        false,
+        run_pause_reason,
+        run_resumable,
+    )
+    .display_status
+}
+
+fn lifecycle_is_active(lifecycle: &ConversationAttemptLifecycleVm) -> bool {
+    lifecycle.runtime.active || lifecycle.acp.active || lifecycle.acp.stopping
+}
+
+fn is_leaf_newer(
+    candidate: &ConversationSessionLeafVm,
+    current: Option<&ConversationSessionLeafVm>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    leaf_order_key(candidate) > leaf_order_key(current)
+}
+
+fn leaf_order_key(leaf: &ConversationSessionLeafVm) -> (&str, &str, &str, &str, &str) {
+    (
+        leaf.started_at
+            .as_deref()
+            .or(leaf.finished_at.as_deref())
+            .unwrap_or(""),
+        leaf.round_id.as_str(),
+        leaf.outer_node_id.as_deref().unwrap_or(""),
+        leaf.node_id.as_str(),
+        leaf.attempt_id.as_str(),
+    )
+}
+
+fn conversation_leaf_key(leaf: &ConversationSessionLeafVm) -> String {
+    if leaf.outer_node_id.is_some() {
+        format!(
+            "{}/{}/{}/{}/{}",
+            leaf.round_id,
+            leaf.outer_node_id.as_deref().unwrap_or(""),
+            leaf.outer_attempt_id.as_deref().unwrap_or(""),
+            leaf.node_id,
+            leaf.attempt_id
+        )
+    } else {
+        format!("{}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id)
+    }
 }
 
 pub fn conversation_run_vm(
@@ -645,15 +1047,43 @@ pub fn conversation_run_vm(
                                 .current_node_ids
                                 .iter()
                                 .any(|id| id == &dyn_node.id);
-                            let dyn_runtime_display = runtime_display_vm(
-                                Some(&dyn_status),
-                                dyn_outcome.as_deref(),
-                                dyn_current,
-                                run_pause_reason.as_deref(),
-                                run_resumable,
-                            );
                             for dyn_attempt_id in &dyn_attempt_ids {
-                                let is_active = dyn_status == "running";
+                                let dyn_session_vm = dynamic_acp_session_vm(
+                                    app,
+                                    task_id,
+                                    run_id,
+                                    &round.id,
+                                    &node.node_id,
+                                    &latest_attempt.attempt_id,
+                                    &dyn_node.id,
+                                    dyn_attempt_id,
+                                    None,
+                                    None,
+                                )?;
+                                let dyn_pause_reason = display_pause_reason_for_dynamic_attempt(
+                                    app,
+                                    task_id,
+                                    run_id,
+                                    &round.id,
+                                    &node.node_id,
+                                    &latest_attempt.attempt_id,
+                                    &dyn_node.id,
+                                    dyn_attempt_id,
+                                    run_pause_reason.as_deref(),
+                                );
+                                let lifecycle = derive_conversation_attempt_lifecycle(
+                                    dyn_session_vm
+                                        .as_ref()
+                                        .map(|session| session.status.as_str()),
+                                    &dyn_status,
+                                    dyn_outcome.as_deref(),
+                                    dyn_current,
+                                    dyn_pause_reason.as_deref(),
+                                    run_resumable,
+                                );
+                                let dyn_status = lifecycle.display_status.clone();
+                                let dyn_runtime_display = lifecycle.runtime_display.clone();
+                                let is_active = lifecycle_is_active(&lifecycle);
 
                                 dyn_leafs.push(ConversationSessionLeafVm {
                                     round_id: round.id.clone(),
@@ -665,6 +1095,7 @@ pub fn conversation_run_vm(
                                     status: dyn_status.clone(),
                                     outcome: dyn_outcome.clone(),
                                     runtime_display: dyn_runtime_display.clone(),
+                                    lifecycle: lifecycle.clone(),
                                     current: dyn_current,
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
@@ -683,6 +1114,7 @@ pub fn conversation_run_vm(
                                         path_label: format!("{}/{}", dyn_node.id, dyn_attempt_id),
                                         status: dyn_status.clone(),
                                         runtime_display: dyn_runtime_display.clone(),
+                                        lifecycle: lifecycle.clone(),
                                         session_id: None,
                                         started_at: None,
                                     });
@@ -696,7 +1128,15 @@ pub fn conversation_run_vm(
                             let dyn_node_runtime_display = dyn_leafs
                                 .last()
                                 .map(|l| l.runtime_display.clone())
-                                .unwrap_or_else(|| dyn_runtime_display.clone());
+                                .unwrap_or_else(|| {
+                                    runtime_display_vm(
+                                        Some(&dyn_status),
+                                        dyn_outcome.as_deref(),
+                                        dyn_current,
+                                        run_pause_reason.as_deref(),
+                                        run_resumable,
+                                    )
+                                });
 
                             dynamic_tree_nodes.push(ConversationTreeNodeVm {
                                 node_id: dyn_node.id.clone(),
@@ -718,19 +1158,41 @@ pub fn conversation_run_vm(
             let mut leafs: Vec<ConversationSessionLeafVm> = Vec::new();
             if !is_ai_dynamic {
                 for attempt in &all_attempts {
-                    let status = enum_label(&attempt.status);
+                    let session_vm = acp_session_vm(
+                        app,
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                        None,
+                        None,
+                    )?;
+                    let runtime_status = enum_label(&attempt.status);
+                    let display_pause_reason = display_pause_reason_for_attempt(
+                        app,
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                        run_pause_reason.as_deref(),
+                    );
                     let outcome = attempt.outcome.as_ref().map(enum_label);
                     let current = run.current_round.as_deref() == Some(&round.id)
                         && run.current_node.as_deref() == Some(&node.node_id)
                         && run.current_attempt.as_deref() == Some(&attempt.attempt_id);
-                    let runtime_display = runtime_display_vm(
-                        Some(&status),
+                    let lifecycle = derive_conversation_attempt_lifecycle(
+                        session_vm.as_ref().map(|session| session.status.as_str()),
+                        &runtime_status,
                         outcome.as_deref(),
                         current,
-                        run_pause_reason.as_deref(),
+                        display_pause_reason.as_deref(),
                         run_resumable,
                     );
-                    let is_active = attempt.status == RunStatus::Running;
+                    let status = lifecycle.display_status.clone();
+                    let runtime_display = lifecycle.runtime_display.clone();
+                    let is_active = lifecycle_is_active(&lifecycle);
                     leafs.push(ConversationSessionLeafVm {
                         round_id: round.id.clone(),
                         node_id: node.node_id.clone(),
@@ -741,6 +1203,7 @@ pub fn conversation_run_vm(
                         status: status.clone(),
                         outcome,
                         runtime_display: runtime_display.clone(),
+                        lifecycle: lifecycle.clone(),
                         current,
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
@@ -759,6 +1222,7 @@ pub fn conversation_run_vm(
                             path_label: format!("{}/{}", node.node_id, attempt.attempt_id),
                             status,
                             runtime_display: runtime_display.clone(),
+                            lifecycle: lifecycle.clone(),
                             session_id: None,
                             started_at: Some(attempt.started_at.clone()),
                         });
@@ -837,38 +1301,17 @@ pub fn conversation_run_vm(
         });
     }
 
-    // Determine which session leaf to load (prefer last attempt of last dynamic child, then last top-level attempt)
+    // Determine which session leaf to load.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
-        // Find the leaf matching the key by searching the tree
+        // Find the leaf matching the key by searching the tree.
         find_leaf_by_key(&tree_rounds, key)
     } else {
-        // Default: last attempt of last dynamic child of last node, or last top-level attempt
-        tree_rounds.last().and_then(|r| {
-            r.nodes.last().and_then(|n| {
-                n.outer_nodes
-                    .as_ref()
-                    .and_then(|o| o.last())
-                    .and_then(|on| on.attempts.last())
-                    .or_else(|| n.attempts.last())
-                    .cloned()
-            })
-        })
+        // Runtime-owned sessions need a stable UI anchor as soon as the run starts.
+        // Prefer the current/running attempt, then fall back to the newest conversation.
+        default_session_leaf(&tree_rounds)
     };
 
-    let effective_key: Option<String> = selected_leaf.as_ref().map(|leaf| {
-        if leaf.outer_node_id.is_some() {
-            format!(
-                "{}/{}/{}/{}/{}",
-                leaf.round_id,
-                leaf.outer_node_id.as_deref().unwrap_or(""),
-                leaf.outer_attempt_id.as_deref().unwrap_or(""),
-                leaf.node_id,
-                leaf.attempt_id
-            )
-        } else {
-            format!("{}/{}/{}", leaf.round_id, leaf.node_id, leaf.attempt_id)
-        }
-    });
+    let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
 
     // Load the selected ACP session
     let selected_session = if let Some(ref leaf) = selected_leaf {
@@ -1490,8 +1933,9 @@ pub fn create_conversation_run_vm(
         }
     }
 
-    // Start run
-    let run = app.run_start(&task_id, None)?;
+    // Start the workflow in the background so the conversation surface can
+    // display the session as soon as the first ACP events arrive.
+    let run = app.run_start_background(&task_id, None)?;
 
     // Return early VM from the run
     conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
@@ -1543,8 +1987,8 @@ pub fn rerun_conversation_task_vm(
             }
         }
     }
-    // Start new run
-    let run = app.run_start(task_id, None)?;
+    // Start new run in the background; live ACP events drive the UI refresh.
+    let run = app.run_start_background(task_id, None)?;
     conversation_run_vm(app, project_id, task_id, &run.id, None).or_else(|_| {
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
@@ -1683,6 +2127,140 @@ pub fn switch_conversation_session_vm(
         attachments,
     };
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        conversation_status_from_session, derive_conversation_attempt_lifecycle,
+        lifecycle_is_active,
+    };
+
+    #[test]
+    fn paused_runtime_keeps_paused_status_after_process_interrupt() {
+        let status = conversation_status_from_session(
+            Some("cancelled"),
+            "paused",
+            Some("process-interrupted"),
+            true,
+        );
+
+        assert_eq!(status, "paused");
+    }
+
+    #[test]
+    fn running_runtime_overrides_stale_session_terminal_status() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            "running",
+            None,
+            true,
+            None,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "running");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.acp.active);
+        assert!(lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn non_resumable_runtime_still_uses_session_terminal_status() {
+        let status = conversation_status_from_session(
+            Some("cancelled"),
+            "paused",
+            Some("process-interrupted"),
+            false,
+        );
+
+        assert_eq!(status, "cancelled");
+    }
+
+    #[test]
+    fn acp_cancelling_keeps_leaf_active_and_stopping() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("cancelling"),
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+        );
+
+        assert_eq!(lifecycle.display_status, "cancelling");
+        assert!(lifecycle.acp.active);
+        assert!(lifecycle.acp.stopping);
+        assert!(lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn completed_runtime_suppresses_stale_acp_running() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("running"),
+            "completed",
+            Some("success"),
+            false,
+            None,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "completed");
+        assert!(!lifecycle.runtime.active);
+        assert!(!lifecycle.acp.active);
+        assert!(lifecycle.acp.terminal);
+        assert!(!lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn workflow_failure_runtime_suppresses_stale_acp_running() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("running"),
+            "completed",
+            Some("failure"),
+            false,
+            None,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "completed");
+        assert_eq!(lifecycle.runtime_display.tone, "danger");
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert!(!lifecycle.acp.active);
+        assert!(!lifecycle_is_active(&lifecycle));
+    }
+
+    #[test]
+    fn interrupted_runtime_pause_is_input_continue() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert!(lifecycle.runtime.continuable);
+    }
+
+    #[test]
+    fn waiting_for_user_input_pause_is_action_continue() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            None,
+            "paused",
+            None,
+            true,
+            Some("waiting-for-user-input"),
+            true,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert!(lifecycle.runtime.continuable);
+    }
 }
 
 pub fn update_task_metadata_vm(

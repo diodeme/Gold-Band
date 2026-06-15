@@ -513,6 +513,10 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
     () => selectedConversation ? mergedConversationSession(selectedConversation, detail.acpSession) : detail.acpSession,
     [detail.acpSession, selectedConversation],
   );
+  const systemPromptOptions = useMemo(
+    () => buildConversationSystemPromptOptions(selectedConversation, detail.acpSession, detail.attemptId),
+    [detail.acpSession, detail.attemptId, selectedConversation],
+  );
   const attemptId = activeAttempt?.attemptId ?? detail.attemptId;
   const runtimeStatus = activeAttempt?.status ?? detail.status;
   const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, attemptId);
@@ -533,7 +537,7 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           <ACPChatDialog
           key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}`}
           session={session}
-          systemPromptOptions={selectedConversation?.attempts.map((attempt) => ({ attemptId: attempt.attemptId, prompt: attempt.acpSession?.systemPromptAppend }))}
+          systemPromptOptions={systemPromptOptions}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
           eventPageSize={appConfig.acpChatEventPageSize}
           taskId={vm.run.taskId}
@@ -543,7 +547,11 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           attemptId={attemptId}
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
-          runtimeStatus={runtimeStatus}
+          runtimeComposerContext={{
+            runtimeStatus,
+            runtimeDisplay: undefined,
+            workflowValid: true,
+          }}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
           onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
@@ -571,8 +579,9 @@ class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: s
   }
 }
 
-function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpConversations']>[number], fallback?: AcpSessionVm | null): AcpSessionVm | null {
-  const base = conversation.attempts.find((attempt) => attempt.attemptId === conversation.activeAttemptId)?.acpSession
+export function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpConversations']>[number], fallback?: AcpSessionVm | null): AcpSessionVm | null {
+  const activeAttempt = conversation.attempts.find((attempt) => attempt.attemptId === conversation.activeAttemptId);
+  const base = activeAttempt?.acpSession
     ?? conversation.attempts.at(-1)?.acpSession
     ?? fallback
     ?? null;
@@ -602,6 +611,9 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
     ...base,
     sessionId: conversation.sessionId ?? base.sessionId,
     restored: conversation.attempts.some((attempt) => attempt.acpSession?.restored),
+    systemPromptAppend: activeAttempt?.acpSession?.systemPromptAppend
+      ?? fallback?.systemPromptAppend
+      ?? base.systemPromptAppend,
     events,
     eventPage: {
       ...base.eventPage,
@@ -609,6 +621,33 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
       total: Math.max(base.eventPage.total, events.length),
     },
   };
+}
+
+export function buildConversationSystemPromptOptions(
+  conversation: NonNullable<NodeDetailVm['acpConversations']>[number] | undefined,
+  fallback?: AcpSessionVm | null,
+  fallbackAttemptId?: string | null,
+) {
+  if (!conversation) {
+    return fallbackAttemptId && fallback?.systemPromptAppend?.trim()
+      ? [{ attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend }]
+      : undefined;
+  }
+  const options = conversation.attempts.map((attempt) => ({
+    attemptId: attempt.attemptId,
+    prompt: attempt.acpSession?.systemPromptAppend,
+  }));
+  if (fallbackAttemptId && fallback?.systemPromptAppend?.trim()) {
+    const index = options.findIndex((option) => option.attemptId === fallbackAttemptId);
+    if (index >= 0) {
+      if (!options[index]?.prompt?.trim()) {
+        options[index] = { attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend };
+      }
+    } else {
+      options.push({ attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend });
+    }
+  }
+  return options;
 }
 
 function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolean; onOpenChange: (open: boolean) => void }) {

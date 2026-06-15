@@ -1,6 +1,7 @@
 import {
   forwardRef,
   memo,
+  startTransition,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -14,7 +15,6 @@ import {
   ChevronDown,
   CircleStop,
   Clock,
-  Eye,
   FileText,
   Image as ImageIcon,
   ListTodo,
@@ -25,7 +25,6 @@ import {
   ShieldQuestion,
   Terminal,
   UsersRound,
-  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -70,7 +69,20 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
-import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from "@/lib/attachments";
+import {
+  decideAcpLiveEventFlush,
+  isAcpLiveToolEvent,
+  isCoalescableAcpLiveEvent,
+  mergeAcpLiveToolEvent,
+  shouldAutoScrollAfterAcpTimelineUpdate,
+} from "@/lib/acp-live-flush";
+import {
+  createAcpSessionConfigViewModel,
+  findAcpConfigOption,
+  type AcpSessionConfigViewModel,
+} from "@/lib/acp-session-config";
+import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
+import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import {
@@ -80,9 +92,19 @@ import {
   normalizeAcpSessionForAttempt,
   originalSeqFromAcpEvent,
 } from "@/lib/acp-event-normalization";
+import {
+  deriveAcpRuntimeComposerState,
+  isRuntimeActiveStatus,
+  isSessionActiveStatus,
+  isSessionCompletedStatus,
+  isSessionTerminalStatus,
+} from "@/lib/acp-runtime-composer-state";
+import {
+  resolveAcpSessionShellState,
+  shouldCreateLiveAcpSessionShell,
+} from "@/lib/acp-session-shell";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
-  cancelAcpSession,
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
@@ -92,6 +114,7 @@ import {
   showArtifact,
   showAttachment,
   showConversationAttachment,
+  stopActiveSession,
   submitManualCheck,
 } from "@/api";
 import { getRuntimeApi } from "@/api/client";
@@ -107,13 +130,22 @@ import type {
   AcpUsageVm,
   AssetItemVm,
   ContentVm,
+  ConversationAttemptLifecycleVm,
+  RuntimeDisplayVm,
 } from "@/types";
 
-export type AcpExternalComposerState =
-  | { kind: "normal" }
-  | { kind: "paused"; message: string; onContinue?: () => void }
-  | { kind: "invalid-workflow"; workflowError: string; onRepair?: () => void }
-  | { kind: "runtime-error"; errorMessage: string; onRepair?: () => void };
+export type AcpRuntimeComposerContext = {
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+  runtimeStatus?: string | null;
+  runtimeDisplay?: RuntimeDisplayVm | null;
+  workflowValid: boolean;
+  workflowError?: string | null;
+  pauseMessage?: string | null;
+  runtimeError?: string | null;
+  onContinue?: (promptId?: string | null, prompt?: string | null) => void | Promise<unknown>;
+  onRepair?: () => void;
+  continueLabel?: string;
+};
 
 export interface ACPChatDialogHandle {
   openArtifactsDialog: (asset?: AssetItemVm) => void;
@@ -128,49 +160,24 @@ interface ACPChatDialogProps {
   attemptId: string;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
-  runtimeStatus?: string | null;
+  runtimeComposerContext?: AcpRuntimeComposerContext;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   eventIdPrefix?: string;
   eventPageSize?: number;
+  liveUpdatesPaused?: boolean;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
   onAtBottomChange?: (atBottom: boolean) => void;
-  externalComposerState?: AcpExternalComposerState;
+  allowEventOnlySessionShell?: boolean;
   artifacts?: AssetItemVm[];
   attachments?: AssetItemVm[];
   usageCompact?: boolean;
 }
 
 type AcpCanvasMode = "chat" | "raw";
-
-function hasFileTransfer(dataTransfer: DataTransfer | null): boolean {
-  if (!dataTransfer) return false;
-  return (
-    Array.from(dataTransfer.types ?? []).includes("Files") ||
-    Array.from(dataTransfer.items ?? []).some((item) => item.kind === "file") ||
-    dataTransfer.files.length > 0
-  );
-}
-
-function extractTransferFiles(dataTransfer: DataTransfer | null): File[] {
-  if (!dataTransfer) return [];
-  const itemFiles = Array.from(dataTransfer.items ?? [])
-    .filter((item) => item.kind === "file")
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => !!file);
-  if (itemFiles.length > 0) return itemFiles;
-  return Array.from(dataTransfer.files ?? []);
-}
-
-function isAttachmentDropTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof Element &&
-    !!target.closest('[data-attachment-dropzone="true"]')
-  );
-}
 
 type ToolTone = "muted" | "pending" | "running" | "success" | "danger";
 type AcpProcessingKind =
@@ -218,6 +225,8 @@ const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
+const LIVE_EVENT_FLUSH_MS = 125;
+const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -379,17 +388,18 @@ export const ACPChatDialog = forwardRef<
     attemptId,
     outerNodeId,
     outerAttemptId,
-    runtimeStatus,
+    runtimeComposerContext,
     manualCheckPending = false,
     systemPromptOptions,
     eventIdPrefix,
     eventPageSize,
+    liveUpdatesPaused: externalLiveUpdatesPaused = false,
     optimisticEvents: controlledOptimisticEvents,
     onOptimisticEventsChange,
     onManualCheckSubmitted,
     onSessionStopped,
     onAtBottomChange,
-    externalComposerState,
+    allowEventOnlySessionShell = true,
     artifacts = [],
     attachments = [],
     usageCompact,
@@ -455,6 +465,7 @@ export const ACPChatDialog = forwardRef<
     pageSize: 100,
   });
   const [rawLoading, setRawLoading] = useState(false);
+  const [loadingInitialSession, setLoadingInitialSession] = useState(!session && isTauriRuntime());
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
     () => session?.eventPage.hasOlder ?? false,
@@ -478,142 +489,47 @@ export const ACPChatDialog = forwardRef<
     null,
   );
   const [artifactLoading, setArtifactLoading] = useState(false);
-  // ── Attachment state ──
-  interface PendingAttachment {
-    id: string;
-    name: string;
-    path?: string;
-    size: number;
-    type: string;
-    previewUrl?: string;
-    file?: File;
-  }
-  const [pendingAttachments, setPendingAttachments] = useState<
-    PendingAttachment[]
-  >([]);
-  const [previewImage, setPreviewImage] = useState<PendingAttachment | null>(
-    null,
-  );
-  const [textPreview, setTextPreview] = useState<{
-    name: string;
-    content: string;
-  } | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const allowedExts = useAttachmentExtensions();
-  const MAX_ATTACHMENT_COUNT = 20;
-  const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024; // 50MB
-  const addFiles = useCallback(
-    (files: FileList | File[]) => {
-      const items: PendingAttachment[] = [];
-      const rejected: string[] = [];
-      let err: string | null = null;
-      for (const file of files) {
-        if (allowedExts && !isAllowedAttachment(file.name, allowedExts)) {
-          rejected.push(file.name);
-          continue;
-        }
-        const mime = file.type || "application/octet-stream";
-        items.push({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: file.name,
-          path: (file as any).path as string | undefined,
-          size: file.size,
-          type: mime,
-          previewUrl: isImageMime(mime) ? URL.createObjectURL(file) : undefined,
-          file,
-        });
-      }
-      if (rejected.length > 0) {
-        err = t("conversation.attachmentUnsupportedFile", { names: rejected.join(", ") });
-      }
-      if (!err) {
-        const total = pendingAttachments.length + items.length;
-        if (total > MAX_ATTACHMENT_COUNT) {
-          err = t("conversation.attachmentCountExceeded", { max: MAX_ATTACHMENT_COUNT });
-          items.length = Math.max(0, MAX_ATTACHMENT_COUNT - pendingAttachments.length);
-        }
-      }
-      if (!err) {
-        const totalSize = pendingAttachments.reduce((s, a) => s + a.size, 0)
-          + items.reduce((s, a) => s + a.size, 0);
-        if (totalSize > MAX_ATTACHMENT_TOTAL) {
-          err = t("conversation.attachmentTotalTooLarge");
-        }
-      }
-      if (err) {
-        setFileError(err);
-        setTimeout(() => setFileError(null), 4000);
-      }
-      setPendingAttachments((prev) => [...prev, ...items]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    },
-    [t, pendingAttachments, allowedExts],
-  );
-  const removeAttachment = useCallback((id: string) => {
-    setPendingAttachments((prev) => {
-      const removed = prev.find((a) => a.id === id);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-      return prev.filter((a) => a.id !== id);
-    });
-  }, []);
-  useEffect(
-    () => () => {
-      for (const a of pendingAttachments) {
-        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      }
-    },
-    [pendingAttachments],
-  );
-  useEffect(() => {
-    const handleWindowDragOver = (event: DragEvent) => {
-      if (!hasFileTransfer(event.dataTransfer)) return;
-      event.preventDefault();
-      if (event.dataTransfer)
-        event.dataTransfer.dropEffect = isAttachmentDropTarget(event.target)
-          ? "copy"
-          : "none";
-    };
-    const handleWindowDrop = (event: DragEvent) => {
-      if (!hasFileTransfer(event.dataTransfer)) return;
-      if (isAttachmentDropTarget(event.target)) return;
-      event.preventDefault();
-    };
-    window.addEventListener("dragover", handleWindowDragOver);
-    window.addEventListener("drop", handleWindowDrop);
-    return () => {
-      window.removeEventListener("dragover", handleWindowDragOver);
-      window.removeEventListener("drop", handleWindowDrop);
-    };
-  }, []);
-  const handleFilesFromInput = () => {
-    if (fileInputRef.current?.files?.length)
-      addFiles(fileInputRef.current.files);
-  };
-  const handleComposerDrag = (e: React.DragEvent) => {
-    if (!hasFileTransfer(e.dataTransfer)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = "copy";
-  };
-  const handleComposerDrop = (e: React.DragEvent) => {
-    if (!hasFileTransfer(e.dataTransfer)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const files = extractTransferFiles(e.dataTransfer);
-    if (files.length > 0) addFiles(files);
-  };
-  // ── End attachment state ──
+  const {
+    attachments: pendingAttachments,
+    fileError,
+    fileInputRef,
+    pickFiles,
+    handleFilesFromInput,
+    removeAttachment,
+    clearAttachments,
+    getAttachmentPaths,
+    dropZoneHandlers,
+    extractPasteFiles,
+    previewImage,
+    setPreviewImage,
+    textPreview,
+    setTextPreview,
+    handlePreviewAttachment,
+  } = useAttachmentPicker();
+  useWindowDragGuard();
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const preservingScrollRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
   const pinToBottomRef = useRef(true);
   const cancelRequestedRef = useRef(false);
+  const awaitTerminalStopRef = useRef(false);
+  const terminalSessionNotifiedRef = useRef(false);
+  const [stopCommandPending, setStopCommandPending] = useState(false);
+  const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
+  const liveEventFlushTimerRef = useRef<number | null>(null);
+  const liveUpdatesDeferredUntilRef = useRef(0);
+  const liveUpdatesPausedRef = useRef(false);
+  const liveUpdatesPaused = Boolean(
+    externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
+  );
+  liveUpdatesPausedRef.current = liveUpdatesPaused;
 
   const updateOptimisticEvents = (
     updater: (current: AcpUiEventVm[]) => AcpUiEventVm[],
@@ -641,6 +557,7 @@ export const ACPChatDialog = forwardRef<
 
   useEffect(() => {
     setCurrentSession(session ?? null);
+    if (session) setLoadingInitialSession(false);
     if (!session) {
       const restored = restoreAcpLoadedEvents(
         eventWindowKey,
@@ -687,6 +604,7 @@ export const ACPChatDialog = forwardRef<
       storedOptimisticEvents,
     );
     setCurrentSession(session ?? null);
+    setLoadingInitialSession(!session && isTauriRuntime());
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
     setOptimisticEvents(storedOptimisticEvents);
@@ -695,6 +613,8 @@ export const ACPChatDialog = forwardRef<
     setSendError(null);
     setCancelError(null);
     setCancelling(false);
+    setStopCommandPending(false);
+    setRuntimeStopAccepted(false);
     setAwaitingResponse(Boolean(storedPromptEvent));
     setActiveTurnPrompt(storedPromptEvent?.content?.trim() || null);
     setActiveTurnPromptId(promptIdFromEvent(storedPromptEvent));
@@ -709,9 +629,13 @@ export const ACPChatDialog = forwardRef<
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
     preservingScrollRef.current = false;
+    programmaticScrollRef.current = false;
     prependAnchorRef.current = null;
+    liveUpdatesDeferredUntilRef.current = 0;
     pinToBottomRef.current = true;
     cancelRequestedRef.current = false;
+    awaitTerminalStopRef.current = false;
+    terminalSessionNotifiedRef.current = false;
     latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
     setCanvasMode("chat");
@@ -731,13 +655,17 @@ export const ACPChatDialog = forwardRef<
   }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
-  const runtimeActive = isRuntimeActiveStatus(runtimeStatus);
+  const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
   const liveSessionShell = useMemo(
     () =>
-      loadedEvents.length > 0 || runtimeActive
-        ? createLiveAcpSessionShell(loadedEvents)
+      shouldCreateLiveAcpSessionShell({
+        runtimeActive: runtimeActiveFromContext,
+        allowEventOnlySessionShell,
+        loadedEventCount: loadedEvents.length,
+      })
+        ? createLiveAcpSessionShell(loadedEvents, "running")
         : null,
-    [loadedEvents, runtimeActive],
+    [allowEventOnlySessionShell, loadedEvents, runtimeActiveFromContext],
   );
   const visibleSession = useMemo(
     () =>
@@ -753,10 +681,17 @@ export const ACPChatDialog = forwardRef<
     () => mergeOptimisticSession(visibleSession, optimisticEvents),
     [visibleSession, optimisticEvents],
   );
+  const sessionConfigViewModel = useMemo(
+    () => createAcpSessionConfigViewModel(effective?.config),
+    [effective?.config],
+  );
   const effectiveEvents = effective?.events ?? [];
+  const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
-    !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+    !hasResponseAfterActiveTurn;
+  const localSubmissionPending = sending || waitingForOptimisticPrompt;
+  const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
   const pendingPermission =
     effective?.pendingPermissions?.find(
       (request) => !dismissedPermissionIds.has(request.requestId),
@@ -779,11 +714,16 @@ export const ACPChatDialog = forwardRef<
     }>;
     return entries.filter((e) => e.content);
   }, [effectiveEvents]);
-  const timeline = useMemo(
+  const rebuiltTimeline = useMemo(
     () => buildAcpTimeline(effectiveEvents),
     [effectiveEvents],
   );
-  const sessionActive = isSessionActive(effective?.status) || runtimeActive;
+  const timeline = useStableAcpTimeline(rebuiltTimeline);
+  const acpSessionActive = isSessionActiveStatus(effective?.status);
+  const sessionActive = acpSessionActive || runtimeActive;
+  const streamingTextItemKey = sessionActive
+    ? latestStreamingTextItemKey(timeline)
+    : null;
   const handleTimelineItemOpenChange = useCallback(
     (key: string, open: boolean) => {
       setExpandedItems((current) =>
@@ -878,41 +818,67 @@ export const ACPChatDialog = forwardRef<
   }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const composerLocked = waitingForPermission && !planInterventionOption;
-  const turnAccepted = Boolean(activeTurnStartedAt);
-  const submittingPrompt =
-    (sending || waitingForOptimisticPrompt) && !turnAccepted;
-  const activePromptLocked =
-    sending ||
-    awaitingResponse ||
-    waitingForOptimisticPrompt ||
-    sessionActive ||
-    cancelling;
+  const localLifecycle = runtimeStopAccepted && runtimeComposerContext?.lifecycle
+    ? {
+        ...runtimeComposerContext.lifecycle,
+        runtime: {
+          ...runtimeComposerContext.lifecycle.runtime,
+          status: "paused",
+          pauseReason: "process-interrupted",
+          resumable: true,
+          active: false,
+          continuable: true,
+        },
+        displayStatus: "paused",
+        continueKind: "input",
+      }
+    : runtimeComposerContext?.lifecycle;
   const composerLatestEvent = timeline.at(-1) ?? null;
-  const awaitingFirstResponse =
-    !waitingForPermission &&
-    awaitingResponse &&
-    turnAccepted &&
-    !hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
-  const composerStatusActive =
-    !waitingForPermission &&
-    !composerLocked &&
-    (submittingPrompt || awaitingResponse || sessionActive || cancelling);
+  const turnAccepted = Boolean(activeTurnStartedAt);
+  const hasTurnResponse = hasResponseAfterActiveTurn;
+  const composerState = deriveAcpRuntimeComposerState({
+    lifecycle: localLifecycle,
+    legacyRuntimeStatus: runtimeStopAccepted ? "paused" : runtimeComposerContext?.runtimeStatus,
+    legacyRuntimeDisplay: runtimeStopAccepted
+      ? {
+          ...(runtimeComposerContext?.runtimeDisplay ?? {}),
+          code: "paused",
+          tone: "warning",
+          terminal: false,
+          resumable: true,
+          reasonCode: "process-interrupted",
+        }
+      : runtimeComposerContext?.runtimeDisplay,
+    workflowValid: runtimeComposerContext?.workflowValid ?? true,
+    workflowInvalidMessage: runtimeComposerContext?.workflowError,
+    pauseMessage: runtimeComposerContext?.pauseMessage,
+    runtimeErrorMessage: runtimeComposerContext?.runtimeError,
+    acpStatus: effective?.status,
+    prompt,
+    waitingForPermission,
+    hasPlanIntervention: Boolean(planInterventionOption),
+    sending,
+    awaitingResponse,
+    waitingForOptimisticPrompt,
+    cancelling,
+    stopCommandPending,
+    turnAccepted,
+    hasResponseAfterTurn: hasTurnResponse,
+    hasTimelineItems: timeline.length > 0,
+    hasEffectiveEvents: effectiveEvents.length > 0,
+    timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
+  });
+  const stopInProgress = composerState.stopInProgress;
+  const composerLocked = composerState.composerLocked;
+  const composerInputDisabled = composerState.inputDisabled;
+  const composerStatusActive = composerState.statusActive;
   const composerSessionSeconds = effective?.sessionElapsedSeconds ?? null;
-  const composerProcessingKind: AcpProcessingKind = cancelling
-    ? "stopping"
-    : submittingPrompt
-      ? "sending"
-      : awaitingFirstResponse
-        ? "processing"
-        : timeline.length === 0
-          ? "launching"
-          : processingKindFromTimeline(composerLatestEvent, false);
-  const showComposerStatus =
-    !waitingForPermission &&
-    (composerStatusActive || composerSessionSeconds != null);
+  const composerProcessingKind: AcpProcessingKind = composerState.processingKind;
+  const showComposerStatus = composerState.showStatus || composerSessionSeconds != null;
   const composerStatusStartAt =
-    submittingPrompt || awaitingFirstResponse || cancelling
+    composerState.mode === "submitting" ||
+    composerState.mode === "stopping" ||
+    (awaitingResponse && turnAccepted && !hasTurnResponse)
       ? activeTurnStartedAt
       : (composerLatestEvent?.startedAt ??
         composerLatestEvent?.timestamp ??
@@ -921,45 +887,39 @@ export const ACPChatDialog = forwardRef<
     composerStatusActive && composerProcessingKind !== "sending",
     composerStatusStartAt,
   );
-  const composerInputHint = waitingForPermission
-    ? t("acp.permissionPending")
-    : cancelling
-      ? t("acp.stopping")
-      : submittingPrompt
-        ? t("acp.sending")
-        : composerStatusActive
-          ? t("acp.processing")
-          : t("acp.promptInputHint");
-  const composerPlaceholder = planInterventionOption
-    ? t("acp.planInterventionHint")
-    : t("acp.composerPlaceholder");
-  const canSubmitPrompt =
-    Boolean(prompt.trim()) &&
-    !cancelling &&
-    (planInterventionOption ? !sending : !activePromptLocked);
-  const canStopSession =
-    sessionActive ||
-    awaitingResponse ||
-    sending ||
-    waitingForOptimisticPrompt ||
-    cancelling;
+  const composerStatusLabel = processingLabel(t, composerProcessingKind);
+  const composerInputHint = composerHintText(
+    composerState,
+    composerStatusLabel,
+    t,
+  );
+  const composerPlaceholder = composerPlaceholderText(composerState, t);
+  const canSubmitPrompt = composerState.canSubmit;
+  const canStopSession = composerState.canStop;
   const sendButtonBusy =
     (sending || waitingForOptimisticPrompt) && !planInterventionOption;
   const lastEvent = effectiveEvents.at(-1);
 
-  const normalizeSessionUpdate = (updated: AcpSessionVm | null) =>
-    eventIdPrefix
-      ? normalizeAcpSessionForAttempt(updated, eventIdPrefix)
-      : updated;
-  const normalizeEventUpdate = (event: AcpUiEventVm | null | undefined) =>
-    event && eventIdPrefix
-      ? normalizeAcpEventForAttempt(event, eventIdPrefix)
-      : (event ?? null);
+  const normalizeSessionUpdate = useCallback(
+    (updated: AcpSessionVm | null) =>
+      eventIdPrefix
+        ? normalizeAcpSessionForAttempt(updated, eventIdPrefix)
+        : updated,
+    [eventIdPrefix],
+  );
+  const normalizeEventUpdate = useCallback(
+    (event: AcpUiEventVm | null | undefined) =>
+      event && eventIdPrefix
+        ? normalizeAcpEventForAttempt(event, eventIdPrefix)
+        : (event ?? null),
+    [eventIdPrefix],
+  );
 
-  const applySessionUpdate = (updated: AcpSessionVm | null) => {
+  const applySessionUpdate = useCallback((updated: AcpSessionVm | null) => {
     const normalized = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
-    if (sessionsEquivalent(previous, normalized)) return;
+    const equivalent = sessionsEquivalent(previous, normalized);
+    if (equivalent) return;
     latestSessionRef.current = normalized;
     setCurrentSession(normalized);
     if (!normalized) return;
@@ -977,10 +937,10 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  };
+  }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate]);
 
-  const patchSessionConfig = (patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
-    const base = latestSessionRef.current ?? currentSession ?? effective ?? null;
+  const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
+    const base = latestSessionRef.current;
     if (!base) return;
     const updated: AcpSessionVm = {
       ...base,
@@ -992,19 +952,107 @@ export const ACPChatDialog = forwardRef<
     configGenerationRef.current += 1;
     latestSessionRef.current = updated;
     setCurrentSession(updated);
-  };
+  }, []);
 
-  const applyEventUpdate = (event: AcpUiEventVm | null | undefined) => {
-    const normalized = normalizeEventUpdate(event);
-    if (
-      !normalized ||
-      (!isRenderableEvent(normalized) &&
-        normalized.kind !== "permissionRequest")
+  const handleAcpSessionModelChange = useCallback((modelId: string) => {
+    const config = latestSessionRef.current?.config;
+    const selected = findAcpConfigOption(
+      config?.models,
+      config?.configOptions,
+      "model",
+      modelId,
+    );
+    patchSessionConfig({
+      currentModelId: modelId,
+      currentModelName: selected.name,
+    });
+    setAcpSessionModel(
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      modelId,
+      outerNodeId,
+      outerAttemptId,
     )
-      return;
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session model:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string) => {
+    const config = latestSessionRef.current?.config;
+    const selected = findAcpConfigOption(
+      config?.modes,
+      config?.configOptions,
+      "mode",
+      permissionModeId,
+    );
+    patchSessionConfig({
+      currentModeId: permissionModeId,
+      currentModeName: selected.name,
+    });
+    setAcpSessionPermissionMode(
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      permissionModeId,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session permission mode:", error);
+      });
+  }, [
+    applySessionUpdate,
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    patchSessionConfig,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
+    const normalizedUpdates = updates
+      .map((event) => normalizeEventUpdate(event))
+      .filter((event): event is AcpUiEventVm => {
+        if (!event) return false;
+        return isRenderableEvent(event) || event.kind === "permissionRequest";
+      });
+    if (normalizedUpdates.length === 0) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(false);
-      const merged = mergeAcpEvents(events, [normalized]);
+      const merged = mergeAcpEvents(events, normalizedUpdates);
       const limited = limitAcpEvents(
         merged,
         "start",
@@ -1014,7 +1062,132 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  };
+  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
+
+  const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
+    if (!event) return;
+    applyEventUpdates([event]);
+  }, [applyEventUpdates]);
+
+  const flushPendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+    const updates = [...pendingLiveEventsRef.current.values()];
+    pendingLiveEventsRef.current.clear();
+    if (updates.length === 0) return;
+    if (priority === "sync") {
+      applyEventUpdates(updates);
+      return;
+    }
+    startTransition(() => applyEventUpdates(updates));
+  }, [applyEventUpdates]);
+
+  const liveFlushDeferRemainingMs = useCallback(() => (
+    Math.max(0, liveUpdatesDeferredUntilRef.current - performance.now())
+  ), []);
+
+  const schedulePendingLiveFlush = useCallback((delayMs: number) => {
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+
+    const schedule = (nextDelayMs: number) => {
+      liveEventFlushTimerRef.current = window.setTimeout(() => {
+        liveEventFlushTimerRef.current = null;
+        if (liveUpdatesPausedRef.current || pendingLiveEventsRef.current.size === 0) return;
+        const deferRemainingMs = liveFlushDeferRemainingMs();
+        if (deferRemainingMs > 0) {
+          schedule(deferRemainingMs);
+          return;
+        }
+        flushPendingLiveEvents();
+      }, Math.max(0, Math.ceil(nextDelayMs)));
+    };
+
+    schedule(delayMs);
+  }, [flushPendingLiveEvents, liveFlushDeferRemainingMs]);
+
+  const flushOrSchedulePendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+    if (pendingLiveEventsRef.current.size === 0 || liveUpdatesPausedRef.current) return;
+    const deferRemainingMs = liveFlushDeferRemainingMs();
+    if (deferRemainingMs > 0) {
+      schedulePendingLiveFlush(deferRemainingMs);
+      return;
+    }
+    flushPendingLiveEvents(priority);
+  }, [flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush]);
+
+  const deferPendingLiveFlush = useCallback((durationMs = LIVE_EVENT_INTERACTION_QUIET_MS) => {
+    const nextDeferredUntil = performance.now() + durationMs;
+    liveUpdatesDeferredUntilRef.current = Math.max(
+      liveUpdatesDeferredUntilRef.current,
+      nextDeferredUntil,
+    );
+    if (liveEventFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventFlushTimerRef.current);
+      liveEventFlushTimerRef.current = null;
+    }
+    flushOrSchedulePendingLiveEvents();
+  }, [flushOrSchedulePendingLiveEvents]);
+
+  const handleLiveStreamUserInteraction = useCallback(() => {
+    deferPendingLiveFlush();
+  }, [deferPendingLiveFlush]);
+
+  const enqueueLiveEventUpdate = useCallback(
+    (event: AcpUiEventVm) => {
+      const decision = decideAcpLiveEventFlush({
+        coalescable: isCoalescableAcpLiveEvent(event),
+        paused: liveUpdatesPausedRef.current,
+        deferRemainingMs: liveFlushDeferRemainingMs(),
+        flushDelayMs: LIVE_EVENT_FLUSH_MS,
+        hasScheduledFlush: liveEventFlushTimerRef.current !== null,
+      });
+
+      if (decision.applyImmediately) {
+        const bufferedToolKey = liveToolEventBufferKey(event);
+        const pendingToolEvent = bufferedToolKey
+          ? pendingLiveEventsRef.current.get(bufferedToolKey)
+          : null;
+        const eventToApply = pendingToolEvent
+          ? mergeAcpLiveToolEvent(pendingToolEvent, event, mergeRaw)
+          : event;
+        if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
+        if (decision.flushPendingBeforeApply) flushPendingLiveEvents("sync");
+        applyEventUpdate(eventToApply);
+        return;
+      }
+
+      if (!decision.buffer) return;
+      const bufferKey = liveEventBufferKey(event);
+      pendingLiveEventsRef.current.set(
+        bufferKey,
+        mergeAcpLiveToolEvent(
+          pendingLiveEventsRef.current.get(bufferKey),
+          event,
+          mergeRaw,
+        ),
+      );
+      if (decision.scheduleDelayMs !== null) {
+        schedulePendingLiveFlush(decision.scheduleDelayMs);
+      }
+    },
+    [applyEventUpdate, flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush],
+  );
+
+  useEffect(() => {
+    if (liveUpdatesPaused) {
+      if (liveEventFlushTimerRef.current !== null) {
+        window.clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      return;
+    }
+    flushOrSchedulePendingLiveEvents();
+  }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
 
   useEffect(() => {
     latestSessionRef.current = effective ?? currentSession ?? session ?? null;
@@ -1038,18 +1211,33 @@ export const ACPChatDialog = forwardRef<
       }
       return;
     }
-    if (pinToBottomRef.current) {
+    if (shouldAutoScrollAfterAcpTimelineUpdate({
+      pinned: pinToBottomRef.current,
+      deferRemainingMs: liveFlushDeferRemainingMs(),
+    })) {
       requestAnimationFrame(() => {
         const el = scrollerElementRef.current;
-        if (el && pinToBottomRef.current) el.scrollTop = el.scrollHeight;
+        if (el && pinToBottomRef.current) {
+          programmaticScrollRef.current = true;
+          el.scrollTop = el.scrollHeight;
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+          });
+        }
       });
     }
-  }, [timeline]);
+  }, [liveFlushDeferRemainingMs, timeline]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!isTauriRuntime()) {
+      setLoadingInitialSession(false);
+      return;
+    }
     const runtimeApi = getRuntimeApi();
-    if (!runtimeApi.subscribeAcpSessionUpdates) return;
+    if (!runtimeApi.subscribeAcpSessionUpdates) {
+      setLoadingInitialSession(false);
+      return;
+    }
     let active = true;
     let stopListening: (() => void) | null = null;
     const subscribe = runtimeApi.subscribeAcpSessionUpdates;
@@ -1075,8 +1263,9 @@ export const ACPChatDialog = forwardRef<
     void (async () => {
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
-        if (event.event) applyEventUpdate(event.event);
+        if (event.event) enqueueLiveEventUpdate(event.event);
         else {
+          flushOrSchedulePendingLiveEvents("sync");
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
@@ -1107,15 +1296,27 @@ export const ACPChatDialog = forwardRef<
           applySessionUpdate(updated);
       } catch {
         if (active) applySessionUpdate(latestSessionRef.current);
+      } finally {
+        if (active && sessionRefreshSeqRef.current === refreshSeq)
+          setLoadingInitialSession(false);
       }
     })();
     return () => {
       active = false;
       stopListening?.();
+      if (liveEventFlushTimerRef.current !== null) {
+        window.clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      pendingLiveEventsRef.current.clear();
     };
   }, [
+    applySessionUpdate,
     attemptId,
+    enqueueLiveEventUpdate,
     eventWindowKey,
+    effectiveEventPageSize,
+    flushOrSchedulePendingLiveEvents,
     nodeId,
     outerAttemptId,
     outerNodeId,
@@ -1125,23 +1326,54 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   useEffect(() => {
-    if (
-      (!awaitingResponse && !cancelling) ||
-      sessionActive ||
-      sending ||
-      waitingForOptimisticPrompt
-    )
+    if (runtimeStopAccepted && !(runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus))) {
+      setRuntimeStopAccepted(false);
+    }
+  }, [runtimeComposerContext?.lifecycle?.runtime.active, runtimeComposerContext?.runtimeStatus, runtimeStopAccepted]);
+
+  useEffect(() => {
+    const terminalSession = isSessionTerminalStatus(effective?.status);
+    if (stopCommandPending || sending || waitingForOptimisticPrompt) {
       return;
+    }
+    if (!awaitingResponse && !cancelling) {
+      return;
+    }
+    if (!terminalSession && cancelling && awaitTerminalStopRef.current && acpSessionActive) {
+      return;
+    }
+    if (!terminalSession && cancelling && acpSessionActive) {
+      return;
+    }
+    if (!terminalSession && !cancelling && sessionActive) {
+      return;
+    }
     setAwaitingResponse(false);
     setCancelling(false);
+    awaitTerminalStopRef.current = false;
+    const shouldNotifyStopped = cancelRequestedRef.current;
     cancelRequestedRef.current = false;
+    if (shouldNotifyStopped) onSessionStopped?.();
   }, [
+    acpSessionActive,
     awaitingResponse,
     cancelling,
+    effective?.status,
+    onSessionStopped,
     sending,
     sessionActive,
+    stopCommandPending,
     waitingForOptimisticPrompt,
   ]);
+
+  useEffect(() => {
+    if (terminalSessionNotifiedRef.current) return;
+    if (!isSessionCompletedStatus(effective?.status)) return;
+    if (!runtimeActiveFromContext && !awaitingResponse && !cancelling) return;
+    if (localSubmissionPending) return;
+    terminalSessionNotifiedRef.current = true;
+    onSessionStopped?.();
+  }, [awaitingResponse, cancelling, effective?.status, localSubmissionPending, onSessionStopped, runtimeActiveFromContext]);
 
   useEffect(() => {
     const acceptedPrompt = findMatchingGoldBandUserPrompt(
@@ -1279,12 +1511,10 @@ export const ACPChatDialog = forwardRef<
     const optimisticEvent = optimisticUserEvent(trimmed);
     const promptId = promptIdFromEvent(optimisticEvent);
     // Collect attachment paths
-    const attPaths = pendingAttachments
-      .map((a) => a.path)
-      .filter((p): p is string => !!p);
+    const attPaths = getAttachmentPaths();
     const effectivePrompt = trimmed;
     setPrompt("");
-    setPendingAttachments([]);
+    clearAttachments();
     setSendError(null);
     pinToBottomRef.current = true;
     setActiveTurnPrompt(effectivePrompt);
@@ -1356,17 +1586,53 @@ export const ACPChatDialog = forwardRef<
       );
       return;
     }
-    await submitPrompt(trimmed);
+    if (composerState.submitTarget === "runtime-continue") {
+      const promptId = createAcpPromptId();
+      const optimisticEvent = optimisticUserEvent(trimmed, promptId);
+      setPrompt("");
+      clearAttachments();
+      setSendError(null);
+      pinToBottomRef.current = true;
+      setActiveTurnPrompt(trimmed);
+      setActiveTurnPromptId(promptId);
+      setActiveTurnStartedAt(null);
+      setAwaitingResponse(true);
+      updateOptimisticEvents((current) => [...current, optimisticEvent]);
+      setSending(true);
+      try {
+        await runtimeComposerContext?.onContinue?.(promptId, trimmed);
+      } catch (error) {
+        setSendError(displayAppError(t, error));
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
+          ),
+        );
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+    if (composerState.submitTarget === "acp-prompt") {
+      await submitPrompt(trimmed);
+    }
   };
 
   const stopSession = async () => {
-    if (cancelling || !canStopSession) return;
+    if (stopInProgress || !canStopSession) return;
     cancelRequestedRef.current = true;
     setCancelling(true);
+    setStopCommandPending(true);
     setCancelError(null);
     setAwaitingResponse(true);
     try {
-      const updated = await cancelAcpSession(
+      const result = await stopActiveSession(
         taskId,
         runId,
         roundId,
@@ -1376,11 +1642,18 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(updated);
-      onSessionStopped?.();
+      awaitTerminalStopRef.current = Boolean(result.session?.sessionId);
+      setRuntimeStopAccepted(Boolean(result.run));
+      applySessionUpdate(result.session ?? null);
+      setStopCommandPending(false);
+      setSending(false);
+      setActiveTurnPrompt(null);
+      setActiveTurnPromptId(null);
+      setActiveTurnStartedAt(null);
     } catch (error) {
       setCancelError(displayAppError(t, error));
       setCancelling(false);
+      setStopCommandPending(false);
       cancelRequestedRef.current = false;
     }
   };
@@ -1505,33 +1778,39 @@ export const ACPChatDialog = forwardRef<
     if (preservingScrollRef.current) return;
     const scroller = scrollerElementRef.current;
     if (!scroller) return;
-    if (scroller.scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    if (!programmaticScrollRef.current) handleLiveStreamUserInteraction();
+    const scrollTop = scroller.scrollTop;
+    if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
+    const distanceFromBottom =
+      scroller.scrollHeight - scrollTop - scroller.clientHeight;
+    if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
+      pinToBottomRef.current = false;
+    }
+    if (distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX) {
+      pinToBottomRef.current = true;
+    }
     const atBottom =
-      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
-      BOTTOM_STICK_THRESHOLD_PX;
+      distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX;
     setIsAtBottom((current) => (current === atBottom ? current : atBottom));
     if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
   const handleScroll = useCallback(() => {
-    const scroller = scrollerElementRef.current;
-    if (scroller && !preservingScrollRef.current) {
-      const distanceFromBottom =
-        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      // Release pin generously — any scroll away from bottom should stop auto-follow
-      if (distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
-        pinToBottomRef.current = false;
-      }
-      // Re-engage pin only at exact bottom, so mid-scroll users don't get snapped
-      if (distanceFromBottom <= 1) {
-        pinToBottomRef.current = true;
-      }
-    }
     if (scrollFrameRef.current != null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
       handleScrollRef.current?.();
     });
   }, []);
+
+  const sessionShellState = resolveAcpSessionShellState({
+    hasBaseSession: Boolean(baseSession),
+    hasLiveSessionShell: Boolean(liveSessionShell),
+    initialSessionLoading: loadingInitialSession,
+  });
+
+  if (sessionShellState === 'loading') {
+    return <AcpLoadingState label={t("common.loading")} />;
+  }
 
   if (!effective) {
     return <AcpErrorState reason={t("acp.missingSessionReason")} />;
@@ -1590,6 +1869,7 @@ export const ACPChatDialog = forwardRef<
               ref={scrollerElementRef}
               className="h-full min-w-0 overflow-y-auto"
               onScroll={handleScroll}
+              onWheel={handleLiveStreamUserInteraction}
             >
               {loadingOlder ? (
                 <AcpListLoading label={t("acp.loadingOlderEvents")} />
@@ -1599,10 +1879,14 @@ export const ACPChatDialog = forwardRef<
                 <div className="h-3" />
               )}
               {timeline.length === 0 &&
-              !isSessionActive(effective.status) &&
+              !isSessionActiveStatus(effective.status) &&
               !sending ? (
                 <div className="p-5">
                   <EmptyAcpState />
+                </div>
+              ) : timeline.length === 0 ? (
+                <div className="p-5">
+                  <AcpPendingTimelineState label={composerStatusLabel} />
                 </div>
               ) : (
                 <div className="space-y-3 px-5 py-3">
@@ -1614,6 +1898,18 @@ export const ACPChatDialog = forwardRef<
                       <ACPTimelineItemRenderer
                         event={item}
                         expansionControls={expansionControls}
+                        streamingTextItemKey={streamingTextItemKey}
+                        taskId={taskId}
+                        onMessageAttachmentClick={(att) => handleOpenArtifactDetail({
+                          kind: 'input-attachment',
+                          name: att.name,
+                          title: att.name,
+                          tone: 'neutral',
+                          preview: '',
+                          roundId: '',
+                          nodeId: '',
+                          attemptId: '',
+                        })}
                       />
                     </div>
                   ))}
@@ -1661,8 +1957,11 @@ export const ACPChatDialog = forwardRef<
           <div className="border-t px-4 pt-1.5 pb-1.5">
             <AcpUsagePanel
               usage={effective?.usage}
-              isRunning={isSessionActive(effective.status)}
+              isRunning={sessionActive}
               compact={usageCompact}
+              processingLabel={
+                usageCompact && composerStatusActive ? composerStatusLabel : null
+              }
               stepSeconds={
                 usageCompact
                   ? composerStatusActive
@@ -1673,23 +1972,22 @@ export const ACPChatDialog = forwardRef<
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
-            {externalComposerState?.kind === "invalid-workflow" ? (
+            {composerState.externalKind ? (
               <AcpExternalComposerState
-                kind="invalid-workflow"
-                message={externalComposerState.workflowError}
-                onAction={externalComposerState.onRepair}
-              />
-            ) : externalComposerState?.kind === "paused" ? (
-              <AcpExternalComposerState
-                kind="paused"
-                message={externalComposerState.message}
-                onAction={externalComposerState.onContinue}
-              />
-            ) : externalComposerState?.kind === "runtime-error" ? (
-              <AcpExternalComposerState
-                kind="runtime-error"
-                message={externalComposerState.errorMessage}
-                onAction={externalComposerState.onRepair}
+                kind={composerState.externalKind}
+                message={composerState.externalMessage ?? ""}
+                onAction={
+                  composerState.externalKind === "invalid-workflow"
+                    ? runtimeComposerContext?.onRepair
+                    : composerState.externalKind === "paused"
+                      ? () => { void runtimeComposerContext?.onContinue?.(); }
+                      : undefined
+                }
+                actionLabel={
+                  composerState.externalKind === "paused"
+                    ? runtimeComposerContext?.continueLabel
+                    : undefined
+                }
               />
             ) : (
               <>
@@ -1705,72 +2003,21 @@ export const ACPChatDialog = forwardRef<
                 ) : (
                   <div
                     data-attachment-dropzone="true"
-                    onDragEnter={handleComposerDrag}
-                    onDragLeave={handleComposerDrag}
-                    onDragOver={handleComposerDrag}
-                    onDrop={handleComposerDrop}
+                    onDragEnter={dropZoneHandlers.onDragEnter}
+                    onDragOver={dropZoneHandlers.onDragOver}
+                    onDrop={dropZoneHandlers.onDrop}
                   >
                     {/* Attachment chips */}
-                    {pendingAttachments.length > 0 ? (
-                      <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border/40 bg-card/40 px-2.5 py-1.5">
-                        {pendingAttachments.map((a) => (
-                          <div
-                            key={a.id}
-                            className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 px-1.5 py-1 text-xs shadow-sm"
-                            onClick={() => {
-                              if (isImageMime(a.type)) {
-                                setPreviewImage(a);
-                                return;
-                              }
-                              if (a.file) {
-                                const reader = new FileReader();
-                                reader.onload = () =>
-                                  setTextPreview({
-                                    name: a.name,
-                                    content: reader.result as string,
-                                  });
-                                reader.readAsText(a.file);
-                              }
-                            }}
-                            title={a.name}
-                          >
-                            {isImageMime(a.type) && a.previewUrl ? (
-                              <img
-                                src={a.previewUrl}
-                                alt={a.name}
-                                className="size-6 shrink-0 rounded object-cover"
-                              />
-                            ) : (
-                              <span className="flex size-6 shrink-0 items-center justify-center rounded bg-muted/50 text-muted-foreground">
-                                <ImageIcon className="size-3.5" />
-                              </span>
-                            )}
-                            <span className="min-w-0 max-w-[100px] truncate font-medium">
-                              {a.name}
-                            </span>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-4 shrink-0 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeAttachment(a.id);
-                              }}
-                            >
-                              <X className="size-2.5" />
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 text-[11px] text-muted-foreground"
-                          onClick={() => setPendingAttachments([])}
-                        >
-                          {t("common.clear") ?? "Clear"}
-                        </Button>
-                      </div>
-                    ) : null}
+                    <div className="mb-2">
+                      <AttachmentChipsList
+                        attachments={pendingAttachments}
+                        compact
+                        onRemove={removeAttachment}
+                        onPreview={handlePreviewAttachment}
+                        onClear={clearAttachments}
+                        clearLabel={t("common.clear") ?? "Clear"}
+                      />
+                    </div>
                     {/* File error */}
                     {fileError ? (
                       <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -1795,25 +2042,11 @@ export const ACPChatDialog = forwardRef<
                       <PromptInputTextarea
                         className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
                         placeholder={composerPlaceholder}
-                        readOnly={activePromptLocked && !planInterventionOption}
-                        onDragEnter={handleComposerDrag}
-                        onDragOver={handleComposerDrag}
-                        onDrop={handleComposerDrop}
-                        onPaste={(e: React.ClipboardEvent) => {
-                          const items = e.clipboardData?.items;
-                          if (!items) return;
-                          const files: File[] = [];
-                          for (let i = 0; i < items.length; i++) {
-                            if (items[i].kind === "file") {
-                              const f = items[i].getAsFile();
-                              if (f) files.push(f);
-                            }
-                          }
-                          if (files.length > 0) {
-                            e.preventDefault();
-                            addFiles(files);
-                          }
-                        }}
+                        textareaDisabled={composerInputDisabled}
+                        onDragEnter={dropZoneHandlers.onDragEnter}
+                        onDragOver={dropZoneHandlers.onDragOver}
+                        onDrop={dropZoneHandlers.onDrop}
+                        onPaste={extractPasteFiles}
                       />
                       <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
                         <div className="flex items-center gap-2">
@@ -1831,10 +2064,8 @@ export const ACPChatDialog = forwardRef<
                               className="size-7 rounded-full"
                               size="icon"
                               variant="ghost"
-                              disabled={
-                                activePromptLocked && !planInterventionOption
-                              }
-                              onClick={() => fileInputRef.current?.click()}
+                              disabled={composerInputDisabled}
+                              onClick={() => { void pickFiles(); }}
                             >
                               <Paperclip className="size-3.5" />
                             </Button>
@@ -1850,10 +2081,10 @@ export const ACPChatDialog = forwardRef<
                                 className="h-8 gap-1.5 rounded-full px-3"
                                 size="sm"
                                 variant="secondary"
-                                disabled={cancelling}
+                                disabled={stopInProgress}
                                 onClick={stopSession}
                               >
-                                {cancelling ? (
+                                {stopInProgress ? (
                                   <Loader2
                                     className="size-3.5 animate-spin"
                                     style={{ willChange: "transform" }}
@@ -1861,7 +2092,7 @@ export const ACPChatDialog = forwardRef<
                                 ) : (
                                   <CircleStop className="size-3.5" />
                                 )}
-                                {cancelling ? t("acp.stopping") : t("acp.stop")}
+                                {stopInProgress ? t("acp.stopping") : t("acp.stop")}
                               </Button>
                             </PromptInputAction>
                           ) : null}
@@ -1886,71 +2117,10 @@ export const ACPChatDialog = forwardRef<
                         </PromptInputActions>
                       </div>
                       <AcpSessionConfigBar
-                        session={effective}
-                        onModelChange={(modelId) => {
-                          const selected = findAcpConfigOption(
-                            effective.config?.models,
-                            effective.config?.configOptions,
-                            "model",
-                            modelId,
-                          );
-                          patchSessionConfig({
-                            currentModelId: modelId,
-                            currentModelName: selected?.name ?? modelId,
-                          });
-                          setAcpSessionModel(
-                            taskId,
-                            runId,
-                            roundId,
-                            nodeId,
-                            attemptId,
-                            modelId,
-                            outerNodeId,
-                            outerAttemptId,
-                          )
-                            .then((updated) => {
-                              if (updated) {
-                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                                applySessionUpdate(updated);
-                              }
-                            })
-                            .catch((error) => {
-                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                              console.error('Failed to set ACP session model:', error);
-                            });
-                        }}
-                        onPermissionModeChange={(permissionModeId) => {
-                          const selected = findAcpConfigOption(
-                            effective.config?.modes,
-                            effective.config?.configOptions,
-                            "mode",
-                            permissionModeId,
-                          );
-                          patchSessionConfig({
-                            currentModeId: permissionModeId,
-                            currentModeName: selected?.name ?? permissionModeId,
-                          });
-                          setAcpSessionPermissionMode(
-                            taskId,
-                            runId,
-                            roundId,
-                            nodeId,
-                            attemptId,
-                            permissionModeId,
-                            outerNodeId,
-                            outerAttemptId,
-                          )
-                            .then((updated) => {
-                              if (updated) {
-                                configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                                applySessionUpdate(updated);
-                              }
-                            })
-                            .catch((error) => {
-                              configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-                              console.error('Failed to set ACP session permission mode:', error);
-                            });
-                        }}
+                        scopeKey={sessionIdentity}
+                        viewModel={sessionConfigViewModel}
+                        onModelChange={handleAcpSessionModelChange}
+                        onPermissionModeChange={handleAcpSessionPermissionModeChange}
                       />
                     </PromptInput>
                   </div>
@@ -1960,50 +2130,12 @@ export const ACPChatDialog = forwardRef<
           </div>
         </div>
       ) : null}
-      {/* Image preview dialog */}
-      <Dialog
-        open={!!previewImage}
-        onOpenChange={(open) => {
-          if (!open) setPreviewImage(null);
-        }}
-      >
-        <DialogContent
-          showCloseButton={false}
-          overlayClassName="bg-black/70"
-          className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
-        >
-          <DialogTitle className="sr-only">
-            {previewImage?.name ?? "Preview"}
-          </DialogTitle>
-          {previewImage?.previewUrl ? (
-            <img
-              src={previewImage.previewUrl}
-              alt={previewImage.name}
-              draggable={false}
-              className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
-            />
-          ) : null}
-        </DialogContent>
-      </Dialog>
-
-      {/* Text preview dialog */}
-      <Dialog
-        open={!!textPreview}
-        onOpenChange={(open) => {
-          if (!open) setTextPreview(null);
-        }}
-      >
-        <DialogContent className="max-h-[86vh] max-w-4xl gap-0 overflow-hidden p-0">
-          <DialogHeader className="border-b px-5 py-3">
-            <DialogTitle className="truncate text-sm">
-              {textPreview?.name}
-            </DialogTitle>
-          </DialogHeader>
-          <pre className="max-h-[70vh] overflow-auto p-5 font-mono text-xs leading-relaxed text-foreground/85 whitespace-pre-wrap break-words">
-            {textPreview?.content}
-          </pre>
-        </DialogContent>
-      </Dialog>
+      <AttachmentPreviewDialogs
+        previewImage={previewImage}
+        textPreview={textPreview}
+        onCloseImage={() => setPreviewImage(null)}
+        onCloseText={() => setTextPreview(null)}
+      />
     </div>
   );
 });
@@ -2013,6 +2145,20 @@ function AcpErrorState({ reason }: { reason: string }) {
     <div className="flex h-full min-h-0 flex-col bg-background">
       <AcpErrorBanner reason={reason} />
       <div className="flex-1" />
+    </div>
+  );
+}
+
+function AcpLoadingState({ label }: { label: string }) {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center bg-background text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+        />
+        <span>{label}</span>
+      </div>
     </div>
   );
 }
@@ -2073,10 +2219,12 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
+  actionLabel,
 }: {
   kind: "invalid-workflow" | "runtime-error" | "paused";
   message: string;
   onAction?: () => void;
+  actionLabel?: string;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
@@ -2119,11 +2267,11 @@ function AcpExternalComposerState({
           className="h-9 shrink-0 rounded-full px-4 text-sm"
           onClick={onAction}
         >
-          {isPaused
+          {actionLabel ?? (isPaused
             ? t("conversation.runtime.composerContinue")
             : isError
               ? t("conversation.runtime.repairAction")
-              : t("conversation.runtime.repairWorkflow")}
+              : t("conversation.runtime.repairWorkflow"))}
         </Button>
       ) : null}
     </div>
@@ -2271,129 +2419,28 @@ function AcpErrorBanner({ reason }: { reason: string }) {
   );
 }
 
-function findAcpConfigOption(
-  groupedOptions: unknown,
-  configOptions: unknown,
-  category: "model" | "mode",
-  id: string,
-) {
-  const grouped = rawObject(groupedOptions);
-  const groupedList = arrayValue(
-    grouped?.[category === "model" ? "availableModels" : "availableModes"],
-  );
-  const groupedMatch = groupedList
-    ?.map(rawObject)
-    .find((option) => {
-      const optionId =
-        stringValue(option?.modelId) ??
-        stringValue(option?.id) ??
-        stringValue(option?.value);
-      return optionId === id;
-    });
-  if (groupedMatch) {
-    return {
-      id,
-      name: stringValue(groupedMatch.name) ?? id,
-    };
-  }
-  const configOption = arrayValue(configOptions)
-    ?.map(rawObject)
-    .find(
-      (option) =>
-        stringValue(option?.id) === category ||
-        stringValue(option?.category) === category,
-    );
-  const configMatch = arrayValue(configOption?.options)
-    ?.map(rawObject)
-    .find((option) => stringValue(option?.value) === id);
-  return {
-    id,
-    name: stringValue(configMatch?.name) ?? id,
-  };
-}
-
-function AcpSessionConfigBar({
-  session,
-  onModelChange,
-  onPermissionModeChange,
-}: {
-  session: AcpSessionVm;
+type AcpSessionConfigBarProps = {
+  scopeKey: string;
+  viewModel: AcpSessionConfigViewModel;
   onModelChange?: (modelId: string) => void;
   onPermissionModeChange?: (permissionModeId: string) => void;
-}) {
+};
+
+const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
+  viewModel,
+  onModelChange,
+  onPermissionModeChange,
+}: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
-  const currentModelId = session.config?.currentModelId ?? null;
-  const currentModelName = session.config?.currentModelName ?? null;
-  const currentModeId = session.config?.currentModeId ?? null;
-  const currentModeName = session.config?.currentModeName ?? null;
-  const mode = currentModeName ?? currentModeId;
-
-  const availableModels: { id: string; name: string; description?: string | null }[] = useMemo(() => {
-    // prefer models.availableModels from session/set_mode responses;
-    // fallback: configOptions[?category="model"].options from session/new or capabilities
-    const models = session.config?.models as Record<string, unknown> | null | undefined;
-    const configOptions = session.config?.configOptions as Array<{
-      category?: string;
-      options?: Array<{ value?: string; name?: string; description?: string | null }>;
-    }> | null | undefined;
-
-    const listFromModels =
-      models ? (models.availableModels ?? models.availableModes) : null;
-
-    const listFromConfig = configOptions?.find(o => o.category === 'model')?.options;
-
-    const list = Array.isArray(listFromModels) && listFromModels.length > 0
-      ? listFromModels
-      : listFromConfig;
-
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (m: unknown): m is { modelId?: string; id?: string; value?: string; name?: string; description?: string | null } =>
-          typeof m === 'object' && m !== null && !Array.isArray(m),
-      )
-      .map((m) => {
-        const id = typeof m.modelId === 'string' ? m.modelId
-          : typeof m.value === 'string' ? m.value
-          : typeof m.id === 'string' ? m.id : '';
-        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
-        return { id, name, description };
-      })
-      .filter((m) => m.id);
-  }, [session.config?.models, session.config?.configOptions]);
-
-  const availablePermissionModes: { id: string; name: string; description?: string | null }[] = useMemo(() => {
-    const modes = session.config?.modes as Record<string, unknown> | null | undefined;
-    const configOptions = session.config?.configOptions as Array<{
-      category?: string;
-      options?: Array<{ value?: string; name?: string; description?: string | null }>;
-    }> | null | undefined;
-
-    const listFromModes =
-      modes ? (modes.availableModes ?? modes.availableModels) : null;
-
-    const listFromConfig = configOptions?.find(o => o.category === 'mode')?.options;
-
-    const list = Array.isArray(listFromModes) && listFromModes.length > 0
-      ? listFromModes
-      : listFromConfig;
-
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (m: unknown): m is { id?: string; value?: string; name?: string; description?: string | null } =>
-          typeof m === 'object' && m !== null && !Array.isArray(m),
-      )
-      .map((m) => {
-        const id = typeof m.id === 'string' ? m.id
-          : typeof m.value === 'string' ? m.value : '';
-        const name = typeof m.name === 'string' && m.name.trim() ? m.name.trim() : id;
-        const description = typeof m.description === 'string' && m.description.trim() ? m.description.trim() : null;
-        return { id, name, description };
-      })
-      .filter((m) => m.id);
-  }, [session.config?.modes, session.config?.configOptions]);
+  const {
+    currentModelId,
+    currentModelName,
+    currentModeId,
+    currentModeName,
+    modeLabel,
+    availableModels,
+    availablePermissionModes,
+  } = viewModel;
 
   const handleModelSelect = useCallback(
     (modelId: string) => {
@@ -2409,7 +2456,7 @@ function AcpSessionConfigBar({
     [onPermissionModeChange],
   );
 
-  if (!currentModelId && !mode) return null;
+  if (!currentModelId && !modeLabel) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
@@ -2446,7 +2493,7 @@ function AcpSessionConfigBar({
           <span className="min-w-0 truncate text-foreground">{currentModelName ?? currentModelId}</span>
         </Badge>
       ) : null}
-      {mode ? (
+      {modeLabel ? (
         availablePermissionModes.length > 1 ? (
           <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
             <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
@@ -2477,11 +2524,23 @@ function AcpSessionConfigBar({
         ) : (
           <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-            <span className="min-w-0 truncate text-foreground">{mode}</span>
+            <span className="min-w-0 truncate text-foreground">{modeLabel}</span>
           </Badge>
         )
       ) : null}
     </div>
+  );
+}, areAcpSessionConfigBarPropsEqual);
+
+function areAcpSessionConfigBarPropsEqual(
+  previous: AcpSessionConfigBarProps,
+  next: AcpSessionConfigBarProps,
+) {
+  return (
+    previous.scopeKey === next.scopeKey &&
+    previous.viewModel.signature === next.viewModel.signature &&
+    previous.onModelChange === next.onModelChange &&
+    previous.onPermissionModeChange === next.onPermissionModeChange
   );
 }
 
@@ -2556,7 +2615,7 @@ export function ACPSessionHeader({
   );
 }
 
-function SystemPromptDialog({
+const SystemPromptDialog = memo(function SystemPromptDialog({
   open,
   prompt,
   options,
@@ -2568,8 +2627,10 @@ function SystemPromptDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const availableOptions =
-    options?.filter((option) => option.prompt?.trim()) ?? [];
+  const availableOptions = useMemo(
+    () => (open ? (options?.filter((option) => option.prompt?.trim()) ?? []) : []),
+    [open, options],
+  );
   const latestAttemptId = availableOptions.at(-1)?.attemptId ?? null;
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
     latestAttemptId,
@@ -2581,7 +2642,11 @@ function SystemPromptDialog({
   const selectedPrompt = availableOptions.find(
     (option) => option.attemptId === selectedAttemptId,
   )?.prompt;
-  const content = (selectedPrompt ?? prompt)?.trim() || "";
+  const content = useMemo(
+    () => (open ? ((selectedPrompt ?? prompt)?.trim() || "") : ""),
+    [open, prompt, selectedPrompt],
+  );
+  if (!open) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -2624,7 +2689,7 @@ function SystemPromptDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 function ACPArtifactsDialog({
   open,
@@ -2803,7 +2868,8 @@ export function ACPMessageList({
   sending: boolean;
   onLayoutChange?: () => void;
 }) {
-  const active = isSessionActive(sessionStatus) || sending;
+  const active = isSessionActiveStatus(sessionStatus) || sending;
+  const streamingTextItemKey = active ? latestStreamingTextItemKey(timeline) : null;
   const expansionControls = useMemo<AcpExpansionControls>(
     () => ({
       expandedItems: {},
@@ -2821,6 +2887,7 @@ export function ACPMessageList({
           key={timelineEventKey(item)}
           event={item}
           expansionControls={expansionControls}
+          streamingTextItemKey={streamingTextItemKey}
         />
       ))}
     </div>
@@ -2832,6 +2899,20 @@ function EmptyAcpState() {
   return (
     <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
       {t("acp.noEvents")}
+    </div>
+  );
+}
+
+function AcpPendingTimelineState({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-[10rem] items-center justify-center text-sm text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+        />
+        <span className="font-medium text-foreground">{label}...</span>
+      </div>
     </div>
   );
 }
@@ -2851,9 +2932,15 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
 const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
   expansionControls,
+  streamingTextItemKey,
+  taskId,
+  onMessageAttachmentClick,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
+  streamingTextItemKey?: string | null;
+  taskId?: string;
+  onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
 }) {
   if (isChildAgentGroup(event))
     return (
@@ -2861,13 +2948,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
         <ChildAgentGroupCard
           event={event}
           expansionControls={expansionControls}
+          streamingTextItemKey={streamingTextItemKey}
         />
       </AssistantTimelineRow>
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} />;
+    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
     return <ThoughtBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -2884,10 +2972,12 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   event,
   expansionControls,
+  streamingTextItemKey,
   onLayoutChange,
 }: {
   event: AcpChildAgentGroup;
   expansionControls: AcpExpansionControls;
+  streamingTextItemKey?: string | null;
   onLayoutChange?: () => void;
 }) {
   const { t } = useTranslation();
@@ -3001,6 +3091,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                       key={timelineEventKey(child)}
                       event={child}
                       expansionControls={expansionControls}
+                      streamingTextItemKey={streamingTextItemKey}
                     />
                   ))}
                 </div>
@@ -3103,9 +3194,9 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
       {active ? (
         <>
-          <Loader2
-            className="size-3.5 shrink-0 animate-spin text-primary"
-            style={{ willChange: "transform" }}
+          <span
+            aria-hidden="true"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
           />
           <span className="font-medium text-foreground">{label}</span>
           {kind === "sending" ? (
@@ -3138,12 +3229,20 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
 
 const MessageBubble = memo(function MessageBubble({
   event,
+  streamingTextItemKey,
+  taskId,
+  onMessageAttachmentClick,
 }: {
   event: AcpTimelineEvent;
+  streamingTextItemKey?: string | null;
+  taskId?: string;
+  onMessageAttachmentClick?: (att: { name: string; path: string; type: string; size: number }) => void;
 }) {
   const { t } = useTranslation();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
+  const streamingDraft =
+    !isUser && timelineEventKey(event) === streamingTextItemKey;
   const rawAttachments: Array<{ name: string; path: string; type: string; size: number }> =
     rawObject(event.raw)?.attachments as any ?? [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
@@ -3170,7 +3269,13 @@ const MessageBubble = memo(function MessageBubble({
               "border border-destructive/40 bg-destructive/10 text-destructive",
           )}
         >
-          {isUser ? event.content : <Markdown>{event.content ?? ""}</Markdown>}
+          {isUser ? (
+            event.content
+          ) : streamingDraft ? (
+            <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
+          ) : (
+            <Markdown>{event.content ?? ""}</Markdown>
+          )}
         </MessageContent>
         {hasAttachments ? (
           <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
@@ -3178,8 +3283,9 @@ const MessageBubble = memo(function MessageBubble({
               <button
                 key={att.path}
                 type="button"
-                className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
                 title={`${att.name} (${formatAttachmentSize(att.size)})`}
+                onClick={() => onMessageAttachmentClick?.(att)}
               >
                 {att.type.startsWith("image/") ? (
                   <ImageIcon className="size-3 text-blue-400" />
@@ -3215,6 +3321,18 @@ const MessageBubble = memo(function MessageBubble({
         <AcpAvatarWithTime tone="user" timestamp={event.timestamp} />
       ) : null}
     </Message>
+  );
+});
+
+const StreamingTextDraft = memo(function StreamingTextDraft({
+  children,
+}: {
+  children: string;
+}) {
+  return (
+    <div className="min-w-0 max-w-full whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">
+      {children}
+    </div>
   );
 });
 
@@ -3619,6 +3737,11 @@ const RawFrameRow = memo(function RawFrameRow({
   const [expandedContent, setExpandedContent] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
 
+  useEffect(() => {
+    setExpandedContent(null);
+    setIsOpen(false);
+  }, [frame.id, frame.content]);
+
   const handleToggle = useCallback(
     (e: React.SyntheticEvent<HTMLDetailsElement>) => {
       const open = e.currentTarget.open;
@@ -3636,8 +3759,11 @@ const RawFrameRow = memo(function RawFrameRow({
     [expandedContent, frame.content, onLayoutChange],
   );
 
-  const compact = truncateFrameLine(frame.content.trimStart());
-  const displayExpanded = expandedContent ?? frame.content;
+  const compact = useMemo(
+    () => truncateFrameLine(frame.content.trimStart()),
+    [frame.content],
+  );
+  const displayExpanded = expandedContent ?? t("acp.loadingRawFrames");
   const scrollable =
     expandedContent !== null && isLongRawFrame(expandedContent);
 
@@ -3833,23 +3959,6 @@ function hasResponseAfterTurn(
   return start != null && firstResponseTimestampAfter(events, start) != null;
 }
 
-function isSessionActive(status?: string | null) {
-  return [
-    "pending",
-    "running",
-    "in_progress",
-    "sending",
-    "cancelling",
-    "cancel_requested",
-  ].includes(status?.toLowerCase() ?? "");
-}
-
-function isRuntimeActiveStatus(status?: string | null) {
-  return ["pending", "running", "in_progress", "active"].includes(
-    status?.toLowerCase() ?? "",
-  );
-}
-
 function processingKindFromTimeline(
   event: AcpTimelineItem | null,
   sending: boolean,
@@ -3879,6 +3988,31 @@ function processingLabel(
   if (kind === "tool") return t("acp.toolRunning");
   if (kind === "responding") return t("acp.responding");
   return t("acp.processing");
+}
+
+function composerHintText(
+  state: ReturnType<typeof deriveAcpRuntimeComposerState>,
+  statusLabel: string,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (state.hintKind === "permission-pending") return t("acp.permissionPending");
+  if (state.hintKind === "stopping") return t("acp.stopping");
+  if (state.hintKind === "sending") return t("acp.sending");
+  if (state.hintKind === "status") return statusLabel;
+  if (state.hintKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.promptInputHint");
+  return t("acp.promptInputHint");
+}
+
+function composerPlaceholderText(
+  state: ReturnType<typeof deriveAcpRuntimeComposerState>,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (state.placeholderKind === "plan-intervention") return t("acp.planInterventionHint");
+  if (state.placeholderKind === "stopping") return t("conversation.runtime.composerStoppingPlaceholder");
+  if (state.placeholderKind === "stopped") return t("conversation.runtime.composerStoppedPlaceholder");
+  if (state.placeholderKind === "runtime-controlled") return t("conversation.runtime.composerRuntimeControlledPlaceholder");
+  if (state.placeholderKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.composerPlaceholder");
+  return t("acp.composerPlaceholder");
 }
 
 function findPlanInterventionOption(request: AcpPermissionRequestVm) {
@@ -3951,6 +4085,112 @@ function isNormalResponseAfterError(event: AcpUiEventVm, errorAt: number) {
   )
     return false;
   return toolStatusTone(event.status) !== "danger";
+}
+
+function liveEventBufferKey(event: AcpUiEventVm) {
+  return liveToolEventBufferKey(event) ?? acpEventKey(event);
+}
+
+function liveToolEventBufferKey(event: AcpUiEventVm) {
+  if (!isAcpLiveToolEvent(event) || !event.toolCallId) return null;
+  const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
+  return `${attemptId}:tool:${event.toolCallId}`;
+}
+
+function useStableAcpTimeline(timeline: AcpTimelineItem[]) {
+  const previousRef = useRef<AcpTimelineItem[]>([]);
+  return useMemo(() => {
+    const stable = stabilizeTimelineItems(timeline, previousRef.current);
+    previousRef.current = stable;
+    return stable;
+  }, [timeline]);
+}
+
+function stabilizeTimelineItems(
+  nextItems: AcpTimelineItem[],
+  previousItems: AcpTimelineItem[],
+): AcpTimelineItem[] {
+  if (previousItems.length === 0) return nextItems;
+  const previousByKey = new Map(
+    previousItems.map((item) => [timelineEventKey(item), item]),
+  );
+  let changed = nextItems.length !== previousItems.length;
+  const stableItems = nextItems.map((item) => {
+    const previous = previousByKey.get(timelineEventKey(item));
+    const stable = stabilizeTimelineItem(item, previous);
+    if (stable !== previous) changed = true;
+    return stable;
+  });
+  return changed ? stableItems : previousItems;
+}
+
+function stabilizeTimelineItem(
+  next: AcpTimelineItem,
+  previous?: AcpTimelineItem,
+): AcpTimelineItem {
+  if (!previous || isChildAgentGroup(next) !== isChildAgentGroup(previous))
+    return next;
+  if (isChildAgentGroup(next) && isChildAgentGroup(previous)) {
+    const events = stabilizeTimelineItems(next.events, previous.events);
+    if (
+      events === previous.events &&
+      next.seq === previous.seq &&
+      next.timestamp === previous.timestamp &&
+      next.startedSeq === previous.startedSeq &&
+      next.endedSeq === previous.endedSeq &&
+      next.startedAt === previous.startedAt &&
+      next.endedAt === previous.endedAt &&
+      next.status === previous.status &&
+      next.title === previous.title &&
+      next.toolCallId === previous.toolCallId &&
+      stabilizeTimelineItem(next.toolEvent, previous.toolEvent) ===
+        previous.toolEvent
+    ) {
+      return previous;
+    }
+    return {
+      ...next,
+      events,
+      toolEvent: stabilizeTimelineItem(next.toolEvent, previous.toolEvent) as AcpTimelineEvent,
+    };
+  }
+  return sameTimelineEvent(next as AcpTimelineEvent, previous as AcpTimelineEvent)
+    ? previous
+    : next;
+}
+
+function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
+  return (
+    left.id === right.id &&
+    left.seq === right.seq &&
+    left.timestamp === right.timestamp &&
+    left.kind === right.kind &&
+    left.sessionId === right.sessionId &&
+    left.content === right.content &&
+    left.title === right.title &&
+    left.toolCallId === right.toolCallId &&
+    left.status === right.status &&
+    left.startedSeq === right.startedSeq &&
+    left.endedSeq === right.endedSeq &&
+    left.startedAt === right.startedAt &&
+    left.endedAt === right.endedAt &&
+    left.durationMs === right.durationMs &&
+    left.optimistic === right.optimistic &&
+    left.raw === right.raw
+  );
+}
+
+function latestStreamingTextItemKey(items: AcpTimelineItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (isChildAgentGroup(item)) {
+      const childKey: string | null = latestStreamingTextItemKey(item.events);
+      if (childKey) return childKey;
+      continue;
+    }
+    if (item.kind === "textDelta") return timelineEventKey(item);
+  }
+  return null;
 }
 
 function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
@@ -4200,6 +4440,27 @@ function mergeRaw(previous: unknown, next: unknown) {
 }
 
 export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
+  if (next.length === 0) return previous;
+  const replacementByKey = new Map<string, AcpUiEventVm>();
+  for (const event of next) replacementByKey.set(acpEventKey(event), event);
+  let allUpdatesReplaceExistingEvents = replacementByKey.size > 0;
+  for (const key of replacementByKey.keys()) {
+    if (!previous.some((event) => acpEventKey(event) === key)) {
+      allUpdatesReplaceExistingEvents = false;
+      break;
+    }
+  }
+  if (allUpdatesReplaceExistingEvents) {
+    let changed = false;
+    const merged = previous.map((event) => {
+      const replacement = replacementByKey.get(acpEventKey(event));
+      if (!replacement) return event;
+      changed = true;
+      return { ...replacement, seq: event.seq };
+    });
+    return changed ? merged : previous;
+  }
+
   const previousByKey = new Map<string, AcpUiEventVm>();
   const byKey = new Map<string, AcpUiEventVm>();
   for (const event of previous) {
@@ -4255,13 +4516,13 @@ function acpEventKey(event: AcpUiEventVm) {
   return `${attemptId}:${event.kind}:${event.id}`;
 }
 
-function createLiveAcpSessionShell(events: AcpUiEventVm[]): AcpSessionVm {
+function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
   return {
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
     provider: "acp",
-    status: "running",
+    status,
     sessionStartedAt: first?.startedAt ?? first?.timestamp ?? null,
     sessionUpdatedAt: last?.endedAt ?? last?.timestamp ?? null,
     restored: false,
@@ -4308,6 +4569,7 @@ function sessionsEquivalent(
   if (!previous || !next) return previous === next;
   if (previous.status !== next.status) return false;
   if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
+  if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
   if (previous.events.length !== next.events.length) return false;
   const previousLast = previous.events.at(-1);
   const nextLast = next.events.at(-1);

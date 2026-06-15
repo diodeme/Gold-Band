@@ -549,6 +549,8 @@ pub struct AcpProvider {
     adapter_config: AcpAdapterConfig,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
 }
 
 impl AcpProvider {
@@ -557,12 +559,16 @@ impl AcpProvider {
         adapter_config: AcpAdapterConfig,
         use_local_claude: bool,
         acp_session_title_refresh_enabled: bool,
+        acp_raw_max_size_bytes: u64,
+        acp_raw_target_size_bytes: u64,
     ) -> Self {
         Self {
             provider_id: provider_id.into(),
             adapter_config,
             use_local_claude,
             acp_session_title_refresh_enabled,
+            acp_raw_max_size_bytes,
+            acp_raw_target_size_bytes,
         }
     }
 }
@@ -633,6 +639,8 @@ impl ProviderAdapter for AcpProvider {
             req.continue_ref.clone(),
             self.use_local_claude,
             self.acp_session_title_refresh_enabled,
+            self.acp_raw_max_size_bytes,
+            self.acp_raw_target_size_bytes,
             live_update,
         )?;
         let status = match run.stop_reason.as_deref() {
@@ -1003,6 +1011,8 @@ pub fn provider_capabilities_for_type(
         agent_type.default_adapter_config(),
         false,
         false,
+        5 * 1024 * 1024,
+        4 * 1024 * 1024,
     )
     .describe_provider()
     .capabilities)
@@ -1017,6 +1027,8 @@ pub fn provider_from_agent(
     config: &ManagedAgentConfig,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
@@ -1026,6 +1038,8 @@ pub fn provider_from_agent(
         config.adapter.clone(),
         use_local_claude,
         acp_session_title_refresh_enabled,
+        acp_raw_max_size_bytes,
+        acp_raw_target_size_bytes,
     )))
 }
 
@@ -1033,6 +1047,8 @@ pub fn provider_from_id(
     provider_id: &str,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
     let agent_type = ManagedAgentType::from_str(provider_id)?;
     let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
@@ -1041,11 +1057,20 @@ pub fn provider_from_id(
         &config,
         use_local_claude,
         acp_session_title_refresh_enabled,
+        acp_raw_max_size_bytes,
+        acp_raw_target_size_bytes,
     )
 }
 
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
-    provider_from_id(DEFAULT_PROVIDER, false, false).expect("default provider must be supported")
+    provider_from_id(
+        DEFAULT_PROVIDER,
+        false,
+        false,
+        5 * 1024 * 1024,
+        4 * 1024 * 1024,
+    )
+    .expect("default provider must be supported")
 }
 
 #[cfg(test)]

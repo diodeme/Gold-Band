@@ -21,9 +21,9 @@ struct AcpTimelineStreamState {
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
-    append_ui_event, current_timestamp, initial_acp_event_seq, latest_timeline_source_seq,
-    load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
-    write_session_metadata, write_timeline_items,
+    append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
+    latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+    permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
     acp_permission_response_result, clear_cancel_request, is_cancel_requested,
@@ -38,6 +38,8 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
+const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -51,6 +53,28 @@ impl std::fmt::Display for AcpCancelled {
 }
 
 impl std::error::Error for AcpCancelled {}
+
+fn session_file_is_cancelled(path: &Utf8Path) -> bool {
+    read_json::<Value>(path)
+        .ok()
+        .and_then(|session| {
+            let status = session
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let stop_reason = session
+                .get("stopReason")
+                .or_else(|| session.get("stop_reason"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (status.eq_ignore_ascii_case("cancelled")
+                || status.eq_ignore_ascii_case("canceled")
+                || stop_reason.eq_ignore_ascii_case("cancelled")
+                || stop_reason.eq_ignore_ascii_case("canceled"))
+            .then_some(())
+        })
+        .is_some()
+}
 
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
@@ -104,6 +128,12 @@ struct AcpRuntime<'a> {
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+    pending_live_update: Option<AcpUiEvent>,
+    last_live_update_at: Option<Instant>,
+    pending_timeline_patch: Option<(u64, AcpUiEvent)>,
+    last_timeline_patch_at: Option<Instant>,
+    raw_max_size: u64,
+    raw_target_size: u64,
 }
 
 pub fn doctor(
@@ -117,6 +147,8 @@ pub fn doctor(
         cwd.clone(),
         paths.runtime_root.join("doctor/acp"),
         use_local_claude,
+        5 * 1024 * 1024,
+        4 * 1024 * 1024,
         None,
     )?;
     let result = (|| {
@@ -142,6 +174,8 @@ pub fn run_prompt(
     continue_ref: Option<Value>,
     use_local_claude: bool,
     acp_session_title_refresh_enabled: bool,
+    acp_raw_max_size_bytes: u64,
+    acp_raw_target_size_bytes: u64,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
@@ -150,6 +184,8 @@ pub fn run_prompt(
         workspace_dir.clone(),
         attempt_dir,
         use_local_claude,
+        acp_raw_max_size_bytes,
+        acp_raw_target_size_bytes,
         live_update,
     )?;
     let capabilities = runtime.initialize()?;
@@ -313,6 +349,8 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
         use_local_claude: bool,
+        raw_max_size: u64,
+        raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -352,6 +390,8 @@ impl<'a> AcpRuntime<'a> {
         let (tx, rx) = mpsc::sync_channel(1024);
         let raw_path = paths.raw.clone();
         let diagnostics_path = paths.diagnostics.clone();
+        let raw_max = raw_max_size;
+        let raw_target = raw_target_size;
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -359,7 +399,13 @@ impl<'a> AcpRuntime<'a> {
                     Ok(line) if line.trim().is_empty() => {}
                     Ok(line) => match serde_json::from_str::<Value>(&line) {
                         Ok(value) => {
-                            let _ = append_raw_frame(&raw_path, "inbound", value.clone());
+                            let _ = append_raw_frame(
+                                &raw_path,
+                                "inbound",
+                                value.clone(),
+                                raw_max,
+                                raw_target,
+                            );
                             if tx.send(value).is_err() {
                                 break;
                             }
@@ -416,7 +462,7 @@ impl<'a> AcpRuntime<'a> {
             .into_iter()
             .map(|item| (item.id.clone(), item))
             .collect::<HashMap<_, _>>();
-        let timeline_revision = timeline_items.len() as u64;
+        let timeline_revision = seq;
         Ok(Self {
             paths,
             child,
@@ -449,6 +495,12 @@ impl<'a> AcpRuntime<'a> {
             active_thought_stream: None,
             active_plan_stream: None,
             live_update,
+            pending_live_update: None,
+            last_live_update_at: None,
+            pending_timeline_patch: None,
+            last_timeline_patch_at: None,
+            raw_max_size,
+            raw_target_size,
         })
     }
 
@@ -544,8 +596,7 @@ impl<'a> AcpRuntime<'a> {
         }
     }
 
-    /// Applies the effective session mode: model takes priority, falls back to
-    /// permission_mode for backward compatibility.
+    /// Applies the effective session configuration for the ACP session.
     fn apply_session_mode_options(
         &mut self,
         permission_mode: Option<&str>,
@@ -553,7 +604,8 @@ impl<'a> AcpRuntime<'a> {
     ) -> Result<()> {
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
             self.set_session_model(m)?;
-        } else if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
+        }
+        if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
             self.apply_permission_mode(pm)?;
         }
         Ok(())
@@ -897,7 +949,7 @@ impl<'a> AcpRuntime<'a> {
 
                     if response_matches_request(&value, id) {
                         if let Some(error) = value.get("error") {
-                            if is_cancel_requested(&self.paths.attempt_dir) {
+                            if self.is_cancellation_observed() {
                                 return Err(anyhow!(AcpCancelled));
                             }
                             bail!("ACP `{method}` failed: {error}");
@@ -923,7 +975,7 @@ impl<'a> AcpRuntime<'a> {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    if is_cancel_requested(&self.paths.attempt_dir) {
+                    if self.is_cancellation_observed() {
                         return Err(anyhow!(AcpCancelled));
                     }
                     bail!("ACP adapter closed before `{method}` response");
@@ -953,7 +1005,7 @@ impl<'a> AcpRuntime<'a> {
             }
 
             if let Some(status) = self.child.try_wait()? {
-                if is_cancel_requested(&self.paths.attempt_dir) {
+                if self.is_cancellation_observed() {
                     return Err(anyhow!(AcpCancelled));
                 }
                 bail!("ACP adapter exited before `{method}` response with status {status}");
@@ -1069,8 +1121,20 @@ impl<'a> AcpRuntime<'a> {
         let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
     }
 
+    fn is_cancellation_observed(&self) -> bool {
+        is_cancel_requested(&self.paths.attempt_dir)
+            || session_file_is_cancelled(&self.paths.snapshot)
+            || session_file_is_cancelled(&self.paths.session)
+    }
+
     fn send_frame(&mut self, frame: &Value) -> Result<()> {
-        append_raw_frame(&self.paths.raw, "outbound", frame.clone())?;
+        append_raw_frame(
+            &self.paths.raw,
+            "outbound",
+            frame.clone(),
+            self.raw_max_size,
+            self.raw_target_size,
+        )?;
         let line = serde_json::to_string(frame)?;
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.write_all(b"\n")?;
@@ -1112,12 +1176,14 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn write_session(
-        &self,
+        &mut self,
         status: &str,
         restored: bool,
         stop_reason: Option<String>,
         capabilities: Value,
     ) -> Result<()> {
+        self.flush_pending_live_update()?;
+        self.flush_pending_timeline_patch()?;
         let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
         write_session_metadata(&self.paths.snapshot, &metadata)
     }
@@ -1173,11 +1239,9 @@ impl<'a> AcpRuntime<'a> {
         let timeline_item = self.timeline_item_for_event(event);
         self.timeline_items
             .insert(timeline_item.id.clone(), timeline_item.clone());
-        self.timeline_revision = self.timeline_items.len() as u64;
-        self.persist_timeline_items()?;
-        if let Some(live_update) = self.live_update {
-            live_update(&timeline_item)?;
-        }
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
+        self.persist_timeline_update(timeline_item.clone())?;
+        self.emit_timeline_live_update(timeline_item)?;
         Ok(())
     }
 
@@ -1185,6 +1249,106 @@ impl<'a> AcpRuntime<'a> {
         let mut items = self.timeline_items.values().cloned().collect::<Vec<_>>();
         items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
         write_timeline_items(&self.paths.timeline, &items)
+    }
+
+    fn persist_timeline_update(&mut self, item: crate::acp::events::AcpUiEvent) -> Result<()> {
+        if is_streaming_timeline_update(&item) {
+            let now = Instant::now();
+            let should_write = self
+                .last_timeline_patch_at
+                .map(|last| now.duration_since(last) >= LIVE_STREAM_UPDATE_INTERVAL)
+                .unwrap_or(true);
+            if should_write {
+                if self
+                    .pending_timeline_patch
+                    .as_ref()
+                    .map(|(_, pending)| pending.id.as_str() != item.id.as_str())
+                    .unwrap_or(false)
+                {
+                    self.flush_pending_timeline_patch()?;
+                } else {
+                    self.pending_timeline_patch = None;
+                }
+                self.persist_timeline_item_patch_now(self.timeline_revision, &item, now)?;
+            } else {
+                if self
+                    .pending_timeline_patch
+                    .as_ref()
+                    .map(|(_, pending)| pending.id.as_str() != item.id.as_str())
+                    .unwrap_or(false)
+                {
+                    self.flush_pending_timeline_patch()?;
+                }
+                self.pending_timeline_patch = Some((self.timeline_revision, item));
+            }
+            return Ok(());
+        }
+
+        self.flush_pending_timeline_patch()?;
+        self.persist_timeline_item_patch_now(self.timeline_revision, &item, Instant::now())
+    }
+
+    fn flush_pending_timeline_patch(&mut self) -> Result<()> {
+        if let Some((revision, item)) = self.pending_timeline_patch.take() {
+            self.persist_timeline_item_patch_now(revision, &item, Instant::now())?;
+        }
+        Ok(())
+    }
+
+    fn persist_timeline_item_patch_now(
+        &mut self,
+        revision: u64,
+        item: &crate::acp::events::AcpUiEvent,
+        now: Instant,
+    ) -> Result<()> {
+        if revision % TIMELINE_COMPACT_EVERY_REVISIONS == 0 {
+            self.persist_timeline_items()
+        } else {
+            append_timeline_patch(&self.paths.timeline, item.id.clone(), revision, item)
+        }?;
+        self.last_timeline_patch_at = Some(now);
+        Ok(())
+    }
+
+    fn emit_timeline_live_update(&mut self, item: crate::acp::events::AcpUiEvent) -> Result<()> {
+        if self.live_update.is_none() {
+            return Ok(());
+        }
+        if is_streaming_timeline_update(&item) {
+            let now = Instant::now();
+            let should_emit = self
+                .last_live_update_at
+                .map(|last| now.duration_since(last) >= LIVE_STREAM_UPDATE_INTERVAL)
+                .unwrap_or(true);
+            if should_emit {
+                self.pending_live_update = None;
+                self.emit_live_update_now(&item, now)?;
+            } else {
+                self.pending_live_update = Some(item);
+            }
+            return Ok(());
+        }
+        self.flush_pending_live_update()?;
+        self.emit_live_update_now(&item, Instant::now())
+    }
+
+    fn flush_pending_live_update(&mut self) -> Result<()> {
+        if let Some(item) = self.pending_live_update.take() {
+            self.emit_live_update_now(&item, Instant::now())?;
+        }
+        Ok(())
+    }
+
+    fn emit_live_update_now(
+        &mut self,
+        item: &crate::acp::events::AcpUiEvent,
+        now: Instant,
+    ) -> Result<()> {
+        if let Some(live_update) = self.live_update {
+            live_update(item)?;
+            self.last_live_update_at = Some(now);
+        }
+        Ok(())
     }
 
     /// Apply a streaming delta — get-or-create the stream, append content,
@@ -1216,7 +1380,11 @@ impl<'a> AcpRuntime<'a> {
 
     /// Stamp a non-streaming event with sequence bounds and clear all streams.
     fn finalize_non_streaming_event(
-        streams: (&mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>, &mut Option<AcpTimelineStreamState>),
+        streams: (
+            &mut Option<AcpTimelineStreamState>,
+            &mut Option<AcpTimelineStreamState>,
+            &mut Option<AcpTimelineStreamState>,
+        ),
         item: &mut crate::acp::events::AcpUiEvent,
         seq: u64,
         timestamp: &str,
@@ -1226,7 +1394,11 @@ impl<'a> AcpRuntime<'a> {
         *streams.2 = None;
         item.started_seq = Some(item.started_seq.unwrap_or(seq));
         item.ended_seq = Some(seq);
-        item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.to_string()));
+        item.started_at = Some(
+            item.started_at
+                .clone()
+                .unwrap_or_else(|| timestamp.to_string()),
+        );
         item.ended_at = Some(timestamp.to_string());
     }
 
@@ -1241,45 +1413,82 @@ impl<'a> AcpRuntime<'a> {
             "textDelta" => {
                 let stable_id = stable_message_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_text_stream, &mut item,
-                    &stable_id, 256_000, seq, &timestamp,
+                    &mut self.active_text_stream,
+                    &mut item,
+                    &stable_id,
+                    256_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "thoughtDelta" => {
                 let stable_id = stable_thought_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_thought_stream, &mut item,
-                    &stable_id, 256_000, seq, &timestamp,
+                    &mut self.active_thought_stream,
+                    &mut item,
+                    &stable_id,
+                    256_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "plan" => {
                 let stable_id = stable_plan_item_id(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_plan_stream, &mut item,
-                    &stable_id, 64_000, seq, &timestamp,
+                    &mut self.active_plan_stream,
+                    &mut item,
+                    &stable_id,
+                    64_000,
+                    seq,
+                    &timestamp,
                 );
             }
             "toolCall" | "toolCallUpdate" => {
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
                     item.id = format!("tool-call-{tool_call_id}");
                 }
+                // Merge rawInput from the previous event for this tool call
+                // if the new event doesn't carry it. The adapter typically sends
+                // rawInput on an intermediate toolCallUpdate but not on the
+                // final completed event, so without merging the input is lost.
+                if let Some(prev) = self.timeline_items.get(&item.id) {
+                    merge_tool_raw_input(&mut item, prev);
+                }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
             "permissionRequest" => {
                 item.id = format!("permission-{}", item.id);
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
             _ => {
                 Self::finalize_non_streaming_event(
-                    (&mut self.active_text_stream, &mut self.active_thought_stream, &mut self.active_plan_stream),
-                    &mut item, seq, &timestamp,
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
                 );
             }
         }
@@ -1299,6 +1508,9 @@ impl<'a> AcpRuntime<'a> {
 
     fn shutdown(mut self) {
         debug!(adapter = %self.adapter.adapter_id, "shutting down ACP adapter");
+        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patch();
+        let _ = self.persist_timeline_items();
         let _ = self.stdin.flush();
         self.kill_adapter_process();
     }
@@ -1306,14 +1518,81 @@ impl<'a> AcpRuntime<'a> {
 
 impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
+        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patch();
         if self.child.try_wait().ok().flatten().is_none() {
             self.kill_adapter_process();
         }
     }
 }
 
+fn is_non_empty_object(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => !map.is_empty(),
+        _ => false,
+    }
+}
+
+/// Merge `raw.rawInput` and `raw.title` from a previous tool-call timeline
+/// item into the current one when the current item doesn't have a non-empty
+/// value. This preserves tool input across adapter updates that overwrite the
+/// timeline slot — the final "completed" event often carries the output
+/// but no longer carries the input or title.
+fn merge_tool_raw_input(
+    new_item: &mut crate::acp::events::AcpUiEvent,
+    prev: &crate::acp::events::AcpUiEvent,
+) {
+    let new_raw = match &new_item.raw {
+        Some(v) => v,
+        None => return,
+    };
+    let prev_raw = match &prev.raw {
+        Some(v) => v,
+        None => return,
+    };
+    // Merge title if new event lacks one.
+    if new_item.title.is_none() {
+        if let Some(prev_title) = &prev.title {
+            new_item.title = Some(prev_title.clone());
+        }
+    }
+    // Merge rawInput.
+    let new_direct = new_raw.get("rawInput");
+    let new_nested = new_raw.get("toolCall").and_then(|tc| tc.get("rawInput"));
+    if new_direct.map_or(false, |v| is_non_empty_object(v))
+        || new_nested.map_or(false, |v| is_non_empty_object(v))
+    {
+        return;
+    }
+    if let Some(prev_direct) = prev_raw.get("rawInput") {
+        if is_non_empty_object(prev_direct) {
+            if let Some(raw_mut) = new_item.raw.as_mut() {
+                raw_mut["rawInput"] = prev_direct.clone();
+            }
+            return;
+        }
+    }
+    if let Some(prev_nested) = prev_raw.get("toolCall").and_then(|tc| tc.get("rawInput")) {
+        if is_non_empty_object(prev_nested) {
+            if let Some(raw_mut) = new_item.raw.as_mut() {
+                if let Some(tc_mut) = raw_mut.get_mut("toolCall") {
+                    tc_mut["rawInput"] = prev_nested.clone();
+                } else {
+                    let mut tc = serde_json::Map::new();
+                    tc.insert("rawInput".to_string(), prev_nested.clone());
+                    raw_mut["toolCall"] = serde_json::Value::Object(tc);
+                }
+            }
+        }
+    }
+}
+
 fn should_write_legacy_events(paths: &AcpAttemptPaths) -> bool {
     paths.events.exists() && !paths.timeline.exists()
+}
+
+fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
+    matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
 }
 
 fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {

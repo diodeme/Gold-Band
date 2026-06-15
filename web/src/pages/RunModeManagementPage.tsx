@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, Plus, Save, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Plus, Save, Trash2, X } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
@@ -206,7 +206,10 @@ export function RunModeManagementPage({
 
   // ── Workflow template editor helpers ──
   const initWfEditor = () => {
-    const initialTemplate = effectiveWorkflowTemplates?.templates[0] ?? null;
+    const preselectedId = workflowTemplateId || effectiveWorkflowTemplates?.lastUsedTemplateId;
+    const initialTemplate = preselectedId
+      ? effectiveWorkflowTemplates?.templates.find((t) => t.id === preselectedId) ?? effectiveWorkflowTemplates?.templates[0] ?? null
+      : effectiveWorkflowTemplates?.templates[0] ?? null;
     const initialWorkflow = initialTemplate?.workflow ?? null;
     setWfEditTemplateId(initialTemplate?.id ?? null);
     setWfEditWorkflow(initialWorkflow);
@@ -506,7 +509,7 @@ export function RunModeManagementPage({
             </section>
 
             <section className="flex flex-wrap gap-2">
-              <Field label={<><Bot className="size-3.5" />{t('workflowEditor.dynamicAgentStrategy')}</>} required>
+              <Field label={<><Bot className="size-3.5" />{t('workflowEditor.dynamicAgentStrategy')}</>} required help={t('workflowEditor.dynamicAgentStrategyHelp')}>
                 <Select value={agentStrategy} onValueChange={(value) => setAgentStrategy(value as 'fixed' | 'dynamic')}>
                   <SelectTrigger className="h-9 w-[180px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -517,7 +520,7 @@ export function RunModeManagementPage({
               </Field>
 
               {agentStrategy === 'fixed' ? (
-                <Field label={t('runMode.agent')} required>
+                <Field label={t('runMode.agent')} required help={t('workflowEditor.dynamicFixedAgentHelp')}>
                   <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
@@ -533,7 +536,7 @@ export function RunModeManagementPage({
                   </Select>
                 </Field>
               ) : (
-                <Field label={t('workflowEditor.dynamicBootstrapAgent')} required>
+                <Field label={t('workflowEditor.dynamicBootstrapAgent')} required help={t('workflowEditor.dynamicBootstrapAgentHelp')}>
                   <Select value={bootstrapAgent} onValueChange={(value) => { setBootstrapAgent(value); setBootstrapModel(''); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
@@ -551,7 +554,7 @@ export function RunModeManagementPage({
               )}
 
               {agentStrategy === 'fixed' && fixedModels.length > 0 ? (
-                <Field label={t('runMode.model')}>
+                <Field label={t('runMode.model')} help={t('workflowEditor.dynamicFixedModelHelp')}>
                   <ClearableModelSelect
                     value={model}
                     models={fixedModels}
@@ -564,7 +567,7 @@ export function RunModeManagementPage({
               ) : null}
 
               {agentStrategy === 'dynamic' && bootstrapModels.length > 0 ? (
-                <Field label={t('workflowEditor.dynamicBootstrapModel')}>
+                <Field label={t('workflowEditor.dynamicBootstrapModel')} help={t('workflowEditor.dynamicBootstrapModelHelp')}>
                   <ClearableModelSelect
                     value={bootstrapModel}
                     models={bootstrapModels}
@@ -580,7 +583,7 @@ export function RunModeManagementPage({
 
             {agentStrategy === 'dynamic' ? (
               <section className="space-y-3">
-                <Field label={t('workflowEditor.dynamicAvailableAgents')} required>
+                <Field label={t('workflowEditor.dynamicAvailableAgents')} required help={t('workflowEditor.dynamicAvailableAgentsHelp')}>
                   <div className="grid gap-2">
                     {agentOptions.map(({ agent: item, selectable, reason }) => {
                       const selected = availableAgentMap.has(item.agentType);
@@ -608,14 +611,14 @@ export function RunModeManagementPage({
                     })}
                   </div>
                 </Field>
-                <Field label={t('workflowEditor.dynamicAgentRoutingPrompt')}>
+                <Field label={t('workflowEditor.dynamicAgentRoutingPrompt')} help={t('workflowEditor.dynamicAgentRoutingPromptHelp')}>
                   <Textarea className="min-h-20" value={routingPrompt} onChange={(event) => setRoutingPrompt(event.target.value)} placeholder={t('workflowEditor.dynamicAgentRoutingPromptPlaceholder')} />
                 </Field>
               </section>
             ) : null}
 
             <section className="grid gap-4 md:grid-cols-2">
-              <Field label={t('workflowEditor.allowedWorkflows')}>
+              <Field label={t('workflowEditor.allowedWorkflows')} help={t('workflowEditor.allowedWorkflowsHelp')}>
                 <MultiToggle
                   items={workflowOptions.map(({ template, workflowId, selectable, reason }) => ({ id: workflowId || template.id, label: template.name, selectable, reason }))}
                   selected={allowedWorkflowIds}
@@ -623,7 +626,7 @@ export function RunModeManagementPage({
                   emptyLabel={t('workflowEditor.noWorkflowTemplates')}
                 />
               </Field>
-              <Field label={t('workflowEditor.allowedProfiles')}>
+              <Field label={t('workflowEditor.allowedProfiles')} help={t('workflowEditor.allowedProfilesHelp')}>
                 <MultiToggle
                   items={profiles.map((profile) => ({ id: profile.id, label: profile.name }))}
                   selected={allowedProfiles}
@@ -635,7 +638,7 @@ export function RunModeManagementPage({
 
             <section className="grid gap-3 md:grid-cols-3">
               {dynamicControlFields(t).map((item) => (
-                <Field key={item.key} label={item.label} required>
+                <Field key={item.key} label={item.label} required help={item.help}>
                   <Input className="h-9" type="number" min={1} step={1} value={String(control[item.key])} onChange={(event) => setControl((current) => ({ ...current, [item.key]: parsePositiveInt(event.target.value) }))} />
                 </Field>
               ))}
@@ -787,12 +790,24 @@ export function RunModeManagementPage({
   );
 }
 
-function Field({ label, children, required = false }: { label: ReactNode; children: ReactNode; required?: boolean }) {
+function Field({ label, children, required = false, help }: { label: ReactNode; children: ReactNode; required?: boolean; help?: string }) {
   return (
     <div className="grid gap-1.5 text-sm">
       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <span className="inline-flex min-w-0 items-center gap-1.5">{label}</span>
         {required ? <span className="text-destructive">*</span> : null}
+        {help ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button type="button" variant="ghost" size="icon-xs" className="size-5 rounded-full" aria-label={help} onClick={(e) => e.preventDefault()}>
+                  <CircleHelp className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-72 whitespace-normal text-xs">{help}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : null}
       </div>
       {children}
     </div>
@@ -906,14 +921,14 @@ function MultiToggle({ items, selected, onChange, emptyLabel }: { items: Array<{
   );
 }
 
-function dynamicControlFields(t: (key: string) => string): Array<{ key: Exclude<keyof DynamicControlDsl, 'allowNestedDynamic'>; label: string }> {
+function dynamicControlFields(t: (key: string) => string): Array<{ key: Exclude<keyof DynamicControlDsl, 'allowNestedDynamic'>; label: string; help: string }> {
   return [
-    { key: 'maxDynamicNodes', label: t('workflowEditor.maxDynamicNodes') },
-    { key: 'maxFanout', label: t('workflowEditor.maxFanout') },
-    { key: 'maxDepth', label: t('workflowEditor.maxDepth') },
-    { key: 'maxParallel', label: t('workflowEditor.maxParallel') },
-    { key: 'maxGroupDepth', label: t('workflowEditor.maxGroupDepth') },
-    { key: 'maxWorkflowInvocations', label: t('workflowEditor.maxWorkflowInvocations') },
+    { key: 'maxDynamicNodes', label: t('workflowEditor.maxDynamicNodes'), help: t('workflowEditor.maxDynamicNodesHelp') },
+    { key: 'maxFanout', label: t('workflowEditor.maxFanout'), help: t('workflowEditor.maxFanoutHelp') },
+    { key: 'maxDepth', label: t('workflowEditor.maxDepth'), help: t('workflowEditor.maxDepthHelp') },
+    { key: 'maxParallel', label: t('workflowEditor.maxParallel'), help: t('workflowEditor.maxParallelHelp') },
+    { key: 'maxGroupDepth', label: t('workflowEditor.maxGroupDepth'), help: t('workflowEditor.maxGroupDepthHelp') },
+    { key: 'maxWorkflowInvocations', label: t('workflowEditor.maxWorkflowInvocations'), help: t('workflowEditor.maxWorkflowInvocationsHelp') },
   ];
 }
 

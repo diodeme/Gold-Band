@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
 import { saveConversationPreference } from '../../api';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -21,6 +22,7 @@ interface ConversationSidebarProps {
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
@@ -38,18 +40,13 @@ export function ConversationSidebar({
   onPinTask,
   onUnpinTask,
   onRenameTask,
+  onDeleteTask,
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
-  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>(() => {
-    const expanded: Record<string, boolean> = {};
-    vm.workspaces.forEach((ws) => {
-      expanded[ws.projectId] = ws.projectId === vm.lastActiveWorkspaceId || vm.lastActiveWorkspaceId == null;
-    });
-    return expanded;
-  });
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') return pref;
@@ -62,6 +59,26 @@ export function ConversationSidebar({
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
+
+  useEffect(() => {
+    const targetWorkspaceId = active.kind === 'conversation-run'
+      ? active.projectId
+      : vm.lastActiveWorkspaceId;
+    setExpandedWorkspaces((prev) => {
+      const next: Record<string, boolean> = {};
+      vm.workspaces.forEach((ws) => {
+        if (prev[ws.projectId] != null) {
+          next[ws.projectId] = prev[ws.projectId];
+          return;
+        }
+        next[ws.projectId] = ws.projectId === targetWorkspaceId || targetWorkspaceId == null;
+      });
+      if (targetWorkspaceId && next[targetWorkspaceId] === false) {
+        next[targetWorkspaceId] = true;
+      }
+      return next;
+    });
+  }, [active, vm.workspaces, vm.lastActiveWorkspaceId]);
 
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
@@ -170,6 +187,7 @@ export function ConversationSidebar({
                               onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                              onDelete={() => onDeleteTask(task.projectId, task.taskId)}
                               t={t}
                             />
                           ))}
@@ -226,6 +244,7 @@ export function ConversationSidebar({
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
                         t={t}
                       />
                     ))}
@@ -285,6 +304,7 @@ function TaskRow({
   onPin,
   onUnpin,
   onRename,
+  onDelete,
   t,
 }: {
   task: ConversationTaskRowVm;
@@ -296,10 +316,12 @@ function TaskRow({
   onPin?: () => void;
   onUnpin?: () => void;
   onRename?: (title: string) => void;
+  onDelete?: () => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasMultipleRuns = task.runs.length > 1;
@@ -341,7 +363,18 @@ function TaskRow({
     if (e.key === 'Escape') { setEditValue(task.title); setEditing(false); }
   };
 
+  const openDeleteDialog = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeleteOpen(true);
+  };
+
+  const confirmDelete = () => {
+    setDeleteOpen(false);
+    onDelete?.();
+  };
+
   return (
+    <>
     <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
       <div
         className={cn(
@@ -351,7 +384,7 @@ function TaskRow({
         onClick={handleRowClick}
       >
         <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-11">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
           {editing ? (
             <input
               ref={editInputRef}
@@ -369,7 +402,7 @@ function TaskRow({
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
           ) : null}
         </div>
-        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex group-hover:pointer-events-auto">
+        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
           {onRename ? (
             <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
               <Pencil className="size-3" />
@@ -382,6 +415,11 @@ function TaskRow({
           ) : onPin ? (
             <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
               <Pin className="size-3" />
+            </Button>
+          ) : null}
+          {onDelete ? (
+            <Button variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+              <Trash2 className="size-3" />
             </Button>
           ) : null}
         </span>
@@ -413,6 +451,23 @@ function TaskRow({
         </div>
       ) : null}
     </div>
+    <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('conversation.sidebar.deleteConfirmTitle')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t('conversation.sidebar.deleteConfirmDescription', { title: task.title })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+          <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmDelete}>
+            {t('conversation.sidebar.deleteConfirmAction')}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 

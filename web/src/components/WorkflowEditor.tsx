@@ -1788,7 +1788,7 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       id,
       source: edge.from,
       target: edge.to,
-      label: edge.on === 'success' ? undefined : workflowEdgeLabel(edge.on, t),
+      label: workflowEdgeLabel(edge.on, t),
       type: retryLane === undefined && edge.on === 'success' ? 'smoothstep' : 'workflowRouted',
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
@@ -1818,6 +1818,7 @@ function workflowNodeLabel(id: string, terminal: boolean, nodeType: WorkflowNode
 }
 
 function workflowEdgeLabel(outcome: WorkflowEdgeDsl['on'], t: (key: string) => string) {
+  if (outcome === 'success') return t('workflowEditor.edgeLabels.success');
   if (outcome === 'failure') return t('workflowEditor.edgeLabels.failure');
   return outcome;
 }

@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     sync::{LazyLock, Mutex},
+    time::SystemTime,
 };
 
 use anyhow::Result;
@@ -10,7 +11,7 @@ use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -36,6 +37,7 @@ pub struct PreferencesVm {
     pub language: DesktopLanguage,
     pub font: DesktopFontPreference,
     pub use_local_claude: bool,
+    pub verbose_logging: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,6 +307,7 @@ pub struct RuntimeDisplayVm {
     pub terminal: bool,
     pub resumable: bool,
     pub reason_code: Option<String>,
+    pub blocking_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +409,12 @@ pub fn runtime_display_vm(
         },
     };
 
+    let blocking_error = match outcome.as_deref() {
+        Some("failure") | Some("failed") | Some("invalid") | Some("success") => false,
+        Some("killed") | Some("cancelled") | Some("canceled") => true,
+        _ => matches!(code, "error-blocked" | "failure" | "killed"),
+    };
+
     RuntimeDisplayVm {
         code: code.to_string(),
         tone: tone.to_string(),
@@ -413,6 +422,7 @@ pub fn runtime_display_vm(
         terminal,
         resumable: (code == "paused" || code == "error-blocked") && resumable,
         reason_code,
+        blocking_error,
     }
 }
 
@@ -811,12 +821,14 @@ pub fn preferences_vm(
     language: DesktopLanguage,
     font: DesktopFontPreference,
     use_local_claude: bool,
+    log_level: RuntimeLogLevel,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
         language,
         font,
         use_local_claude,
+        verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
     }
 }
 
@@ -828,7 +840,10 @@ fn update_badge_state_vm(state: &DesktopUpdateBadgeState) -> UpdateBadgeStateVm 
     }
 }
 
-fn persisted_available_update_vm(update: Option<&DesktopAvailableUpdate>, current_version: &str) -> Option<UpdateInfoVm> {
+fn persisted_available_update_vm(
+    update: Option<&DesktopAvailableUpdate>,
+    current_version: &str,
+) -> Option<UpdateInfoVm> {
     let update = update?;
     // 退出安装后 current_version 会变为新版本号，此时应清除旧的 available 记录
     if update.current_version != current_version {
@@ -866,6 +881,7 @@ pub fn bootstrap_vm(
             app.config.desktop_language,
             app.config.desktop_font.clone(),
             app.config.use_local_claude,
+            app.config.log_level,
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -3083,8 +3099,9 @@ pub fn dynamic_acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
+    let provider_pid_path = attempt_dir.join("provider.pid");
     let cancelling =
-        is_cancel_requested(&attempt_dir) && is_acp_session_active_status(metadata_status);
+        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -3336,8 +3353,11 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
+    let provider_pid_path = app
+        .paths
+        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
     let cancelling =
-        is_cancel_requested(&attempt_dir) && is_acp_session_active_status(metadata_status);
+        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
     let status = if cancelling {
         "cancelling"
     } else {
@@ -3522,12 +3542,19 @@ struct AcpTimelinePatchVm {
 const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
 
 struct CachedTimeline {
+    file_signature: Option<TimelineFileSignature>,
     all_events: Vec<AcpUiEventVm>,
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimelineFileSignature {
+    len: u64,
+    modified: Option<SystemTime>,
 }
 
 struct TimelineCache {
@@ -3544,6 +3571,17 @@ static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
 
 fn timeline_cache_key(path: &camino::Utf8Path) -> String {
     path.as_str().to_string()
+}
+
+fn timeline_file_signature(path: &camino::Utf8Path) -> Result<Option<TimelineFileSignature>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(path.as_std_path())?;
+    Ok(Some(TimelineFileSignature {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    }))
 }
 
 fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
@@ -3595,8 +3633,10 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+    let file_signature = timeline_file_signature(path)?;
 
-    // Check cache for completed sessions (timeline file is immutable once complete)
+    // Completed sessions may still receive a final timeline flush shortly after
+    // the snapshot flips terminal, so cache only while the file signature matches.
     let cache_key = timeline_cache_key(path);
     let (
         all_events,
@@ -3607,7 +3647,11 @@ fn scan_acp_timeline(
         usage,
     ) = if !session_active {
         let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache.entries.get(&cache_key) {
+        if let Some(cached) = cache
+            .entries
+            .get(&cache_key)
+            .filter(|cached| cached.file_signature == file_signature)
+        {
             let all_events = cached.all_events.clone();
             let event_count = cached.event_count;
             let session_elapsed_seconds = cached.session_elapsed_seconds;
@@ -3633,6 +3677,7 @@ fn scan_acp_timeline(
         cache.entries.insert(
             cache_key.clone(),
             CachedTimeline {
+                file_signature,
                 all_events: result.0.clone(),
                 event_count: result.1,
                 session_elapsed_seconds: result.2,
@@ -3688,25 +3733,24 @@ fn parse_timeline_file(
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) {
-                event_count += 1;
-                final_item.item.seq = final_item
-                    .item
-                    .ended_seq
-                    .or(final_item.item.started_seq)
-                    .unwrap_or(final_item.item.seq);
-                session_elapsed.observe_event(&final_item.item);
-                if final_item.item.kind == "permissionRequest" {
-                    latest_permission_events
-                        .insert(final_item.item.id.clone(), final_item.item.clone());
+            if let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
+                if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                    continue;
                 }
-                if let Some(raw) = final_item.item.raw.as_ref() {
-                    if is_session_update(&final_item.item, "available_commands_update") {
+                saw_legacy_patch = true;
+                event_count += 1;
+                patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
+                session_elapsed.observe_event(&patch.item);
+                if patch.item.kind == "permissionRequest" {
+                    latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+                }
+                if let Some(raw) = patch.item.raw.as_ref() {
+                    if is_session_update(&patch.item, "available_commands_update") {
                         available_commands = raw
                             .get("availableCommands")
                             .and_then(|value| value.as_array())
                             .cloned();
-                    } else if is_session_update(&final_item.item, "usage_update") {
+                    } else if is_session_update(&patch.item, "usage_update") {
                         let (used, size, cost_amount) =
                             gold_band::acp::events::extract_usage_fields(raw);
                         usage = Some(AcpUsageVm {
@@ -3717,35 +3761,40 @@ fn parse_timeline_file(
                         });
                     }
                 }
-                if is_hidden_from_chat(&final_item.item)
-                    || !is_session_timeline_event(&final_item.item)
-                {
+                if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
                     continue;
                 }
-                final_items.push(final_item.item);
+                let should_replace = latest_by_item
+                    .get(&patch.item_id)
+                    .map(|(revision, _)| patch.revision >= *revision)
+                    .unwrap_or(true);
+                if should_replace {
+                    latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+                }
                 continue;
             }
 
-            let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) else {
+            let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) else {
                 continue;
             };
-            if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
-                continue;
-            }
-            saw_legacy_patch = true;
             event_count += 1;
-            patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
-            session_elapsed.observe_event(&patch.item);
-            if patch.item.kind == "permissionRequest" {
-                latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+            final_item.item.seq = final_item
+                .item
+                .ended_seq
+                .or(final_item.item.started_seq)
+                .unwrap_or(final_item.item.seq);
+            session_elapsed.observe_event(&final_item.item);
+            if final_item.item.kind == "permissionRequest" {
+                latest_permission_events
+                    .insert(final_item.item.id.clone(), final_item.item.clone());
             }
-            if let Some(raw) = patch.item.raw.as_ref() {
-                if is_session_update(&patch.item, "available_commands_update") {
+            if let Some(raw) = final_item.item.raw.as_ref() {
+                if is_session_update(&final_item.item, "available_commands_update") {
                     available_commands = raw
                         .get("availableCommands")
                         .and_then(|value| value.as_array())
                         .cloned();
-                } else if is_session_update(&patch.item, "usage_update") {
+                } else if is_session_update(&final_item.item, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
                     usage = Some(AcpUsageVm {
@@ -3756,21 +3805,21 @@ fn parse_timeline_file(
                     });
                 }
             }
-            if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
+            if is_hidden_from_chat(&final_item.item) || !is_session_timeline_event(&final_item.item)
+            {
                 continue;
             }
-            let should_replace = latest_by_item
-                .get(&patch.item_id)
-                .map(|(revision, _)| patch.revision >= *revision)
-                .unwrap_or(true);
-            if should_replace {
-                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
-            }
+            latest_by_item.insert(final_item.item.id.clone(), (0, final_item.item.clone()));
+            final_items.push(final_item.item);
         }
     }
 
     let mut all_events = if saw_legacy_patch {
-        latest_by_item
+        let mut merged = latest_by_item;
+        for item in final_items {
+            merged.entry(item.id.clone()).or_insert((0, item));
+        }
+        merged
             .into_values()
             .map(|(_, event)| event)
             .collect::<Vec<_>>()
@@ -3904,8 +3953,9 @@ fn scan_acp_events(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
+    let file_signature = timeline_file_signature(path)?;
 
-    // Cache via the same pool as scan_acp_timeline
+    // Cache via the same pool as scan_acp_timeline and invalidate on file writes.
     let cache_key = timeline_cache_key(path);
     let (
         all_events,
@@ -3916,7 +3966,11 @@ fn scan_acp_events(
         usage,
     ) = if !session_active {
         let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache.entries.get(&cache_key) {
+        if let Some(cached) = cache
+            .entries
+            .get(&cache_key)
+            .filter(|cached| cached.file_signature == file_signature)
+        {
             let all_events = cached.all_events.clone();
             let raw_event_count = cached.event_count;
             let session_elapsed_seconds = cached.session_elapsed_seconds;
@@ -3942,6 +3996,7 @@ fn scan_acp_events(
         cache.entries.insert(
             cache_key.clone(),
             CachedTimeline {
+                file_signature,
                 all_events: result.0.clone(),
                 event_count: result.1,
                 session_elapsed_seconds: result.2,
@@ -4230,13 +4285,14 @@ fn apply_stale_session_completion_fuse_common(
     if !is_acp_session_active_status(metadata_status) {
         return Ok(false);
     }
-    // Provider process is still alive — don't fuse.
-    if pid_path.exists() {
+    if pid_path.exists() && !node_completed {
         return Ok(false);
     }
-    // Process is dead. Fuse when the node itself is done OR the user requested cancel.
     if !node_completed && !is_cancel_requested(attempt_dir) {
         return Ok(false);
+    }
+    if node_completed && pid_path.exists() {
+        let _ = fs::remove_file(pid_path.as_std_path());
     }
     session["status"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
@@ -4588,9 +4644,41 @@ fn truncate_string(value: String, max_chars: usize) -> String {
 
 fn is_acp_session_active_status(status: &str) -> bool {
     matches!(
-        status.to_ascii_lowercase().as_str(),
-        "pending" | "running" | "in_progress" | "sending" | "cancelling" | "cancel_requested"
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
     )
+}
+
+fn is_acp_session_terminal_status(status: &str) -> bool {
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "completed"
+            | "complete"
+            | "failed"
+            | "failure"
+            | "error"
+            | "killed"
+            | "cancelled"
+            | "canceled"
+    )
+}
+
+fn acp_cancel_request_in_progress(
+    attempt_dir: &camino::Utf8Path,
+    provider_pid_path: &camino::Utf8Path,
+    metadata_status: &str,
+) -> bool {
+    is_cancel_requested(attempt_dir)
+        && !is_acp_session_terminal_status(metadata_status)
+        && (provider_pid_path.exists() || is_acp_session_active_status(metadata_status))
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
@@ -5387,6 +5475,141 @@ mod tests {
     }
 
     #[test]
+    fn runtime_display_marks_workflow_failure_as_non_blocking() {
+        let failure = runtime_display_vm(Some("completed"), Some("failure"), false, None, false);
+        let error_blocked =
+            runtime_display_vm(Some("paused"), None, true, Some("error-blocked"), true);
+        let killed = runtime_display_vm(Some("completed"), Some("killed"), false, None, false);
+
+        assert_eq!(failure.tone, "danger");
+        assert!(!failure.blocking_error);
+        assert!(error_blocked.blocking_error);
+        assert!(killed.blocking_error);
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_ignores_pid_when_node_completed() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-completion-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        let mut session = json!({ "status": "running" });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
+                .unwrap();
+
+        assert!(fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert!(!pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_keeps_live_incomplete_node_running() {
+        let dir =
+            std::env::temp_dir().join(format!("gold-band-live-fuse-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        let mut session = json!({ "status": "running" });
+
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &attempt_dir,
+            &mut session,
+            false,
+        )
+        .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("running")
+        );
+        assert!(pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_leaves_terminal_session_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-terminal-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let mut session = json!({ "status": "failed" });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
+                .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("failed")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancel_requested_with_live_provider_stays_cancelling() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-cancel-status-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
+            .unwrap();
+
+        assert!(acp_cancel_request_in_progress(
+            &attempt_dir,
+            &pid_path,
+            "running"
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancel_requested_with_terminal_snapshot_does_not_stay_cancelling() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-terminal-cancel-status-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
+            .unwrap();
+
+        assert!(!acp_cancel_request_in_progress(
+            &attempt_dir,
+            &pid_path,
+            "cancelled"
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn diagnostics_file_populates_session_diagnostics() {
         let dir = std::env::temp_dir().join(format!("gold-band-diag-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -5599,6 +5822,27 @@ mod tests {
             .collect()
     }
 
+    fn tool_event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
+        (0..count)
+            .map(|i| AcpUiEventVm {
+                id: format!("tool-{i}"),
+                seq: i as u64 + 1,
+                timestamp: format!("{}Z", base_ts + i as u64),
+                kind: "toolCall".to_string(),
+                session_id: Some("s1".to_string()),
+                content: Some(format!("tool {i}")),
+                title: Some(format!("Tool {i}")),
+                tool_call_id: Some(format!("call-{i}")),
+                status: Some("completed".to_string()),
+                started_seq: Some(i as u64 + 1),
+                ended_seq: Some(i as u64 + 1),
+                started_at: Some(format!("{}Z", base_ts + i as u64)),
+                ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                raw: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn parse_timeline_file_all_events() {
         let dir = std::env::temp_dir().join(format!("gb-tl-parse-{}", std::process::id()));
@@ -5687,30 +5931,32 @@ mod tests {
     }
 
     #[test]
+    fn scan_timeline_cache_invalidates_when_file_changes() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(5, 2500));
+
+        let r1 = scan_acp_timeline(&path, None, false, 360).unwrap();
+        assert_eq!(r1.events.len(), 5);
+
+        let rewritten_path = write_timeline_file(&db, "acp.timeline.jsonl", &event_sequence(8, 2500));
+        assert_eq!(rewritten_path, path);
+        let r2 = scan_acp_timeline(&path, None, false, 360).unwrap();
+
+        assert_eq!(r2.events.len(), 8);
+        assert_eq!(r2.event_page.total, 8);
+        assert_eq!(r2.events[7].content.as_deref(), Some("message 7"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn scan_events_cache_hit_on_repeat() {
         let dir = std::env::temp_dir().join(format!("gb-ev-hit-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        // Use unique kinds so events don't get merged by delta logic
-        let events: Vec<_> = (0..15)
-            .map(|i| AcpUiEventVm {
-                id: format!("evt-{i}"),
-                seq: 0,
-                timestamp: format!("{}Z", 3000 + i),
-                kind: "toolCall".to_string(),
-                session_id: Some("s1".to_string()),
-                content: Some(format!("tool {i}")),
-                title: Some(format!("Tool {i}")),
-                tool_call_id: Some(format!("call-{i}")),
-                status: Some("completed".to_string()),
-                started_seq: None,
-                ended_seq: None,
-                started_at: None,
-                ended_at: None,
-                raw: None,
-            })
-            .collect();
-        let path = write_events_file(&db, "acp.events.jsonl", &events);
+        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(15, 3000));
 
         let r1 = scan_acp_events(&path, None, false, 360).unwrap();
         let r2 = scan_acp_events(&path, None, false, 360).unwrap();
@@ -5718,6 +5964,27 @@ mod tests {
         assert_eq!(r1.events.len(), 15);
         assert_eq!(r2.events.len(), 15);
         assert_eq!(r2.event_count, r1.event_count);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_events_cache_invalidates_when_file_changes() {
+        let dir = std::env::temp_dir().join(format!("gb-ev-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(4, 3500));
+
+        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
+        assert_eq!(r1.events.len(), 4);
+
+        let rewritten_path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(7, 3500));
+        assert_eq!(rewritten_path, path);
+        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
+
+        assert_eq!(r2.events.len(), 7);
+        assert_eq!(r2.event_page.total, 7);
+        assert_eq!(r2.events[6].content.as_deref(), Some("tool 6"));
 
         fs::remove_dir_all(dir).unwrap();
     }

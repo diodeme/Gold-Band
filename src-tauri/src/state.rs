@@ -75,17 +75,35 @@ impl DesktopContext {
                 + Send
                 + Sync,
         >,
+        session_update: Arc<
+            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
+        >,
     ) -> App {
-        self.app().with_acp_live_update(live_update)
+        self.app()
+            .with_acp_live_update(live_update)
+            .with_acp_session_update(session_update)
     }
 
     pub fn app_with_metrics(
         &self,
-        live_update: Arc<dyn Fn(gold_band::app::AcpLiveEventContext, gold_band::acp::events::AcpUiEvent) -> anyhow::Result<()> + Send + Sync>,
-        metrics_callback: Arc<dyn Fn(gold_band::app::MetricsEventContext, gold_band::app::MetricsEvent) + Send + Sync>,
+        live_update: Arc<
+            dyn Fn(
+                    gold_band::app::AcpLiveEventContext,
+                    gold_band::acp::events::AcpUiEvent,
+                ) -> anyhow::Result<()>
+                + Send
+                + Sync,
+        >,
+        session_update: Arc<
+            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
+        >,
+        metrics_callback: Arc<
+            dyn Fn(gold_band::app::MetricsEventContext, gold_band::app::MetricsEvent) + Send + Sync,
+        >,
     ) -> App {
         self.app()
             .with_acp_live_update(live_update)
+            .with_acp_session_update(session_update)
             .with_metrics_callback(metrics_callback)
     }
 }

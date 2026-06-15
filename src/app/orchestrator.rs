@@ -1571,6 +1571,18 @@ fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option
     }
 }
 
+fn dynamic_acceptance_model(dynamic: &AiDynamicNode) -> Option<&str> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { .. } => None,
+        AiDynamicAgentStrategy::Dynamic {
+            acceptance_model, ..
+        } => acceptance_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty()),
+    }
+}
+
 fn dynamic_requires_model_in_proposal(dynamic: &AiDynamicNode) -> bool {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { .. } => false,
@@ -1614,7 +1626,10 @@ fn provider_model_option_values(
         .collect()
 }
 
-fn dynamic_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>, provider: &str) -> bool {
+fn dynamic_worker_model_required_from_proposal(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> bool {
     match &ctx.dynamic.agent_strategy {
         AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
         AiDynamicAgentStrategy::Fixed { .. } => {
@@ -1624,10 +1639,26 @@ fn dynamic_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>, provi
     }
 }
 
-fn dynamic_any_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>) -> bool {
+fn dynamic_agent_task_model_required_from_proposal(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> bool {
+    if dynamic_acceptance_model(ctx.dynamic).is_some() {
+        return false;
+    }
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+        AiDynamicAgentStrategy::Fixed { .. } => {
+            dynamic_model_for_provider(ctx.dynamic, provider).is_none()
+                && !provider_model_options_summary(ctx, provider).is_empty()
+        }
+    }
+}
+
+fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>) -> bool {
     match &ctx.dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => {
-            dynamic_model_required_from_proposal(ctx, provider)
+            dynamic_worker_model_required_from_proposal(ctx, provider)
         }
         AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
     }
@@ -1641,14 +1672,24 @@ fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                     "The fixed provider has configured model `{model}`; do not output `model`."
                 );
             }
-            if dynamic_model_required_from_proposal(ctx, provider) {
+            if dynamic_worker_model_required_from_proposal(ctx, provider) {
                 "The fixed provider has no configured model and exposes selectable models; output `model` for every worker / merge / acceptance node, using one model name from the provider list.".to_string()
             } else {
                 "The fixed provider has no configured model catalog; do not output `model`, and runtime will use the provider default.".to_string()
             }
         }
         AiDynamicAgentStrategy::Dynamic { routing_prompt, .. } => {
-            if routing_prompt.trim().is_empty() {
+            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+                if routing_prompt.trim().is_empty() {
+                    format!(
+                        "Routing guidance is empty, so worker models stay runtime-configured; do not output `model` for workers. `merge` / `acceptance` use the configured acceptance model `{model}`; do not output `model` for them."
+                    )
+                } else {
+                    format!(
+                        "Routing guidance is configured, so every worker node must output `model`; if a provider already has a configured model, runtime still prefers the configured model. `merge` / `acceptance` use the configured acceptance model `{model}`; do not output `model` for them."
+                    )
+                }
+            } else if routing_prompt.trim().is_empty() {
                 "Routing guidance is empty, so provider models are configured by runtime; do not output `model` for worker / merge / acceptance nodes.".to_string()
             } else {
                 "Routing guidance is configured, so every worker / merge / acceptance node must output `model`; if a provider already has a configured model, runtime still prefers the configured model.".to_string()
@@ -1663,14 +1704,24 @@ fn dynamic_model_policy_summary_zh_cn(ctx: &DynamicExecutionContext<'_>) -> Stri
             if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
                 return format!("固定 provider 已配置模型 `{model}`；不要输出 `model`。");
             }
-            if dynamic_model_required_from_proposal(ctx, provider) {
+            if dynamic_worker_model_required_from_proposal(ctx, provider) {
                 "固定 provider 未配置模型且提供了可选模型列表；每个 worker / merge / acceptance 节点都必须输出 `model`，并使用 provider 列表中的模型名称。".to_string()
             } else {
                 "固定 provider 没有可用模型列表；不要输出 `model`，runtime 会使用 provider 默认模型。".to_string()
             }
         }
         AiDynamicAgentStrategy::Dynamic { routing_prompt, .. } => {
-            if routing_prompt.trim().is_empty() {
+            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+                if routing_prompt.trim().is_empty() {
+                    format!(
+                        "当前没有节点 agent 选择说明，worker 的 provider 模型由 runtime 配置决定；不要在 worker 节点中输出 `model`。`merge` / `acceptance` 统一使用已配置的验收模型 `{model}`；不要为它们输出 `model`。"
+                    )
+                } else {
+                    format!(
+                        "当前提供了节点 agent 选择说明，因此每个 worker 节点都必须输出 `model`；如果某个 provider 已经锁定模型，runtime 仍会优先使用配置模型。`merge` / `acceptance` 统一使用已配置的验收模型 `{model}`；不要为它们输出 `model`。"
+                    )
+                }
+            } else if routing_prompt.trim().is_empty() {
                 "当前没有节点 agent 选择说明，provider 模型由 runtime 配置决定；不要在 worker / merge / acceptance 节点中输出 `model`。".to_string()
             } else {
                 "当前提供了节点 agent 选择说明，因此每个 worker / merge / acceptance 节点都必须输出 `model`；如果某个 provider 已经锁定模型，runtime 仍会优先使用配置模型。".to_string()
@@ -1692,8 +1743,18 @@ fn dynamic_completion_schema_policy(
 ) -> DynamicCompletionSchemaPolicy {
     let provider_ids = dynamic_available_provider_ids(ctx);
     let mut model_names = Vec::new();
-    let model_required = dynamic_any_model_required_from_proposal(ctx);
-    if model_required {
+    let node_model_required = dynamic_any_worker_model_required_from_proposal(ctx);
+    let agent_task_model_required = match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, .. } => {
+            dynamic_agent_task_model_required_from_proposal(ctx, provider)
+        }
+        AiDynamicAgentStrategy::Dynamic { .. } => {
+            dynamic_requires_model_in_proposal(ctx.dynamic)
+                && dynamic_acceptance_model(ctx.dynamic).is_none()
+        }
+    };
+    let any_model_visible = node_model_required || agent_task_model_required;
+    if any_model_visible {
         for provider in &provider_ids {
             for (model, _) in provider_model_option_values(ctx, provider) {
                 if !model_names.iter().any(|existing| existing == &model) {
@@ -1704,7 +1765,9 @@ fn dynamic_completion_schema_policy(
     }
     DynamicCompletionSchemaPolicy {
         provider_required: dynamic_requires_provider_in_proposal(ctx.dynamic),
-        model_required,
+        node_model_required,
+        agent_task_model_required,
+        agent_task_model_visible: dynamic_acceptance_model(ctx.dynamic).is_none(),
         provider_ids,
         model_names,
         profile_ids: available_profile_refs(ctx)
@@ -1745,7 +1808,7 @@ fn dynamic_output_contract(
         serde_json::json!({
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
             "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.dynamic),
-            "model_required_in_proposal": dynamic_any_model_required_from_proposal(ctx),
+            "model_required_in_proposal": dynamic_any_worker_model_required_from_proposal(ctx),
             "model_policy": match language {
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
                 DesktopLanguage::En => dynamic_model_policy_summary(ctx),
@@ -3722,7 +3785,7 @@ fn validate_dynamic_node_spec(
                             errors.push(error);
                         }
                     }
-                    if dynamic_model_required_from_proposal(ctx, provider)
+                    if dynamic_worker_model_required_from_proposal(ctx, provider)
                         && spec
                             .model
                             .as_deref()
@@ -3919,14 +3982,30 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     }
-    if let Some(provider) = resolved_provider
-        && dynamic_model_required_from_proposal(ctx, provider)
-        && spec
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .is_none()
+    let proposed_model = spec
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if let Some(model) = proposed_model
+        && dynamic_acceptance_model(ctx.dynamic).is_some()
+    {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.model.unsupported"),
+            format!(
+                "dynamic {name} must not output model because AI-DYNAMIC configured acceptanceModel"
+            ),
+            serde_json::json!({
+                "provider": resolved_provider,
+                "stage": name,
+                "field": "model",
+                "actual": model,
+                "expected": "omit this field",
+            }),
+        ));
+    } else if let Some(provider) = resolved_provider
+        && dynamic_agent_task_model_required_from_proposal(ctx, provider)
+        && proposed_model.is_none()
     {
         errors.push(dynamic_validation_error(
             &format!("dynamic.{name}.model.required"),
@@ -3978,6 +4057,15 @@ fn dynamic_agent_task_spec_with_resolved_provider(
     spec.provider = dynamic_resolved_proposal_provider(ctx, Some(spec.provider.as_str()))
         .ok_or_else(|| anyhow!("dynamic agent task provider was not resolved"))?
         .to_string();
+    spec.model = dynamic_acceptance_model(ctx.dynamic)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            spec.model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        });
     Ok(spec)
 }
 
@@ -4711,6 +4799,23 @@ fn build_dynamic_worker_invocation(
         .clone()
         .unwrap_or_else(|| ctx.app.paths.repo_root.clone());
     let extra_system_sections = dynamic_system_sections(ctx, graph, node)?;
+    let model = match node.kind {
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+            dynamic_acceptance_model(ctx.dynamic)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    node.provider
+                        .as_deref()
+                        .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+                })
+                .or_else(|| node.model.clone())
+        }
+        _ => node
+            .provider
+            .as_deref()
+            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+            .or_else(|| node.model.clone()),
+    };
     Ok(WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile,
@@ -4737,11 +4842,7 @@ fn build_dynamic_worker_invocation(
                 (other, _) => other,
             }
         },
-        model: node
-            .provider
-            .as_deref()
-            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-            .or_else(|| node.model.clone()),
+        model,
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -5441,6 +5542,20 @@ fn dynamic_system_sections(
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
             "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
             "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
+            "acceptance_model_policy": match ctx.app.config.desktop_language {
+                DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
+                    Some(model) => format!(
+                        "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
+                    ),
+                    None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
+                },
+                DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+                    Some(model) => format!(
+                        "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
+                    ),
+                    None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
+                },
+            },
             "available_providers": available_provider_summary(ctx),
             "available_profiles": available_profile_summary(ctx),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),

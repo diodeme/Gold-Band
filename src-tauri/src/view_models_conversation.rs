@@ -217,6 +217,7 @@ pub struct ConversationAutoConfigVm {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    pub acceptance_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
@@ -1736,6 +1737,9 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
     let bootstrap_model_id = config
         .and_then(|c| c.bootstrap_model_id.as_deref())
         .filter(|v| !v.trim().is_empty());
+    let acceptance_model_id = config
+        .and_then(|c| c.acceptance_model_id.as_deref())
+        .filter(|v| !v.trim().is_empty());
     let permission_mode = config
         .and_then(|c| c.permission_mode.as_deref())
         .filter(|v| !v.trim().is_empty());
@@ -1784,6 +1788,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
+            acceptance_model: acceptance_model_id.map(str::to_string),
             routing_prompt: config
                 .and_then(|c| c.routing_prompt.as_deref())
                 .map(str::trim)
@@ -2058,11 +2063,13 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
+        ConversationAutoConfigVm, ConversationDynamicAgentRefVm, build_auto_workflow,
         conversation_run_vm, conversation_status_from_session,
         derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
+    use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl};
     use serde_json::json;
 
     #[test]
@@ -2189,6 +2196,47 @@ mod tests {
         assert_eq!(lifecycle.display_status, "paused");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
+    }
+
+    #[test]
+    fn build_auto_workflow_preserves_dynamic_acceptance_model() {
+        let workflow = build_auto_workflow(Some(&ConversationAutoConfigVm {
+            agent_strategy: Some("dynamic".to_string()),
+            agent_type: "claude-acp".to_string(),
+            bootstrap_agent_type: Some("claude-acp".to_string()),
+            bootstrap_model_id: Some("bootstrap-model".to_string()),
+            acceptance_model_id: Some("accept-model".to_string()),
+            model_id: None,
+            permission_mode: None,
+            available_agents: Some(vec![ConversationDynamicAgentRefVm {
+                provider: "claude-acp".to_string(),
+                model: Some("worker-model".to_string()),
+            }]),
+            routing_prompt: Some("Pick worker models explicitly".to_string()),
+            allowed_workflows: None,
+            allowed_profiles: None,
+            global_goal: None,
+            control: None,
+            active_template_id: None,
+            active_template_name: None,
+        }));
+
+        let NodeDsl::AiDynamic(node) = &workflow.nodes[0] else {
+            panic!("expected ai-dynamic node");
+        };
+        match &node.agent_strategy {
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_model,
+                acceptance_model,
+                available_agents,
+                ..
+            } => {
+                assert_eq!(bootstrap_model.as_deref(), Some("bootstrap-model"));
+                assert_eq!(acceptance_model.as_deref(), Some("accept-model"));
+                assert_eq!(available_agents[0].model.as_deref(), Some("worker-model"));
+            }
+            other => panic!("expected dynamic strategy, got {other:?}"),
+        }
     }
 
     #[test]

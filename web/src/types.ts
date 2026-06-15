@@ -243,6 +243,7 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  acceptanceModel?: string | null;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -986,6 +987,7 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  acceptanceModelId?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;
   availableAgents?: DynamicAgentRefDsl[];

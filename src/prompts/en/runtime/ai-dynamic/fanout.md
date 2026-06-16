@@ -6,6 +6,7 @@ Every internal worker node must finish by producing a `dynamic-node-completion` 
 
 Workspace selection rules:
 - Use `workspace.mode="readonly"` for analysis, review, planning, or read-only validation nodes.
-- Any parallel branch that may modify code, tests, config, docs, or assets should use `workspace.mode="worktree"` so runtime creates an isolated git worktree for that branch.
-- Do not assign `workspace.mode="main"` to fan-out branches; reserve `main` for merge, acceptance, or cleanup nodes.
+- Only use `workspace.mode="worktree"` for parallel branches that may modify code, tests, config, docs, or assets when the Workspace capability in the system context says `supportsWorktree: true`; runtime will create an isolated git worktree for each such branch.
+- If Workspace capability says `supportsWorktree: false`, do not output `workspace.mode="worktree"`; instead use read-only analysis, serial `main` workspace work, or end with a summary explaining that the user must initialize Git before writable parallel fan-out is available.
+- Do not assign `workspace.mode="main"` to fan-out branches; reserve `main` for merge, acceptance, or cleanup nodes. For non-git workspaces that need writes, prefer a single serial successor over writable fan-out.
 - When splitting a fan-out, give each writable branch a clear and non-overlapping responsibility boundary to reduce merge conflicts.

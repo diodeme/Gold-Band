@@ -15,6 +15,8 @@ AI-DYNAMIC filesystem rules:
 - Internal attachments dir: {{ attachments_dir }}
 - Workspace mode: {{ workspace_mode }}
 - Workspace path: {{ workspace_path }}
+- Workspace capability:
+{{ workspace_capability }}
 - Upstream refs:
 {{ upstream_refs }}
 - Treat Workspace path as the current workspace for all reads and writes; `worktree` mode may only modify that worktree, and `main` mode is for merging or acceptance in the main workspace.

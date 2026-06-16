@@ -15,6 +15,8 @@ AI-DYNAMIC 文件系统规则：
 - 内部 attachments 目录：{{ attachments_dir }}
 - Workspace 模式：{{ workspace_mode }}
 - Workspace 路径：{{ workspace_path }}
+- Workspace 能力：
+{{ workspace_capability }}
 - 上游引用：
 {{ upstream_refs }}
 - 所有读写操作都必须以 Workspace 路径为当前工作区；`worktree` 模式只能修改该 worktree，`main` 模式只能在主工作区合并或验收。

@@ -159,6 +159,7 @@ export interface ACPChatDialogHandle {
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -387,6 +388,7 @@ export const ACPChatDialog = forwardRef<
 >(function ACPChatDialog(
   {
     session,
+    projectId,
     taskId,
     runId,
     roundId,
@@ -763,7 +765,7 @@ export const ACPChatDialog = forwardRef<
       try {
         let content: ContentVm;
         if (asset.kind === "input-attachment") {
-          content = await showConversationAttachment(taskId, asset.name);
+          content = await showConversationAttachment(projectId, taskId, asset.name);
         } else {
           const loader =
             asset.kind === "attachment" ? showAttachment : showArtifact;
@@ -805,7 +807,7 @@ export const ACPChatDialog = forwardRef<
     async (attachment: MessageAttachmentPreview) => {
       if (isImageMessageAttachment(attachment)) {
         try {
-          const content = await showConversationAttachment(taskId, attachment.name);
+          const content = await showConversationAttachment(projectId, taskId, attachment.name);
           const src = imageSrcFromContent(content);
           if (src) {
             setMessageImagePreview({ name: attachment.name, src });
@@ -1994,6 +1996,7 @@ export const ACPChatDialog = forwardRef<
                         event={item}
                         expansionControls={expansionControls}
                         streamingTextItemKey={streamingTextItemKey}
+                        projectId={projectId}
                         taskId={taskId}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
                       />
@@ -3031,12 +3034,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
   expansionControls,
   streamingTextItemKey,
+  projectId,
   taskId,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
   streamingTextItemKey?: string | null;
+  projectId?: string;
   taskId?: string;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
@@ -3053,7 +3058,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
+    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} projectId={projectId} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
     return <ThoughtBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -3328,11 +3333,13 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
 const MessageBubble = memo(function MessageBubble({
   event,
   streamingTextItemKey,
+  projectId,
   taskId,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineEvent;
   streamingTextItemKey?: string | null;
+  projectId?: string;
   taskId?: string;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
@@ -3381,6 +3388,7 @@ const MessageBubble = memo(function MessageBubble({
               <MessageAttachmentPreviewButton
                 key={att.path}
                 attachment={att}
+                projectId={projectId}
                 taskId={taskId}
                 onClick={onMessageAttachmentClick}
               />
@@ -3416,10 +3424,12 @@ const MessageBubble = memo(function MessageBubble({
 
 const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
   attachment,
+  projectId,
   taskId,
   onClick,
 }: {
   attachment: MessageAttachmentPreview;
+  projectId?: string;
   taskId?: string;
   onClick?: (attachment: MessageAttachmentPreview) => void;
 }) {
@@ -3433,7 +3443,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
     }
     let cancelled = false;
     setPreviewSrc(null);
-    showConversationAttachment(taskId, attachment.name)
+    showConversationAttachment(projectId ?? 'default', taskId ?? '', attachment.name)
       .then((content) => {
         if (!cancelled) setPreviewSrc(imageSrcFromContent(content));
       })

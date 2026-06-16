@@ -45,6 +45,11 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId);
+
+  useEffect(() => {
+    setSelectedProjectId(projectId);
+  }, [projectId]);
 
   const {
     attachments,
@@ -116,7 +121,7 @@ export function ConversationComposer({
     if (!canSubmit) return;
     const trimmed = content.trim();
     const inputBase: ConversationCreateInput = {
-      projectId,
+      projectId: selectedProjectId,
       content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
@@ -203,7 +208,7 @@ export function ConversationComposer({
                 </span>
               ) : null}
               {workspaces.length > 1 ? (
-                <Select value={projectId} onValueChange={onWorkspaceChange}>
+                <Select value={selectedProjectId} onValueChange={(id) => { setSelectedProjectId(id); onWorkspaceChange(id); }}>
                   <SelectTrigger className="h-9 min-w-[170px] max-w-[240px] gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />

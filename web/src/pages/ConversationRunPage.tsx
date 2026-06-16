@@ -335,6 +335,7 @@ export function ConversationRunPage({
             ref={chatDialogRef}
             key={selectedSessionKey ?? 'empty'}
             session={selectedSession}
+            projectId={run.projectId}
             taskId={run.taskId}
             runId={run.runId}
             roundId={selectedLeaf.roundId}

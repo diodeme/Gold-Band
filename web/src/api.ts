@@ -199,8 +199,8 @@ export function showAttachment(taskId: string, runId: string, roundId: string, n
   return getRuntimeApi().showAttachment(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
-export function showConversationAttachment(taskId: string, name: string) {
-  return getRuntimeApi().showConversationAttachment(taskId, name);
+export function showConversationAttachment(projectId: string, taskId: string, name: string) {
+  return getRuntimeApi().showConversationAttachment(projectId, taskId, name);
 }
 
 export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -259,8 +259,8 @@ export function getConversationRun(projectId: string, taskId: string, runId: str
   return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
 }
 
-export function switchConversationSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().switchConversationSession(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+export function switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().switchConversationSession(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function validateConversationCreate(input: Parameters<ReturnType<typeof getRuntimeApi>['validateConversationCreate']>[0]) {

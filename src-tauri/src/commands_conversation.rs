@@ -10,11 +10,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, State};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, acp_live_update_emitter, acp_session_update_emitter,
-    command_error, pick_folder_result,
+    command_error,
 };
 use crate::state::DesktopContext;
 use crate::state::DesktopState;

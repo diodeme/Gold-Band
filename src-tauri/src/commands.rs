@@ -22,7 +22,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     str::FromStr,
-    sync::{Arc, mpsc},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -35,6 +35,7 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
@@ -58,32 +59,6 @@ const ACP_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
-
-type DialogCallback<T> = Box<dyn FnOnce(Option<T>) + Send>;
-
-pub(crate) async fn await_dialog_result<T, F>(register: F) -> Option<T>
-where
-    T: Send + 'static,
-    F: FnOnce(DialogCallback<T>),
-{
-    let (tx, rx) = mpsc::sync_channel(1);
-    register(Box::new(move |selection| {
-        let _ = tx.send(selection);
-    }));
-    tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
-        .await
-        .ok()
-        .flatten()
-}
-
-pub(crate) async fn pick_folder_result<R: tauri::Runtime>(
-    dialog: FileDialogBuilder<R>,
-) -> Option<FilePath> {
-    await_dialog_result(|callback| {
-        dialog.pick_folder(move |path| callback(path));
-    })
-    .await
-}
 
 fn resolve_acp_attempt_dir(
     app: &gold_band::app::App,

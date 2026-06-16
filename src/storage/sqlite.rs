@@ -70,10 +70,20 @@ pub fn index_task_with_retry(task_dir: &Utf8Path, task_id: &str) {
     index.index_task_with_retry(task_dir, task_id);
 }
 
+pub fn delete_task(task_id: &str) {
+    let Some(index) = search_index() else {
+        return;
+    };
+    if let Err(error) = index.delete_task(task_id) {
+        warn!("sqlite delete_task failed for {}: {:#}", task_id, error);
+    }
+}
+
 // ── SearchIndex ──────────────────────────────────────────────────────
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 1;
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -105,6 +115,23 @@ impl SearchIndex {
 
     fn ensure_schema(&self) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().expect("search index lock poisoned");
+        let schema_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+            warn!(
+                "sqlite session search index schema version mismatch (found {}, expected {}), rebuilding derived session index tables",
+                schema_version, SEARCH_INDEX_SCHEMA_VERSION
+            );
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS session_prompts_ai;
+                DROP TRIGGER IF EXISTS session_prompts_ad;
+                DROP TRIGGER IF EXISTS session_prompts_au;
+                DROP TABLE IF EXISTS session_prompts_fts;
+                DROP TABLE IF EXISTS session_prompts;
+                DROP TABLE IF EXISTS sessions;",
+            )?;
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
                 task_id      TEXT NOT NULL PRIMARY KEY,
@@ -173,8 +200,12 @@ impl SearchIndex {
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
                 INSERT INTO tasks_fts(rowid, title, description, requirement_text)
                 VALUES (new.rowid, new.title, new.description, new.requirement_text);
-            END;"
+            END;",
         )?;
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = {};",
+            SEARCH_INDEX_SCHEMA_VERSION
+        ))?;
         Ok(())
     }
 
@@ -521,6 +552,16 @@ impl SearchIndex {
 
     // ── task search ────────────────────────────────────────────
 
+    pub fn delete_task(&self, task_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM session_prompts WHERE attempt_path IN (SELECT attempt_path FROM sessions WHERE task_id = ?1)", params![task_id])?;
+        tx.execute("DELETE FROM sessions WHERE task_id = ?1", params![task_id])?;
+        tx.execute("DELETE FROM tasks WHERE task_id = ?1", params![task_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn search_tasks(
         &self,
         query: &str,
@@ -676,4 +717,67 @@ pub struct SessionSearchResult {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rebuilds_outdated_search_index_schema() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+
+        {
+            let conn = Connection::open(db_path.as_std_path()).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    task_id TEXT NOT NULL PRIMARY KEY,
+                    task_path TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    requirement_text TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
+                VALUES ('task-1', '/tmp/task-1', 'Task 1', '', '', '', '');
+                CREATE TABLE session_prompts (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    prompt_id TEXT,
+                    timestamp TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '',
+                    normalized_text TEXT NOT NULL DEFAULT ''
+                );",
+            )
+            .unwrap();
+        }
+
+        let index = SearchIndex::open(&db_path).unwrap();
+        let conn = index.conn.lock().unwrap();
+        let schema_version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version, SEARCH_INDEX_SCHEMA_VERSION);
+
+        let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
+        let column_names = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(column_names.iter().any(|name| name == "attempt_path"));
+
+        let task_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE task_id = 'task-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_count, 1);
+    }
 }

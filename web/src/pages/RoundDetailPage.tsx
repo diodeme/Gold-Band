@@ -33,6 +33,7 @@ interface RoundDetailPageProps {
   refreshing: boolean;
   busy: boolean;
   appConfig: AppConfigVm;
+  workspaceProjectId?: string;
   onRefresh: () => void;
   onSelect: (selection: RoundSelection) => void;
   onContinueRun: (taskId: string, runId: string, promptId: string) => Promise<unknown>;
@@ -43,7 +44,7 @@ type NodeDrawerTab = 'detail' | 'session';
 const defaultLogPageSize = 50;
 const defaultHotLimit = 1000;
 
-export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, appConfig, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
+export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, appConfig, workspaceProjectId, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
@@ -60,7 +61,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
     let cancelled = false;
     setAssetLoading(true);
     const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
-    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
+    loader(undefined, vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
       .then((content) => { if (!cancelled) setAssetContent(content); })
       .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: displayAppError(t, error), metadata: {} }); })
       .finally(() => { if (!cancelled) setAssetLoading(false); });
@@ -219,6 +220,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
         onTabChange={setNodeDrawerTab}
         onRefresh={onRefresh}
         appConfig={appConfig}
+        workspaceProjectId={workspaceProjectId}
         optimisticAcpEventsByKey={optimisticAcpEventsByKey}
         onOptimisticAcpEventsChange={(key, events) => setOptimisticAcpEventsByKey((current) => {
           const next = { ...current };
@@ -269,7 +271,7 @@ function isRoundContinuable(vm: RoundDetailVm) {
   );
 }
 
-function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; appConfig: AppConfigVm; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
+function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, workspaceProjectId, optimisticAcpEventsByKey, onOpenChange, onTabChange, onRefresh, onOptimisticAcpEventsChange, onOpenAsset }: { vm: RoundDetailVm; nodeDetail?: NodeDetailVm | null; open: boolean; activeTab: NodeDrawerTab; appConfig: AppConfigVm; workspaceProjectId?: string; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOpenChange: (open: boolean) => void; onTabChange: (tab: NodeDrawerTab) => void; onRefresh: () => void; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void; onOpenAsset: (asset: AssetItemVm) => void }) {
   const { t } = useTranslation();
   return (
     <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
@@ -303,7 +305,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, optimisti
             </ScrollArea>
           </TabsContent>
           <TabsContent value="session" className="min-h-0 flex-1 overflow-hidden">
-            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} appConfig={appConfig} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
+            {nodeDetail ? <SessionContent vm={vm} detail={nodeDetail} appConfig={appConfig} workspaceProjectId={workspaceProjectId} onRefresh={onRefresh} optimisticAcpEventsByKey={optimisticAcpEventsByKey} onOptimisticAcpEventsChange={onOptimisticAcpEventsChange} /> : <EmptyState>{t('roundDetail.noSession')}</EmptyState>}
           </TabsContent>
         </Tabs>
       </SheetContent>
@@ -498,7 +500,7 @@ function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId
   return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
 }
 
-function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
+function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; workspaceProjectId?: string; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
   const { t } = useTranslation();
   const conversations = detail.acpConversations?.length ? detail.acpConversations : [];
   const initialKey = detail.selectedConversationKey ?? conversations[0]?.key ?? 'current';
@@ -512,6 +514,10 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
   const session = useMemo(
     () => selectedConversation ? mergedConversationSession(selectedConversation, detail.acpSession) : detail.acpSession,
     [detail.acpSession, selectedConversation],
+  );
+  const systemPromptOptions = useMemo(
+    () => buildConversationSystemPromptOptions(selectedConversation, detail.acpSession, detail.attemptId),
+    [detail.acpSession, detail.attemptId, selectedConversation],
   );
   const attemptId = activeAttempt?.attemptId ?? detail.attemptId;
   const runtimeStatus = activeAttempt?.status ?? detail.status;
@@ -533,7 +539,8 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           <ACPChatDialog
           key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}`}
           session={session}
-          systemPromptOptions={selectedConversation?.attempts.map((attempt) => ({ attemptId: attempt.attemptId, prompt: attempt.acpSession?.systemPromptAppend }))}
+          projectId={workspaceProjectId ?? 'default'}
+          systemPromptOptions={systemPromptOptions}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
           eventPageSize={appConfig.acpChatEventPageSize}
           taskId={vm.run.taskId}
@@ -543,7 +550,11 @@ function SessionContent({ vm, detail, appConfig, onRefresh, optimisticAcpEventsB
           attemptId={attemptId}
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
-          runtimeStatus={runtimeStatus}
+          runtimeComposerContext={{
+            runtimeStatus,
+            runtimeDisplay: undefined,
+            workflowValid: true,
+          }}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
           optimisticEvents={optimisticAcpEventsByKey[optimisticKey]}
           onOptimisticEventsChange={(events) => onOptimisticAcpEventsChange(optimisticKey, events)}
@@ -571,8 +582,9 @@ class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: s
   }
 }
 
-function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpConversations']>[number], fallback?: AcpSessionVm | null): AcpSessionVm | null {
-  const base = conversation.attempts.find((attempt) => attempt.attemptId === conversation.activeAttemptId)?.acpSession
+export function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpConversations']>[number], fallback?: AcpSessionVm | null): AcpSessionVm | null {
+  const activeAttempt = conversation.attempts.find((attempt) => attempt.attemptId === conversation.activeAttemptId);
+  const base = activeAttempt?.acpSession
     ?? conversation.attempts.at(-1)?.acpSession
     ?? fallback
     ?? null;
@@ -602,6 +614,9 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
     ...base,
     sessionId: conversation.sessionId ?? base.sessionId,
     restored: conversation.attempts.some((attempt) => attempt.acpSession?.restored),
+    systemPromptAppend: activeAttempt?.acpSession?.systemPromptAppend
+      ?? fallback?.systemPromptAppend
+      ?? base.systemPromptAppend,
     events,
     eventPage: {
       ...base.eventPage,
@@ -609,6 +624,33 @@ function mergedConversationSession(conversation: NonNullable<NodeDetailVm['acpCo
       total: Math.max(base.eventPage.total, events.length),
     },
   };
+}
+
+export function buildConversationSystemPromptOptions(
+  conversation: NonNullable<NodeDetailVm['acpConversations']>[number] | undefined,
+  fallback?: AcpSessionVm | null,
+  fallbackAttemptId?: string | null,
+) {
+  if (!conversation) {
+    return fallbackAttemptId && fallback?.systemPromptAppend?.trim()
+      ? [{ attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend }]
+      : undefined;
+  }
+  const options = conversation.attempts.map((attempt) => ({
+    attemptId: attempt.attemptId,
+    prompt: attempt.acpSession?.systemPromptAppend,
+  }));
+  if (fallbackAttemptId && fallback?.systemPromptAppend?.trim()) {
+    const index = options.findIndex((option) => option.attemptId === fallbackAttemptId);
+    if (index >= 0) {
+      if (!options[index]?.prompt?.trim()) {
+        options[index] = { attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend };
+      }
+    } else {
+      options.push({ attemptId: fallbackAttemptId, prompt: fallback.systemPromptAppend });
+    }
+  }
+  return options;
 }
 
 function LogDrawer({ vm, open, onOpenChange }: { vm: RoundDetailVm; open: boolean; onOpenChange: (open: boolean) => void }) {

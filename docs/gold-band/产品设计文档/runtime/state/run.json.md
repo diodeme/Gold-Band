@@ -7,6 +7,7 @@
 - 这次 run 属于哪个 task
 - 当前 run 正在运行、暂停还是已完成
 - 当前 round / node / attempt 到哪一步
+- 最近一次已完成节点的上报快照
 - 最终是成功、失败还是停止
 
 ---
@@ -51,6 +52,15 @@
 ---
 
 ## 4. 字段说明
+
+### `id`
+- 类型：string
+- 格式：`run-NNN`
+
+说明：
+- `id` 在同一 task 的 `runs/` 目录下唯一。
+- 创建新 run 时从该 task 下已持久化的最大 `run-*` 数字后缀递增，并在写入 `run.json` 前先原子创建对应 run 目录占位。
+- 会话页“重跑该任务”与普通 `run start` 共享同一分配规则，不允许基于当前选中的 run id 直接 `+1`。
 
 ### `status`
 - 类型：string
@@ -115,6 +125,24 @@
 说明：
 - 仅当 `status = paused` 时允许为非 null
 - MVP 中不支持用户主动 `pause`，因此 `pauseReason` 只记录系统观测到的挂起原因
+
+### `lastExecutedNode`
+- 类型：object | null
+- 含义：最近一次完成的节点快照，用于节点指标上报、下一节点启动时的 predecessor 语义，以及运行中断后的恢复分析；它是观察性快照，不参与控制流判定。
+
+说明：
+- 节点完成后的控制流推进必须优先于指标采集和 token 快照读取；`lastExecutedNode` 可以在推进完成后作为内存 predecessor 快照更新。
+- 该字段不得成为推进控制流的唯一事实源；控制流仍以当前完成节点的 `node.json.outcome` 和 workflow edge 为准。
+- 指标开关关闭时不得读取 ACP timeline / token 文件；指标开关开启时，token 读取、上报失败或 panic 都不得阻断 `run.json / round.json / node.json` 的推进落盘。
+
+### 推进落盘顺序
+
+节点完成后的状态更新必须避免长期暴露“当前 node 已 completed，但 run/round 仍停留在旧节点 running”的中间态：
+
+1. 先写当前 attempt 的 `node.json = completed + outcome`。
+2. 根据 workflow edge 计算下一步控制决策。
+3. 如果进入下一节点或新 round，必须立即写入新的 `run.current*`、`round.trace` 和新节点 `node.json = running`。
+4. 只有在上述状态落盘后，后续 provider 调用失败才允许表现为新节点暂停或错误阻塞；metrics 只能作为旁路观察逻辑，不能改变 runtime 主状态。
 
 ---
 

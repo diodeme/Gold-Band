@@ -21,7 +21,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
 export const mockAppInfo = {
   channel: 'default',
   appName: 'Gold Band',
@@ -56,13 +56,14 @@ function localTimestamp(date = new Date()) {
 }
 
 function runtimeDisplay(status?: string | null, outcome?: string | null, current = false, pauseReason?: string | null) {
-  if (outcome === 'success') return { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode: pauseReason ?? null };
-  if (outcome === 'failure' || outcome === 'killed') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null };
-  if (status === 'running') return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null };
-  if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason };
-  if (status === 'paused') return { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: true, reasonCode: pauseReason ?? null };
-  if (status === 'completed') return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: pauseReason ?? null };
-  return { code: status ?? 'pending', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null };
+  if (outcome === 'success') return { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (outcome === 'failure') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (outcome === 'killed') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: true };
+  if (status === 'running') return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason, blockingError: true };
+  if (status === 'paused') return { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: true, reasonCode: pauseReason ?? null, blockingError: false };
+  if (status === 'completed') return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  return { code: status ?? 'pending', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
 }
 
 const latestRun: RunSummaryVm = {

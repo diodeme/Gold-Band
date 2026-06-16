@@ -10,6 +10,7 @@ export interface PreferencesVm {
   language: DesktopLanguage;
   font: DesktopFontPreference;
   useLocalClaude: boolean;
+  verboseLogging: boolean;
 }
 
 export interface LocalClaudeStatusVm {
@@ -243,6 +244,7 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  acceptanceModel?: string | null;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -437,6 +439,7 @@ export interface RuntimeDisplayVm {
   terminal: boolean;
   resumable: boolean;
   reasonCode?: string | null;
+  blockingError: boolean;
 }
 
 export interface GraphNodeVm {
@@ -601,6 +604,12 @@ export interface AcpSessionVm {
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
+}
+
+export interface ActiveSessionStopVm {
+  kind: 'run-paused' | 'session-cancelled' | string;
+  run?: RunSummaryVm | null;
+  session?: AcpSessionVm | null;
 }
 
 export interface AcpSessionQueryInput {
@@ -855,6 +864,31 @@ export interface PinRef {
   taskId: string;
 }
 
+export interface ConversationRuntimeFacetVm {
+  status: string;
+  outcome?: string | null;
+  pauseReason?: string | null;
+  resumable: boolean;
+  current: boolean;
+  active: boolean;
+  continuable: boolean;
+}
+
+export interface ConversationAcpFacetVm {
+  status?: string | null;
+  active: boolean;
+  stopping: boolean;
+  terminal: boolean;
+}
+
+export interface ConversationAttemptLifecycleVm {
+  runtime: ConversationRuntimeFacetVm;
+  acp: ConversationAcpFacetVm;
+  displayStatus: string;
+  runtimeDisplay: RuntimeDisplayVm;
+  continueKind?: 'input' | 'action' | string | null;
+}
+
 export interface ConversationSessionLeafVm {
   roundId: string;
   nodeId: string;
@@ -865,6 +899,7 @@ export interface ConversationSessionLeafVm {
   status: string;
   outcome?: string | null;
   runtimeDisplay: RuntimeDisplayVm;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -937,6 +972,7 @@ export interface ConversationActiveSessionVm {
   pathLabel: string;
   status: string;
   runtimeDisplay: RuntimeDisplayVm;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
   sessionId?: string | null;
   startedAt?: string | null;
 }
@@ -952,6 +988,7 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  acceptanceModelId?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;
   availableAgents?: DynamicAgentRefDsl[];

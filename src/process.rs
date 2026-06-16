@@ -10,7 +10,12 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn find_executable_in_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var("PATH").ok()?;
+    let path_var = std::env::var_os("PATH");
+    find_executable_in_paths(name, path_var.as_deref())
+}
+
+pub fn find_executable_in_paths(name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
+    let path_var = path_var?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(name);
         if candidate.is_file() {

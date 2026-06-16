@@ -2,6 +2,7 @@ pub mod sqlite;
 
 use crate::domain::VERSION;
 use anyhow::Result;
+use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -135,14 +136,6 @@ impl GoldBandPaths {
             .unwrap_or_else(|| Utf8PathBuf::from("."));
         dir.join(active_storage_path_config().app_key)
             .join("state.json")
-    }
-
-    pub fn repo_configs_dir(&self) -> Utf8PathBuf {
-        self.repo_root.join("configs")
-    }
-
-    pub fn repo_app_config_file(&self) -> Utf8PathBuf {
-        self.repo_configs_dir().join("app-config.json")
     }
 
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
@@ -741,7 +734,12 @@ fn project_id(repo_root: &Utf8Path) -> String {
             id.push('-');
         }
     }
-    id.trim_matches('-').to_string()
+    let trimmed = id.trim_matches('-');
+    if trimmed.is_empty() {
+        "root".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
@@ -753,8 +751,10 @@ pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
 
 pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     ensure_parent_dir(path)?;
-    let content = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_vec_pretty(value)?;
+    let mut file = AtomicWriteFile::open(path.as_std_path())?;
+    file.write_all(&content)?;
+    file.commit()?;
     Ok(())
 }
 
@@ -765,9 +765,7 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
         match serde_json::from_str(&content) {
             Ok(value) => return Ok(value),
             Err(error)
-                if attempt + 1 < MAX_ATTEMPTS
-                    && (content.trim().is_empty()
-                        || matches!(error.classify(), serde_json::error::Category::Eof)) =>
+                if attempt + 1 < MAX_ATTEMPTS && should_retry_json_read(&content, &error) =>
             {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -775,6 +773,14 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
         }
     }
     unreachable!("read_json should have returned within retry loop")
+}
+
+fn should_retry_json_read(content: &str, error: &serde_json::Error) -> bool {
+    content.trim().is_empty()
+        || matches!(
+            error.classify(),
+            serde_json::error::Category::Eof | serde_json::error::Category::Syntax
+        )
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
@@ -785,6 +791,37 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
         .open(path.as_std_path())?;
     serde_json::to_writer(&mut file, value)?;
     file.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Trim a JSONL file from the beginning when it exceeds `max_size`,
+/// keeping the most recent lines that fit within `target_size`.
+pub fn roll_jsonl(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+    let meta = match std::fs::metadata(path.as_std_path()) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if meta.len() <= max_size {
+        return Ok(());
+    }
+    let content = std::fs::read(path.as_std_path())?;
+    let total = content.len() as u64;
+    if total <= target_size {
+        return Ok(());
+    }
+    let excess = total.saturating_sub(target_size);
+    let mut cumulative = 0u64;
+    let mut drop_bytes = 0usize;
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
+        if cumulative >= excess {
+            break;
+        }
+        cumulative += line.len() as u64;
+        drop_bytes += line.len();
+    }
+    let drop_bytes = drop_bytes.min(content.len());
+    let keep = &content[drop_bytes..];
+    std::fs::write(path.as_std_path(), keep)?;
     Ok(())
 }
 
@@ -916,5 +953,118 @@ mod tests {
                 .ends_with("/.gold-band/state.json")
         );
         assert!(state.to_string().replace('\\', "/").contains("gold-band"));
+    }
+
+    #[test]
+    fn write_json_replaces_longer_existing_file_without_trailing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("state.json")).unwrap();
+        std::fs::write(path.as_std_path(), r#"{"items":[1,2,3],"stale":true}"#).unwrap();
+
+        write_json(&path, &serde_json::json!({"ok": true})).unwrap();
+
+        let contents = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(
+            contents,
+            r#"{
+  "ok": true
+}"#
+        );
+        assert_eq!(
+            read_json::<serde_json::Value>(&path).unwrap(),
+            serde_json::json!({"ok": true})
+        );
+        assert!(!contents.contains("stale"));
+    }
+
+    #[test]
+    fn write_json_does_not_leave_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("state.json")).unwrap();
+
+        write_json(&path, &serde_json::json!({"ok": true})).unwrap();
+
+        let files = std::fs::read_dir(dir.path())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().to_string_lossy(), "state.json");
+    }
+
+    #[test]
+    fn roll_jsonl_trims_oldest_lines_when_over_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();
+
+        // Write 3 lines totaling ~60+ bytes
+        append_jsonl(&path, &"line-one-is-longer").unwrap();
+        append_jsonl(&path, &"line-two").unwrap();
+        append_jsonl(&path, &"line-three-even-longer").unwrap();
+
+        let original = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(original.lines().count(), 3);
+
+        // Set max so we need to drop first line
+        let meta = std::fs::metadata(path.as_std_path()).unwrap();
+        let target = meta.len() / 2; // keep roughly half
+        roll_jsonl(&path, target.saturating_sub(1), target).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        let lines: Vec<&str> = after.lines().collect();
+        assert!(lines.len() < 3, "should have dropped some lines");
+        assert!(
+            after.len() as u64 <= target + 10,
+            "should be roughly under target"
+        );
+    }
+
+    #[test]
+    fn roll_jsonl_noop_when_under_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();
+
+        append_jsonl(&path, &"hello").unwrap();
+        let before = std::fs::read_to_string(path.as_std_path()).unwrap();
+
+        // max far above current size
+        roll_jsonl(&path, 1024 * 1024, 512 * 1024).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn roll_jsonl_trims_unicode_file_without_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("unicode.jsonl")).unwrap();
+        let first = r#"{"content":"本次任务包含中文内容一"}"#;
+        let second = r#"{"content":"本次任务包含中文内容二"}"#;
+        std::fs::write(path.as_std_path(), format!("{first}\n{second}")).unwrap();
+
+        roll_jsonl(&path, 1, second.len() as u64).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(after, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_workspace_uses_stable_non_empty_project_id() {
+        let temp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("/"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
+
+        assert_eq!(paths.project_id, "root");
+        assert!(
+            paths
+                .runtime_log_file()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/projects/root/logs/runtime.log")
+        );
     }
 }

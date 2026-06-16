@@ -1,9 +1,14 @@
-use std::collections::HashSet;
-use std::sync::mpsc;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
+use jsonschema::JSONSchema;
+use jsonschema::error::{ValidationError, ValidationErrorKind};
 
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
@@ -19,12 +24,13 @@ use crate::dsl::{
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
-    DynamicCompletionStatus, DynamicGraphState, DynamicGroupState, DynamicGroupStatus, DynamicNext,
-    DynamicNodeCompletion, DynamicNodeCompletionKind, DynamicNodeKind, DynamicNodeSpec,
-    DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus, DynamicProposalState,
-    DynamicProposalValidationError, DynamicProposalValidationStatus, DynamicRunState,
-    DynamicRunStatus, WorkspaceMode, WorkspacePolicy, dynamic_completion_schema,
-    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
+    DynamicCompletionSchemaPolicy, DynamicCompletionStatus, DynamicGraphState, DynamicGroupState,
+    DynamicGroupStatus, DynamicNext, DynamicNodeCompletion, DynamicNodeCompletionKind,
+    DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus,
+    DynamicProposalState, DynamicProposalValidationError, DynamicProposalValidationStatus,
+    DynamicRunState, DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
+    dynamic_completion_effective_schema, validate_dynamic_group_state, validate_dynamic_node_state,
+    validate_dynamic_run_state,
 };
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
@@ -50,7 +56,7 @@ use crate::runtime::{
 };
 use crate::storage::{append_jsonl, read_json, write_json};
 
-use super::ids::{generate_uuid, next_attempt_id, next_run_id, now_rfc3339_like};
+use super::ids::{generate_uuid, next_attempt_id, now_rfc3339_like, reserve_next_run_dir};
 use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
@@ -74,21 +80,118 @@ struct NextExecution {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
+    OnceLock::new();
+static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DYNAMIC_STATE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+#[derive(Debug)]
+struct GitCommandOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DynamicWorkspaceCapability {
+    supports_worktree: bool,
+    reason_code: &'static str,
+    reason: String,
+}
 
 fn dynamic_validation_error(
     code: &str,
     message: impl Into<String>,
     params: serde_json::Value,
 ) -> DynamicProposalValidationError {
-    DynamicProposalValidationError::new(code, message, params)
+    let mut error = DynamicProposalValidationError::new(code, message, params);
+    enrich_dynamic_validation_error_defaults(&mut error);
+    error
 }
 
 fn dynamic_validation_error_lines(errors: &[DynamicProposalValidationError]) -> String {
     errors
         .iter()
-        .map(|error| format!("- [{}] {}", error.code, error.message))
+        .map(|error| {
+            let path = error
+                .path
+                .as_deref()
+                .map(|path| format!(" path={path}"))
+                .unwrap_or_default();
+            format!("- [{}]{} {}", error.code, path, error.message)
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn enrich_dynamic_validation_error_defaults(error: &mut DynamicProposalValidationError) {
+    if error.path.is_none() {
+        error.path = infer_dynamic_error_path(&error.params);
+    }
+    if error.actual.is_none() {
+        error.actual = infer_dynamic_error_actual(&error.params);
+    }
+    if error.expected.is_none() {
+        error.expected = infer_dynamic_error_expected(error.code.as_str(), &error.params);
+    }
+}
+
+fn json_param_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn infer_dynamic_error_path(params: &serde_json::Value) -> Option<String> {
+    if let Some(path) = params.get("path").and_then(|value| value.as_str()) {
+        return Some(path.to_string());
+    }
+    let field = params.get("field").and_then(|value| value.as_str());
+    let stage = params.get("stage").and_then(|value| value.as_str());
+    let node_id = params.get("nodeId").and_then(|value| value.as_str());
+    match (stage, node_id, field) {
+        (Some(stage @ ("merge" | "acceptance")), _, Some(field)) => {
+            Some(format!("next.{stage}.{field}"))
+        }
+        (_, Some(node_id), Some(field)) => Some(format!("next.nodes[id={node_id}].{field}")),
+        (_, Some(node_id), None) => Some(format!("next.nodes[id={node_id}]")),
+        (_, _, Some(field)) => Some(field.to_string()),
+        _ => None,
+    }
+}
+
+fn infer_dynamic_error_actual(params: &serde_json::Value) -> Option<String> {
+    [
+        "actual",
+        "profile",
+        "provider",
+        "model",
+        "permissionMode",
+        "workflowId",
+        "nodeId",
+        "groupId",
+    ]
+    .into_iter()
+    .find_map(|key| params.get(key).and_then(json_param_string))
+}
+
+fn infer_dynamic_error_expected(code: &str, params: &serde_json::Value) -> Option<String> {
+    if let Some(expected) = params.get("expected").and_then(json_param_string) {
+        return Some(expected);
+    }
+    if code.ends_with(".blank") {
+        return Some("non-empty value".to_string());
+    }
+    if code.ends_with(".unknown") {
+        return Some("known configured value".to_string());
+    }
+    if code.ends_with(".unallowed") {
+        return Some("allowed configured value".to_string());
+    }
+    None
 }
 
 fn localized_continue_prompt(language: DesktopLanguage) -> String {
@@ -96,6 +199,13 @@ fn localized_continue_prompt(language: DesktopLanguage) -> String {
         DesktopLanguage::ZhCn => "继续".to_string(),
         DesktopLanguage::En => "Continue".to_string(),
     }
+}
+
+fn continue_prompt_or_default(language: DesktopLanguage, prompt: Option<String>) -> String {
+    prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| localized_continue_prompt(language))
 }
 
 fn output_schema_for_node<'a>(
@@ -208,7 +318,7 @@ fn prepare_run(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let run_id = next_run_id(&app.paths.runs_dir(task_id))?;
+    let (run_id, _) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
@@ -277,6 +387,11 @@ fn prepare_run(
         entry_node,
         entry_profile,
     );
+    write_json(
+        &app.paths
+            .node_file(task_id, &run_id, &round_id, &node.node_id, &node.attempt_id),
+        &node,
+    )?;
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
         .with_node(node.node_id.clone())
@@ -333,6 +448,7 @@ pub(crate) fn run_continue(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -416,7 +532,10 @@ pub(crate) fn run_continue(
                     (
                         SessionMode::Continue,
                         Some(continue_ref),
-                        Some(localized_continue_prompt(app.config.desktop_language)),
+                        Some(continue_prompt_or_default(
+                            app.config.desktop_language,
+                            prompt,
+                        )),
                         prompt_id,
                     )
                 }
@@ -450,6 +569,7 @@ pub(crate) fn run_continue_background(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
+    prompt: Option<String>,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
@@ -463,10 +583,11 @@ pub(crate) fn run_continue_background(
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
+    let prompt = prompt.clone();
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id) {
+        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -890,6 +1011,58 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
         )
 }
 
+fn completed_node_snapshot(
+    round: &RoundState,
+    node: &NodeState,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    total_tokens: u64,
+) -> crate::runtime::LastExecutedNode {
+    let status = match node.outcome {
+        Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
+        Some(crate::domain::NodeOutcome::Failure)
+        | Some(crate::domain::NodeOutcome::Killed)
+        | Some(crate::domain::NodeOutcome::Invalid)
+        | None => "FAILED",
+    };
+    let node_name = node
+        .resolved_config
+        .get("profileName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let seq = round
+        .trace
+        .iter()
+        .filter(|t| t.node_id == node.node_id)
+        .map(|t| t.sequence)
+        .last();
+    let agent_type = node
+        .resolved_config
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    crate::runtime::LastExecutedNode {
+        node_id: node.node_id.clone(),
+        uuid: node.uuid.clone().unwrap_or_default(),
+        round_uuid: round.uuid.clone().unwrap_or_default(),
+        node_name,
+        seq,
+        agent_type,
+        status: status.to_string(),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        total_tokens,
+    }
+}
+
 fn apply_control_decision(
     app: &App,
     task_id: &str,
@@ -1011,6 +1184,7 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: session,
@@ -1125,6 +1299,7 @@ fn apply_control_decision(
                 ),
             );
             validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
                 session_mode: SessionMode::New,
@@ -1210,7 +1385,17 @@ fn apply_control_decision(
             );
             validate_round_state(round)?;
             validate_run_state(run)?;
+            let completed_node_id = node.node_id.clone();
+            let completed_attempt_id = node.attempt_id.clone();
             persist_runtime_state(app, task_id, run, round, node)?;
+            emit_completed_acp_session_update_best_effort(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                &completed_node_id,
+                &completed_attempt_id,
+            );
             Ok(None)
         }
     }
@@ -1296,6 +1481,25 @@ fn freeze_allowed_workflow_snapshots(
     Ok(snapshots)
 }
 
+fn emit_completed_acp_session_update_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) {
+    let _ = app.emit_acp_session_update(AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    });
+}
+
 fn dynamic_acp_live_event_context(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
@@ -1361,7 +1565,7 @@ fn dynamic_runtime_context(
         node_dir,
         attempt_dir,
         attachments_dir,
-        task_inputs_dir: None,
+        task_inputs_dir: super::existing_task_inputs_dir(ctx.app, ctx.task_id),
     }
 }
 
@@ -1384,6 +1588,18 @@ fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option
     }
 }
 
+fn dynamic_acceptance_model(dynamic: &AiDynamicNode) -> Option<&str> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { .. } => None,
+        AiDynamicAgentStrategy::Dynamic {
+            acceptance_model, ..
+        } => acceptance_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty()),
+    }
+}
+
 fn dynamic_requires_model_in_proposal(dynamic: &AiDynamicNode) -> bool {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { .. } => false,
@@ -1391,10 +1607,30 @@ fn dynamic_requires_model_in_proposal(dynamic: &AiDynamicNode) -> bool {
     }
 }
 
+fn dynamic_requires_provider_in_proposal(dynamic: &AiDynamicNode) -> bool {
+    matches!(
+        &dynamic.agent_strategy,
+        AiDynamicAgentStrategy::Dynamic { .. }
+    )
+}
+
 fn provider_model_options_summary(
     ctx: &DynamicExecutionContext<'_>,
     provider: &str,
 ) -> Vec<String> {
+    provider_model_option_values(ctx, provider)
+        .into_iter()
+        .map(|(name, description)| match description {
+            Some(description) => format!("{name} — {description}"),
+            None => name,
+        })
+        .collect()
+}
+
+fn provider_model_option_values(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> Vec<(String, Option<String>)> {
     let Ok(doctor) = ctx.app.provider_doctor(provider) else {
         return Vec::new();
     };
@@ -1402,15 +1638,15 @@ fn provider_model_options_summary(
         .into_iter()
         .map(|model| {
             let name = model.name.as_deref().unwrap_or(model.id.as_str());
-            match model.description.as_deref() {
-                Some(description) => format!("{name} — {description}"),
-                None => name.to_string(),
-            }
+            (name.to_string(), model.description)
         })
         .collect()
 }
 
-fn dynamic_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>, provider: &str) -> bool {
+fn dynamic_worker_model_required_from_proposal(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> bool {
     match &ctx.dynamic.agent_strategy {
         AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
         AiDynamicAgentStrategy::Fixed { .. } => {
@@ -1419,6 +1655,98 @@ fn dynamic_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>, provi
         }
     }
 }
+
+fn dynamic_agent_task_model_required_from_proposal(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> bool {
+    if dynamic_acceptance_model(ctx.dynamic).is_some() {
+        return false;
+    }
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+        AiDynamicAgentStrategy::Fixed { .. } => {
+            dynamic_model_for_provider(ctx.dynamic, provider).is_none()
+                && !provider_model_options_summary(ctx, provider).is_empty()
+        }
+    }
+}
+
+fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>) -> bool {
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, .. } => {
+            dynamic_worker_model_required_from_proposal(ctx, provider)
+        }
+        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+    }
+}
+
+fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
+            if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
+                return format!(
+                    "The fixed provider has configured model `{model}`; do not output `model`."
+                );
+            }
+            if dynamic_worker_model_required_from_proposal(ctx, provider) {
+                "The fixed provider has no configured model and exposes selectable models; output `model` for every worker / merge / acceptance node, using one model name from the provider list.".to_string()
+            } else {
+                "The fixed provider has no configured model catalog; do not output `model`, and runtime will use the provider default.".to_string()
+            }
+        }
+        AiDynamicAgentStrategy::Dynamic { routing_prompt, .. } => {
+            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+                if routing_prompt.trim().is_empty() {
+                    format!(
+                        "Routing guidance is empty, so worker models stay runtime-configured; do not output `model` for workers. `merge` / `acceptance` use the configured acceptance model `{model}`; do not output `model` for them."
+                    )
+                } else {
+                    format!(
+                        "Routing guidance is configured, so every worker node must output `model`; if a provider already has a configured model, runtime still prefers the configured model. `merge` / `acceptance` use the configured acceptance model `{model}`; do not output `model` for them."
+                    )
+                }
+            } else if routing_prompt.trim().is_empty() {
+                "Routing guidance is empty, so provider models are configured by runtime; do not output `model` for worker / merge / acceptance nodes.".to_string()
+            } else {
+                "Routing guidance is configured, so every worker / merge / acceptance node must output `model`; if a provider already has a configured model, runtime still prefers the configured model.".to_string()
+            }
+        }
+    }
+}
+
+fn dynamic_model_policy_summary_zh_cn(ctx: &DynamicExecutionContext<'_>) -> String {
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, model } => {
+            if let Some(model) = model.as_deref().filter(|model| !model.trim().is_empty()) {
+                return format!("固定 provider 已配置模型 `{model}`；不要输出 `model`。");
+            }
+            if dynamic_worker_model_required_from_proposal(ctx, provider) {
+                "固定 provider 未配置模型且提供了可选模型列表；每个 worker / merge / acceptance 节点都必须输出 `model`，并使用 provider 列表中的模型名称。".to_string()
+            } else {
+                "固定 provider 没有可用模型列表；不要输出 `model`，runtime 会使用 provider 默认模型。".to_string()
+            }
+        }
+        AiDynamicAgentStrategy::Dynamic { routing_prompt, .. } => {
+            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+                if routing_prompt.trim().is_empty() {
+                    format!(
+                        "当前没有节点 agent 选择说明，worker 的 provider 模型由 runtime 配置决定；不要在 worker 节点中输出 `model`。`merge` / `acceptance` 统一使用已配置的验收模型 `{model}`；不要为它们输出 `model`。"
+                    )
+                } else {
+                    format!(
+                        "当前提供了节点 agent 选择说明，因此每个 worker 节点都必须输出 `model`；如果某个 provider 已经锁定模型，runtime 仍会优先使用配置模型。`merge` / `acceptance` 统一使用已配置的验收模型 `{model}`；不要为它们输出 `model`。"
+                    )
+                }
+            } else if routing_prompt.trim().is_empty() {
+                "当前没有节点 agent 选择说明，provider 模型由 runtime 配置决定；不要在 worker / merge / acceptance 节点中输出 `model`。".to_string()
+            } else {
+                "当前提供了节点 agent 选择说明，因此每个 worker / merge / acceptance 节点都必须输出 `model`；如果某个 provider 已经锁定模型，runtime 仍会优先使用配置模型。".to_string()
+            }
+        }
+    }
+}
+
 fn dynamic_agent_routing_prompt(dynamic: &AiDynamicNode) -> Option<&str> {
     match &dynamic.agent_strategy {
         AiDynamicAgentStrategy::Fixed { .. } => None,
@@ -1426,10 +1754,68 @@ fn dynamic_agent_routing_prompt(dynamic: &AiDynamicNode) -> Option<&str> {
     }
 }
 
+fn dynamic_completion_schema_policy(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> DynamicCompletionSchemaPolicy {
+    let provider_ids = dynamic_available_provider_ids(ctx);
+    let mut model_names = Vec::new();
+    let node_model_required = dynamic_any_worker_model_required_from_proposal(ctx);
+    let agent_task_model_required = match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, .. } => {
+            dynamic_agent_task_model_required_from_proposal(ctx, provider)
+        }
+        AiDynamicAgentStrategy::Dynamic { .. } => {
+            dynamic_requires_model_in_proposal(ctx.dynamic)
+                && dynamic_acceptance_model(ctx.dynamic).is_none()
+        }
+    };
+    let any_model_visible = node_model_required || agent_task_model_required;
+    if any_model_visible {
+        for provider in &provider_ids {
+            for (model, _) in provider_model_option_values(ctx, provider) {
+                if !model_names.iter().any(|existing| existing == &model) {
+                    model_names.push(model);
+                }
+            }
+        }
+    }
+    DynamicCompletionSchemaPolicy {
+        provider_required: dynamic_requires_provider_in_proposal(ctx.dynamic),
+        node_model_required,
+        agent_task_model_required,
+        agent_task_model_visible: dynamic_acceptance_model(ctx.dynamic).is_none(),
+        provider_ids,
+        model_names,
+        profile_ids: available_profile_refs(ctx)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect(),
+        workflow_ids: graph
+            .run
+            .allowed_workflow_snapshots
+            .iter()
+            .map(|snapshot| snapshot.workflow_id.clone())
+            .collect(),
+        max_fanout: graph.run.control.max_fanout,
+    }
+}
+
+fn dynamic_effective_completion_schema(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> serde_json::Value {
+    let policy = dynamic_completion_schema_policy(ctx, graph);
+    dynamic_completion_effective_schema(&policy)
+}
+
 fn dynamic_output_contract(
-    language: DesktopLanguage,
-    dynamic: &AiDynamicNode,
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
 ) -> PromptOutputContract {
+    let language = ctx.app.config.desktop_language;
+    let schema = dynamic_effective_completion_schema(ctx, graph);
+    let json_schema = serde_json::to_string_pretty(&schema).expect("serialize dynamic schema");
     let schema_text = render_template(
         prompt_by_language(
             language,
@@ -1437,15 +1823,21 @@ fn dynamic_output_contract(
             AI_DYNAMIC_OUTPUT_PROTOCOL_EN,
         ),
         serde_json::json!({
-            "agent_strategy_mode": dynamic_agent_strategy_mode(dynamic),
-            "dynamic_requires_model_in_proposal": dynamic_requires_model_in_proposal(dynamic),
+            "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
+            "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.dynamic),
+            "model_required_in_proposal": dynamic_any_worker_model_required_from_proposal(ctx),
+            "model_policy": match language {
+                DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
+                DesktopLanguage::En => dynamic_model_policy_summary(ctx),
+            },
+            "json_schema": json_schema,
         }),
     )
     .expect("prompt template renders");
     PromptOutputContract {
         artifact: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
         kind: "json".to_string(),
-        schema: Some(dynamic_completion_schema()),
+        schema: Some(schema),
         schema_text: Some(schema_text.trim().to_string()),
         success_condition: None,
     }
@@ -1467,6 +1859,44 @@ fn dynamic_proposal_file_path(ctx: &DynamicExecutionContext<'_>, proposal_id: &s
         )
         .join("proposals")
         .join(format!("{proposal_id}.json"))
+}
+
+fn dynamic_state_lock_key(
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> String {
+    format!("{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
+}
+
+fn dynamic_state_lock(ctx: &DynamicExecutionContext<'_>) -> Result<Arc<Mutex<()>>> {
+    dynamic_state_lock_for(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    )
+}
+
+fn dynamic_state_lock_for(
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> Result<Arc<Mutex<()>>> {
+    let key = dynamic_state_lock_key(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let mut locks = DYNAMIC_STATE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic state lock registry poisoned"))?;
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
 }
 
 fn execute_ai_dynamic_node(
@@ -1542,6 +1972,10 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         ctx.outer_attempt_id,
     );
     if graph_path.exists() {
+        let lock = dynamic_state_lock(ctx)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
         return read_json(&graph_path);
     }
 
@@ -1567,7 +2001,15 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         workspace_path: Some(ctx.app.paths.repo_root.clone()),
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
-        permission_mode: ctx.dynamic.permission_mode().map(ToOwned::to_owned),
+        permission_mode: ctx
+            .dynamic
+            .bootstrap_provider()
+            .and_then(|provider| {
+                ctx.dynamic
+                    .permission_mode()
+                    .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+            })
+            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned)),
         model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
@@ -1626,6 +2068,9 @@ fn drive_dynamic_graph(
             continue;
         }
         if dynamic_graph_completed(graph) {
+            for node in &graph.nodes {
+                teardown_dynamic_workspace_best_effort(ctx, node);
+            }
             graph.run.status = DynamicRunStatus::Completed;
             graph.run.outcome = Some(RunOutcome::Success);
             graph.run.updated_at = now_rfc3339_like();
@@ -1701,9 +2146,9 @@ fn launch_ready_dynamic_nodes(
         let tx = tx.clone();
         thread::spawn(move || {
             let app = background_app;
-            let message = DynamicExecutionMessage {
-                node_id: node_clone.id.clone(),
-                result: execute_dynamic_node_job(
+            let node_id = node_clone.id.clone();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                execute_dynamic_node_job(
                     &app,
                     &task_id,
                     &run_id,
@@ -1712,8 +2157,17 @@ fn launch_ready_dynamic_nodes(
                     &outer_attempt_id,
                     &dynamic,
                     node_clone,
-                ),
-            };
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                let panic_message = payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                Err(anyhow!("dynamic node job panicked: {panic_message}"))
+            });
+            let message = DynamicExecutionMessage { node_id, result };
             let _ = tx.send(message);
         });
     }
@@ -1730,7 +2184,17 @@ fn apply_dynamic_execution_message(
         .iter()
         .position(|node| node.id == message.node_id)
         .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", message.node_id))?;
-    let result = message.result?;
+    let result = match message.result {
+        Ok(result) => result,
+        Err(error) => {
+            let reason = error.to_string();
+            graph.nodes[index].status = DynamicNodeStatus::Paused;
+            graph.nodes[index].outcome = None;
+            graph.nodes[index].finished_at = Some(now_rfc3339_like());
+            pause_dynamic_graph(ctx, graph, PauseReason::ErrorBlocked, &reason)?;
+            return Err(error);
+        }
+    };
     graph.nodes[index] = result.node;
     if graph.nodes[index].status == DynamicNodeStatus::Paused {
         let pause_reason = match graph.nodes[index].kind {
@@ -1818,8 +2282,14 @@ fn execute_dynamic_node_job(
     let graph_path =
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
-    let run: DynamicRunState = read_json(&dynamic_run_path)?;
-    let mut graph: DynamicGraphState = read_json(&graph_path)?;
+    let state_lock =
+        dynamic_state_lock_for(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
+    let (run, mut graph): (DynamicRunState, DynamicGraphState) = {
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
+        (read_json(&dynamic_run_path)?, read_json(&graph_path)?)
+    };
     let ctx = DynamicExecutionContext {
         app,
         task_id,
@@ -1921,16 +2391,14 @@ fn execute_dynamic_worker(
 
     loop {
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
-        let live_update = ctx.app.acp_live_update_for(live_update_context);
+        let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
+        let session_update = ctx.app.acp_session_update_for(live_update_context);
         let invocation = build_dynamic_worker_invocation(
             ctx,
             graph,
             &node,
             &attempt_id,
-            Some(dynamic_output_contract(
-                ctx.app.config.desktop_language,
-                ctx.dynamic,
-            )),
+            Some(dynamic_output_contract(ctx, graph)),
             session_mode,
             continue_ref.clone(),
             resume_prompt.take(),
@@ -1968,9 +2436,10 @@ fn execute_dynamic_worker(
                     node.id
                 )
             })?
-            .run_worker_with_live_update(
+            .run_worker_with_callbacks(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
+                session_update.as_ref().map(|callback| callback as _),
             )
             .map_err(|error| {
                 anyhow!(
@@ -2073,6 +2542,9 @@ fn execute_dynamic_worker(
                 return Ok(DynamicExecutionResult { node, proposals });
             }
             Err(err) if proposal_repair_prompts < MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS => {
+                let schema_validation_errors = err
+                    .downcast_ref::<DynamicCompletionSchemaValidationError>()
+                    .map(|error| error.errors.clone());
                 let repair_continue_ref = read_json::<WorkerRefState>(&worker_ref_path)
                     .ok()
                     .and_then(|worker_ref| worker_ref.continue_ref);
@@ -2089,16 +2561,15 @@ fn execute_dynamic_worker(
                         "repairAttempt": proposal_repair_prompts,
                         "maxRepairAttempts": MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS,
                         "error": err.to_string(),
+                        "validationErrors": schema_validation_errors.clone(),
                     }),
                 )?;
                 session_mode = SessionMode::Continue;
                 continue_ref = Some(repair_continue_ref);
-                resume_prompt = Some(dynamic_text_repair_prompt(
-                    ctx,
-                    graph,
-                    &node,
-                    err.to_string(),
-                ));
+                resume_prompt = Some(match schema_validation_errors {
+                    Some(errors) => dynamic_structured_repair_prompt(ctx, graph, &node, &errors),
+                    None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
+                });
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
@@ -2143,7 +2614,8 @@ fn execute_dynamic_agent_stage(
         None
     };
     let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
-    let live_update = ctx.app.acp_live_update_for(live_update_context);
+    let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
+    let session_update = ctx.app.acp_session_update_for(live_update_context);
     let invocation = build_dynamic_worker_invocation(
         ctx,
         graph,
@@ -2171,9 +2643,10 @@ fn execute_dynamic_agent_stage(
     let result = ctx
         .app
         .provider_for_id(provider_id)?
-        .run_worker_with_live_update(
+        .run_worker_with_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
+            session_update.as_ref().map(|callback| callback as _),
         )?;
     finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
     if node.status == DynamicNodeStatus::Paused {
@@ -2182,6 +2655,7 @@ fn execute_dynamic_agent_stage(
             proposals: Vec::new(),
         });
     }
+    teardown_dynamic_workspace_best_effort(ctx, &node);
     if node.outcome != Some(NodeOutcome::Success) {
         bail!("dynamic stage `{}` failed", node.id);
     }
@@ -2258,7 +2732,9 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     let child_run = match node.child_run_id.as_deref() {
-        Some(child_run_id) => ctx.app.run_continue(ctx.task_id, child_run_id, None)?,
+        Some(child_run_id) => ctx
+            .app
+            .run_continue(ctx.task_id, child_run_id, None, None)?,
         None => ctx
             .app
             .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
@@ -2321,9 +2797,13 @@ fn execute_dynamic_workflow_invocation(
                     proposals: Vec::new(),
                 });
             }
-            _ => bail!("child workflow invocation `{}` failed", node.id),
+            _ => {
+                teardown_dynamic_workspace_best_effort(ctx, &node);
+                bail!("child workflow invocation `{}` failed", node.id);
+            }
         }
     }
+    teardown_dynamic_workspace_best_effort(ctx, &node);
     let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&node.id));
     let completion = DynamicNodeCompletion {
         version: VERSION.to_string(),
@@ -2355,6 +2835,8 @@ fn execute_dynamic_workflow_invocation(
                 )
                 .join("raw.stream.jsonl"),
         ),
+        None,
+        Vec::new(),
     )?;
     Ok(DynamicExecutionResult {
         node,
@@ -2489,8 +2971,21 @@ fn build_dynamic_completion_from_artifact(
         "dynamic node `{}` did not produce dynamic-node-completion",
         node.id
     );
+    let graph: DynamicGraphState = {
+        let lock = dynamic_state_lock(ctx)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
+        read_json(&ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))?
+    };
     let raw = std::fs::read_to_string(artifact_path.as_std_path())?;
-    let completion: DynamicNodeCompletion = parse_json_artifact(&raw)?;
+    let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, &raw)?;
     let raw_output_path = ctx
         .app
         .paths
@@ -2510,7 +3005,341 @@ fn build_dynamic_completion_from_artifact(
         completion,
         Some(artifact_path),
         Some(raw_output_path),
+        Some(parsed),
+        schema_errors,
     )
+}
+
+fn parse_dynamic_completion_artifact(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    raw: &str,
+) -> Result<(
+    DynamicNodeCompletion,
+    serde_json::Value,
+    Vec<DynamicProposalValidationError>,
+)> {
+    let parsed: serde_json::Value = parse_json_artifact(raw)?;
+    let schema_errors = validate_dynamic_completion_schema(ctx, graph, &parsed)?;
+    let completion: DynamicNodeCompletion = serde_path_to_error::deserialize(parsed.clone())
+        .map_err(|err| {
+            if !schema_errors.is_empty() {
+                return DynamicCompletionSchemaValidationError {
+                    errors: schema_errors.clone(),
+                }
+                .into();
+            }
+            let path = err.path().to_string();
+            let path = if path == "." { "$".to_string() } else { path };
+            let path = refine_dynamic_parse_error_path(&parsed, &path, &err.inner().to_string());
+            anyhow!(
+                "failed to parse dynamic-node-completion at JSON path `{}`: {}",
+                path,
+                err.inner()
+            )
+        })?;
+    Ok((completion, parsed, schema_errors))
+}
+
+fn refine_dynamic_parse_error_path(
+    parsed: &serde_json::Value,
+    path: &str,
+    message: &str,
+) -> String {
+    let Some(field) = missing_field_from_serde_message(message) else {
+        return path.to_string();
+    };
+    if path != "next" {
+        return format!("{path}.{field}");
+    }
+    let Some(next) = parsed.get("next").and_then(|value| value.as_object()) else {
+        return format!("{path}.{field}");
+    };
+    match next.get("type").and_then(|value| value.as_str()) {
+        Some("single") => next
+            .get("node")
+            .and_then(|value| value.as_object())
+            .filter(|object| !object.contains_key(field))
+            .map(|_| format!("next.node.{field}"))
+            .unwrap_or_else(|| format!("{path}.{field}")),
+        Some("fanout") => {
+            for stage in ["merge", "acceptance"] {
+                if next
+                    .get(stage)
+                    .and_then(|value| value.as_object())
+                    .filter(|object| !object.contains_key(field))
+                    .is_some()
+                {
+                    return format!("next.{stage}.{field}");
+                }
+            }
+            if let Some(index) = next
+                .get("nodes")
+                .and_then(|value| value.as_array())
+                .and_then(|nodes| {
+                    nodes.iter().position(|node| {
+                        node.as_object()
+                            .map(|object| !object.contains_key(field))
+                            .unwrap_or(false)
+                    })
+                })
+            {
+                return format!("next.nodes[{index}].{field}");
+            }
+            format!("{path}.{field}")
+        }
+        _ => format!("{path}.{field}"),
+    }
+}
+
+fn missing_field_from_serde_message(message: &str) -> Option<&str> {
+    message
+        .split("missing field `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .filter(|field| !field.trim().is_empty())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("dynamic-node-completion schema validation failed")]
+struct DynamicCompletionSchemaValidationError {
+    errors: Vec<DynamicProposalValidationError>,
+}
+
+fn validate_dynamic_completion_schema(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    parsed: &serde_json::Value,
+) -> Result<Vec<DynamicProposalValidationError>> {
+    let schema = dynamic_effective_completion_schema(ctx, graph);
+    let compiled = compiled_dynamic_completion_schema(&schema)?;
+    let errors = match compiled.validate(parsed) {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors
+            .map(|error| dynamic_schema_validation_error(parsed, error))
+            .collect::<Vec<_>>(),
+    };
+    Ok(dedupe_dynamic_validation_errors(errors))
+}
+
+fn compiled_dynamic_completion_schema(schema: &serde_json::Value) -> Result<Arc<JSONSchema>> {
+    let key = serde_json::to_string(schema)?;
+    let cache = DYNAMIC_COMPLETION_SCHEMA_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(compiled) = cache.lock().unwrap().get(&key).cloned() {
+        return Ok(compiled);
+    }
+    let compiled =
+        Arc::new(JSONSchema::compile(schema).map_err(|error| {
+            anyhow!("failed to compile dynamic-node-completion schema: {error}")
+        })?);
+    cache.lock().unwrap().insert(key, compiled.clone());
+    Ok(compiled)
+}
+
+fn dedupe_dynamic_validation_errors(
+    errors: Vec<DynamicProposalValidationError>,
+) -> Vec<DynamicProposalValidationError> {
+    let mut seen = HashSet::new();
+    errors
+        .into_iter()
+        .filter(|error| {
+            seen.insert(format!(
+                "{}|{}|{}",
+                error.code,
+                error.path.as_deref().unwrap_or_default(),
+                error.message
+            ))
+        })
+        .collect()
+}
+
+fn dynamic_schema_validation_error(
+    root: &serde_json::Value,
+    error: ValidationError<'_>,
+) -> DynamicProposalValidationError {
+    let base_path = json_pointer_to_dynamic_path(&error.instance_path.to_string());
+    let schema_path = error.schema_path.to_string();
+    let mut code = "dynamic.schema.invalid".to_string();
+    let mut path = base_path.clone();
+    let mut expected = "valid value for dynamic-node-completion schema".to_string();
+    let mut allowed_values = Vec::new();
+    let mut actual = schema_actual_value(&error.instance);
+    let mut message = match &error.kind {
+        ValidationErrorKind::Required { property } => {
+            code = "dynamic.schema.required".to_string();
+            let property = property
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| property.to_string());
+            path = append_dynamic_path(&base_path, &property);
+            actual = Some("missing".to_string());
+            expected = "required field".to_string();
+            format!("required field `{property}` is missing")
+        }
+        ValidationErrorKind::AdditionalProperties { unexpected }
+        | ValidationErrorKind::UnevaluatedProperties { unexpected } => {
+            code = "dynamic.schema.additional-property".to_string();
+            let property = unexpected
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            path = append_dynamic_path(&base_path, &property);
+            actual = value_at_dynamic_path(root, &path).and_then(json_param_string);
+            expected = "omit this field".to_string();
+            format!("field `{property}` is not allowed here")
+        }
+        ValidationErrorKind::FalseSchema => {
+            code = "dynamic.schema.forbidden-field".to_string();
+            expected = "omit this field".to_string();
+            format!("field at `{path}` is forbidden by the dynamic-node-completion schema")
+        }
+        ValidationErrorKind::Enum { options } => {
+            code = "dynamic.schema.enum".to_string();
+            allowed_values = options
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            expected = if allowed_values.is_empty() {
+                "one of the schema enum values".to_string()
+            } else {
+                format!("one of: {}", allowed_values.join(", "))
+            };
+            format!("value at `{path}` is not one of the allowed schema values")
+        }
+        ValidationErrorKind::MaxItems { limit } => {
+            code = "dynamic.schema.max-items".to_string();
+            expected = format!("at most {limit} items");
+            format!("array at `{path}` has too many items")
+        }
+        ValidationErrorKind::MinItems { limit } => {
+            code = "dynamic.schema.min-items".to_string();
+            expected = format!("at least {limit} items");
+            format!("array at `{path}` has too few items")
+        }
+        ValidationErrorKind::Type { kind } => {
+            code = "dynamic.schema.type".to_string();
+            expected = format!("{kind:?}");
+            format!("value at `{path}` has the wrong type")
+        }
+        ValidationErrorKind::OneOfNotValid
+        | ValidationErrorKind::OneOfMultipleValid
+        | ValidationErrorKind::AnyOf => {
+            code = "dynamic.schema.branch".to_string();
+            expected = "one valid dynamic-node-completion branch".to_string();
+            format!("value at `{path}` does not match the expected schema branch")
+        }
+        _ => format!("{error}"),
+    };
+    if code == "dynamic.schema.max-items" && path == "next.nodes" {
+        code = "dynamic.fanout.max-fanout-exceeded".to_string();
+        message = "dynamic fanout exceeds maxFanout".to_string();
+    } else if matches!(
+        code.as_str(),
+        "dynamic.schema.forbidden-field" | "dynamic.schema.additional-property"
+    ) && path == "next.merge.profile"
+    {
+        code = "dynamic.merge.profile.unsupported".to_string();
+        message = "dynamic merge must not output profile; runtime uses the built-in AI-DYNAMIC merge prompt".to_string();
+    } else if matches!(
+        code.as_str(),
+        "dynamic.schema.forbidden-field" | "dynamic.schema.additional-property"
+    ) && path == "next.acceptance.profile"
+    {
+        code = "dynamic.acceptance.profile.unsupported".to_string();
+        message = "dynamic acceptance must not output profile; runtime uses the built-in AI-DYNAMIC acceptance prompt".to_string();
+    }
+    let mut validation_error = dynamic_validation_error(
+        &code,
+        message,
+        serde_json::json!({
+            "path": path,
+            "actual": actual,
+            "expected": expected,
+            "schemaPath": schema_path,
+        }),
+    );
+    validation_error.path = Some(path);
+    validation_error.actual = actual;
+    validation_error.expected = Some(expected);
+    validation_error.allowed_values = allowed_values;
+    if validation_error.expected.as_deref() == Some("omit this field") {
+        validation_error.suggestion = Some("remove this field from the JSON output".to_string());
+    }
+    validation_error
+}
+
+fn schema_actual_value(value: &Cow<'_, serde_json::Value>) -> Option<String> {
+    json_param_string(value.as_ref()).or_else(|| Some(value.as_ref().to_string()))
+}
+
+fn json_pointer_to_dynamic_path(pointer: &str) -> String {
+    if pointer.is_empty() || pointer == "/" {
+        return "$".to_string();
+    }
+    let mut path = String::new();
+    for segment in pointer.trim_start_matches('/').split('/') {
+        let segment = segment.replace("~1", "/").replace("~0", "~");
+        if segment.chars().all(|ch| ch.is_ascii_digit()) {
+            path.push('[');
+            path.push_str(&segment);
+            path.push(']');
+        } else {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(&segment);
+        }
+    }
+    if path.is_empty() {
+        "$".to_string()
+    } else {
+        path
+    }
+}
+
+fn append_dynamic_path(base: &str, field: &str) -> String {
+    if base == "$" || base.is_empty() {
+        field.to_string()
+    } else {
+        format!("{base}.{field}")
+    }
+}
+
+fn value_at_dynamic_path<'a>(
+    root: &'a serde_json::Value,
+    dynamic_path: &str,
+) -> Option<&'a serde_json::Value> {
+    if dynamic_path == "$" {
+        return Some(root);
+    }
+    let mut value = root;
+    for raw_segment in dynamic_path.split('.') {
+        let mut segment = raw_segment;
+        loop {
+            if let Some(index_start) = segment.find('[') {
+                let field = &segment[..index_start];
+                if !field.is_empty() {
+                    value = value.get(field)?;
+                }
+                let index_end = segment[index_start + 1..].find(']')? + index_start + 1;
+                let index = segment[index_start + 1..index_end].parse::<usize>().ok()?;
+                value = value.get(index)?;
+                segment = &segment[index_end + 1..];
+                if segment.is_empty() {
+                    break;
+                }
+            } else {
+                value = value.get(segment)?;
+                break;
+            }
+        }
+    }
+    Some(value)
 }
 
 fn build_dynamic_completion_proposal(
@@ -2519,14 +3348,22 @@ fn build_dynamic_completion_proposal(
     completion: DynamicNodeCompletion,
     artifact_path: Option<Utf8PathBuf>,
     raw_output_path: Option<Utf8PathBuf>,
+    parsed_override: Option<serde_json::Value>,
+    pre_validation_errors: Vec<DynamicProposalValidationError>,
 ) -> Result<DynamicProposalState> {
-    let graph: DynamicGraphState = read_json(&ctx.app.paths.dynamic_graph_file(
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
-    ))?;
+    let graph: DynamicGraphState = {
+        let lock = dynamic_state_lock(ctx)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
+        read_json(&ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))?
+    };
     let index = graph
         .nodes
         .iter()
@@ -2548,8 +3385,12 @@ fn build_dynamic_completion_proposal(
             )
             .join("events.jsonl")
     });
-    let parsed = serde_json::to_value(&completion)?;
-    let validation_errors = validate_dynamic_completion(ctx, &graph, index, &completion);
+    let parsed = match parsed_override {
+        Some(parsed) => parsed,
+        None => serde_json::to_value(&completion)?,
+    };
+    let mut validation_errors = pre_validation_errors;
+    validation_errors.extend(validate_dynamic_completion(ctx, &graph, index, &completion));
     if validation_errors.is_empty() {
         Ok(DynamicProposalState {
             version: VERSION.to_string(),
@@ -2795,6 +3636,24 @@ fn validate_dynamic_permission_mode(
     }
 }
 
+fn normalized_dynamic_provider(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn dynamic_fixed_provider(dynamic: &AiDynamicNode) -> Option<&str> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, .. } => Some(provider.as_str()),
+        AiDynamicAgentStrategy::Dynamic { .. } => None,
+    }
+}
+
+fn dynamic_resolved_proposal_provider<'a>(
+    ctx: &'a DynamicExecutionContext<'_>,
+    proposed: Option<&'a str>,
+) -> Option<&'a str> {
+    dynamic_fixed_provider(ctx.dynamic).or_else(|| normalized_dynamic_provider(proposed))
+}
+
 fn validate_dynamic_node_spec(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -2863,6 +3722,32 @@ fn validate_dynamic_node_spec(
                 "actual": graph.nodes.len() + additional_nodes,
             }),
         ));
+    }
+    if spec.workspace.mode == WorkspaceMode::Worktree {
+        let capability = dynamic_workspace_capability(ctx);
+        if !capability.supports_worktree {
+            let mut error = dynamic_validation_error(
+                "dynamic.node.workspace.worktree-git-required",
+                format!(
+                    "dynamic node `{}` cannot use workspace.mode=worktree because the current workspace cannot create git worktrees",
+                    spec.id
+                ),
+                serde_json::json!({
+                    "nodeId": spec.id,
+                    "field": "workspace.mode",
+                    "actual": "worktree",
+                    "expected": "readonly or main",
+                    "workspacePath": ctx.app.paths.repo_root,
+                    "reasonCode": capability.reason_code,
+                    "reason": capability.reason,
+                }),
+            );
+            error.allowed_values = vec!["readonly".to_string(), "main".to_string()];
+            error.suggestion = Some(
+                "replace writable parallel fan-out with serial main workspace work, or ask the user to initialize Git before using worktree fan-out".to_string(),
+            );
+            errors.push(error);
+        }
     }
     for dependency in &spec.depends_on {
         if !graph.nodes.iter().any(|node| node.id == *dependency) {
@@ -2938,7 +3823,9 @@ fn validate_dynamic_node_spec(
                         ));
                     }
                     if spec.kind == DynamicNodeSpecKind::Worker {
-                        if let Some(provider) = spec.provider.as_deref() {
+                        if let Some(provider) =
+                            dynamic_resolved_proposal_provider(ctx, spec.provider.as_deref())
+                        {
                             if target.provider.as_deref() != Some(provider) {
                                 errors.push(dynamic_validation_error(
                                     "dynamic.node.session.provider-mismatch",
@@ -2969,52 +3856,69 @@ fn validate_dynamic_node_spec(
         }
     }
     match spec.kind {
-        DynamicNodeSpecKind::Worker => match spec.provider.as_deref() {
-            Some(provider) if !provider.trim().is_empty() => {
-                if ctx.app.provider_for_id(provider).is_err() {
-                    errors.push(dynamic_validation_error(
-                        "dynamic.node.provider.unknown",
-                        format!(
-                            "dynamic worker `{}` references unknown provider `{provider}`",
-                            spec.id
-                        ),
-                        serde_json::json!({
-                            "nodeId": spec.id,
-                            "provider": provider,
-                        }),
-                    ));
-                } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
-                    if let Some(error) = validate_dynamic_permission_mode(
-                        ctx,
-                        provider,
-                        normative_mode,
-                        |resolved| {
-                            dynamic_validation_error(
-                                "dynamic.node.permission-mode.unsupported",
-                                format!(
-                                    "dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`",
-                                    spec.id, normative_mode, resolved
-                                ),
-                                serde_json::json!({
-                                    "nodeId": spec.id,
-                                    "provider": provider,
-                                    "permissionMode": normative_mode,
-                                }),
-                            )
-                        },
-                    ) {
-                        errors.push(error);
+        DynamicNodeSpecKind::Worker => {
+            let proposed_provider = normalized_dynamic_provider(spec.provider.as_deref());
+            if dynamic_fixed_provider(ctx.dynamic).is_some() && proposed_provider.is_some() {
+                errors.push(dynamic_validation_error(
+                    "dynamic.node.provider.unsupported",
+                    format!(
+                        "dynamic worker `{}` must not output provider under fixed agent strategy",
+                        spec.id
+                    ),
+                    serde_json::json!({
+                        "nodeId": spec.id,
+                        "field": "provider",
+                        "provider": proposed_provider.unwrap(),
+                        "expected": "omit this field",
+                    }),
+                ));
+            }
+            match dynamic_resolved_proposal_provider(ctx, spec.provider.as_deref()) {
+                Some(provider) => {
+                    if ctx.app.provider_for_id(provider).is_err() {
+                        errors.push(dynamic_validation_error(
+                            "dynamic.node.provider.unknown",
+                            format!(
+                                "dynamic worker `{}` references unknown provider `{provider}`",
+                                spec.id
+                            ),
+                            serde_json::json!({
+                                "nodeId": spec.id,
+                                "provider": provider,
+                            }),
+                        ));
+                    } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
+                        if let Some(error) = validate_dynamic_permission_mode(
+                            ctx,
+                            provider,
+                            normative_mode,
+                            |resolved| {
+                                dynamic_validation_error(
+                                    "dynamic.node.permission-mode.unsupported",
+                                    format!(
+                                        "dynamic worker `{}` permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`",
+                                        spec.id, normative_mode, resolved
+                                    ),
+                                    serde_json::json!({
+                                        "nodeId": spec.id,
+                                        "provider": provider,
+                                        "permissionMode": normative_mode,
+                                    }),
+                                )
+                            },
+                        ) {
+                            errors.push(error);
+                        }
                     }
-                }
-                if dynamic_model_required_from_proposal(ctx, provider)
-                    && spec
-                        .model
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|model| !model.is_empty())
-                        .is_none()
-                {
-                    errors.push(dynamic_validation_error(
+                    if dynamic_worker_model_required_from_proposal(ctx, provider)
+                        && spec
+                            .model
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|model| !model.is_empty())
+                            .is_none()
+                    {
+                        errors.push(dynamic_validation_error(
                         "dynamic.node.model.required",
                         format!("dynamic worker `{}` must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one", spec.id),
                         serde_json::json!({
@@ -3023,16 +3927,16 @@ fn validate_dynamic_node_spec(
                             "field": "model",
                         }),
                     ));
-                }
-                if let Some(profile) = spec.profile.as_deref() {
-                    let allowed = ctx
-                        .dynamic
-                        .allowed_profiles
-                        .iter()
-                        .map(|item| item.as_str())
-                        .collect::<std::collections::HashSet<_>>();
-                    if !allowed.is_empty() && !allowed.contains(profile) {
-                        errors.push(dynamic_validation_error(
+                    }
+                    if let Some(profile) = spec.profile.as_deref() {
+                        let allowed = ctx
+                            .dynamic
+                            .allowed_profiles
+                            .iter()
+                            .map(|item| item.as_str())
+                            .collect::<std::collections::HashSet<_>>();
+                        if !allowed.is_empty() && !allowed.contains(profile) {
+                            errors.push(dynamic_validation_error(
                             "dynamic.node.profile.unallowed",
                             format!("dynamic worker `{}` profile `{profile}` is not allowed by this AI-DYNAMIC node", spec.id),
                             serde_json::json!({
@@ -3040,18 +3944,19 @@ fn validate_dynamic_node_spec(
                                 "profile": profile,
                             }),
                         ));
+                        }
                     }
                 }
+                None => errors.push(dynamic_validation_error(
+                    "dynamic.node.provider.blank",
+                    format!("dynamic worker `{}` provider cannot be blank", spec.id),
+                    serde_json::json!({
+                        "nodeId": spec.id,
+                        "field": "provider",
+                    }),
+                )),
             }
-            _ => errors.push(dynamic_validation_error(
-                "dynamic.node.provider.blank",
-                format!("dynamic worker `{}` provider cannot be blank", spec.id),
-                serde_json::json!({
-                    "nodeId": spec.id,
-                    "field": "provider",
-                }),
-            )),
-        },
+        }
         DynamicNodeSpecKind::WorkflowInvocation => {
             let workflow_id = spec.workflow_id.as_deref();
             match workflow_id {
@@ -3145,7 +4050,54 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     }
-    if spec.provider.trim().is_empty() {
+    let proposed_provider = normalized_dynamic_provider(Some(spec.provider.as_str()));
+    if dynamic_fixed_provider(ctx.dynamic).is_some() && proposed_provider.is_some() {
+        errors.push(dynamic_validation_error(
+            &format!("dynamic.{name}.provider.unsupported"),
+            format!("dynamic {name} must not output provider under fixed agent strategy"),
+            serde_json::json!({
+                "field": "provider",
+                "stage": name,
+                "provider": proposed_provider.unwrap(),
+                "expected": "omit this field",
+            }),
+        ));
+    }
+    let resolved_provider = dynamic_resolved_proposal_provider(ctx, Some(spec.provider.as_str()));
+    if let Some(provider) = resolved_provider {
+        if ctx.app.provider_for_id(provider).is_err() {
+            errors.push(dynamic_validation_error(
+                &format!("dynamic.{name}.provider.unknown"),
+                format!("dynamic {name} references unknown provider `{provider}`"),
+                serde_json::json!({
+                    "provider": provider,
+                    "stage": name,
+                }),
+            ));
+        } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
+            if let Some(error) = validate_dynamic_permission_mode(
+                ctx,
+                provider,
+                normative_mode,
+                |resolved| {
+                    dynamic_validation_error(
+                        &format!("dynamic.{name}.permission-mode.unsupported"),
+                        format!(
+                            "dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{provider}`",
+                            normative_mode, resolved
+                        ),
+                        serde_json::json!({
+                            "provider": provider,
+                            "stage": name,
+                            "permissionMode": normative_mode,
+                        }),
+                    )
+                },
+            ) {
+                errors.push(error);
+            }
+        }
+    } else {
         errors.push(dynamic_validation_error(
             &format!("dynamic.{name}.provider.blank"),
             format!("dynamic {name} provider cannot be blank"),
@@ -3154,55 +4106,37 @@ fn validate_dynamic_agent_task_spec(
                 "stage": name,
             }),
         ));
-    } else if ctx.app.provider_for_id(&spec.provider).is_err() {
+    }
+    let proposed_model = spec
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if let Some(model) = proposed_model
+        && dynamic_acceptance_model(ctx.dynamic).is_some()
+    {
         errors.push(dynamic_validation_error(
-            &format!("dynamic.{name}.provider.unknown"),
+            &format!("dynamic.{name}.model.unsupported"),
             format!(
-                "dynamic {name} references unknown provider `{}`",
-                spec.provider
+                "dynamic {name} must not output model because AI-DYNAMIC configured acceptanceModel"
             ),
             serde_json::json!({
-                "provider": spec.provider,
+                "provider": resolved_provider,
                 "stage": name,
+                "field": "model",
+                "actual": model,
+                "expected": "omit this field",
             }),
         ));
-    } else if let Some(normative_mode) = ctx.dynamic.permission_mode() {
-        if let Some(error) = validate_dynamic_permission_mode(
-            ctx,
-            &spec.provider,
-            normative_mode,
-            |resolved| {
-                dynamic_validation_error(
-                    &format!("dynamic.{name}.permission-mode.unsupported"),
-                    format!(
-                        "dynamic {name} permissionMode `{}` (resolved to `{}`) is not supported by provider `{}`",
-                        normative_mode, resolved, spec.provider
-                    ),
-                    serde_json::json!({
-                        "provider": spec.provider,
-                        "stage": name,
-                        "permissionMode": normative_mode,
-                    }),
-                )
-            },
-        ) {
-            errors.push(error);
-        }
-    }
-    if !spec.provider.trim().is_empty()
-        && dynamic_model_required_from_proposal(ctx, &spec.provider)
-        && spec
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .is_none()
+    } else if let Some(provider) = resolved_provider
+        && dynamic_agent_task_model_required_from_proposal(ctx, provider)
+        && proposed_model.is_none()
     {
         errors.push(dynamic_validation_error(
             &format!("dynamic.{name}.model.required"),
-            format!("dynamic {name} must output model for provider `{}` because the AI-DYNAMIC config did not lock one", spec.provider),
+            format!("dynamic {name} must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one"),
             serde_json::json!({
-                "provider": spec.provider,
+                "provider": provider,
                 "stage": name,
                 "field": "model",
             }),
@@ -3218,16 +4152,6 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     }
-    errors.extend(validate_dynamic_profile_reference(
-        ctx,
-        &spec.profile,
-        &format!("dynamic {name}"),
-        serde_json::json!({
-            "field": "profile",
-            "stage": name,
-            "profile": spec.profile,
-        }),
-    ));
     errors
 }
 
@@ -3251,6 +4175,25 @@ fn validate_dynamic_profile_reference(
     }
 }
 
+fn dynamic_agent_task_spec_with_resolved_provider(
+    ctx: &DynamicExecutionContext<'_>,
+    mut spec: DynamicAgentTaskSpec,
+) -> Result<DynamicAgentTaskSpec> {
+    spec.provider = dynamic_resolved_proposal_provider(ctx, Some(spec.provider.as_str()))
+        .ok_or_else(|| anyhow!("dynamic agent task provider was not resolved"))?
+        .to_string();
+    spec.model = dynamic_acceptance_model(ctx.dynamic)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            spec.model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        });
+    Ok(spec)
+}
+
 fn materialize_dynamic_next(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
@@ -3272,6 +4215,7 @@ fn materialize_dynamic_next(
         DynamicNext::Single { node } => {
             let source = graph.nodes[source_index].clone();
             let new_node = dynamic_node_state_from_spec(
+                ctx,
                 graph,
                 &source,
                 node,
@@ -3297,6 +4241,8 @@ fn materialize_dynamic_next(
             acceptance,
         } => {
             let source = graph.nodes[source_index].clone();
+            let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
+            let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
             let group_depth = source
                 .group_id
                 .as_deref()
@@ -3326,6 +4272,7 @@ fn materialize_dynamic_next(
             for node in nodes {
                 let chain_id = node.id.clone();
                 let new_node = dynamic_node_state_from_spec(
+                    ctx,
                     graph,
                     &source,
                     node,
@@ -3361,6 +4308,7 @@ fn materialize_dynamic_next(
 }
 
 fn dynamic_node_state_from_spec(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     source: &DynamicNodeState,
     spec: DynamicNodeSpec,
@@ -3372,6 +4320,13 @@ fn dynamic_node_state_from_spec(
         DynamicNodeSpecKind::Worker => DynamicNodeKind::Worker,
         DynamicNodeSpecKind::WorkflowInvocation => DynamicNodeKind::WorkflowInvocation,
     };
+    let provider = match kind {
+        DynamicNodeKind::Worker => {
+            dynamic_resolved_proposal_provider(ctx, spec.provider.as_deref()).map(ToOwned::to_owned)
+        }
+        DynamicNodeKind::WorkflowInvocation => None,
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => unreachable!(),
+    };
     let workflow_snapshot_id = spec.workflow_id.as_ref().and_then(|workflow_id| {
         graph
             .run
@@ -3380,6 +4335,18 @@ fn dynamic_node_state_from_spec(
             .find(|snapshot| snapshot.workflow_id == *workflow_id)
             .map(|snapshot| snapshot.snapshot_id.clone())
     });
+    let model = provider
+        .as_deref()
+        .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+        .or(spec.model.clone());
+    let resolved_permission_mode = provider
+        .as_deref()
+        .and_then(|provider| {
+            inherited_permission_mode
+                .as_deref()
+                .map(|mode| ctx.app.config.resolve_permission_mode(provider, mode))
+        })
+        .or(inherited_permission_mode);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         id: spec.id,
@@ -3395,10 +4362,10 @@ fn dynamic_node_state_from_spec(
         depends_on: spec.depends_on,
         workspace: spec.workspace,
         workspace_path: None,
-        provider: spec.provider,
+        provider,
         profile: spec.profile,
-        model: spec.model.clone(),
-        permission_mode: inherited_permission_mode,
+        model,
+        permission_mode: resolved_permission_mode,
         session_mode: spec.session_mode,
         continue_from_node_id: spec.continue_from_node_id,
         workflow_id: spec.workflow_id,
@@ -3471,7 +4438,7 @@ fn advance_dynamic_groups(
         let status = graph.groups[group_index].status;
         match status {
             DynamicGroupStatus::Open if dynamic_group_ready(graph, group_index) => {
-                let merge_node = create_dynamic_merge_node(graph, group_index)?;
+                let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Merging;
                 graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
@@ -3492,7 +4459,7 @@ fn advance_dynamic_groups(
                     graph.groups[group_index].merge_node_id.as_deref(),
                 ) =>
             {
-                let acceptance_node = create_dynamic_acceptance_node(graph, group_index)?;
+                let acceptance_node = create_dynamic_acceptance_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Accepting;
                 graph.groups[group_index].acceptance_node_id = Some(acceptance_node.id.clone());
@@ -3516,6 +4483,11 @@ fn advance_dynamic_groups(
                 let group_id = graph.groups[group_index].id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Closed;
                 graph.groups[group_index].updated_at = now_rfc3339_like();
+                for node in &graph.nodes {
+                    if node.group_id.as_deref() == Some(group_id.as_str()) {
+                        teardown_dynamic_workspace_best_effort(ctx, node);
+                    }
+                }
                 attach_closed_child_group_to_parent(graph, group_index);
                 append_dynamic_event(
                     ctx,
@@ -3687,6 +4659,7 @@ fn group_node_completed(graph: &DynamicGraphState, node_id: Option<&str>) -> boo
 }
 
 fn create_dynamic_merge_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3704,8 +4677,8 @@ fn create_dynamic_merge_node(
         group.merge.task,
         group.id,
         group.terminal_node_ids.join(", "),
-        graph.run.parent_run_id,
-        dynamic_group_workspace_summary(graph, group),
+        ctx.app.paths.repo_root,
+        dynamic_group_workspace_summary(ctx, graph, group),
     );
     let node = DynamicNodeState {
         version: VERSION.to_string(),
@@ -3727,7 +4700,11 @@ fn create_dynamic_merge_node(
         provider: Some(group.merge.provider.clone()),
         profile: None,
         model: group.merge.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.merge.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3741,6 +4718,7 @@ fn create_dynamic_merge_node(
 }
 
 fn create_dynamic_acceptance_node(
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group_index: usize,
 ) -> Result<DynamicNodeState> {
@@ -3785,7 +4763,11 @@ fn create_dynamic_acceptance_node(
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
         model: group.acceptance.model.clone(),
-        permission_mode: None,
+        permission_mode: ctx.dynamic.permission_mode().map(|mode| {
+            ctx.app
+                .config
+                .resolve_permission_mode(&group.acceptance.provider, mode)
+        }),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -3798,18 +4780,46 @@ fn create_dynamic_acceptance_node(
     Ok(node)
 }
 
-fn dynamic_group_workspace_summary(graph: &DynamicGraphState, group: &DynamicGroupState) -> String {
-    graph
+fn dynamic_group_workspace_summary(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    group: &DynamicGroupState,
+) -> String {
+    let lines = graph
         .nodes
         .iter()
         .filter(|node| node.group_id.as_deref() == Some(group.id.as_str()))
-        .filter_map(|node| {
-            node.workspace_path
-                .as_ref()
-                .map(|path| format!("- {}: {}", node.id, path))
+        .filter_map(|node| node.workspace_path.as_ref().map(|path| (node, path)))
+        .map(|(node, path)| {
+            let mode = format!("{:?}", node.workspace.mode);
+            if node.workspace.mode != WorkspaceMode::Worktree {
+                return format!("- {}: mode={} path={}", node.id, mode, path);
+            }
+            let branch = dynamic_worktree_branch_name(ctx, &node.id);
+            let actual_branch = git_capture(path, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .unwrap_or_else(|| branch.clone());
+            let head =
+                git_capture(path, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+            let merge_base = git_capture(
+                &ctx.app.paths.repo_root,
+                &["merge-base", "HEAD", actual_branch.as_str()],
+            )
+            .unwrap_or_else(|| "unknown".to_string());
+            let status = git_capture(path, &["status", "--short"])
+                .map(|value| value.lines().collect::<Vec<_>>().join("; "))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "clean".to_string());
+            format!(
+                "- {}: mode={} path={} branch={} head={} mergeBase={} status={}",
+                node.id, mode, path, actual_branch, head, merge_base, status
+            )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        "none".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn dynamic_graph_completed(graph: &DynamicGraphState) -> bool {
@@ -3892,9 +4902,9 @@ pub(crate) fn build_dynamic_prompt_bundle(
         dynamic,
     };
     let output_contract = match node.kind {
-        DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => Some(
-            dynamic_output_contract(app.config.desktop_language, dynamic),
-        ),
+        DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
+            Some(dynamic_output_contract(&ctx, &graph))
+        }
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => None,
     };
     let invocation = build_dynamic_worker_invocation(
@@ -3947,6 +4957,23 @@ fn build_dynamic_worker_invocation(
         .clone()
         .unwrap_or_else(|| ctx.app.paths.repo_root.clone());
     let extra_system_sections = dynamic_system_sections(ctx, graph, node)?;
+    let model = match node.kind {
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+            dynamic_acceptance_model(ctx.dynamic)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    node.provider
+                        .as_deref()
+                        .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+                })
+                .or_else(|| node.model.clone())
+        }
+        _ => node
+            .provider
+            .as_deref()
+            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+            .or_else(|| node.model.clone()),
+    };
     Ok(WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile,
@@ -3973,11 +5000,7 @@ fn build_dynamic_worker_invocation(
                 (other, _) => other,
             }
         },
-        model: node
-            .provider
-            .as_deref()
-            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-            .or_else(|| node.model.clone()),
+        model,
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -3996,7 +5019,7 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
-        input_attachment_paths: Vec::new(),
+        input_attachment_paths: super::task_input_attachment_paths(ctx.app, ctx.task_id),
     })
 }
 
@@ -4045,7 +5068,8 @@ fn dynamic_proposal_repair_prompt(
             AI_DYNAMIC_PROPOSAL_REPAIR_EN,
         ),
         serde_json::json!({
-            "validation_errors": dynamic_validation_error_lines(errors),
+            "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
+            "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
         }),
     )
@@ -4058,13 +5082,16 @@ fn dynamic_text_repair_prompt(
     node: &DynamicNodeState,
     error: String,
 ) -> String {
-    let validation_errors = error
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| format!("- {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let validation_error = dynamic_parse_repair_error(error);
+    dynamic_structured_repair_prompt(ctx, graph, node, &[validation_error])
+}
+
+fn dynamic_structured_repair_prompt(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+    errors: &[DynamicProposalValidationError],
+) -> String {
     render_template(
         prompt_by_language(
             ctx.app.config.desktop_language,
@@ -4072,11 +5099,175 @@ fn dynamic_text_repair_prompt(
             AI_DYNAMIC_PROPOSAL_REPAIR_EN,
         ),
         serde_json::json!({
-            "validation_errors": validation_errors,
+            "validation_errors": dynamic_validation_repair_lines(ctx, graph, errors),
+            "repair_reference": dynamic_repair_reference_summary(ctx, graph),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
         }),
     )
     .expect("prompt template renders")
+}
+
+fn dynamic_parse_repair_error(error: String) -> DynamicProposalValidationError {
+    let path = error
+        .split("JSON path `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or("$");
+    dynamic_validation_error(
+        "dynamic.parse.invalid",
+        "dynamic-node-completion is not valid for the expected DSL shape",
+        serde_json::json!({
+            "path": path,
+            "actual": error,
+            "expected": "valid dynamic-node-completion JSON matching the output protocol",
+        }),
+    )
+}
+
+fn dynamic_validation_repair_lines(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    errors: &[DynamicProposalValidationError],
+) -> String {
+    if errors.is_empty() {
+        return "- none".to_string();
+    }
+    errors
+        .iter()
+        .map(|error| {
+            let allowed_values = dynamic_allowed_values_for_error(ctx, graph, error);
+            let suggestion = error
+                .suggestion
+                .clone()
+                .or_else(|| dynamic_suggestion_for_error(ctx, error, &allowed_values));
+            let mut lines = vec![format!("- [{}] {}", error.code, error.message)];
+            if let Some(path) = error.path.as_deref() {
+                lines.push(format!("  path: {path}"));
+            }
+            if let Some(actual) = error.actual.as_deref() {
+                lines.push(format!("  actual: {actual}"));
+            }
+            if let Some(expected) = error.expected.as_deref() {
+                lines.push(format!("  expected: {expected}"));
+            }
+            if !allowed_values.is_empty() {
+                lines.push(format!("  allowed values: {}", allowed_values.join(", ")));
+            }
+            if let Some(suggestion) = suggestion {
+                lines.push(format!("  suggested repair: {suggestion}"));
+            }
+            lines.join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn dynamic_repair_reference_summary(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> String {
+    format!(
+        "Available providers and models:\n{}\n\nAvailable worker profile IDs:\n{}\n\nAllowed workflow IDs:\n{}\n\nWorkspace capability:\n{}",
+        available_provider_summary(ctx),
+        available_profile_summary(ctx),
+        allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
+        dynamic_workspace_capability_summary(ctx),
+    )
+}
+
+fn dynamic_available_provider_ids(ctx: &DynamicExecutionContext<'_>) -> Vec<String> {
+    match &ctx.dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
+        AiDynamicAgentStrategy::Dynamic {
+            bootstrap_provider,
+            available_agents,
+            ..
+        } => {
+            let mut providers = vec![bootstrap_provider.clone()];
+            for agent in available_agents {
+                if !providers.iter().any(|provider| provider == &agent.provider) {
+                    providers.push(agent.provider.clone());
+                }
+            }
+            providers
+        }
+    }
+}
+
+fn dynamic_allowed_values_for_error(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    error: &DynamicProposalValidationError,
+) -> Vec<String> {
+    if !error.allowed_values.is_empty() {
+        return error.allowed_values.clone();
+    }
+    let field = error
+        .params
+        .get("field")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if error.code.contains(".profile.") || field == "profile" {
+        if !ctx.dynamic.allowed_profiles.is_empty() {
+            return ctx.dynamic.allowed_profiles.clone();
+        }
+        return available_profile_refs(ctx)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+    }
+    if error.code.contains(".provider.") || field == "provider" {
+        return dynamic_available_provider_ids(ctx);
+    }
+    if error.code.contains(".model.") || field == "model" {
+        if let Some(provider) = error
+            .params
+            .get("provider")
+            .and_then(|value| value.as_str())
+        {
+            return provider_model_option_values(ctx, provider)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+        }
+    }
+    if error.code.contains(".workflow-invocation.") || field == "workflowId" {
+        return graph
+            .run
+            .allowed_workflow_snapshots
+            .iter()
+            .map(|snapshot| snapshot.workflow_id.clone())
+            .collect();
+    }
+    Vec::new()
+}
+
+fn dynamic_suggestion_for_error(
+    ctx: &DynamicExecutionContext<'_>,
+    error: &DynamicProposalValidationError,
+    allowed_values: &[String],
+) -> Option<String> {
+    let actual = error.actual.as_deref()?.trim();
+    if actual.is_empty() {
+        return None;
+    }
+    if error.code.contains(".profile.")
+        || error.params.get("field").and_then(|value| value.as_str()) == Some("profile")
+    {
+        for (id, name) in available_profile_refs(ctx) {
+            if actual == name || actual.eq_ignore_ascii_case(&name) {
+                return Some(format!("replace with profileId `{id}`"));
+            }
+            if actual == id || actual.eq_ignore_ascii_case(&id) {
+                return Some(format!("use profileId `{id}`"));
+            }
+        }
+    }
+    if allowed_values.iter().any(|value| value == actual) {
+        return Some(format!("use `{actual}`"));
+    }
+    None
 }
 
 fn dynamic_task_instruction(
@@ -4231,6 +5422,19 @@ fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
 }
 
 fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    let profiles = available_profile_refs(ctx);
+    if profiles.is_empty() {
+        "none".to_string()
+    } else {
+        profiles
+            .into_iter()
+            .map(|(id, name)| format!("- profileId={id} displayName={name}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn available_profile_refs(ctx: &DynamicExecutionContext<'_>) -> Vec<(String, String)> {
     match ctx.app.profiles() {
         Ok(list) => {
             let allowed = ctx
@@ -4239,21 +5443,13 @@ fn available_profile_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                 .iter()
                 .map(|profile| profile.as_str())
                 .collect::<std::collections::HashSet<_>>();
-            let profiles = list
-                .profiles
+            list.profiles
                 .into_iter()
                 .filter(|profile| allowed.is_empty() || allowed.contains(profile.id.as_str()))
-                .collect::<Vec<_>>();
-            if profiles.is_empty() {
-                return "none".to_string();
-            }
-            profiles
-                .into_iter()
-                .map(|profile| format!("- {} ({})", profile.name, profile.id))
-                .collect::<Vec<_>>()
-                .join("\n")
+                .map(|profile| (profile.id, profile.name))
+                .collect()
         }
-        Err(_) => "none".to_string(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -4412,7 +5608,7 @@ fn dynamic_upstream_refs_summary(
 }
 
 fn dynamic_kind_specific_summary(
-    _ctx: &DynamicExecutionContext<'_>,
+    ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
 ) -> String {
@@ -4453,7 +5649,7 @@ fn dynamic_kind_specific_summary(
                 } else {
                     group.terminal_node_ids.join(", ")
                 },
-                dynamic_group_workspace_summary(graph, group),
+                dynamic_group_workspace_summary(ctx, graph, group),
                 child_runs,
             )
         }
@@ -4500,11 +5696,26 @@ fn dynamic_system_sections(
             "attachments_dir": runtime_context.attachments_dir,
             "workspace_mode": format!("{:?}", node.workspace.mode),
             "workspace_path": workspace_path,
+            "workspace_capability": dynamic_workspace_capability_summary(ctx),
             "upstream_refs": dynamic_upstream_refs_summary(ctx, graph, node),
             "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
             "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
             "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
+            "acceptance_model_policy": match ctx.app.config.desktop_language {
+                DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
+                    Some(model) => format!(
+                        "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
+                    ),
+                    None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
+                },
+                DesktopLanguage::En => match dynamic_acceptance_model(ctx.dynamic) {
+                    Some(model) => format!(
+                        "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
+                    ),
+                    None => "No dedicated acceptance model is configured; `merge` / `acceptance` follow the same model rules as other dynamic nodes.".to_string(),
+                },
+            },
             "available_providers": available_provider_summary(ctx),
             "available_profiles": available_profile_summary(ctx),
             "remaining_budget": dynamic_remaining_budget_summary(graph, node),
@@ -4570,6 +5781,187 @@ fn prepare_dynamic_attempt_dirs(
     Ok(())
 }
 
+fn dynamic_worktree_short_id(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    ctx.round_id.hash(&mut hasher);
+    ctx.outer_node_id.hash(&mut hasher);
+    ctx.outer_attempt_id.hash(&mut hasher);
+    node_id.hash(&mut hasher);
+    format!("dyn-{:016x}", hasher.finish())
+}
+
+fn dynamic_worktree_branch_name(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
+    format!(
+        "gb-dyn-{}-{}-{}",
+        safe_dynamic_ref(ctx.task_id),
+        safe_dynamic_ref(ctx.run_id),
+        dynamic_worktree_short_id(ctx, node_id)
+    )
+}
+
+fn dynamic_worktree_base_dir(ctx: &DynamicExecutionContext<'_>) -> Utf8PathBuf {
+    ctx.app
+        .paths
+        .repo_gold_band_root
+        .join("worktrees")
+        .join(safe_dynamic_ref(ctx.task_id))
+        .join(safe_dynamic_ref(ctx.run_id))
+}
+
+fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> Utf8PathBuf {
+    dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, node_id))
+}
+
+fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd.as_str())
+        .args(args)
+        .output()?;
+    Ok(GitCommandOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
+fn git_command_details(output: &GitCommandOutput) -> String {
+    match (output.stdout.is_empty(), output.stderr.is_empty()) {
+        (true, true) => "no git output".to_string(),
+        (false, true) => format!("stdout: {}", output.stdout),
+        (true, false) => format!("stderr: {}", output.stderr),
+        (false, false) => format!("stdout: {}; stderr: {}", output.stdout, output.stderr),
+    }
+}
+
+fn git_capture(cwd: &Utf8Path, args: &[&str]) -> Option<String> {
+    let output = git_output(cwd, args).ok()?;
+    if !output.success {
+        return None;
+    }
+    Some(output.stdout).filter(|value| !value.is_empty())
+}
+
+fn dynamic_worktree_is_git_worktree(path: &Utf8Path) -> bool {
+    git_capture(path, &["rev-parse", "--show-toplevel"])
+        .map(|root| Utf8PathBuf::from(root) == path)
+        .unwrap_or(false)
+}
+
+fn parse_git_branch_list_name(line: &str) -> Option<&str> {
+    line.trim_start_matches(['*', '+', ' '])
+        .split_whitespace()
+        .next()
+}
+
+fn delete_dynamic_worktree_branch(
+    ctx: &DynamicExecutionContext<'_>,
+    branch: &str,
+    missing_ok: bool,
+) -> Result<()> {
+    let list_output = git_output(&ctx.app.paths.repo_root, &["branch", "--list", branch])?;
+    if !list_output.success {
+        bail!(
+            "failed to inspect branch `{}`: {}",
+            branch,
+            git_command_details(&list_output)
+        );
+    }
+    let exists = list_output
+        .stdout
+        .lines()
+        .any(|line| parse_git_branch_list_name(line) == Some(branch));
+    if !exists {
+        ensure!(missing_ok, "branch `{}` does not exist", branch);
+        return Ok(());
+    }
+    let delete_output = git_output(&ctx.app.paths.repo_root, &["branch", "-D", branch])?;
+    ensure!(
+        delete_output.success,
+        "git branch -D `{}` failed: {}",
+        branch,
+        git_command_details(&delete_output)
+    );
+    Ok(())
+}
+
+fn dynamic_workspace_capability(ctx: &DynamicExecutionContext<'_>) -> DynamicWorkspaceCapability {
+    let repo_root = &ctx.app.paths.repo_root;
+    let Some(is_inside_work_tree) = git_capture(repo_root, &["rev-parse", "--is-inside-work-tree"])
+    else {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "git-unavailable-or-non-git",
+            reason: format!(
+                "`{}` is not a Git working tree or the `git` command is unavailable",
+                repo_root
+            ),
+        };
+    };
+    if is_inside_work_tree != "true" {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "non-git-workspace",
+            reason: format!("`{}` is not inside a Git working tree", repo_root),
+        };
+    }
+    if git_capture(repo_root, &["rev-parse", "--verify", "HEAD"]).is_none() {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "missing-head",
+            reason: format!("`{}` has no HEAD commit for git worktree add", repo_root),
+        };
+    }
+    if git_capture(repo_root, &["worktree", "list", "--porcelain"]).is_none() {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "worktree-unsupported",
+            reason: "git worktree is not available for the current workspace".to_string(),
+        };
+    }
+    DynamicWorkspaceCapability {
+        supports_worktree: true,
+        reason_code: "ready",
+        reason: "git worktree is available".to_string(),
+    }
+}
+
+fn dynamic_workspace_capability_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    let capability = dynamic_workspace_capability(ctx);
+    match (ctx.app.config.desktop_language, capability.supports_worktree) {
+        (DesktopLanguage::ZhCn, true) => {
+            "- supportsWorktree: true\n- 原因：git worktree 可用\n- 可写并行分支：需要隔离时可以使用 workspace.mode=\"worktree\"".to_string()
+        }
+        (DesktopLanguage::ZhCn, false) => format!(
+            "- supportsWorktree: false\n- reasonCode: {}\n- 原因：{}\n- 必须遵守：不要输出 workspace.mode=\"worktree\"；分析使用 readonly，需要写入时使用串行 main，或结束并说明需要用户初始化 Git 后才能使用并行可写 fan-out",
+            capability.reason_code,
+            capability.reason
+        ),
+        (DesktopLanguage::En, true) => {
+            "- supportsWorktree: true\n- reason: git worktree is available\n- writable parallel branches: use workspace.mode=\"worktree\" when isolation is needed".to_string()
+        }
+        (DesktopLanguage::En, false) => format!(
+            "- supportsWorktree: false\n- reasonCode: {}\n- reason: {}\n- required behavior: do not output workspace.mode=\"worktree\"; use readonly for analysis and main only for serial writable work, or end with a summary that asks the user to initialize Git before parallel writable fan-out",
+            capability.reason_code,
+            capability.reason
+        ),
+    }
+}
+
+fn dynamic_worktree_unavailable_error(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    capability: &DynamicWorkspaceCapability,
+) -> anyhow::Error {
+    anyhow!(
+        "workspace.worktree-git-required: dynamic node `{}` requested workspace.mode=worktree but workspace `{}` cannot create git worktrees (reasonCode={}, reason={})",
+        node_id,
+        ctx.app.paths.repo_root,
+        capability.reason_code,
+        capability.reason
+    )
+}
+
 fn ensure_dynamic_workspace(
     ctx: &DynamicExecutionContext<'_>,
     node: &mut DynamicNodeState,
@@ -4583,18 +5975,38 @@ fn ensure_dynamic_workspace(
             if node.workspace_path.is_some() {
                 return Ok(());
             }
-            let worktree_dir = ctx
-                .app
-                .paths
-                .dynamic_dir(
-                    ctx.task_id,
-                    ctx.run_id,
-                    ctx.round_id,
-                    ctx.outer_node_id,
-                    ctx.outer_attempt_id,
-                )
-                .join("worktrees")
-                .join(safe_dynamic_ref(&node.id));
+            let capability = dynamic_workspace_capability(ctx);
+            if !capability.supports_worktree {
+                return Err(dynamic_worktree_unavailable_error(
+                    ctx,
+                    &node.id,
+                    &capability,
+                ));
+            }
+            let worktree_dir = dynamic_worktree_dir(ctx, &node.id);
+            let branch = dynamic_worktree_branch_name(ctx, &node.id);
+            if worktree_dir.exists() && !dynamic_worktree_is_git_worktree(&worktree_dir) {
+                std::fs::remove_dir_all(worktree_dir.as_std_path()).map_err(|error| {
+                    anyhow!(
+                        "failed to remove incomplete dynamic worktree directory `{}` for `{}`: {error}",
+                        worktree_dir,
+                        node.id
+                    )
+                })?;
+            }
+            if worktree_dir.exists() {
+                let actual_branch =
+                    git_capture(&worktree_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+                        .unwrap_or_else(|| "unknown".to_string());
+                ensure!(
+                    actual_branch == branch,
+                    "dynamic worktree `{}` for `{}` is on branch `{}` but expected `{}`",
+                    worktree_dir,
+                    node.id,
+                    actual_branch,
+                    branch
+                );
+            }
             if !worktree_dir.exists() {
                 std::fs::create_dir_all(
                     worktree_dir
@@ -4602,32 +6014,61 @@ fn ensure_dynamic_workspace(
                         .ok_or_else(|| anyhow!("dynamic worktree path has no parent"))?
                         .as_std_path(),
                 )?;
-                let branch = format!(
-                    "gb-dynamic-{}-{}-{}",
-                    safe_dynamic_ref(ctx.run_id),
-                    safe_dynamic_ref(ctx.outer_node_id),
-                    safe_dynamic_ref(&node.id)
-                );
-                let status = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(ctx.app.paths.repo_root.as_str())
-                    .arg("worktree")
-                    .arg("add")
-                    .arg("-b")
-                    .arg(branch)
-                    .arg(worktree_dir.as_str())
-                    .arg("HEAD")
-                    .status()?;
-                ensure!(
-                    status.success(),
-                    "failed to create dynamic worktree for `{}`",
-                    node.id
-                );
+                let _git_guard = DYNAMIC_WORKTREE_GIT_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+                delete_dynamic_worktree_branch(ctx, &branch, true).map_err(|error| {
+                    anyhow!(
+                        "failed to clear stale dynamic worktree branch `{}` for `{}`: {error}",
+                        branch,
+                        node.id
+                    )
+                })?;
+                let output = git_output(
+                    &ctx.app.paths.repo_root,
+                    &[
+                        "worktree",
+                        "add",
+                        "-b",
+                        &branch,
+                        worktree_dir.as_str(),
+                        "HEAD",
+                    ],
+                )?;
+                if !output.success {
+                    let _ = delete_dynamic_worktree_branch(ctx, &branch, true);
+                    bail!(
+                        "failed to create dynamic worktree for `{}` at `{}` with branch `{}`: {}",
+                        node.id,
+                        worktree_dir,
+                        branch,
+                        git_command_details(&output)
+                    );
+                }
             }
             node.workspace_path = Some(worktree_dir);
             Ok(())
         }
     }
+}
+
+fn teardown_dynamic_workspace_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) {
+    if node.workspace.mode != WorkspaceMode::Worktree {
+        return;
+    }
+    let Some(worktree_dir) = node.workspace_path.as_ref() else {
+        return;
+    };
+    let branch = dynamic_worktree_branch_name(ctx, &node.id);
+    let _ = git_output(
+        &ctx.app.paths.repo_root,
+        &["worktree", "remove", "--force", worktree_dir.as_str()],
+    );
+    let _ = delete_dynamic_worktree_branch(ctx, &branch, true);
 }
 
 fn persist_dynamic_graph(
@@ -4641,6 +6082,10 @@ fn persist_dynamic_graph(
     for group in &graph.groups {
         validate_dynamic_group_state(group)?;
     }
+    let lock = dynamic_state_lock(ctx)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
     write_json(
         &ctx.app.paths.dynamic_run_file(
             ctx.task_id,
@@ -4840,16 +6285,22 @@ fn drive_from_node_with_initial_session(
 
         // ── Metrics: notify node started (predecessor + current) ──
         if let Some(metrics_cb) = &app.metrics_callback {
-            let seq = round.trace.iter()
+            let seq = round
+                .trace
+                .iter()
                 .filter(|t| t.node_id == node.node_id)
                 .map(|t| t.sequence)
                 .last();
-            let node_name = node.resolved_config.get("profileName")
+            let node_name = node
+                .resolved_config
+                .get("profileName")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
-            let agent_type = node.resolved_config.get("provider")
+            let agent_type = node
+                .resolved_config
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             let metrics_ctx = super::MetricsEventContext {
@@ -4872,11 +6323,17 @@ fn drive_from_node_with_initial_session(
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 total_tokens: 0,
+                acp_session_path: None,
                 outcome: None,
             };
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeStarted {
-                predecessor: run.last_executed_node.clone(),
-            });
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(
+                    metrics_ctx,
+                    super::MetricsEvent::NodeStarted {
+                        predecessor: run.last_executed_node.clone(),
+                    },
+                );
+            }));
         }
 
         let current_node_dsl = workflow
@@ -5203,50 +6660,7 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // ── Metrics: update last_executed_node and notify node completed ──
-        {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                Some(crate::domain::NodeOutcome::Failure) => "FAILED",
-                Some(crate::domain::NodeOutcome::Killed) => "FAILED",
-                Some(crate::domain::NodeOutcome::Invalid) => "FAILED",
-                None => "FAILED",
-            };
-            let node_name = node.resolved_config.get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            // Read real token data from ACP session metadata
-            let attempt_dir = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
-            let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                crate::acp::events::read_session_tokens(&session_paths.session);
-            let seq = round.trace.iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            let agent_type = node.resolved_config.get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name,
-                seq,
-                agent_type,
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                total_tokens,
-            });
-        }
-
+        let completed_snapshot = completed_node_snapshot(round, &node, 0, 0, 0, 0);
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -5259,6 +6673,7 @@ fn drive_from_node_with_initial_session(
             &node,
             decision,
         )? {
+            run.last_executed_node = Some(completed_snapshot);
             node = next.node;
             session_mode = next.session_mode;
             continue_ref = next.continue_ref;
@@ -5269,43 +6684,12 @@ fn drive_from_node_with_initial_session(
             continue;
         }
         // Workflow ended — send final metrics for the last completed node
+        run.last_executed_node = Some(completed_snapshot.clone());
         if let Some(metrics_cb) = &app.metrics_callback {
-            let status_str = match node.outcome {
-                Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
-                _ => "FAILED",
-            };
-            let node_name = node.resolved_config.get("profileName")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            let agent_type = node.resolved_config.get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let seq = round.trace.iter()
-                .filter(|t| t.node_id == node.node_id)
-                .map(|t| t.sequence)
-                .last();
-            // Update last_executed_node with final state (read real token data from ACP session)
-            let ad = app.paths.attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let sp = crate::acp::events::AcpAttemptPaths::from_attempt_dir(ad);
-            let (it, ot, cr, tt) = crate::acp::events::read_session_tokens(&sp.session);
-            run.last_executed_node = Some(crate::runtime::LastExecutedNode {
-                node_id: node.node_id.clone(),
-                uuid: node.uuid.clone().unwrap_or_default(),
-                round_uuid: round.uuid.clone().unwrap_or_default(),
-                node_name: node_name.clone(),
-                seq,
-                agent_type: agent_type.clone(),
-                status: status_str.to_string(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-            });
+            let attempt_dir =
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
             let metrics_ctx = super::MetricsEventContext {
                 repo_root: app.paths.repo_root.to_string(),
                 task_id: task_id.to_string(),
@@ -5317,20 +6701,279 @@ fn drive_from_node_with_initial_session(
                 run_uuid: run.uuid.clone(),
                 round_uuid: round.uuid.clone(),
                 node_uuid: node.uuid.clone(),
-                seq,
-                node_name: Some(node_name),
-                agent_type,
+                seq: completed_snapshot.seq,
+                node_name: Some(completed_snapshot.node_name.clone()),
+                agent_type: completed_snapshot.agent_type.clone(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),
-                input_tokens: it,
-                output_tokens: ot,
-                cache_read_tokens: cr,
-                total_tokens: tt,
-                outcome: Some(status_str.to_string()),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 0,
+                acp_session_path: Some(session_paths.session.to_string()),
+                outcome: Some(completed_snapshot.status.clone()),
             };
             // Send with predecessor = this node's final state
-            metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
+            }));
         }
         return Ok(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RuntimeConfig;
+    use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
+    use tempfile::tempdir;
+
+    fn git(cwd: &Utf8Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd.as_str())
+            .args(args)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo() -> (tempfile::TempDir, Utf8PathBuf) {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        git(&repo_root, &["init"]);
+        git(&repo_root, &["config", "user.email", "test@example.com"]);
+        git(&repo_root, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_root.join("README.md").as_std_path(), "hello\n").unwrap();
+        git(&repo_root, &["add", "README.md"]);
+        git(&repo_root, &["commit", "-m", "init"]);
+        (temp, repo_root)
+    }
+
+    fn test_dynamic() -> AiDynamicNode {
+        AiDynamicNode {
+            id: "ai-dynamic".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Fixed {
+                provider: "claude-acp".to_string(),
+                model: None,
+            },
+            permission_mode: None,
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        }
+    }
+
+    fn test_context<'a>(app: &'a App, dynamic: &'a AiDynamicNode) -> DynamicExecutionContext<'a> {
+        DynamicExecutionContext {
+            app,
+            task_id: "task-006",
+            run_id: "run-001",
+            round_id: "round-001",
+            outer_node_id: "ai-dynamic",
+            outer_attempt_id: "attempt-001",
+            dynamic,
+        }
+    }
+
+    fn test_worktree_node(id: &str) -> DynamicNodeState {
+        DynamicNodeState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            dynamic_run_id: "dynamic-run-001".to_string(),
+            kind: DynamicNodeKind::Worker,
+            title: id.to_string(),
+            task: id.to_string(),
+            status: DynamicNodeStatus::Ready,
+            outcome: None,
+            group_id: None,
+            chain_id: id.to_string(),
+            depth: 1,
+            depends_on: Vec::new(),
+            workspace: WorkspacePolicy {
+                mode: WorkspaceMode::Worktree,
+            },
+            workspace_path: None,
+            provider: Some("claude-acp".to_string()),
+            profile: None,
+            permission_mode: None,
+            model: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            workflow_id: None,
+            workflow_snapshot_id: None,
+            child_run_id: None,
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn dynamic_worktree_dir_uses_project_gold_band_task_run_short_id() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let worktree_dir = dynamic_worktree_dir(&ctx, "good-night");
+        let short_id = dynamic_worktree_short_id(&ctx, "good-night");
+
+        assert!(worktree_dir.starts_with(&app.paths.repo_gold_band_root));
+        assert!(!worktree_dir.starts_with(&app.paths.runtime_root));
+        assert_eq!(short_id.len(), "dyn-0000000000000000".len());
+        assert_eq!(worktree_dir.file_name(), Some(short_id.as_str()));
+        assert_eq!(
+            worktree_dir,
+            app.paths
+                .repo_gold_band_root
+                .join("worktrees")
+                .join("task-006")
+                .join("run-001")
+                .join(short_id)
+        );
+    }
+
+    #[test]
+    fn dynamic_worktree_short_id_includes_round_outer_attempt_and_node() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let base = test_context(&app, &dynamic);
+        let same = dynamic_worktree_short_id(&base, "good-night");
+        let different_node = dynamic_worktree_short_id(&base, "good-morning");
+        let different_round = DynamicExecutionContext {
+            round_id: "round-002",
+            ..test_context(&app, &dynamic)
+        };
+        let different_outer_attempt = DynamicExecutionContext {
+            outer_attempt_id: "attempt-002",
+            ..test_context(&app, &dynamic)
+        };
+
+        assert_eq!(same, dynamic_worktree_short_id(&base, "good-night"));
+        assert_ne!(same, different_node);
+        assert_ne!(
+            same,
+            dynamic_worktree_short_id(&different_round, "good-night")
+        );
+        assert_ne!(
+            same,
+            dynamic_worktree_short_id(&different_outer_attempt, "good-night")
+        );
+    }
+
+    #[test]
+    fn ensure_dynamic_workspace_clears_stale_branch_before_add() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("good-night");
+        let branch = dynamic_worktree_branch_name(&ctx, &node.id);
+        git(&repo_root, &["branch", &branch, "HEAD"]);
+
+        ensure_dynamic_workspace(&ctx, &mut node).unwrap();
+
+        let worktree_path = node.workspace_path.as_ref().unwrap();
+        assert!(worktree_path.exists());
+        assert_eq!(
+            git_capture(worktree_path, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            Some(branch.as_str())
+        );
+        let branch_list = git_capture(&repo_root, &["branch", "--list", &branch]).unwrap();
+        assert!(
+            branch_list
+                .lines()
+                .any(|line| parse_git_branch_list_name(line) == Some(branch.as_str()))
+        );
+        teardown_dynamic_workspace_best_effort(&ctx, &node);
+        assert!(git_capture(&repo_root, &["branch", "--list", &branch]).is_none());
+    }
+
+    #[test]
+    fn ensure_dynamic_workspace_removes_incomplete_directory() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("good-night");
+        let worktree_dir = dynamic_worktree_dir(&ctx, &node.id);
+        std::fs::create_dir_all(worktree_dir.as_std_path()).unwrap();
+        std::fs::write(worktree_dir.join("stale.txt").as_std_path(), "stale").unwrap();
+
+        ensure_dynamic_workspace(&ctx, &mut node).unwrap();
+
+        assert!(node.workspace_path.as_ref().unwrap().exists());
+        assert!(!worktree_dir.join("stale.txt").exists());
+        assert_eq!(
+            git_capture(
+                node.workspace_path.as_ref().unwrap(),
+                &["rev-parse", "--is-inside-work-tree"]
+            )
+            .as_deref(),
+            Some("true")
+        );
+        teardown_dynamic_workspace_best_effort(&ctx, &node);
+    }
+
+    #[test]
+    fn dynamic_node_job_error_pauses_graph_and_node() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let node = test_worktree_node("good-night");
+        let mut graph = DynamicGraphState {
+            version: VERSION.to_string(),
+            run: DynamicRunState {
+                version: VERSION.to_string(),
+                id: "dynamic-run-001".to_string(),
+                parent_run_id: "run-001".to_string(),
+                parent_round_id: "round-001".to_string(),
+                parent_node_id: "ai-dynamic".to_string(),
+                parent_attempt_id: "attempt-001".to_string(),
+                status: DynamicRunStatus::Running,
+                outcome: None,
+                pause_reason: None,
+                started_at: "2026-06-16T00:00:00Z".to_string(),
+                updated_at: "2026-06-16T00:00:00Z".to_string(),
+                control: DynamicControlDsl::default(),
+                allowed_workflow_snapshots: Vec::new(),
+                current_node_ids: vec!["good-night".to_string()],
+            },
+            nodes: vec![node],
+            groups: Vec::new(),
+            proposals: Vec::new(),
+        };
+
+        let error = apply_dynamic_execution_message(
+            &ctx,
+            &mut graph,
+            DynamicExecutionMessage {
+                node_id: "good-night".to_string(),
+                result: Err(anyhow!(
+                    "failed to create dynamic worktree for `good-night`"
+                )),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "failed to create dynamic worktree for `good-night`"
+        );
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::ErrorBlocked));
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert!(graph.nodes[0].finished_at.is_some());
     }
 }

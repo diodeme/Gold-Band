@@ -12,7 +12,7 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -71,6 +71,34 @@ fn tail_text(text: &str, limit: usize) -> String {
 
 fn logical_artifact_name(name: &str) -> &str {
     name.strip_suffix(".json").unwrap_or(name)
+}
+
+pub(crate) fn task_inputs_dir(app: &App, task_id: &str) -> Utf8PathBuf {
+    app.paths.task_dir(task_id).join("authoring").join("inputs")
+}
+
+pub(crate) fn existing_task_inputs_dir(app: &App, task_id: &str) -> Option<Utf8PathBuf> {
+    let dir = task_inputs_dir(app, task_id);
+    dir.exists().then_some(dir)
+}
+
+pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<String> {
+    let inputs_dir = task_inputs_dir(app, task_id);
+    if !inputs_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut paths = std::fs::read_dir(inputs_dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
+                .map(|entry| entry.path().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    paths.sort();
+    paths
 }
 
 fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
@@ -419,6 +447,7 @@ pub struct MetricsEventContext {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub acp_session_path: Option<String>,
     // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
     // Used by NodeCompleted to report the real status instead of hardcoding.
     pub outcome: Option<String>,
@@ -439,7 +468,12 @@ pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
-    acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    acp_live_update: Option<
+        Arc<
+            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+        >,
+    >,
+    acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
 }
 
@@ -624,13 +658,7 @@ fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
 
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
-        let paths = GoldBandPaths::new(repo_root.clone());
-        let app_config: ProjectAppConfig =
-            read_json(&paths.repo_app_config_file()).unwrap_or_default();
-        Self::with_config(
-            repo_root,
-            RuntimeConfig::default().apply_app_config(&app_config),
-        )
+        Self::with_config(repo_root, RuntimeConfig::default())
     }
 
     pub fn clone_for_background(&self) -> Self {
@@ -639,6 +667,7 @@ impl App {
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
+            acp_session_update: self.acp_session_update.clone(),
             metrics_callback: self.metrics_callback.clone(),
         }
     }
@@ -650,6 +679,14 @@ impl App {
         >,
     ) -> Self {
         self.acp_live_update = Some(live_update);
+        self
+    }
+
+    pub fn with_acp_session_update(
+        mut self,
+        session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.acp_session_update = Some(session_update);
         self
     }
 
@@ -669,6 +706,21 @@ impl App {
         Some(move |event: &crate::acp::events::AcpUiEvent| {
             live_update(context.clone(), event.clone())
         })
+    }
+
+    pub fn acp_session_update_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn() -> Result<()> + 'a> {
+        let session_update = self.acp_session_update.as_ref()?.clone();
+        Some(move || session_update(context.clone()))
+    }
+
+    pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
+        if let Some(session_update) = &self.acp_session_update {
+            session_update(context)?;
+        }
+        Ok(())
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -735,6 +787,21 @@ impl App {
         settings.use_local_claude = Some(use_local_claude);
         self.save_settings(&settings)?;
         Ok(settings)
+    }
+
+    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.log_level = Some(log_level);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
+        self.set_user_log_level(if enabled {
+            RuntimeLogLevel::Debug
+        } else {
+            RuntimeLogLevel::Info
+        })
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -1190,6 +1257,8 @@ impl App {
             config,
             self.config.use_local_claude,
             self.config.acp_session_title_refresh_enabled,
+            self.config.acp_raw_max_size_bytes,
+            self.config.acp_raw_target_size_bytes,
         )?))
     }
 
@@ -1233,6 +1302,7 @@ impl App {
             config,
             provider_override: None,
             acp_live_update: None,
+            acp_session_update: None,
             metrics_callback: None,
         }
     }
@@ -1254,6 +1324,7 @@ impl App {
             config,
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
+            acp_session_update: None,
             metrics_callback: None,
         }
     }
@@ -2308,8 +2379,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn run_continue_background(
@@ -2317,8 +2389,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn submit_manual_check(
@@ -2658,11 +2731,13 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{AcpLiveEventContext, App};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
+    use crate::observability::touch_log_file_best_effort;
     use camino::Utf8PathBuf;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -2671,6 +2746,75 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    #[test]
+    fn emits_acp_session_update_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+            seen_for_callback.lock().unwrap().push(context);
+            Ok(())
+        }));
+
+        app.emit_acp_session_update(AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "验收".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        })
+        .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].run_id, "run-001");
+        assert_eq!(calls[0].node_id, "验收");
+        assert_eq!(calls[0].attempt_id, "attempt-001");
+    }
+
+    #[test]
+    fn acp_session_update_for_emits_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+            seen_for_callback.lock().unwrap().push(context);
+            Ok(())
+        }));
+
+        let context = AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-002".to_string(),
+            outer_node_id: Some("outer-node".to_string()),
+            outer_attempt_id: Some("outer-attempt".to_string()),
+        };
+        let callback = app.acp_session_update_for(context.clone()).unwrap();
+        callback().unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].task_id, context.task_id);
+        assert_eq!(calls[0].run_id, context.run_id);
+        assert_eq!(calls[0].round_id, context.round_id);
+        assert_eq!(calls[0].node_id, context.node_id);
+        assert_eq!(calls[0].attempt_id, context.attempt_id);
+        assert_eq!(calls[0].outer_node_id, context.outer_node_id);
+        assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
     }
 
     #[test]
@@ -2693,6 +2837,21 @@ mod tests {
 
         let tail = app.runtime_log_tail_show(3).unwrap().unwrap();
         assert_eq!(tail, "line-998\nline-999\nline-1000");
+    }
+
+    #[test]
+    fn touch_runtime_log_creates_file_before_first_event() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root);
+        touch_log_file_best_effort(&app.paths);
+
+        assert!(app.paths.runtime_log_file().as_std_path().exists());
     }
 
     #[test]

@@ -28,15 +28,17 @@ interface ShellProps {
   onConversationSelectTask: (projectId: string, taskId: string) => void;
   onConversationSelectRun: (projectId: string, taskId: string, runId: string) => void;
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onConversationDeleteTask: (projectId: string, taskId: string) => void;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
   onConversationNewInWorkspace?: (projectId: string) => void;
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => void;
+  activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
@@ -54,9 +56,11 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onPinTask={onConversationPinTask}
         onUnpinTask={onConversationUnpinTask}
         onRenameTask={onConversationRenameTask}
+        onDeleteTask={onConversationDeleteTask}
         onNewConversationInWorkspace={onConversationNewInWorkspace}
         onAddWorkspace={onConversationAddWorkspace}
         onRemoveWorkspace={onConversationRemoveWorkspace}
+        activeWorkspaceId={activeWorkspaceId}
       >
         {children}
       </ConversationShell>

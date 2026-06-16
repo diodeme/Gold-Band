@@ -37,13 +37,17 @@
 - 当前 MVP 中默认返回“任务编排 / 任务列表”，并重置任务编排内部的深层页面状态。
 
 ### 3.2 Workspace 选择与记忆
-左侧 Logo 下方显示当前 workspace 路径，并作为“切换工作空间”入口。
+左侧 Logo 下方显示当前 workspace 路径，并作为”切换工作空间”入口。
 
 规则：
 - 桌面端启动时优先恢复用户上次选择的 workspace。
 - 若无用户记忆，则从当前进程目录向上查找包含 `.gold-band/` 的项目根目录，避免 Tauri dev 从 `src-tauri/` 启动时误读子目录。
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
+- 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
+- **新旧 UI 切换同步**：旧 UI → 新 UI 时，将旧 UI 当前 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；新 UI → 旧 UI 时，将新 UI 最后活跃 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）。查看历史 run 或切换 composer 草稿目标不改变该同步目标。
+- **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
 
 ### 3.3 一级菜单
 当前菜单：
@@ -162,6 +166,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
 - 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置。
+- `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
+- 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。

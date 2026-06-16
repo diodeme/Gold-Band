@@ -1,9 +1,26 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
+use tracing::Level;
+
+fn embedded_project_app_config() -> &'static ProjectAppConfig {
+    static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        config::Config::builder()
+            .add_source(config::File::from_str(
+                include_str!("../../configs/app-config.toml"),
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("embedded app-config.toml is valid")
+            .try_deserialize()
+            .expect("embedded app-config.toml deserializes to ProjectAppConfig")
+    })
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeLogLevel {
     Error,
@@ -14,13 +31,43 @@ pub enum RuntimeLogLevel {
 }
 
 impl RuntimeLogLevel {
-    pub fn as_directive(self) -> &'static str {
+    pub const fn as_directive(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
             Self::Info => "info",
             Self::Debug => "debug",
             Self::Trace => "trace",
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Error,
+            1 => Self::Warn,
+            2 => Self::Info,
+            3 => Self::Debug,
+            4 => Self::Trace,
+            _ => Self::Info,
+        }
+    }
+
+    pub const fn allows(self, level: &Level) -> bool {
+        match self {
+            Self::Error => matches!(*level, Level::ERROR),
+            Self::Warn => matches!(*level, Level::ERROR | Level::WARN),
+            Self::Info => matches!(*level, Level::ERROR | Level::WARN | Level::INFO),
+            Self::Debug => {
+                matches!(
+                    *level,
+                    Level::ERROR | Level::WARN | Level::INFO | Level::DEBUG
+                )
+            }
+            Self::Trace => true,
         }
     }
 }
@@ -294,8 +341,6 @@ pub struct SettingsConfig {
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
     pub desktop_metrics_base_url: Option<String>,
-    pub desktop_heartbeat_endpoint: Option<String>,
-    pub desktop_node_metrics_endpoint: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
 }
 
@@ -327,6 +372,8 @@ pub struct StateConfig {
 pub struct ProjectAppConfig {
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
+    pub acp_raw_max_size_bytes: Option<u64>,
+    pub acp_raw_target_size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
@@ -349,11 +396,11 @@ pub struct RuntimeConfig {
     pub use_local_claude: bool,
     pub desktop_metrics_enabled: bool,
     pub desktop_metrics_base_url: Option<String>,
-    pub desktop_heartbeat_endpoint: Option<String>,
-    pub desktop_node_metrics_endpoint: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub acp_raw_max_size_bytes: u64,
+    pub acp_raw_target_size_bytes: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -364,8 +411,8 @@ impl Default for RuntimeConfig {
             ManagedAgentType::ClaudeAcp,
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
-        Self {
-            log_level: RuntimeLogLevel::Debug,
+        let base = Self {
+            log_level: RuntimeLogLevel::Info,
             log_prompts: true,
             log_provider_command: true,
             log_retention_days: 30,
@@ -381,13 +428,14 @@ impl Default for RuntimeConfig {
             use_local_claude: false,
             desktop_metrics_enabled: false,
             desktop_metrics_base_url: None,
-            desktop_heartbeat_endpoint: None,
-            desktop_node_metrics_endpoint: None,
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
+            acp_raw_max_size_bytes: 5 * 1024 * 1024,
+            acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
-        }
+        };
+        base.apply_app_config(embedded_project_app_config())
     }
 }
 
@@ -428,8 +476,6 @@ impl RuntimeConfig {
             self.desktop_metrics_enabled = desktop_metrics_enabled;
         }
         self.desktop_metrics_base_url = settings.desktop_metrics_base_url.clone();
-        self.desktop_heartbeat_endpoint = settings.desktop_heartbeat_endpoint.clone();
-        self.desktop_node_metrics_endpoint = settings.desktop_node_metrics_endpoint.clone();
         self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
         self
     }
@@ -442,6 +488,12 @@ impl RuntimeConfig {
         }
         if let Some(acp_chat_event_page_size) = app_config.acp_chat_event_page_size {
             self.acp_chat_event_page_size = acp_chat_event_page_size;
+        }
+        if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
+            self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
+        }
+        if let Some(acp_raw_target_size_bytes) = app_config.acp_raw_target_size_bytes {
+            self.acp_raw_target_size_bytes = acp_raw_target_size_bytes;
         }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
@@ -699,7 +751,7 @@ mod tests {
         assert_eq!(config.desktop_theme, DesktopThemePreference::System);
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.desktop_font, "app-default");
-        assert!(matches!(config.log_level, RuntimeLogLevel::Debug));
+        assert!(matches!(config.log_level, RuntimeLogLevel::Info));
     }
 
     #[test]
@@ -839,6 +891,7 @@ pub struct ConversationAutoConfig {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    pub acceptance_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,

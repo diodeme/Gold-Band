@@ -20,9 +20,11 @@ interface ConversationShellProps {
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
+  activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }
 
@@ -63,9 +65,11 @@ export function ConversationShell({
   onPinTask,
   onUnpinTask,
   onRenameTask,
+  onDeleteTask,
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  activeWorkspaceId,
   children,
 }: ConversationShellProps) {
   const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth(vm.preferences));
@@ -145,6 +149,7 @@ export function ConversationShell({
             <ConversationSidebar
               vm={vm}
               active={active}
+              activeWorkspaceId={activeWorkspaceId}
               onSelect={onSelect}
               onToggleUiMode={onToggleUiMode}
               onNewConversation={onNewConversation}
@@ -154,6 +159,7 @@ export function ConversationShell({
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}
               onRenameTask={onRenameTask}
+              onDeleteTask={onDeleteTask}
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
               onRemoveWorkspace={onRemoveWorkspace}

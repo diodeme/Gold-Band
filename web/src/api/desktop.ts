@@ -167,8 +167,8 @@ export const desktopApi: RuntimeApi = {
   showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_attachment', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
-  showConversationAttachment(taskId: string, name: string) {
-    return invokeCommand('show_conversation_attachment', { taskId, name });
+  showConversationAttachment(projectId: string, taskId: string, name: string) {
+    return invokeCommand('show_conversation_attachment', { projectId, taskId, name });
   },
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
@@ -214,8 +214,8 @@ export const desktopApi: RuntimeApi = {
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
   },
-  switchConversationSession(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
-    return invokeCommand<ConversationSessionSwitchVm>('switch_conversation_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  switchConversationSession(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand<ConversationSessionSwitchVm>('switch_conversation_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   validateConversationCreate(input) {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });

@@ -856,7 +856,18 @@ export function App() {
     if (typeof localStorage !== 'undefined') localStorage.setItem('gold-band-ui-mode', nextMode);
     saveDesktopUiMode(nextMode).catch(() => {});
     if (nextMode === 'conversation' && bootstrap?.repoRoot) {
+      // Sync the old UI's current workspace into conversation sidebar and expand it
       syncConversationWorkspace(bootstrap.repoRoot).then(setConversationSidebar).catch(() => {});
+    }
+    if (nextMode === 'workbench') {
+      const targetWorkspace = activeWorkspace?.workspacePath;
+      if (targetWorkspace && targetWorkspace !== bootstrap?.repoRoot) {
+        setBusy(true);
+        selectRecentWorkspace(targetWorkspace)
+          .then(applyWorkspace)
+          .catch((err) => setError(displayAppError(t, err)))
+          .finally(() => setBusy(false));
+      }
     }
     if (nextMode === 'conversation') {
       pushRoute(primaryModule, taskPage, conversationPage);
@@ -1178,6 +1189,7 @@ export function App() {
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
             switchConversationSession(
+              conversationPage.projectId,
               conversationPage.taskId,
               conversationPage.runId,
               leaf.roundId,
@@ -1300,6 +1312,6 @@ export function App() {
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(taskId, runId, promptId))} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(taskId, runId, promptId))} />;
   }
 }

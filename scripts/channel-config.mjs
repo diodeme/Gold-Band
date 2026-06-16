@@ -36,6 +36,8 @@ export function tauriConfigOverlay(config, version) {
           height: 800,
           minWidth: 1040,
           minHeight: 680,
+          decorations: false,
+          dragDropEnabled: false,
         },
       ],
       security: {

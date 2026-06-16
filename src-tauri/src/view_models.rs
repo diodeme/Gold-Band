@@ -3771,7 +3771,7 @@ fn parse_timeline_file(
                 patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
                 session_elapsed.observe_event(&patch.item);
                 if patch.item.kind == "permissionRequest" {
-                    latest_permission_events.insert(patch.item.id.clone(), patch.item.clone());
+                    insert_latest_permission_event(&mut latest_permission_events, &patch.item);
                 }
                 if let Some(raw) = patch.item.raw.as_ref() {
                     if is_session_update(&patch.item, "available_commands_update") {
@@ -3814,8 +3814,7 @@ fn parse_timeline_file(
                 .unwrap_or(final_item.item.seq);
             session_elapsed.observe_event(&final_item.item);
             if final_item.item.kind == "permissionRequest" {
-                latest_permission_events
-                    .insert(final_item.item.id.clone(), final_item.item.clone());
+                insert_latest_permission_event(&mut latest_permission_events, &final_item.item);
             }
             if let Some(raw) = final_item.item.raw.as_ref() {
                 if is_session_update(&final_item.item, "available_commands_update") {
@@ -4087,7 +4086,7 @@ fn parse_events_file(
             event.seq = raw_event_count as u64;
             session_elapsed.observe_event(&event);
             if event.kind == "permissionRequest" {
-                latest_permission_events.insert(event.id.clone(), event.clone());
+                insert_latest_permission_event(&mut latest_permission_events, &event);
             }
             if let Some(raw) = event.raw.as_ref() {
                 if is_session_update(&event, "available_commands_update") {
@@ -4412,13 +4411,15 @@ impl AcpSessionElapsedState {
             .as_deref()
             .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
         if is_pending {
+            let request_id = permission_request_id_from_event(event);
             let was_empty = self.pending_permission_ids.is_empty();
-            if self.pending_permission_ids.insert(event.id.clone()) && was_empty {
+            if self.pending_permission_ids.insert(request_id) && was_empty {
                 self.permission_wait_started_at = Some(timestamp);
             }
             return;
         }
-        if !self.pending_permission_ids.remove(&event.id) {
+        let request_id = permission_request_id_from_event(event);
+        if !self.pending_permission_ids.remove(&request_id) {
             return;
         }
         if self.pending_permission_ids.is_empty() {
@@ -4836,12 +4837,52 @@ fn is_session_update(event: &AcpUiEventVm, session_update: &str) -> bool {
         == Some(session_update)
 }
 
+fn permission_request_id_from_event(event: &AcpUiEventVm) -> String {
+    let value = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("requestId"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&event.id);
+    canonical_permission_request_id(value)
+}
+
+fn canonical_permission_request_id(value: &str) -> String {
+    let mut current = value;
+    while let Some(next) = current.strip_prefix("permission-") {
+        current = next;
+    }
+    current.to_string()
+}
+
+fn insert_latest_permission_event(
+    latest_permission_events: &mut HashMap<String, AcpUiEventVm>,
+    event: &AcpUiEventVm,
+) {
+    let request_id = permission_request_id_from_event(event);
+    let should_replace = latest_permission_events
+        .get(&request_id)
+        .map(|current| event.seq >= current.seq)
+        .unwrap_or(true);
+    if should_replace {
+        latest_permission_events.insert(request_id, event.clone());
+    }
+}
+
 fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
-    let raw = event
+    let request_id = permission_request_id_from_event(event);
+    let mut raw = event
         .raw
         .clone()
         .map(compact_raw_value)
         .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(object) = raw.as_object_mut() {
+        object.insert(
+            "requestId".to_string(),
+            serde_json::Value::String(request_id.clone()),
+        );
+    }
     let options = raw
         .get("options")
         .and_then(|value| value.as_array())
@@ -4866,7 +4907,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
         })
         .collect::<Vec<_>>();
     AcpPermissionRequestVm {
-        request_id: event.id.clone(),
+        request_id,
         title: event
             .title
             .clone()
@@ -5801,6 +5842,92 @@ mod tests {
         );
 
         assert_eq!(elapsed, Some(30));
+    }
+
+    #[test]
+    fn permission_vm_uses_raw_request_id_over_timeline_display_id() {
+        let event = acp_event_at(
+            "permission-0",
+            "permissionRequest",
+            Some("pending"),
+            110,
+            Some(json!({
+                "requestId": "0",
+                "options": [
+                    { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+                ]
+            })),
+        );
+
+        let vm = permission_vm_from_event(&event);
+
+        assert_eq!(vm.request_id, "0");
+        assert_eq!(
+            vm.raw.get("requestId").and_then(|value| value.as_str()),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn legacy_permission_display_id_falls_back_to_original_request_id() {
+        let event = acp_event_at(
+            "permission-permission-0",
+            "permissionRequest",
+            Some("pending"),
+            110,
+            Some(json!({
+                "options": [
+                    { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+                ]
+            })),
+        );
+
+        assert_eq!(permission_request_id_from_event(&event), "0");
+        assert_eq!(permission_vm_from_event(&event).request_id, "0");
+    }
+
+    #[test]
+    fn timeline_permission_decision_replaces_pending_by_request_id() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-permission-id-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                acp_event_at(
+                    "permission-0",
+                    "permissionRequest",
+                    Some("pending"),
+                    110,
+                    Some(json!({
+                        "requestId": "0",
+                        "options": [
+                            { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+                        ]
+                    })),
+                ),
+                acp_event_at(
+                    "permission-permission-0",
+                    "permissionRequest",
+                    Some("selected"),
+                    160,
+                    Some(json!({ "requestId": "permission-0", "optionId": "allow" })),
+                ),
+            ],
+        );
+
+        let (_, _, _, latest_permissions, _, _) = parse_timeline_file(&path, true).unwrap();
+
+        assert_eq!(latest_permissions.len(), 1);
+        assert_eq!(
+            latest_permissions
+                .get("0")
+                .and_then(|event| event.status.as_deref()),
+            Some("selected")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     // --- timeline / events parse & cache tests ---

@@ -325,7 +325,7 @@ attempt-001/
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
 - `acp.session.json` / `acp.events.jsonl`：仅历史旧会话可能存在，供 legacy reader 兼容读取
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
-- permission request / response 文件
+- permission request / response 文件：文件名中的 `<id>` 必须使用 ACP JSON-RPC `session/request_permission` 的原始 request id。UI timeline 为了展示可使用 `permission-<id>` 这类稳定 item id，但响应文件、pending 文件和 VM `requestId` 都不能使用展示 id，否则 agent runtime 无法消费用户决策。
 - cancel marker
 
 #### session identity

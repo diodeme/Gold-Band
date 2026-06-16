@@ -4242,21 +4242,32 @@ function findPlanInterventionOption(request: AcpPermissionRequestVm) {
   );
 }
 
-function pendingPermissionFromEvents(
+export function permissionRequestIdFromEvent(event: AcpUiEventVm) {
+  return canonicalPermissionRequestId(
+    stringValue(rawObject(event.raw)?.requestId) ?? event.id,
+  );
+}
+
+function canonicalPermissionRequestId(value: string) {
+  return value.replace(/^(permission-)+/, "");
+}
+
+export function pendingPermissionFromEvents(
   events: AcpUiEventVm[],
   dismissedIds: Set<string>,
 ) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (
-      event.kind !== "permissionRequest" ||
-      event.status !== "pending" ||
-      dismissedIds.has(event.id)
-    )
+    if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
-    const raw = rawObject(event.raw) ?? {};
+    const requestId = permissionRequestIdFromEvent(event);
+    if (dismissedIds.has(requestId)) continue;
+    const raw: Record<string, unknown> = {
+      ...(rawObject(event.raw) ?? {}),
+      requestId,
+    };
     return {
-      requestId: event.id,
+      requestId,
       title: event.title ?? "Permission required",
       toolCallId: event.toolCallId,
       options:
@@ -4726,7 +4737,11 @@ export function limitAcpEvents(
 
 function acpEventKey(event: AcpUiEventVm) {
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
-  return `${attemptId}:${event.kind}:${event.id}`;
+  const eventId =
+    event.kind === "permissionRequest"
+      ? `permission-${permissionRequestIdFromEvent(event)}`
+      : event.id;
+  return `${attemptId}:${event.kind}:${eventId}`;
 }
 
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {

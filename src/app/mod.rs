@@ -12,7 +12,7 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
     StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
@@ -659,13 +659,7 @@ fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
 
 impl App {
     pub fn new(repo_root: Utf8PathBuf) -> Self {
-        let paths = GoldBandPaths::new(repo_root.clone());
-        let app_config: ProjectAppConfig =
-            read_json(&paths.repo_app_config_file()).unwrap_or_default();
-        Self::with_config(
-            repo_root,
-            RuntimeConfig::default().apply_app_config(&app_config),
-        )
+        Self::with_config(repo_root, RuntimeConfig::default())
     }
 
     pub fn clone_for_background(&self) -> Self {

@@ -8,7 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
 use gold_band::config::{
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, SettingsConfig, StateConfig,
+    ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig,
 };
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
@@ -21,7 +21,6 @@ use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 pub struct DesktopContext {
     pub repo_root: Utf8PathBuf,
     pub config: RuntimeConfig,
-    pub app_config: ProjectAppConfig,
     pub recent_workspaces: Vec<String>,
     pub needs_workspace: bool,
 }
@@ -36,17 +35,16 @@ impl DesktopContext {
 
     pub fn from_workspace(repo_root: Utf8PathBuf) -> Result<Self> {
         let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, _, _) = load_configs(&paths);
+        let (settings, _) = load_configs(&paths);
         let needs_workspace = resolve_configured_workspace(&settings).is_none()
             && find_workspace_root(&repo_root).is_none();
         let repo_root = resolve_configured_workspace(&settings)
             .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, state, app_config) = load_configs(&paths);
+        let (settings, state) = load_configs(&paths);
         let config = RuntimeConfig::default()
             .apply_settings(&settings)
-            .apply_app_config(&app_config)
             .apply_state(&state);
         let mut recent_workspaces = recent_workspaces(&state, &repo_root);
         if needs_workspace {
@@ -55,7 +53,6 @@ impl DesktopContext {
         Ok(Self {
             repo_root,
             config,
-            app_config,
             recent_workspaces,
             needs_workspace,
         })
@@ -168,7 +165,6 @@ impl DesktopState {
                 .unwrap_or_default();
         guard.config = RuntimeConfig::default()
             .apply_settings(settings)
-            .apply_app_config(&guard.app_config)
             .apply_state(&state);
         drop(guard);
         self.prune_agent_diagnostics()?;
@@ -371,14 +367,9 @@ impl DesktopState {
             let app = App::with_config(repo_root.clone(), guard.config.clone());
             let workspace = repo_root.to_string();
             let (settings, state) = app.set_user_desktop_workspace(&workspace)?;
-            let app_config: ProjectAppConfig =
-                read_json(&GoldBandPaths::new(repo_root.clone()).repo_app_config_file())
-                    .unwrap_or_default();
             guard.repo_root = repo_root;
-            guard.app_config = app_config;
             guard.config = RuntimeConfig::default()
                 .apply_settings(&settings)
-                .apply_app_config(&guard.app_config)
                 .apply_state(&state);
             guard.recent_workspaces = recent_workspaces(&state, &guard.repo_root);
             guard.needs_workspace = false;
@@ -452,11 +443,10 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
     }
 }
 
-fn load_configs(paths: &GoldBandPaths) -> (SettingsConfig, StateConfig, ProjectAppConfig) {
+fn load_configs(paths: &GoldBandPaths) -> (SettingsConfig, StateConfig) {
     let settings: SettingsConfig = read_json(&paths.user_settings_file()).unwrap_or_default();
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
-    let app_config: ProjectAppConfig = read_json(&paths.repo_app_config_file()).unwrap_or_default();
-    (settings, state, app_config)
+    (settings, state)
 }
 
 fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {

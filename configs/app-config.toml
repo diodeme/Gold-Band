@@ -1,0 +1,14 @@
+acpSessionTitleRefreshEnabled = false
+acpChatEventPageSize = 200
+acpRawMaxSizeBytes = 2048
+acpRawTargetSizeBytes = 1024
+
+[permissionModeMapping.claude-acp]
+read_only = "plan"
+ask = "acceptEdits"
+full_access = "bypassPermissions"
+
+[permissionModeMapping.codex-acp]
+read_only = "read-only"
+ask = "auto"
+full_access = "full-access"

@@ -1,8 +1,23 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
+
+fn embedded_project_app_config() -> &'static ProjectAppConfig {
+    static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        config::Config::builder()
+            .add_source(config::File::from_str(
+                include_str!("../../configs/app-config.toml"),
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("embedded app-config.toml is valid")
+            .try_deserialize()
+            .expect("embedded app-config.toml deserializes to ProjectAppConfig")
+    })
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(u8)]
@@ -398,7 +413,7 @@ impl Default for RuntimeConfig {
             ManagedAgentType::ClaudeAcp,
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
-        Self {
+        let base = Self {
             log_level: RuntimeLogLevel::Info,
             log_prompts: true,
             log_provider_command: true,
@@ -422,7 +437,8 @@ impl Default for RuntimeConfig {
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
-        }
+        };
+        base.apply_app_config(embedded_project_app_config())
     }
 }
 

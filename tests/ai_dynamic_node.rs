@@ -1031,16 +1031,13 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         .unwrap();
     let merge = render_prompt_bundle(merge_invocation).unwrap();
     assert!(merge.system_prompt.contains("branch workspaces"));
-    assert!(
-        merge
-            .system_prompt
-            .contains("branch=gb-dynamic-task-ai-dynamic-worktree-fanout-run-001-router-branch-a")
-    );
-    assert!(
-        merge
-            .system_prompt
-            .contains("branch=gb-dynamic-task-ai-dynamic-worktree-fanout-run-001-router-branch-b")
-    );
+    let branch_lines = merge
+        .system_prompt
+        .lines()
+        .filter(|line| line.contains("branch=gb-dyn-task-ai-dynamic-worktree-fanout-run-001-dyn-"))
+        .collect::<Vec<_>>();
+    assert_eq!(branch_lines.len(), 2);
+    assert_ne!(branch_lines[0], branch_lines[1]);
     assert!(merge.system_prompt.contains("head="));
     assert!(merge.system_prompt.contains("mergeBase="));
     assert!(merge.system_prompt.contains("status=?? branch-a.txt"));

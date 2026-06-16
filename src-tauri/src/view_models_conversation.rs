@@ -306,10 +306,13 @@ pub fn conversation_sidebar_vm_from_sources(
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
 ) -> ConversationSidebarVm {
-    let workspaces = sources
+    let mut workspaces = sources
         .iter()
         .map(|source| source.workspace.clone())
         .collect::<Vec<_>>();
+    if let Some(last_workspace) = &state.last_conversation_workspace {
+        workspaces.sort_by_key(|workspace| usize::from(workspace.project_id != *last_workspace));
+    }
     let mut pinned_tasks: Vec<ConversationTaskRowVm> = Vec::new();
     let mut tasks_by_workspace: HashMap<String, Vec<ConversationTaskRowVm>> = HashMap::new();
     let pinned_set: std::collections::HashSet<(String, String)> = state
@@ -2275,6 +2278,40 @@ mod tests {
         assert_eq!(vm.tasks_by_workspace["workspace-a"][0].project_id, "workspace-a");
         assert_eq!(vm.tasks_by_workspace["workspace-b"][0].task_id, "task-b");
         assert_eq!(vm.tasks_by_workspace["workspace-b"][0].project_id, "workspace-b");
+    }
+
+    #[test]
+    fn conversation_sidebar_vm_prioritizes_last_workspace() {
+        let repo_a = temp_repo_root();
+        let repo_b = temp_repo_root();
+        let app_a = App::new(repo_a.clone());
+        let app_b = App::new(repo_b.clone());
+        let mut state = gold_band::config::StateConfig::default();
+        state.last_conversation_workspace = Some("workspace-b".to_string());
+        let sources = vec![
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-a".to_string(),
+                    workspace_path: repo_a.to_string(),
+                    name: "Workspace A".to_string(),
+                },
+                app: app_a.clone_for_background(),
+            },
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-b".to_string(),
+                    workspace_path: repo_b.to_string(),
+                    name: "Workspace B".to_string(),
+                },
+                app: app_b.clone_for_background(),
+            },
+        ];
+
+        let vm = conversation_sidebar_vm_from_sources(&app_a, &state, &sources);
+
+        assert_eq!(vm.last_active_workspace_id.as_deref(), Some("workspace-b"));
+        assert_eq!(vm.workspaces[0].project_id, "workspace-b");
+        assert_eq!(vm.workspaces[1].project_id, "workspace-a");
     }
 
     #[test]

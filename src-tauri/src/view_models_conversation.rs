@@ -56,6 +56,11 @@ pub struct ConversationTaskRowVm {
     pub pinned_order: Option<usize>,
 }
 
+pub struct ConversationWorkspaceSource {
+    pub workspace: ConversationWorkspaceVm,
+    pub app: App,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunSummaryVm {
@@ -296,40 +301,15 @@ pub struct ConversationSearchResultVm {
 
 // ── Builder functions (stubs — full implementation in later phases) ──
 
-pub fn conversation_sidebar_vm(app: &App, state: &StateConfig) -> ConversationSidebarVm {
-    // Build workspaces: always include the default (current repo) workspace,
-    // then merge stored workspaces, deduplicating by project_id.
-    let default_repo = app.paths.repo_root.to_string();
-    let default_name = std::path::Path::new(&default_repo)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Workspace".to_string());
-    let default_project_id = default_repo
-        .to_lowercase()
-        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
-
-    let mut workspaces: Vec<ConversationWorkspaceVm> = vec![ConversationWorkspaceVm {
-        project_id: default_project_id.clone(),
-        workspace_path: default_repo,
-        name: default_name,
-    }];
-
-    for w in &state.conversation_workspaces {
-        if w.project_id != default_project_id {
-            workspaces.push(ConversationWorkspaceVm {
-                project_id: w.project_id.clone(),
-                workspace_path: w.workspace_path.clone(),
-                name: w.name.clone(),
-            });
-        }
-    }
-
-    let default_project_id = workspaces
-        .first()
-        .map(|w| w.project_id.clone())
-        .unwrap_or_default();
-
-    // Read real tasks from the app
+pub fn conversation_sidebar_vm_from_sources(
+    state_app: &App,
+    state: &StateConfig,
+    sources: &[ConversationWorkspaceSource],
+) -> ConversationSidebarVm {
+    let workspaces = sources
+        .iter()
+        .map(|source| source.workspace.clone())
+        .collect::<Vec<_>>();
     let mut pinned_tasks: Vec<ConversationTaskRowVm> = Vec::new();
     let mut tasks_by_workspace: HashMap<String, Vec<ConversationTaskRowVm>> = HashMap::new();
     let pinned_set: std::collections::HashSet<(String, String)> = state
@@ -338,107 +318,105 @@ pub fn conversation_sidebar_vm(app: &App, state: &StateConfig) -> ConversationSi
         .map(|p| (p.project_id.clone(), p.task_id.clone()))
         .collect();
 
-    // Initialize empty task lists for each workspace
     for ws in &workspaces {
         tasks_by_workspace.entry(ws.project_id.clone()).or_default();
     }
 
-    // Read task summaries from the app
-    if let Ok(summaries) = app.task_summaries() {
-        for summary in &summaries {
-            let task_id = &summary.task.id;
-            let project_id = &default_project_id; // Single workspace for now
-            let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
-            let pin_order = state
-                .conversation_pins
-                .iter()
-                .find(|p| p.project_id == *project_id && p.task_id == *task_id)
-                .map(|p| p.order);
+    for source in sources {
+        if let Ok(summaries) = source.app.task_summaries() {
+            for summary in &summaries {
+                let task_id = &summary.task.id;
+                let project_id = &source.workspace.project_id;
+                let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
+                let pin_order = state
+                    .conversation_pins
+                    .iter()
+                    .find(|p| p.project_id == *project_id && p.task_id == *task_id)
+                    .map(|p| p.order);
 
-            // Read conversation metadata if exists
-            let conversation_json_path = app
-                .paths
-                .tasks_dir()
-                .join(task_id)
-                .join("authoring")
-                .join("conversation.json");
-            let run_mode = if conversation_json_path.exists() {
-                gold_band::storage::read_json::<serde_json::Value>(&conversation_json_path)
-                    .ok()
-                    .and_then(|v| v.get("runMode").and_then(|m| m.as_str().map(String::from)))
-                    .unwrap_or_else(|| "workflow".to_string())
-            } else {
-                "workflow".to_string()
-            };
+                let conversation_json_path = source
+                    .app
+                    .paths
+                    .tasks_dir()
+                    .join(task_id)
+                    .join("authoring")
+                    .join("conversation.json");
+                let run_mode = if conversation_json_path.exists() {
+                    gold_band::storage::read_json::<serde_json::Value>(&conversation_json_path)
+                        .ok()
+                        .and_then(|v| v.get("runMode").and_then(|m| m.as_str().map(String::from)))
+                        .unwrap_or_else(|| "workflow".to_string())
+                } else {
+                    "workflow".to_string()
+                };
 
-            let latest_run = summary.latest_run.as_ref().map(|run| {
-                let resumable = is_run_continuable(run);
-                ConversationRunSummaryVm {
-                    run_id: run.id.clone(),
-                    status: enum_label(&run.status),
-                    outcome: run.outcome.map(|o| enum_label(&o)),
-                    started_at: run.started_at.clone(),
-                    updated_at: run.updated_at.clone(),
-                    current_round: run.current_round.clone(),
-                    current_node: run.current_node.clone(),
-                    resumable,
+                let latest_run = summary.latest_run.as_ref().map(|run| {
+                    let resumable = is_run_continuable(run);
+                    ConversationRunSummaryVm {
+                        run_id: run.id.clone(),
+                        status: enum_label(&run.status),
+                        outcome: run.outcome.map(|o| enum_label(&o)),
+                        started_at: run.started_at.clone(),
+                        updated_at: run.updated_at.clone(),
+                        current_round: run.current_round.clone(),
+                        current_node: run.current_node.clone(),
+                        resumable,
+                    }
+                });
+
+                let runs: Vec<ConversationRunSummaryVm> = source
+                    .app
+                    .run_list(task_id)
+                    .map(|run_list| {
+                        let mut vms: Vec<ConversationRunSummaryVm> = run_list
+                            .iter()
+                            .map(|run| {
+                                let resumable = is_run_continuable(run);
+                                ConversationRunSummaryVm {
+                                    run_id: run.id.clone(),
+                                    status: enum_label(&run.status),
+                                    outcome: run.outcome.map(|o| enum_label(&o)),
+                                    started_at: run.started_at.clone(),
+                                    updated_at: run.updated_at.clone(),
+                                    current_round: run.current_round.clone(),
+                                    current_node: run.current_node.clone(),
+                                    resumable,
+                                }
+                            })
+                            .collect();
+                        vms.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                        vms
+                    })
+                    .unwrap_or_default();
+
+                let row = ConversationTaskRowVm {
+                    project_id: project_id.clone(),
+                    task_id: task_id.clone(),
+                    title: summary
+                        .task
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| task_id.clone()),
+                    auto_title: conversation_json_path.exists(),
+                    run_mode,
+                    workflow_template_id: None,
+                    latest_run,
+                    runs,
+                    pinned,
+                    pinned_order: pin_order,
+                };
+
+                if pinned {
+                    pinned_tasks.push(row.clone());
                 }
-            });
-
-            // Load all runs for this task (for expandable run list in sidebar)
-            let runs: Vec<ConversationRunSummaryVm> = app
-                .run_list(task_id)
-                .map(|run_list| {
-                    let mut vms: Vec<ConversationRunSummaryVm> = run_list
-                        .iter()
-                        .map(|run| {
-                            let resumable = is_run_continuable(run);
-                            ConversationRunSummaryVm {
-                                run_id: run.id.clone(),
-                                status: enum_label(&run.status),
-                                outcome: run.outcome.map(|o| enum_label(&o)),
-                                started_at: run.started_at.clone(),
-                                updated_at: run.updated_at.clone(),
-                                current_round: run.current_round.clone(),
-                                current_node: run.current_node.clone(),
-                                resumable,
-                            }
-                        })
-                        .collect();
-                    // Sort newest first
-                    vms.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-                    vms
-                })
-                .unwrap_or_default();
-
-            let row = ConversationTaskRowVm {
-                project_id: project_id.clone(),
-                task_id: task_id.clone(),
-                title: summary
-                    .task
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| task_id.clone()),
-                auto_title: conversation_json_path.exists(),
-                run_mode,
-                workflow_template_id: None,
-                latest_run,
-                runs,
-                pinned,
-                pinned_order: pin_order,
-            };
-
-            if pinned {
-                pinned_tasks.push(row.clone());
+                tasks_by_workspace
+                    .entry(project_id.clone())
+                    .or_default()
+                    .push(row);
             }
-            tasks_by_workspace
-                .entry(project_id.clone())
-                .or_default()
-                .push(row);
         }
     }
 
-    // Sort: pinned by order, others by latest run time (newest first)
     pinned_tasks.sort_by_key(|t| t.pinned_order.unwrap_or(usize::MAX));
     for tasks in tasks_by_workspace.values_mut() {
         tasks.sort_by(|a, b| {
@@ -452,7 +430,7 @@ pub fn conversation_sidebar_vm(app: &App, state: &StateConfig) -> ConversationSi
                 .as_ref()
                 .map(|r| r.started_at.as_str())
                 .unwrap_or("");
-            b_time.cmp(&a_time) // newest first
+            b_time.cmp(&a_time)
         });
     }
 
@@ -466,7 +444,10 @@ pub fn conversation_sidebar_vm(app: &App, state: &StateConfig) -> ConversationSi
         pinned_tasks,
         tasks_by_workspace,
         last_active_workspace_id,
-        preferences: app.load_state().map(|s| s.preferences).unwrap_or_default(),
+        preferences: state_app
+            .load_state()
+            .map(|s| s.preferences)
+            .unwrap_or_default(),
     }
 }
 
@@ -2081,8 +2062,9 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConversationAutoConfigVm, ConversationDynamicAgentRefVm, build_auto_workflow,
-        conversation_run_vm, conversation_status_from_session,
+        ConversationAutoConfigVm, ConversationDynamicAgentRefVm, ConversationWorkspaceSource,
+        ConversationWorkspaceVm, build_auto_workflow, conversation_run_vm,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
         derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
     };
     use camino::Utf8PathBuf;
@@ -2258,6 +2240,44 @@ mod tests {
     }
 
     #[test]
+    fn conversation_sidebar_vm_groups_tasks_by_workspace_source() {
+        let repo_a = temp_repo_root();
+        let repo_b = temp_repo_root();
+        let app_a = App::new(repo_a.clone());
+        let app_b = App::new(repo_b.clone());
+        write_sidebar_task_fixture(&app_a, "task-a", "Task A", "run-a", "2026-06-15T00:00:00Z");
+        write_sidebar_task_fixture(&app_b, "task-b", "Task B", "run-b", "2026-06-15T00:01:00Z");
+
+        let state = gold_band::config::StateConfig::default();
+        let sources = vec![
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-a".to_string(),
+                    workspace_path: repo_a.to_string(),
+                    name: "Workspace A".to_string(),
+                },
+                app: app_a.clone_for_background(),
+            },
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-b".to_string(),
+                    workspace_path: repo_b.to_string(),
+                    name: "Workspace B".to_string(),
+                },
+                app: app_b.clone_for_background(),
+            },
+        ];
+
+        let vm = conversation_sidebar_vm_from_sources(&app_a, &state, &sources);
+
+        assert_eq!(vm.workspaces.len(), 2);
+        assert_eq!(vm.tasks_by_workspace["workspace-a"][0].task_id, "task-a");
+        assert_eq!(vm.tasks_by_workspace["workspace-a"][0].project_id, "workspace-a");
+        assert_eq!(vm.tasks_by_workspace["workspace-b"][0].task_id, "task-b");
+        assert_eq!(vm.tasks_by_workspace["workspace-b"][0].project_id, "workspace-b");
+    }
+
+    #[test]
     fn conversation_run_vm_exposes_selected_session_assets_and_leaf_counts() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -2320,6 +2340,56 @@ mod tests {
         Utf8PathBuf::from_path_buf(root).unwrap()
     }
 
+    fn write_sidebar_task_fixture(
+        app: &App,
+        task_id: &str,
+        title: &str,
+        run_id: &str,
+        started_at: &str,
+    ) {
+        std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": task_id,
+                "title": title,
+                "description": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": started_at,
+                "updated_at": started_at,
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": null,
+                "current_node": null,
+                "current_attempt": null,
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        let authoring_dir = app.paths.task_dir(task_id).join("authoring");
+        std::fs::create_dir_all(authoring_dir.as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &authoring_dir.join("conversation.json"),
+            &json!({
+                "version": "1",
+                "source": "conversation-ui",
+                "runMode": "auto"
+            }),
+        )
+        .unwrap();
+    }
+
     fn write_conversation_assets_fixture(app: &App) {
         let task_id = "task-046";
         let run_id = "run-060";
@@ -2331,7 +2401,7 @@ mod tests {
         gold_band::storage::write_json(
             &app.paths.task_file(task_id),
             &json!({
-                "version": "0.1",
+                "version": gold_band::domain::VERSION,
                 "id": task_id,
                 "title": "中文节点资源回归",
                 "description": null
@@ -2341,7 +2411,7 @@ mod tests {
         gold_band::storage::write_json(
             &app.paths.run_file(task_id, run_id),
             &json!({
-                "version": "0.1",
+                "version": gold_band::domain::VERSION,
                 "id": run_id,
                 "task_id": task_id,
                 "status": "completed",
@@ -2360,7 +2430,7 @@ mod tests {
         gold_band::storage::write_json(
             &app.paths.round_file(task_id, run_id, round_id),
             &json!({
-                "version": "0.1",
+                "version": gold_band::domain::VERSION,
                 "id": round_id,
                 "run_id": run_id,
                 "index": 1,
@@ -2385,7 +2455,7 @@ mod tests {
             &app.paths
                 .node_file(task_id, run_id, round_id, node_id, attempt_id),
             &json!({
-                "version": "0.1",
+                "version": gold_band::domain::VERSION,
                 "node_id": node_id,
                 "node_type": "worker",
                 "run_id": run_id,

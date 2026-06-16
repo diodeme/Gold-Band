@@ -37,7 +37,7 @@
 - 当前 MVP 中默认返回“任务编排 / 任务列表”，并重置任务编排内部的深层页面状态。
 
 ### 3.2 Workspace 选择与记忆
-左侧 Logo 下方显示当前 workspace 路径，并作为“切换工作空间”入口。
+左侧 Logo 下方显示当前 workspace 路径，并作为”切换工作空间”入口。
 
 规则：
 - 桌面端启动时优先恢复用户上次选择的 workspace。
@@ -45,6 +45,9 @@
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
+- **新旧 UI 切换同步**：旧 UI → 新 UI 时，将旧 UI 当前 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；新 UI → 旧 UI 时，将新 UI 最近使用的 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）。
+- **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加或选择 workspace 不污染旧 UI 最近列表。
 
 ### 3.3 一级菜单
 当前菜单：

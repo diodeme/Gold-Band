@@ -7,9 +7,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::App;
-use gold_band::config::{
-    ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig,
-};
+use gold_band::config::{ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};

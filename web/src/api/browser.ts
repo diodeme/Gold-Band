@@ -284,12 +284,13 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({
       enabled: false,
       toggleLocked: false,
+      metricsBaseUrl: null,
       heartbeatEndpoint: null,
       nodeMetricsEndpoint: null,
       apiKeySet: false,
     });
   },
-  saveMetricsSettings(_enabled: boolean, _heartbeatEndpoint: string | null, _nodeMetricsEndpoint: string | null, _apiKey: string | null) {
+  saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },
   getUpdateStatus() {

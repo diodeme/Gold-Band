@@ -8,6 +8,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 export interface MetricsSettingsVm {
     enabled: boolean;
     toggleLocked: boolean;
+    metricsBaseUrl: string | null;
     heartbeatEndpoint: string | null;
     nodeMetricsEndpoint: string | null;
     apiKeySet: boolean;
@@ -186,8 +187,8 @@ export const desktopApi: RuntimeApi = {
   getMetricsSettings() {
     return invokeCommand<MetricsSettingsVm>('get_metrics_settings');
   },
-  saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
-    return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey });
+  saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
+    return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
   },
   getUpdateStatus() {
     return invokeCommand('get_update_status');

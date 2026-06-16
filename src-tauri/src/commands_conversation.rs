@@ -173,8 +173,9 @@ pub fn rerun_conversation_task(
             Some(project_id.clone()),
         ))
         .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle));
-    let run = crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
-        .map_err(command_error)?;
+    let run =
+        crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
+            .map_err(command_error)?;
     persist_last_conversation_workspace(&global_app, &project_id)?;
     Ok(run)
 }

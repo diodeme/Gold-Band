@@ -15,7 +15,6 @@
   "releaseBaseUrl": "http://maling.example.com/api/file/download",
   "metricsEnabled": true,
   "metricsToggleLocked": true,
-  "heartbeatEndpoint": "http://maling.example.com/api/client-report/heartbeat",
-  "nodeMetricsEndpoint": "http://maling.example.com/api/client-report/metrics/batch",
+  "metricsBaseUrl": "http://maling.example.com",
   "metricsApiKey": ""
 }

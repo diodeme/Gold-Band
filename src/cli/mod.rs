@@ -234,9 +234,7 @@ mod tests {
     fn stderr_progress_enabled(cli: &Cli) -> bool {
         !matches!(cli.command, Commands::Console { .. })
     }
-    use crate::config::{
-        ConsoleThemeName, RuntimeLogLevel, SettingsConfig, StateConfig,
-    };
+    use crate::config::{ConsoleThemeName, RuntimeLogLevel, SettingsConfig, StateConfig};
     use clap::Parser;
 
     #[test]

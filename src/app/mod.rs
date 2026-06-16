@@ -12,8 +12,7 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
-    StateConfig,
+    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};

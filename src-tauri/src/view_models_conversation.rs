@@ -2275,9 +2275,15 @@ mod tests {
 
         assert_eq!(vm.workspaces.len(), 2);
         assert_eq!(vm.tasks_by_workspace["workspace-a"][0].task_id, "task-a");
-        assert_eq!(vm.tasks_by_workspace["workspace-a"][0].project_id, "workspace-a");
+        assert_eq!(
+            vm.tasks_by_workspace["workspace-a"][0].project_id,
+            "workspace-a"
+        );
         assert_eq!(vm.tasks_by_workspace["workspace-b"][0].task_id, "task-b");
-        assert_eq!(vm.tasks_by_workspace["workspace-b"][0].project_id, "workspace-b");
+        assert_eq!(
+            vm.tasks_by_workspace["workspace-b"][0].project_id,
+            "workspace-b"
+        );
     }
 
     #[test]

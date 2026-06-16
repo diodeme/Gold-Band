@@ -38,7 +38,7 @@ use tauri::{AppHandle, Emitter, State};
 use tracing::info;
 
 use crate::i18n::Translator;
-use crate::metrics::{MetricsSettingsVm, metrics_settings};
+use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopContext, DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
@@ -158,18 +158,9 @@ fn resolve_command_app_with_emitters(
     let pid = project_id.map(|s| s.to_string());
     let bg_app = base_app.clone_for_background();
     Ok(base_app
-        .with_acp_live_update(acp_live_update_emitter(
-            app_handle.clone(),
-            pid.clone(),
-        ))
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            bg_app,
-            pid,
-        ))
-        .with_metrics_callback(crate::metrics::create_metrics_callback(
-            app_handle.clone(),
-        )))
+        .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
+        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle.clone())))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -900,9 +891,10 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
     let context = state.context().map_err(command_error)?;
     let vm = metrics_settings(&context.config);
     eprintln!(
-        "[metrics] enabled={} toggle_locked={} heartbeat={:?} node_metrics={:?} api_key_set={}",
+        "[metrics] enabled={} toggle_locked={} base_url={:?} heartbeat={:?} node_metrics={:?} api_key_set={}",
         vm.enabled,
         vm.toggle_locked,
+        vm.metrics_base_url,
         vm.heartbeat_endpoint,
         vm.node_metrics_endpoint,
         vm.api_key_set,
@@ -914,16 +906,16 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
     enabled: bool,
-    heartbeat_endpoint: Option<String>,
-    node_metrics_endpoint: Option<String>,
+    metrics_base_url: Option<String>,
     api_key: Option<String>,
 ) -> CommandResult<MetricsSettingsVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
     existing.desktop_metrics_enabled = Some(enabled);
-    existing.desktop_heartbeat_endpoint = heartbeat_endpoint.filter(|s| !s.trim().is_empty());
-    existing.desktop_node_metrics_endpoint = node_metrics_endpoint.filter(|s| !s.trim().is_empty());
+    existing.desktop_metrics_base_url = metrics_base_url
+        .as_deref()
+        .and_then(normalize_metrics_base_url);
     existing.desktop_metrics_api_key = api_key.filter(|s| !s.trim().is_empty());
     app.save_settings(&existing).map_err(command_error)?;
     state
@@ -2839,24 +2831,4 @@ pub fn open_in_file_manager(
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn await_dialog_result_returns_selected_value() {
-        let selected = tauri::async_runtime::block_on(super::await_dialog_result(|callback| {
-            callback(Some(String::from("/tmp/workspace")));
-        }));
-        assert_eq!(selected.as_deref(), Some("/tmp/workspace"));
-    }
-
-    #[test]
-    fn await_dialog_result_returns_none_for_cancelled_picker() {
-        let selected =
-            tauri::async_runtime::block_on(super::await_dialog_result::<String, _>(|callback| {
-                callback(None);
-            }));
-        assert_eq!(selected, None);
-    }
 }

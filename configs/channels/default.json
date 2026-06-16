@@ -13,7 +13,6 @@
   "allowHttpUpdater": false,
   "metricsEnabled": false,
   "metricsToggleLocked": false,
-  "heartbeatEndpoint": "",
-  "nodeMetricsEndpoint": "",
+  "metricsBaseUrl": "",
   "metricsApiKey": ""
 }

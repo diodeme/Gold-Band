@@ -131,7 +131,7 @@ export interface RuntimeApi {
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
-  saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
+  saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;

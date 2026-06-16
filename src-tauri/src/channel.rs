@@ -14,8 +14,7 @@ pub struct DesktopChannelConfig {
     pub allow_http_updater: bool,
     pub metrics_enabled: bool,
     pub metrics_toggle_locked: bool,
-    pub heartbeat_endpoint: &'static str,
-    pub node_metrics_endpoint: &'static str,
+    pub metrics_base_url: &'static str,
     pub metrics_api_key: &'static str,
     pub silent_update_enabled: bool,
 }
@@ -33,18 +32,16 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         allow_http_updater: option_env!("GOLD_BAND_ALLOW_HTTP_UPDATER") == Some("true"),
         metrics_enabled: option_env!("GOLD_BAND_METRICS_ENABLED") == Some("true"),
         metrics_toggle_locked: option_env!("GOLD_BAND_METRICS_TOGGLE_LOCKED") == Some("true"),
-        heartbeat_endpoint: option_env!("GOLD_BAND_HEARTBEAT_ENDPOINT").unwrap_or(""),
-        node_metrics_endpoint: option_env!("GOLD_BAND_NODE_METRICS_ENDPOINT").unwrap_or(""),
+        metrics_base_url: option_env!("GOLD_BAND_METRICS_BASE_URL").unwrap_or(""),
         metrics_api_key: option_env!("GOLD_BAND_METRICS_API_KEY").unwrap_or(""),
         silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
     };
     eprintln!(
-        "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} heartbeat={} node_metrics={} apikey_set={}",
+        "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} base_url={} apikey_set={}",
         config.channel,
         config.metrics_enabled,
         config.metrics_toggle_locked,
-        config.heartbeat_endpoint,
-        config.node_metrics_endpoint,
+        config.metrics_base_url,
         !config.metrics_api_key.is_empty(),
     );
     config

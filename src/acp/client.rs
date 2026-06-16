@@ -145,7 +145,7 @@ pub fn doctor(
     let mut runtime = AcpRuntime::start(
         config,
         cwd.clone(),
-        paths.runtime_root.join("doctor/acp"),
+        paths.doctor_acp_dir(),
         use_local_claude,
         5 * 1024 * 1024,
         4 * 1024 * 1024,

@@ -307,9 +307,7 @@ impl DesktopState {
 
     pub fn cleanup_agent_diagnostic_processes(&self) -> Result<()> {
         let repo_root = self.context()?.repo_root;
-        let pid_path = GoldBandPaths::new(repo_root)
-            .runtime_root
-            .join("doctor/acp/provider.pid");
+        let pid_path = GoldBandPaths::new(repo_root).doctor_acp_provider_pid_file();
         let Some(pid) = std::fs::read_to_string(pid_path.as_std_path())
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok())

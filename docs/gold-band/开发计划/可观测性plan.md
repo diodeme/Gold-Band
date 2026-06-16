@@ -26,12 +26,12 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 
 基于这个方向，这轮系统日志设计为：
 
-- 在 user project runtime 下新增系统日志目录：`~/.gold-band/projects/{project-id}/logs/`
+- 在用户全局目录下新增系统日志目录：`~/.gold-band/logs/`
 - 输出全局 debug 日志文件，例如：
   - `runtime.log`（当前活动日志）
   - `runtime.yyyy-mm-dd.log` 或按小时/日期滚动出来的归档文件
-- 系统日志只记录 runtime / CLI / provider / worker 的内部行为与异常
-- 桌面端启动时先 best-effort 预创建 `runtime.log`，不能等到第一条业务 tracing 事件出现后才生成；这样首次启动、未选 workspace、目录选择器卡死等问题也能留下排障入口
+- 系统日志是桌面/CLI 进程级全局日志，只记录 runtime / CLI / provider / worker 的内部行为与异常；workspace 过滤通过日志事件中的结构化字段实现，不按文件物理目录拆分
+- 桌面端启动时先 best-effort 预创建 `~/.gold-band/logs/runtime.log`，不能等到第一条业务 tracing 事件出现后才生成；这样首次启动、未选 workspace、目录选择器卡死等问题也能留下排障入口
 - workspace 选择相关命令需要补结构化日志：打开目录选择器、取消、返回路径、切换完成
 - 所有桌面端主线程目录选择链路统一改用非阻塞 dialog API，并通过异步回调回传结果；`blocking_*` 只允许出现在非 UI 主线程场景
 - run 内继续记录：
@@ -43,7 +43,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
 为了贴近 logback 的体验，这轮建议至少实现：
 - 自动滚动（优先按日，必要时可加按小时）
 - 自动保留清理（例如只保留最近 N 天）
-- 日志目录集中在 `~/.gold-band/projects/{project-id}/logs/`
+- 日志目录集中在 `~/.gold-band/logs/`
 
 如果 tracing 现成 rolling appender 只能满足“按时间滚动”，而不能直接满足“按大小 + 历史清理”两者同时具备，那么这轮优先：
 1. 先用 tracing 生态落稳定的 rolling file 输出
@@ -209,7 +209,7 @@ Rust 没有一个“官方 logback”，但 tracing 生态里有成熟的 rollin
    - `cargo run -- run start task-001`
 2. 终端应立即看到 stderr 进度，而不是长时间无反馈
 3. 检查系统日志：
-   - `~/.gold-band/projects/{project-id}/logs/runtime.log`
+   - `~/.gold-band/logs/runtime.log`
 4. 检查 run 级文件：
    - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/run-progress.json`
    - `~/.gold-band/projects/{project-id}/tasks/task-001/runs/run-001/events.jsonl`

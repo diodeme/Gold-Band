@@ -171,7 +171,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
-- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；前端启动后通过 Tauri window API 关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制。
+- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；Tauri 基础配置和 channel overlay 均关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制；同时关闭 Tauri 原生 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 
 ---
 

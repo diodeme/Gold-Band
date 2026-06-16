@@ -167,7 +167,7 @@ impl GoldBandPaths {
     }
 
     pub fn logs_dir(&self) -> Utf8PathBuf {
-        self.runtime_root.join("logs")
+        self.user_gold_band_root.join("logs")
     }
 
     pub fn runtime_log_file(&self) -> Utf8PathBuf {
@@ -191,7 +191,20 @@ impl GoldBandPaths {
     }
 
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
-        self.runtime_root.join("desktop/agent-diagnostics.json")
+        self.user_gold_band_root
+            .join("desktop/agent-diagnostics.json")
+    }
+
+    pub fn doctor_dir(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("doctor")
+    }
+
+    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+        self.doctor_dir().join("acp")
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
+        self.doctor_acp_dir().join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
@@ -853,7 +866,7 @@ mod tests {
                 .runtime_log_file()
                 .to_string()
                 .replace('\\', "/")
-                .contains("/.gold-band/projects/D--Projects-Example-App/")
+                .ends_with("/.gold-band/logs/runtime.log")
         );
     }
 
@@ -1064,7 +1077,7 @@ mod tests {
                 .runtime_log_file()
                 .to_string()
                 .replace('\\', "/")
-                .ends_with("/.gold-band/projects/root/logs/runtime.log")
+                .ends_with("/.gold-band/logs/runtime.log")
         );
     }
 }

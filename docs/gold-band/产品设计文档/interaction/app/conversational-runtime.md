@@ -85,7 +85,7 @@
 
 继续对话时可上传附件作为本轮输入内容：
 
-- **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端文件进入 WebView 后即声明可拖拽，拖入 composer 时应稳定显示可投放状态
+- **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
 - **预览**：图片文件在 composer 内显示缩略图，点击可打开沉浸式大图预览；预览使用单层深色遮罩按合适尺寸展示原图，不支持缩放或拖拽，点击空白遮罩关闭
 - **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。
 - **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`；发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后继续走现有 `attachmentPaths -> authoring/inputs -> provider task-inputs` 链路。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。

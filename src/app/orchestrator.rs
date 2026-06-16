@@ -5669,7 +5669,8 @@ fn prepare_dynamic_attempt_dirs(
 
 fn dynamic_worktree_branch_name(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
     format!(
-        "gb-dynamic-{}-{}-{}",
+        "gb-dynamic-{}-{}-{}-{}",
+        safe_dynamic_ref(ctx.task_id),
         safe_dynamic_ref(ctx.run_id),
         safe_dynamic_ref(ctx.outer_node_id),
         safe_dynamic_ref(node_id)
@@ -5752,13 +5753,21 @@ fn ensure_dynamic_workspace(
                     .get_or_init(|| Mutex::new(()))
                     .lock()
                     .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+                // Clear stale branch left from a previous killed/failed attempt.
+                let _ = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(ctx.app.paths.repo_root.as_str())
+                    .arg("branch")
+                    .arg("-D")
+                    .arg(&branch)
+                    .status();
                 let status = std::process::Command::new("git")
                     .arg("-C")
                     .arg(ctx.app.paths.repo_root.as_str())
                     .arg("worktree")
                     .arg("add")
                     .arg("-b")
-                    .arg(branch)
+                    .arg(&branch)
                     .arg(worktree_dir.as_str())
                     .arg("HEAD")
                     .status()?;

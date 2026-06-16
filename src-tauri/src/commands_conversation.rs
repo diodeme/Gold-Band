@@ -10,8 +10,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
-use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
@@ -121,19 +119,27 @@ pub async fn create_conversation_run(
         ));
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let project_id_for_current = input.project_id.clone();
+    let project_id_for_emit = input.project_id.clone();
     let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_acp_live_update(acp_live_update_emitter(
+            app_handle.clone(),
+            Some(project_id_for_emit.clone()),
+        ))
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
+            Some(project_id_for_emit),
         ))
         .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle));
-    tauri::async_runtime::spawn_blocking(move || {
+    let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
     })
     .await
-    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
+    persist_last_conversation_workspace(&global_app, &project_id_for_current)?;
+    Ok(run)
 }
 
 #[tauri::command]
@@ -156,14 +162,20 @@ pub fn rerun_conversation_task(
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(app_handle.clone()))
+        .with_acp_live_update(acp_live_update_emitter(
+            app_handle.clone(),
+            Some(project_id.clone()),
+        ))
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
+            Some(project_id.clone()),
         ))
         .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle));
-    crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
-        .map_err(command_error)
+    let run = crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
+        .map_err(command_error)?;
+    persist_last_conversation_workspace(&global_app, &project_id)?;
+    Ok(run)
 }
 
 #[tauri::command]
@@ -385,6 +397,13 @@ fn app_for_workspace(context: &DesktopContext, workspace_path: &str) -> anyhow::
     Ok(App::with_config(repo_root, context.config.clone()))
 }
 
+fn persist_last_conversation_workspace(app: &App, project_id: &str) -> CommandResult<()> {
+    let mut state = app.load_state().map_err(command_error)?;
+    state.last_conversation_workspace = Some(project_id.to_string());
+    app.save_state(&state).map_err(command_error)?;
+    Ok(())
+}
+
 fn conversation_sidebar_sources(
     context: &DesktopContext,
     app: &App,
@@ -399,25 +418,29 @@ fn conversation_sidebar_sources(
         .to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
 
-    let mut sources = vec![crate::view_models_conversation::ConversationWorkspaceSource {
-        workspace: crate::view_models_conversation::ConversationWorkspaceVm {
-            project_id: default_project_id.clone(),
-            workspace_path: default_repo.clone(),
-            name: default_name,
+    let mut sources = vec![
+        crate::view_models_conversation::ConversationWorkspaceSource {
+            workspace: crate::view_models_conversation::ConversationWorkspaceVm {
+                project_id: default_project_id.clone(),
+                workspace_path: default_repo.clone(),
+                name: default_name,
+            },
+            app: app.clone_for_background(),
         },
-        app: app.clone_for_background(),
-    }];
+    ];
 
     for w in &state.conversation_workspaces {
         if w.project_id != default_project_id {
-            sources.push(crate::view_models_conversation::ConversationWorkspaceSource {
-                workspace: crate::view_models_conversation::ConversationWorkspaceVm {
-                    project_id: w.project_id.clone(),
-                    workspace_path: w.workspace_path.clone(),
-                    name: w.name.clone(),
+            sources.push(
+                crate::view_models_conversation::ConversationWorkspaceSource {
+                    workspace: crate::view_models_conversation::ConversationWorkspaceVm {
+                        project_id: w.project_id.clone(),
+                        workspace_path: w.workspace_path.clone(),
+                        name: w.name.clone(),
+                    },
+                    app: app_for_workspace(context, &w.workspace_path)?,
                 },
-                app: app_for_workspace(context, &w.workspace_path)?,
-            });
+            );
         }
     }
 
@@ -430,11 +453,7 @@ fn conversation_sidebar_for_state(
     state: &gold_band::config::StateConfig,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let sources = conversation_sidebar_sources(context, app, state).map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(
-        app,
-        state,
-        &sources,
-    ))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(app, state, &sources))
 }
 
 #[tauri::command]
@@ -580,25 +599,14 @@ pub fn choose_conversation_workspace(
 }
 
 #[tauri::command]
-pub async fn add_conversation_workspace(
-    app_handle: AppHandle,
+pub fn add_conversation_workspace(
     state: State<'_, DesktopState>,
+    path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
     let gold_band_app = context.app();
 
-    let Some(path) = pick_folder_result(app_handle.dialog().file()).await else {
-        info!(repo_root = %gold_band_app.paths.repo_root, "conversation workspace picker cancelled");
-        return Err(CommandErrorVm::new(
-            "workspace.cancelled",
-            serde_json::json!({}),
-        ));
-    };
-    let path = path
-        .into_path()
-        .map_err(|_| CommandErrorVm::new("workspace.path-invalid", serde_json::json!({})))?;
-    let workspace_path = Utf8PathBuf::from_path_buf(path)
-        .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
+    let workspace_path = Utf8PathBuf::from(path);
     let workspace_path_str = workspace_path.as_str().to_string();
     info!(workspace_path = %workspace_path_str, "conversation workspace picker returned selection");
 
@@ -833,21 +841,15 @@ pub struct MaterializeConversationAttachmentsInput {
 }
 
 #[tauri::command]
-pub fn pick_attachment_files(
-    app_handle: AppHandle,
-    _state: State<'_, DesktopState>,
-) -> CommandResult<Vec<AttachmentFileVm>> {
-    let Some(paths) = app_handle.dialog().file().blocking_pick_files() else {
-        return Ok(Vec::new());
-    };
+pub fn stat_attachment_files(paths: Vec<String>) -> CommandResult<Vec<AttachmentFileVm>> {
     let files: Vec<AttachmentFileVm> = paths
         .into_iter()
         .filter_map(|p| {
-            let path = p.into_path().ok()?;
+            let path = Path::new(&p);
             let name = path.file_name()?.to_str()?.to_string();
             let size = path.metadata().ok()?.len();
             Some(AttachmentFileVm {
-                path: path.to_string_lossy().to_string(),
+                path: p,
                 name,
                 size,
             })
@@ -1255,10 +1257,7 @@ mod tests {
 
     fn temp_repo_root() -> Utf8PathBuf {
         let mut root = std::env::temp_dir();
-        root.push(format!(
-            "gold-band-workspace-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        root.push(format!("gold-band-workspace-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         Utf8PathBuf::from_path_buf(root).unwrap()
     }
@@ -1287,14 +1286,14 @@ mod tests {
     fn workspace_entry_resolves_non_default_from_state() {
         let app = make_test_app();
         let mut state = gold_band::config::StateConfig::default();
-        state.conversation_workspaces.push(
-            gold_band::config::ConversationWorkspaceEntry {
+        state
+            .conversation_workspaces
+            .push(gold_band::config::ConversationWorkspaceEntry {
                 project_id: "claude-code".to_string(),
                 workspace_path: "/path/to/claude-code".to_string(),
                 name: "claude-code".to_string(),
                 added_at: "2025-01-01T00:00:00Z".to_string(),
-            },
-        );
+            });
 
         let result = super::workspace_entry_for_project(&app, &state, "claude-code");
         assert!(result.is_some());
@@ -1315,33 +1314,37 @@ mod tests {
     #[test]
     fn remove_conversation_workspace_cleans_up_pins_and_run_modes() {
         let mut state = gold_band::config::StateConfig::default();
-        state.conversation_workspaces.push(
-            gold_band::config::ConversationWorkspaceEntry {
+        state
+            .conversation_workspaces
+            .push(gold_band::config::ConversationWorkspaceEntry {
                 project_id: "ws-a".to_string(),
                 workspace_path: "/ws-a".to_string(),
                 name: "Workspace A".to_string(),
                 added_at: "2025-01-01T00:00:00Z".to_string(),
-            },
-        );
-        state.conversation_workspaces.push(
-            gold_band::config::ConversationWorkspaceEntry {
+            });
+        state
+            .conversation_workspaces
+            .push(gold_band::config::ConversationWorkspaceEntry {
                 project_id: "ws-b".to_string(),
                 workspace_path: "/ws-b".to_string(),
                 name: "Workspace B".to_string(),
                 added_at: "2025-01-01T00:00:00Z".to_string(),
-            },
-        );
+            });
         state.last_conversation_workspace = Some("ws-a".to_string());
-        state.conversation_pins.push(gold_band::config::ConversationPin {
-            project_id: "ws-a".to_string(),
-            task_id: "task-1".to_string(),
-            order: 0,
-        });
-        state.conversation_pins.push(gold_band::config::ConversationPin {
-            project_id: "ws-b".to_string(),
-            task_id: "task-2".to_string(),
-            order: 1,
-        });
+        state
+            .conversation_pins
+            .push(gold_band::config::ConversationPin {
+                project_id: "ws-a".to_string(),
+                task_id: "task-1".to_string(),
+                order: 0,
+            });
+        state
+            .conversation_pins
+            .push(gold_band::config::ConversationPin {
+                project_id: "ws-b".to_string(),
+                task_id: "task-2".to_string(),
+                order: 1,
+            });
         state.conversation_run_modes.insert(
             "ws-a".to_string(),
             gold_band::config::ConversationRunModeEntry {
@@ -1352,7 +1355,9 @@ mod tests {
         );
 
         // Remove ws-a
-        state.conversation_workspaces.retain(|w| w.project_id != "ws-a");
+        state
+            .conversation_workspaces
+            .retain(|w| w.project_id != "ws-a");
         state.conversation_pins.retain(|p| p.project_id != "ws-a");
         state.conversation_run_modes.remove("ws-a");
         if state.last_conversation_workspace.as_deref() == Some("ws-a") {
@@ -1367,9 +1372,6 @@ mod tests {
         assert_eq!(state.conversation_pins.len(), 1);
         assert_eq!(state.conversation_pins[0].project_id, "ws-b");
         assert!(state.conversation_run_modes.get("ws-a").is_none());
-        assert_eq!(
-            state.last_conversation_workspace.as_deref(),
-            Some("ws-b")
-        );
+        assert_eq!(state.last_conversation_workspace.as_deref(), Some("ws-b"));
     }
 }

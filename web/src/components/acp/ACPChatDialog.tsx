@@ -774,6 +774,7 @@ export const ACPChatDialog = forwardRef<
           const assetOuterAttemptId =
             outerNodeId && outerAttemptId ? outerAttemptId : undefined;
           content = await loader(
+            projectId,
             taskId,
             runId,
             asset.roundId || roundId,
@@ -791,7 +792,7 @@ export const ACPChatDialog = forwardRef<
         setArtifactLoading(false);
       }
     },
-    [taskId, runId, roundId],
+    [projectId, taskId, runId, roundId],
   );
 
   const handleArtifactsDialogOpenChange = useCallback((open: boolean) => {
@@ -1011,6 +1012,7 @@ export const ACPChatDialog = forwardRef<
       currentModelName: selected.name,
     });
     setAcpSessionModel(
+      projectId,
       taskId,
       runId,
       roundId,
@@ -1055,6 +1057,7 @@ export const ACPChatDialog = forwardRef<
       currentModeName: selected.name,
     });
     setAcpSessionPermissionMode(
+      projectId,
       taskId,
       runId,
       roundId,
@@ -1327,6 +1330,7 @@ export const ACPChatDialog = forwardRef<
           ) {
             hydrationInflightRef.current = true;
             getAcpSession(
+              projectId,
               taskId,
               runId,
               roundId,
@@ -1366,6 +1370,7 @@ export const ACPChatDialog = forwardRef<
       });
       try {
         const updated = await getAcpSession(
+          projectId,
           taskId,
           runId,
           roundId,
@@ -1501,6 +1506,7 @@ export const ACPChatDialog = forwardRef<
     try {
       const updated = normalizeSessionUpdate(
         await getAcpSession(
+          projectId,
           taskId,
           runId,
           roundId,
@@ -1556,6 +1562,7 @@ export const ACPChatDialog = forwardRef<
     try {
       const updated = normalizeSessionUpdate(
         await getAcpSession(
+          projectId,
           taskId,
           runId,
           roundId,
@@ -1618,6 +1625,7 @@ export const ACPChatDialog = forwardRef<
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     try {
       const updated = await sendAcpPrompt(
+        projectId,
         taskId,
         runId,
         roundId,
@@ -1726,6 +1734,7 @@ export const ACPChatDialog = forwardRef<
     setAwaitingResponse(true);
     try {
       const result = await stopActiveSession(
+        projectId,
         taskId,
         runId,
         roundId,
@@ -1757,6 +1766,7 @@ export const ACPChatDialog = forwardRef<
     setManualCheckSubmitting(true);
     try {
       await submitManualCheck(
+        projectId,
         taskId,
         runId,
         roundId,
@@ -1783,6 +1793,7 @@ export const ACPChatDialog = forwardRef<
     );
     try {
       const updated = await respondAcpPermission(
+        projectId,
         taskId,
         runId,
         roundId,
@@ -1832,6 +1843,7 @@ export const ACPChatDialog = forwardRef<
     setRawLoading(true);
     try {
       const next = await getAcpRawFrames(
+        projectId,
         taskId,
         runId,
         roundId,

@@ -24,6 +24,7 @@ interface ConversationShellProps {
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
+  activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }
 
@@ -68,6 +69,7 @@ export function ConversationShell({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  activeWorkspaceId,
   children,
 }: ConversationShellProps) {
   const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth(vm.preferences));
@@ -147,6 +149,7 @@ export function ConversationShell({
             <ConversationSidebar
               vm={vm}
               active={active}
+              activeWorkspaceId={activeWorkspaceId}
               onSelect={onSelect}
               onToggleUiMode={onToggleUiMode}
               onNewConversation={onNewConversation}

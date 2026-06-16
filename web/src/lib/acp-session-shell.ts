@@ -6,6 +6,8 @@ export interface AcpLiveSessionShellPolicyInput {
 
 export type AcpSessionShellState = 'available' | 'loading' | 'missing';
 
+const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [120, 300, 700, 1200];
+
 export interface AcpSessionShellStateInput {
   hasBaseSession: boolean;
   hasLiveSessionShell: boolean;
@@ -21,6 +23,10 @@ export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): A
   if (input.hasBaseSession || input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';
   return 'missing';
+}
+
+export function missingAcpSessionRetryDelay(attempt: number) {
+  return MISSING_ACP_SESSION_RETRY_DELAYS_MS[attempt] ?? null;
 }
 
 export interface AcpSessionMetadataInput {

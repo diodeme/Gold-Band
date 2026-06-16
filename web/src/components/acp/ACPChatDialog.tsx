@@ -106,6 +106,7 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -1368,30 +1369,38 @@ export const ACPChatDialog = forwardRef<
           applySessionUpdate(incoming ?? null);
         }
       });
-      try {
-        const updated = await getAcpSession(
-          projectId,
-          taskId,
-          runId,
-          roundId,
-          nodeId,
-          attemptId,
-          {
-            pageSize: effectiveEventPageSize,
-            eventLimit: effectiveEventPageSize,
-          },
-          latestSessionRef.current,
-          outerNodeId,
-          outerAttemptId,
-        );
-        if (active && sessionRefreshSeqRef.current === refreshSeq)
-          applySessionUpdate(updated);
-      } catch {
-        if (active) applySessionUpdate(latestSessionRef.current);
-      } finally {
-        if (active && sessionRefreshSeqRef.current === refreshSeq)
-          setLoadingInitialSession(false);
+      let retryAttempt = 0;
+      while (true) {
+        try {
+          const updated = await getAcpSession(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            {
+              pageSize: effectiveEventPageSize,
+              eventLimit: effectiveEventPageSize,
+            },
+            latestSessionRef.current,
+            outerNodeId,
+            outerAttemptId,
+          );
+          if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
+            applySessionUpdate(updated);
+            break;
+          }
+        } catch {
+          // provider resolution / IO error — retry may not help but we try once more
+        }
+        const delay = missingAcpSessionRetryDelay(retryAttempt);
+        if (delay === null) break;
+        retryAttempt += 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
+      if (active && sessionRefreshSeqRef.current === refreshSeq)
+        setLoadingInitialSession(false);
     })();
     return () => {
       active = false;

@@ -245,6 +245,9 @@ pub fn run_prompt(
                 Some("error".to_string()),
             )?;
             runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
+            if let Some(session_update) = session_update {
+                let _ = session_update();
+            }
             runtime.shutdown();
             return Err(error);
         }
@@ -257,6 +260,9 @@ pub fn run_prompt(
         stop_reason.clone(),
     )?;
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    if let Some(session_update) = session_update {
+        let _ = session_update();
+    }
     if status != "running" {
         let _ = clear_cancel_request(&runtime.paths.attempt_dir);
     }

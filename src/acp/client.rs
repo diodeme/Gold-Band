@@ -153,11 +153,7 @@ pub fn doctor(
     )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-<<<<<<< HEAD
-        runtime.setup_session(cwd, None, None, "", false, &[])?;
-=======
-        runtime.setup_session(cwd, None, None, None, "", false)?;
->>>>>>> main
+        runtime.setup_session(cwd, None, None, None, "", false, &[])?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)

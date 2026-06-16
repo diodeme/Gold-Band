@@ -4861,12 +4861,9 @@ fn build_dynamic_worker_invocation(
         )),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
-<<<<<<< HEAD
+        input_attachment_paths: super::task_input_attachment_paths(ctx.app, ctx.task_id),
         mcp_servers: Vec::new(),
         skill_catalog: String::new(),
-=======
-        input_attachment_paths: super::task_input_attachment_paths(ctx.app, ctx.task_id),
->>>>>>> main
     })
 }
 

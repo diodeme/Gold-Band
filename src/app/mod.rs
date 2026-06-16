@@ -12,13 +12,8 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-<<<<<<< HEAD
     ManagedAgentType, McpServerConfig, McpServerHealthResult, ProjectAppConfig, RuntimeConfig,
-    SettingsConfig, SkillMeta, SkillSource, StateConfig,
-=======
-    ManagedAgentType, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
-    StateConfig,
->>>>>>> main
+    SettingsConfig, SkillMeta, SkillSource, StateConfig,RuntimeLogLevel,
 };
 use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};

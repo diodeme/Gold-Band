@@ -48,7 +48,6 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
-<<<<<<< HEAD
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
     SkillListVm, SkillMetaVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
@@ -56,13 +55,6 @@ use crate::view_models::{
     bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
     round_detail_vm, run_detail_vm, run_summary_vm, skill_content_vm, skill_list_vm,
     skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
-=======
-    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm,
-    RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm,
-    UpdateBadgeStateVm, WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
-    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, preferences_vm, round_detail_vm,
-    run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
->>>>>>> main
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -2791,7 +2783,6 @@ fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
-<<<<<<< HEAD
 // ── MCP Server Commands ──
 
 #[tauri::command]
@@ -2969,7 +2960,9 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
             "skill.invalid-source",
             serde_json::json!({ "source": source }),
         )),
-=======
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2987,6 +2980,5 @@ mod tests {
                 callback(None);
             }));
         assert_eq!(selected, None);
->>>>>>> main
     }
 }

@@ -1804,11 +1804,8 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
-<<<<<<< HEAD
  "serde_json_lenient",
-=======
  "serde_path_to_error",
->>>>>>> main
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4220,7 +4217,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "serde_json_lenient"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4230,7 +4226,9 @@ dependencies = [
  "memchr",
  "ryu",
  "serde",
-=======
+]
+
+[[package]]
 name = "serde_path_to_error"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4239,7 +4237,6 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
->>>>>>> main
 ]
 
 [[package]]

@@ -97,12 +97,9 @@ fn invocation() -> WorkerInvocation {
                 "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../report.md",
             ),
         }],
-<<<<<<< HEAD
+        input_attachment_paths: Vec::new(),
         mcp_servers: Vec::new(),
         skill_catalog: String::new(),
-=======
-        input_attachment_paths: Vec::new(),
->>>>>>> main
     }
 }
 

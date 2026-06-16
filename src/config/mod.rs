@@ -440,15 +440,12 @@ pub struct SettingsConfig {
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
-<<<<<<< HEAD
-    #[serde(default)]
-    pub context_servers: Option<Vec<McpServerConfig>>,
-=======
     pub desktop_metrics_enabled: Option<bool>,
     pub desktop_heartbeat_endpoint: Option<String>,
     pub desktop_node_metrics_endpoint: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
->>>>>>> main
+    #[serde(default)]
+    pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

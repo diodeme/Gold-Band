@@ -326,8 +326,8 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
+    let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
 
-<<<<<<< HEAD
     // 对标 Zed: 渲染 MCP 工具和 SKILL 目录到 system prompt
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
     let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
@@ -344,9 +344,6 @@ pub(crate) fn build_worker_invocation(
             warn!(%e, "failed to render SKILL catalog, falling back to empty catalog");
             String::new()
         });
-=======
-    let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
->>>>>>> main
 
     Ok(WorkerInvocation {
         invocation_kind,
@@ -377,12 +374,9 @@ pub(crate) fn build_worker_invocation(
         }),
         cold_artifacts,
         cold_attachments,
-<<<<<<< HEAD
+        input_attachment_paths,
         mcp_servers,
         skill_catalog,
-=======
-        input_attachment_paths,
->>>>>>> main
     })
 }
 

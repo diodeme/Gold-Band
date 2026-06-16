@@ -124,13 +124,11 @@ pub struct WorkerInvocation {
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
     #[serde(default)]
-<<<<<<< HEAD
+    pub input_attachment_paths: Vec<String>,
+    #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default)]
     pub skill_catalog: String,
-=======
-    pub input_attachment_paths: Vec<String>,
->>>>>>> main
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1132,12 +1130,9 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
-<<<<<<< HEAD
+            input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
             skill_catalog: String::new(),
-=======
-            input_attachment_paths: Vec::new(),
->>>>>>> main
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

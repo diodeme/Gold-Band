@@ -6,6 +6,7 @@
 
 workspace 选择规则：
 - 分析、审查、方案类节点使用 `workspace.mode="readonly"`。
-- 任何会修改代码、测试、配置、文档或资源的并行分支，优先使用 `workspace.mode="worktree"`，让 runtime 为该分支创建独立 git worktree。
-- 不要让 fan-out 分支直接使用 `workspace.mode="main"`；`main` 只用于 merge、acceptance 或清理类节点。
+- 只有系统上下文中的 Workspace 能力显示 `supportsWorktree: true` 时，才允许会修改代码、测试、配置、文档或资源的并行分支使用 `workspace.mode="worktree"`，让 runtime 为该分支创建独立 git worktree。
+- 如果 Workspace 能力显示 `supportsWorktree: false`，禁止输出 `workspace.mode="worktree"`；请改为只读分析、串行 `main` 写入，或结束并说明需要用户初始化 Git 后才能使用并行可写 fan-out。
+- 不要让 fan-out 分支直接使用 `workspace.mode="main"`；`main` 只用于 merge、acceptance 或清理类节点。非 git 工作区需要写入时，优先避免可写 fan-out，改用单个串行后继节点。
 - 拆分 fan-out 时让每个可写分支拥有清晰、不重叠的职责边界，降低后续 merge 冲突。

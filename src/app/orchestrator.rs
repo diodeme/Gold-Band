@@ -83,6 +83,13 @@ static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONS
     OnceLock::new();
 static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DynamicWorkspaceCapability {
+    supports_worktree: bool,
+    reason_code: &'static str,
+    reason: String,
+}
+
 fn dynamic_validation_error(
     code: &str,
     message: impl Into<String>,
@@ -3637,6 +3644,32 @@ fn validate_dynamic_node_spec(
             }),
         ));
     }
+    if spec.workspace.mode == WorkspaceMode::Worktree {
+        let capability = dynamic_workspace_capability(ctx);
+        if !capability.supports_worktree {
+            let mut error = dynamic_validation_error(
+                "dynamic.node.workspace.worktree-git-required",
+                format!(
+                    "dynamic node `{}` cannot use workspace.mode=worktree because the current workspace cannot create git worktrees",
+                    spec.id
+                ),
+                serde_json::json!({
+                    "nodeId": spec.id,
+                    "field": "workspace.mode",
+                    "actual": "worktree",
+                    "expected": "readonly or main",
+                    "workspacePath": ctx.app.paths.repo_root,
+                    "reasonCode": capability.reason_code,
+                    "reason": capability.reason,
+                }),
+            );
+            error.allowed_values = vec!["readonly".to_string(), "main".to_string()];
+            error.suggestion = Some(
+                "replace writable parallel fan-out with serial main workspace work, or ask the user to initialize Git before using worktree fan-out".to_string(),
+            );
+            errors.push(error);
+        }
+    }
     for dependency in &spec.depends_on {
         if !graph.nodes.iter().any(|node| node.id == *dependency) {
             errors.push(dynamic_validation_error(
@@ -5056,10 +5089,11 @@ fn dynamic_repair_reference_summary(
     graph: &DynamicGraphState,
 ) -> String {
     format!(
-        "Available providers and models:\n{}\n\nAvailable worker profile IDs:\n{}\n\nAllowed workflow IDs:\n{}",
+        "Available providers and models:\n{}\n\nAvailable worker profile IDs:\n{}\n\nAllowed workflow IDs:\n{}\n\nWorkspace capability:\n{}",
         available_provider_summary(ctx),
         available_profile_summary(ctx),
         allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
+        dynamic_workspace_capability_summary(ctx),
     )
 }
 
@@ -5583,6 +5617,7 @@ fn dynamic_system_sections(
             "attachments_dir": runtime_context.attachments_dir,
             "workspace_mode": format!("{:?}", node.workspace.mode),
             "workspace_path": workspace_path,
+            "workspace_capability": dynamic_workspace_capability_summary(ctx),
             "upstream_refs": dynamic_upstream_refs_summary(ctx, graph, node),
             "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
             "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
@@ -5722,6 +5757,83 @@ fn git_capture(cwd: &Utf8Path, args: &[&str]) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn dynamic_workspace_capability(ctx: &DynamicExecutionContext<'_>) -> DynamicWorkspaceCapability {
+    let repo_root = &ctx.app.paths.repo_root;
+    let Some(is_inside_work_tree) = git_capture(repo_root, &["rev-parse", "--is-inside-work-tree"])
+    else {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "git-unavailable-or-non-git",
+            reason: format!(
+                "`{}` is not a Git working tree or the `git` command is unavailable",
+                repo_root
+            ),
+        };
+    };
+    if is_inside_work_tree != "true" {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "non-git-workspace",
+            reason: format!("`{}` is not inside a Git working tree", repo_root),
+        };
+    }
+    if git_capture(repo_root, &["rev-parse", "--verify", "HEAD"]).is_none() {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "missing-head",
+            reason: format!("`{}` has no HEAD commit for git worktree add", repo_root),
+        };
+    }
+    if git_capture(repo_root, &["worktree", "list", "--porcelain"]).is_none() {
+        return DynamicWorkspaceCapability {
+            supports_worktree: false,
+            reason_code: "worktree-unsupported",
+            reason: "git worktree is not available for the current workspace".to_string(),
+        };
+    }
+    DynamicWorkspaceCapability {
+        supports_worktree: true,
+        reason_code: "ready",
+        reason: "git worktree is available".to_string(),
+    }
+}
+
+fn dynamic_workspace_capability_summary(ctx: &DynamicExecutionContext<'_>) -> String {
+    let capability = dynamic_workspace_capability(ctx);
+    match (ctx.app.config.desktop_language, capability.supports_worktree) {
+        (DesktopLanguage::ZhCn, true) => {
+            "- supportsWorktree: true\n- 原因：git worktree 可用\n- 可写并行分支：需要隔离时可以使用 workspace.mode=\"worktree\"".to_string()
+        }
+        (DesktopLanguage::ZhCn, false) => format!(
+            "- supportsWorktree: false\n- reasonCode: {}\n- 原因：{}\n- 必须遵守：不要输出 workspace.mode=\"worktree\"；分析使用 readonly，需要写入时使用串行 main，或结束并说明需要用户初始化 Git 后才能使用并行可写 fan-out",
+            capability.reason_code,
+            capability.reason
+        ),
+        (DesktopLanguage::En, true) => {
+            "- supportsWorktree: true\n- reason: git worktree is available\n- writable parallel branches: use workspace.mode=\"worktree\" when isolation is needed".to_string()
+        }
+        (DesktopLanguage::En, false) => format!(
+            "- supportsWorktree: false\n- reasonCode: {}\n- reason: {}\n- required behavior: do not output workspace.mode=\"worktree\"; use readonly for analysis and main only for serial writable work, or end with a summary that asks the user to initialize Git before parallel writable fan-out",
+            capability.reason_code,
+            capability.reason
+        ),
+    }
+}
+
+fn dynamic_worktree_unavailable_error(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    capability: &DynamicWorkspaceCapability,
+) -> anyhow::Error {
+    anyhow!(
+        "workspace.worktree-git-required: dynamic node `{}` requested workspace.mode=worktree but workspace `{}` cannot create git worktrees (reasonCode={}, reason={})",
+        node_id,
+        ctx.app.paths.repo_root,
+        capability.reason_code,
+        capability.reason
+    )
+}
+
 fn ensure_dynamic_workspace(
     ctx: &DynamicExecutionContext<'_>,
     node: &mut DynamicNodeState,
@@ -5734,6 +5846,14 @@ fn ensure_dynamic_workspace(
         WorkspaceMode::Worktree => {
             if node.workspace_path.is_some() {
                 return Ok(());
+            }
+            let capability = dynamic_workspace_capability(ctx);
+            if !capability.supports_worktree {
+                return Err(dynamic_worktree_unavailable_error(
+                    ctx,
+                    &node.id,
+                    &capability,
+                ));
             }
             let worktree_dir = dynamic_worktree_base_dir(ctx)
                 .join(safe_dynamic_ref(ctx.task_id))

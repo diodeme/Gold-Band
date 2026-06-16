@@ -930,6 +930,70 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
 }
 
 #[test]
+fn ai_dynamic_non_git_workspace_prompt_disables_worktree() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-non-git-prompt";
+    let provider = DynamicProvider::fanout();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let bootstrap = render_prompt_bundle(&invocations[0]).unwrap();
+    assert!(
+        bootstrap.system_prompt.contains("Workspace capability")
+            || bootstrap.system_prompt.contains("Workspace 能力")
+    );
+    assert!(bootstrap.system_prompt.contains("supportsWorktree: false"));
+    assert!(
+        bootstrap
+            .system_prompt
+            .contains("workspace.mode=\"worktree\"")
+    );
+}
+
+#[test]
+fn ai_dynamic_rejects_worktree_fanout_in_non_git_workspace() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-non-git-worktree-fanout";
+    let provider = DynamicProvider::worktree_fanout();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.outcome, None);
+    assert_eq!(run.pause_reason, Some(PauseReason::ErrorBlocked));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.proposals.iter().any(|proposal| {
+        proposal.validation_status == DynamicProposalValidationStatus::Rejected
+            && proposal.validation_errors.iter().any(|error| {
+                error.code == "dynamic.node.workspace.worktree-git-required"
+                    && error.params["workspacePath"] == repo_root.as_str()
+                    && error.params["reasonCode"] == "git-unavailable-or-non-git"
+            })
+    }));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert!(invocations.iter().all(|invocation| {
+        !matches!(
+            invocation.runtime_context.node_id.as_str(),
+            "branch-a" | "branch-b"
+        )
+    }));
+}
+
+#[test]
 fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -970,12 +1034,12 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     assert!(
         merge
             .system_prompt
-            .contains("branch=gb-dynamic-run-001-router-branch-a")
+            .contains("branch=gb-dynamic-task-ai-dynamic-worktree-fanout-run-001-router-branch-a")
     );
     assert!(
         merge
             .system_prompt
-            .contains("branch=gb-dynamic-run-001-router-branch-b")
+            .contains("branch=gb-dynamic-task-ai-dynamic-worktree-fanout-run-001-router-branch-b")
     );
     assert!(merge.system_prompt.contains("head="));
     assert!(merge.system_prompt.contains("mergeBase="));

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
 import { saveConversationPreference } from '../../api';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -21,6 +22,7 @@ interface ConversationSidebarProps {
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
@@ -38,18 +40,14 @@ export function ConversationSidebar({
   onPinTask,
   onUnpinTask,
   onRenameTask,
+  onDeleteTask,
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
-  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>(() => {
-    const expanded: Record<string, boolean> = {};
-    vm.workspaces.forEach((ws) => {
-      expanded[ws.projectId] = ws.projectId === vm.lastActiveWorkspaceId || vm.lastActiveWorkspaceId == null;
-    });
-    return expanded;
-  });
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
+  const [expandedTaskKey, setExpandedTaskKey] = useState<string | null>(null);
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') return pref;
@@ -63,6 +61,26 @@ export function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
+  useEffect(() => {
+    const targetWorkspaceId = active.kind === 'conversation-run'
+      ? active.projectId
+      : vm.lastActiveWorkspaceId;
+    setExpandedWorkspaces((prev) => {
+      const next: Record<string, boolean> = {};
+      vm.workspaces.forEach((ws) => {
+        if (prev[ws.projectId] != null) {
+          next[ws.projectId] = prev[ws.projectId];
+          return;
+        }
+        next[ws.projectId] = ws.projectId === targetWorkspaceId || targetWorkspaceId == null;
+      });
+      if (targetWorkspaceId && next[targetWorkspaceId] === false) {
+        next[targetWorkspaceId] = true;
+      }
+      return next;
+    });
+  }, [active, vm.workspaces, vm.lastActiveWorkspaceId]);
+
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
       const next = !prev;
@@ -75,15 +93,33 @@ export function ConversationSidebar({
     setCollapsedPinnedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
 
-  const activeRunId = active.kind === 'conversation-run' ? active.runId : null;
+  const activeTaskKey = active.kind === 'conversation-run'
+    ? conversationSidebarTaskKey(active.projectId, active.taskId)
+    : null;
+  const activeRunKey = active.kind === 'conversation-run'
+    ? conversationSidebarRunKey(active.projectId, active.taskId, active.runId)
+    : null;
+
+  useEffect(() => {
+    if (activeTaskKey) setExpandedTaskKey(activeTaskKey);
+  }, [activeTaskKey]);
 
   const toggleWorkspace = (projectId: string) => {
     setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
 
+  const toggleTaskRuns = (projectId: string, taskId: string) => {
+    const taskKey = conversationSidebarTaskKey(projectId, taskId);
+    setExpandedTaskKey((prev) => (prev === taskKey ? null : taskKey));
+  };
+
+  const expandTaskRuns = (projectId: string, taskId: string) => {
+    setExpandedTaskKey(conversationSidebarTaskKey(projectId, taskId));
+  };
+
   return (
     <TooltipProvider>
-      <aside className="flex min-h-0 h-full flex-col gap-2 bg-sidebar px-3 py-3 text-sidebar-foreground">
+      <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -99,10 +135,10 @@ export function ConversationSidebar({
           />
         </div>
 
-        <Separator className="my-0.5" />
+        <Separator className="mx-1 my-0 opacity-45" />
 
         {/* Navigation */}
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-1">
           <SidebarButton
             compact
             active={active.kind === 'agents'}
@@ -128,10 +164,10 @@ export function ConversationSidebar({
 
         {/* Pinned section — fixed, collapsible, outside scroll */}
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0 border-y border-border py-0.5">
+          <div className="shrink-0 border-y border-border/55 py-1">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[13px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[14px] font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -151,7 +187,7 @@ export function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
@@ -165,11 +201,15 @@ export function ConversationSidebar({
                               task={task}
                               pinned
                               isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                              activeRunId={activeRunId}
+                              activeRunKey={activeRunKey}
+                              expanded={expandedTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId)}
                               onSelect={() => onSelectTask(task.projectId, task.taskId)}
                               onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
+                              onToggleRuns={() => toggleTaskRuns(task.projectId, task.taskId)}
+                              onExpandRuns={() => expandTaskRuns(task.projectId, task.taskId)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                              onDelete={() => onDeleteTask(task.projectId, task.taskId)}
                               t={t}
                             />
                           ))}
@@ -182,18 +222,18 @@ export function ConversationSidebar({
             ) : null}
           </div>
         ) : (
-          <Separator className="my-0.5" />
+          <Separator className="mx-1 my-0.75 opacity-45" />
         )}
 
         {/* Workspace sections — scrollable with sticky headers */}
         <ScrollArea className="min-h-0 flex-1">
-          <div>
+          <div className="pt-2.5">
             {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-2">
-                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-2 py-1">
+              <div key={ws.projectId} className="mb-2.5">
+                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-muted-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -220,12 +260,16 @@ export function ConversationSidebar({
                         task={task}
                         pinned={vm.pinnedTasks.some((p) => p.projectId === task.projectId && p.taskId === task.taskId)}
                         isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                        activeRunId={activeRunId}
+                        activeRunKey={activeRunKey}
+                        expanded={expandedTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId)}
                         onSelect={() => onSelectTask(task.projectId, task.taskId)}
                         onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
+                        onToggleRuns={() => toggleTaskRuns(task.projectId, task.taskId)}
+                        onExpandRuns={() => expandTaskRuns(task.projectId, task.taskId)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
                         t={t}
                       />
                     ))}
@@ -241,7 +285,7 @@ export function ConversationSidebar({
             {onAddWorkspace ? (
               <button
                 type="button"
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={onAddWorkspace}
               >
                 <Plus className="size-3.5" />
@@ -259,7 +303,7 @@ export function ConversationSidebar({
 
 
         {/* Settings */}
-        <Separator className="my-0.5" />
+        <Separator className="mx-1 my-0.75 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
       </aside>
     </TooltipProvider>
@@ -279,27 +323,35 @@ function TaskRow({
   task,
   pinned,
   isActive,
-  activeRunId,
+  activeRunKey,
+  expanded,
   onSelect,
   onSelectRun,
+  onToggleRuns,
+  onExpandRuns,
   onPin,
   onUnpin,
   onRename,
+  onDelete,
   t,
 }: {
   task: ConversationTaskRowVm;
   pinned: boolean;
   isActive: boolean;
-  activeRunId?: string | null;
+  activeRunKey?: string | null;
+  expanded: boolean;
   onSelect: () => void;
   onSelectRun?: (runId: string) => void;
+  onToggleRuns: () => void;
+  onExpandRuns: () => void;
   onPin?: () => void;
   onUnpin?: () => void;
   onRename?: (title: string) => void;
+  onDelete?: () => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasMultipleRuns = task.runs.length > 1;
@@ -313,10 +365,10 @@ function TaskRow({
     if (hasMultipleRuns) {
       if (isActive) {
         // Already viewing a run of this task — just toggle expand, don't re-navigate
-        setExpanded((prev) => !prev);
+        onToggleRuns();
         return;
       }
-      setExpanded(true);
+      onExpandRuns();
     }
     onSelect();
   };
@@ -341,7 +393,18 @@ function TaskRow({
     if (e.key === 'Escape') { setEditValue(task.title); setEditing(false); }
   };
 
+  const openDeleteDialog = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeleteOpen(true);
+  };
+
+  const confirmDelete = () => {
+    setDeleteOpen(false);
+    onDelete?.();
+  };
+
   return (
+    <>
     <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
       <div
         className={cn(
@@ -351,7 +414,7 @@ function TaskRow({
         onClick={handleRowClick}
       >
         <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-11">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
           {editing ? (
             <input
               ref={editInputRef}
@@ -369,7 +432,7 @@ function TaskRow({
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
           ) : null}
         </div>
-        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex group-hover:pointer-events-auto">
+        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
           {onRename ? (
             <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
               <Pencil className="size-3" />
@@ -382,6 +445,11 @@ function TaskRow({
           ) : onPin ? (
             <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
               <Pin className="size-3" />
+            </Button>
+          ) : null}
+          {onDelete ? (
+            <Button variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+              <Trash2 className="size-3" />
             </Button>
           ) : null}
         </span>
@@ -398,7 +466,9 @@ function TaskRow({
                 key={run.runId}
                 className={cn(
                   'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
-                  activeRunId === run.runId ? 'bg-sidebar-accent text-sidebar-primary' : 'hover:bg-sidebar-accent',
+                  isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
+                    ? 'bg-sidebar-accent text-sidebar-primary'
+                    : 'hover:bg-sidebar-accent',
                 )}
                 onClick={() => onSelectRun?.(run.runId)}
               >
@@ -413,6 +483,23 @@ function TaskRow({
         </div>
       ) : null}
     </div>
+    <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('conversation.sidebar.deleteConfirmTitle')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t('conversation.sidebar.deleteConfirmDescription', { title: task.title })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
+          <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmDelete}>
+            {t('conversation.sidebar.deleteConfirmAction')}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
@@ -435,8 +522,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-lg px-2.5 text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-8 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-primary',
       )}
       onClick={onClick}
@@ -472,4 +559,21 @@ function formatRelativeTime(isoString: string, t: (key: string, options?: Record
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo`;
   return `${Math.floor(days / 365)}y`;
+}
+
+export function conversationSidebarTaskKey(projectId: string, taskId: string) {
+  return `${projectId}\u0000${taskId}`;
+}
+
+export function conversationSidebarRunKey(projectId: string, taskId: string, runId: string) {
+  return `${conversationSidebarTaskKey(projectId, taskId)}\u0000${runId}`;
+}
+
+export function isConversationSidebarRunActive(
+  activeRunKey: string | null | undefined,
+  projectId: string,
+  taskId: string,
+  runId: string,
+) {
+  return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId);
 }

@@ -10,6 +10,16 @@ use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AttachmentMeta {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpSessionMetadata {
     pub adapter_id: String,
     pub adapter_display_name: String,
@@ -99,6 +109,16 @@ pub struct AcpTimelineItem {
     pub item: AcpUiEvent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimelinePatch {
+    pub patch_type: String,
+    pub item_id: String,
+    pub revision: u64,
+    pub op: String,
+    pub item: AcpUiEvent,
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpAttemptPaths {
     pub attempt_dir: Utf8PathBuf,
@@ -126,6 +146,100 @@ impl AcpAttemptPaths {
     }
 }
 
+/// Read token totals from the ACP session metadata file and timeline.
+/// First reads `acp.session.json`, then scans `acp.timeline.jsonl` for usage events
+/// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
+pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
+    let mut input = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut total = 0u64;
+
+    // 1. Read acp.snapshot.json (acp.session.json may not exist)
+    let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
+    if let Some(ref sp) = snapshot_path {
+        if let Ok(contents) = std::fs::read_to_string(sp.as_std_path()) {
+            if let Ok(meta) = serde_json::from_str::<AcpSessionMetadata>(&contents) {
+                input = meta.input_tokens.unwrap_or(0);
+                output = meta.output_tokens.unwrap_or(0);
+                cache_read = meta.cached_read_tokens.unwrap_or(0);
+                total = meta.total_tokens.unwrap_or(0);
+                eprintln!(
+                    "[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}",
+                    input, output, cache_read, total
+                );
+            }
+        }
+    }
+
+    // 2. Scan timeline for usage events (may have more up-to-date data)
+    let timeline_path = session_path.parent().map(|p| p.join("acp.timeline.jsonl"));
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Ok(line_val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    // Unwrap AcpTimelineItem wrapper if present
+                    let event = line_val.get("item").unwrap_or(&line_val);
+                    let kind = event.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "usageUpdate" {
+                        if let Some(v) = event.get("inputTokens").and_then(|v| v.as_u64()) {
+                            input = input.max(v);
+                        }
+                        if let Some(v) = event.get("outputTokens").and_then(|v| v.as_u64()) {
+                            output = output.max(v);
+                        }
+                        if let Some(v) = event.get("cachedReadTokens").and_then(|v| v.as_u64()) {
+                            cache_read = cache_read.max(v);
+                        }
+                        if let Some(v) = event.get("totalTokens").and_then(|v| v.as_u64()) {
+                            total = total.max(v);
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}",
+                input, output, cache_read, total
+            );
+        } else {
+            eprintln!("[metrics] failed to open timeline at {}", tp.as_str());
+        }
+    } else {
+        eprintln!(
+            "[metrics] no timeline file found for {}",
+            session_path.as_str()
+        );
+    }
+
+    // 3. Debug: list files in attempt dir and show first timeline line
+    let dir = session_path.parent();
+    if let Some(d) = dir {
+        if let Ok(entries) = std::fs::read_dir(d.as_std_path()) {
+            eprintln!("[metrics] attempt_dir files:");
+            for e in entries.flatten() {
+                eprintln!("[metrics]   {}", e.file_name().to_string_lossy());
+            }
+        }
+    }
+    if let Some(ref tp) = timeline_path {
+        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
+            let reader = BufReader::new(file);
+            for (i, line) in reader.lines().enumerate() {
+                if i >= 3 {
+                    break;
+                }
+                if let Ok(l) = line {
+                    let preview = l.chars().take(200).collect::<String>();
+                    eprintln!("[metrics] timeline[{}]: {}", i, preview);
+                }
+            }
+        }
+    }
+
+    (input, output, cache_read, total)
+}
+
 pub fn current_timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -134,7 +248,13 @@ pub fn current_timestamp() -> String {
     format!("{secs}Z")
 }
 
-pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value) -> Result<()> {
+pub fn append_raw_frame(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) -> Result<()> {
     append_jsonl(
         path,
         &AcpRawFrame {
@@ -142,7 +262,64 @@ pub fn append_raw_frame(path: &Utf8Path, direction: &str, frame: Value) -> Resul
             direction: direction.to_string(),
             frame,
         },
-    )
+    )?;
+    let _ = roll_raw_log(path, max_size, target_size);
+    Ok(())
+}
+
+/// Roll the raw log file, preserving init handshake frames (everything before the first
+/// `session/update`) and only trimming the streaming update section.
+fn roll_raw_log(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+    use std::io::Write;
+    let meta = match std::fs::metadata(path.as_std_path()) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if meta.len() <= max_size {
+        return Ok(());
+    }
+    let content = std::fs::read(path.as_std_path())?;
+
+    // Find byte offset of the first session/update line — only trim from there onward.
+    let mut pinned_bytes = 0usize;
+    let marker = br#""method":"session/update""#;
+    let mut found_updatable = false;
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
+        if line.windows(marker.len()).any(|window| window == marker) {
+            found_updatable = true;
+            break;
+        }
+        pinned_bytes += line.len();
+    }
+    if !found_updatable {
+        return Ok(());
+    }
+
+    let updatable_start = pinned_bytes;
+    let updatable_len = content.len().saturating_sub(updatable_start) as u64;
+    let pinned_len = pinned_bytes as u64;
+    let effective_target = target_size.saturating_sub(pinned_len);
+    if updatable_len <= effective_target {
+        return Ok(());
+    }
+    let excess = updatable_len.saturating_sub(effective_target);
+
+    let updatable = &content[updatable_start..];
+    let mut cumulative = 0u64;
+    let mut drop_bytes = 0usize;
+    for line in updatable.split_inclusive(|byte| *byte == b'\n') {
+        if cumulative >= excess {
+            break;
+        }
+        cumulative += line.len() as u64;
+        drop_bytes += line.len();
+    }
+    let drop_bytes = drop_bytes.min(updatable.len());
+
+    let mut file = std::fs::File::create(path.as_std_path())?;
+    file.write_all(&content[..updatable_start])?;
+    file.write_all(&updatable[drop_bytes..])?;
+    Ok(())
 }
 
 pub fn append_diagnostic(
@@ -177,48 +354,57 @@ pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()>
     Ok(())
 }
 
+pub fn append_timeline_patch(
+    path: &Utf8Path,
+    item_id: impl Into<String>,
+    revision: u64,
+    item: &AcpUiEvent,
+) -> Result<()> {
+    append_jsonl(
+        path,
+        &AcpTimelinePatch {
+            patch_type: "timelinePatch".to_string(),
+            item_id: item_id.into(),
+            revision,
+            op: "upsert".to_string(),
+            item: item.clone(),
+        },
+    )
+}
+
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
-    let mut legacy_latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
+    let mut latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
     let mut final_items = Vec::<AcpUiEvent>::new();
-    let mut saw_legacy_patch = false;
+    let mut saw_patch = false;
     for line in BufReader::new(file).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
+        if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
+            if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                continue;
+            }
+            saw_patch = true;
+            let should_replace = latest_by_item
+                .get(&patch.item_id)
+                .map(|(revision, _)| patch.revision >= *revision)
+                .unwrap_or(true);
+            if should_replace {
+                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+            }
+            continue;
+        }
         if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+            latest_by_item.insert(entry.item.id.clone(), (0, entry.item.clone()));
             final_items.push(entry.item);
-            continue;
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LegacyPatch {
-            patch_type: String,
-            item_id: String,
-            revision: u64,
-            op: String,
-            item: AcpUiEvent,
-        }
-        let Ok(patch) = serde_json::from_str::<LegacyPatch>(&line) else {
-            continue;
-        };
-        if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
-            continue;
-        }
-        saw_legacy_patch = true;
-        let should_replace = legacy_latest_by_item
-            .get(&patch.item_id)
-            .map(|(revision, _)| patch.revision >= *revision)
-            .unwrap_or(true);
-        if should_replace {
-            legacy_latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
         }
     }
-    if saw_legacy_patch {
-        let mut items = legacy_latest_by_item
+    if saw_patch {
+        let mut items = latest_by_item
             .into_values()
             .map(|(_, item)| item)
             .collect::<Vec<_>>();
@@ -257,7 +443,7 @@ pub fn normalize_session_update(
     seq: u64,
     session_id: Option<String>,
     update: &Value,
-) -> Vec<AcpUiEvent> {
+) -> AcpUiEvent {
     let timestamp = current_timestamp();
     let kind = update
         .get("sessionUpdate")
@@ -291,7 +477,7 @@ pub fn normalize_session_update(
         event.content = Some(String::new());
     }
 
-    vec![event]
+    event
 }
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
@@ -348,6 +534,7 @@ pub fn user_prompt_event(
     content: String,
     prompt_id: Option<String>,
     hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
@@ -359,6 +546,9 @@ pub fn user_prompt_event(
     if hidden_from_chat {
         raw["hiddenFromChat"] = Value::Bool(true);
         raw["reason"] = Value::String("invalidOutputRepair".to_string());
+    }
+    if !attachments.is_empty() {
+        raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -435,11 +625,6 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
                 .pointer("/toolCall/toolCallId")
                 .and_then(Value::as_str)
         })
-        .or_else(|| {
-            value
-                .pointer("/toolCall/toolCallId")
-                .and_then(Value::as_str)
-        })
         .map(str::to_string)
 }
 
@@ -448,9 +633,7 @@ fn extract_tool_call_id(value: &Value) -> Option<String> {
 pub fn extract_usage_fields(raw: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
     let used = raw.get("used").and_then(Value::as_u64);
     let size = raw.get("size").and_then(Value::as_u64);
-    let cost_amount = raw
-        .pointer("/cost/amount")
-        .and_then(Value::as_f64);
+    let cost_amount = raw.pointer("/cost/amount").and_then(Value::as_f64);
     (used, size, cost_amount)
 }
 
@@ -470,14 +653,18 @@ fn extract_status(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_usage_fields, kind_to_ui_kind, user_prompt_event};
+    use super::{
+        AcpUiEvent, append_timeline_patch, extract_usage_fields, kind_to_ui_kind,
+        load_timeline_items, user_prompt_event, write_timeline_items,
+    };
     use serde_json::json;
 
     // --- extract_usage_fields ---
 
     #[test]
     fn extract_usage_all_fields() {
-        let raw = json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
+        let raw =
+            json!({"used": 12345, "size": 200000, "cost": {"amount": 0.1234, "currency": "USD"}});
         let (used, size, cost) = extract_usage_fields(&raw);
         assert_eq!(used, Some(12345));
         assert_eq!(size, Some(200000));
@@ -569,7 +756,10 @@ mod tests {
 
     #[test]
     fn kind_to_ui_available_commands_update() {
-        assert_eq!(kind_to_ui_kind("available_commands_update"), "availableCommands");
+        assert_eq!(
+            kind_to_ui_kind("available_commands_update"),
+            "availableCommands"
+        );
     }
 
     #[test]
@@ -607,6 +797,7 @@ mod tests {
             "继续".to_string(),
             Some("prompt-123".to_string()),
             false,
+            Vec::new(),
         );
         assert_eq!(
             event
@@ -626,6 +817,7 @@ mod tests {
             "继续".to_string(),
             None,
             false,
+            Vec::new(),
         );
         assert_eq!(event.raw.as_ref().and_then(|raw| raw.get("promptId")), None);
     }
@@ -638,6 +830,7 @@ mod tests {
             "repair".to_string(),
             None,
             true,
+            Vec::new(),
         );
         assert_eq!(event.content, None);
         assert_eq!(
@@ -648,5 +841,160 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
+    }
+
+    // ── read_session_tokens tests ──
+    use std::io::Write as _;
+    use tempfile::TempDir;
+
+    fn test_timeline_event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
+        AcpUiEvent {
+            id: id.to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(content.to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(seq),
+            ended_seq: Some(seq),
+            started_at: Some(format!("{seq}Z")),
+            ended_at: Some(format!("{seq}Z")),
+            raw: None,
+        }
+    }
+
+    #[test]
+    fn load_timeline_items_merges_snapshot_and_patch() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[
+                test_timeline_event("message-1", 10, "old"),
+                test_timeline_event("message-2", 20, "keep"),
+            ],
+        )
+        .unwrap();
+        let mut updated = test_timeline_event("message-1", 30, "new");
+        updated.started_seq = Some(10);
+        updated.started_at = Some("10Z".to_string());
+        append_timeline_patch(&path, "message-1", 1, &updated).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "message-1");
+        assert_eq!(items[0].content.as_deref(), Some("new"));
+        assert_eq!(items[1].id, "message-2");
+        assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn tokens_from_snapshot() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 1000);
+        assert_eq!(o, 500);
+        assert_eq!(c, 200);
+        assert_eq!(t, 1700);
+    }
+
+    #[test]
+    fn tokens_no_files_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let (i, o, c, t) = super::read_session_tokens(&session_path);
+        assert_eq!((i, o, c, t), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn tokens_from_timeline_usage_update_camelcase() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":99,"outputTokens":33,"totalTokens":132}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 99);
+        assert_eq!(o, 33);
+        assert_eq!(t, 132);
+    }
+
+    #[test]
+    fn tokens_timeline_takes_max_across_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":100,"outputTokens":10,"totalTokens":110}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":500,"outputTokens":20,"totalTokens":520}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":300,"outputTokens":5,"totalTokens":305}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 500);
+        assert_eq!(o, 20);
+        assert_eq!(t, 520);
+    }
+
+    #[test]
+    fn tokens_ignores_non_usage_events() {
+        let dir = TempDir::new().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("acp.timeline.jsonl")).unwrap();
+        writeln!(
+            f,
+            r#"{{"item":{{"kind":"userTextDelta","content":"hello"}}}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"availableCommands"}}}}"#).unwrap();
+        writeln!(f, r#"{{"item":{{"kind":"usageUpdate","inputTokens":77,"outputTokens":7,"totalTokens":84}}}}"#).unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let (i, o, _c, t) = super::read_session_tokens(&session_path);
+        assert_eq!(i, 77);
+        assert_eq!(o, 7);
+        assert_eq!(t, 84);
+    }
+
+    #[test]
+    fn roll_raw_log_trims_by_line_bytes_with_unicode_without_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+        let pinned = r#"{"method":"initialize","content":"固定握手"}"#;
+        let update_one = r#"{"method":"session/update","content":"本次任务包含中文内容一"}"#;
+        let update_two = r#"{"method":"session/update","content":"本次任务包含中文内容二"}"#;
+        std::fs::write(
+            path.as_std_path(),
+            format!("{pinned}\n{update_one}\n{update_two}"),
+        )
+        .unwrap();
+
+        super::roll_raw_log(&path, 1, (pinned.len() + 1 + update_two.len()) as u64).unwrap();
+
+        let rolled = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert!(rolled.contains(pinned));
+        assert!(rolled.contains(update_two));
+        assert!(!rolled.contains(update_one));
     }
 }

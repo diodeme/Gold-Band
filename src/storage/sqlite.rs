@@ -13,7 +13,10 @@ use crate::storage::read_json;
 
 static SEARCH_INDEX: OnceLock<Arc<SearchIndex>> = OnceLock::new();
 
-pub fn init_search_index(db_path: &Utf8Path, projects_dir: &Utf8Path) -> Result<Arc<SearchIndex>, rusqlite::Error> {
+pub fn init_search_index(
+    db_path: &Utf8Path,
+    projects_dir: &Utf8Path,
+) -> Result<Arc<SearchIndex>, rusqlite::Error> {
     let index = Arc::new(SearchIndex::open(db_path)?);
 
     // If the DB is empty (first run), backfill from existing files in a
@@ -67,10 +70,20 @@ pub fn index_task_with_retry(task_dir: &Utf8Path, task_id: &str) {
     index.index_task_with_retry(task_dir, task_id);
 }
 
+pub fn delete_task(task_id: &str) {
+    let Some(index) = search_index() else {
+        return;
+    };
+    if let Err(error) = index.delete_task(task_id) {
+        warn!("sqlite delete_task failed for {}: {:#}", task_id, error);
+    }
+}
+
 // ── SearchIndex ──────────────────────────────────────────────────────
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 1;
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -102,6 +115,23 @@ impl SearchIndex {
 
     fn ensure_schema(&self) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().expect("search index lock poisoned");
+        let schema_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
+            warn!(
+                "sqlite session search index schema version mismatch (found {}, expected {}), rebuilding derived session index tables",
+                schema_version, SEARCH_INDEX_SCHEMA_VERSION
+            );
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS session_prompts_ai;
+                DROP TRIGGER IF EXISTS session_prompts_ad;
+                DROP TRIGGER IF EXISTS session_prompts_au;
+                DROP TABLE IF EXISTS session_prompts_fts;
+                DROP TABLE IF EXISTS session_prompts;
+                DROP TABLE IF EXISTS sessions;",
+            )?;
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
                 task_id      TEXT NOT NULL PRIMARY KEY,
@@ -170,8 +200,12 @@ impl SearchIndex {
                 VALUES('delete', old.rowid, old.title, old.description, old.requirement_text);
                 INSERT INTO tasks_fts(rowid, title, description, requirement_text)
                 VALUES (new.rowid, new.title, new.description, new.requirement_text);
-            END;"
+            END;",
         )?;
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = {};",
+            SEARCH_INDEX_SCHEMA_VERSION
+        ))?;
         Ok(())
     }
 
@@ -227,27 +261,45 @@ impl SearchIndex {
             return;
         };
         for run_entry in run_entries.flatten() {
-            let Some(run_dir) = to_utf8(run_entry.path()) else { continue };
-            if !run_dir.is_dir() { continue; }
-            let Some(run_id) = file_name(&run_dir) else { continue };
+            let Some(run_dir) = to_utf8(run_entry.path()) else {
+                continue;
+            };
+            if !run_dir.is_dir() {
+                continue;
+            }
+            let Some(run_id) = file_name(&run_dir) else {
+                continue;
+            };
 
             let rounds_dir = run_dir.join("rounds");
             let Ok(round_entries) = std::fs::read_dir(rounds_dir.as_std_path()) else {
                 continue;
             };
             for round_entry in round_entries.flatten() {
-                let Some(round_dir) = to_utf8(round_entry.path()) else { continue };
-                if !round_dir.is_dir() { continue; }
-                let Some(round_id) = file_name(&round_dir) else { continue };
+                let Some(round_dir) = to_utf8(round_entry.path()) else {
+                    continue;
+                };
+                if !round_dir.is_dir() {
+                    continue;
+                }
+                let Some(round_id) = file_name(&round_dir) else {
+                    continue;
+                };
 
                 let nodes_dir = round_dir.join("nodes");
                 let Ok(node_entries) = std::fs::read_dir(nodes_dir.as_std_path()) else {
                     continue;
                 };
                 for node_entry in node_entries.flatten() {
-                    let Some(node_dir) = to_utf8(node_entry.path()) else { continue };
-                    if !node_dir.is_dir() { continue; }
-                    let Some(node_id) = file_name(&node_dir) else { continue };
+                    let Some(node_dir) = to_utf8(node_entry.path()) else {
+                        continue;
+                    };
+                    if !node_dir.is_dir() {
+                        continue;
+                    }
+                    let Some(node_id) = file_name(&node_dir) else {
+                        continue;
+                    };
 
                     let Ok(attempt_entries) = std::fs::read_dir(node_dir.as_std_path()) else {
                         continue;
@@ -256,7 +308,9 @@ impl SearchIndex {
                         let Some(attempt_dir) = to_utf8(attempt_entry.path()) else {
                             continue;
                         };
-                        if !attempt_dir.is_dir() { continue; }
+                        if !attempt_dir.is_dir() {
+                            continue;
+                        }
                         if !attempt_dir.join("acp.snapshot.json").exists() {
                             continue;
                         }
@@ -285,11 +339,7 @@ impl SearchIndex {
     /// `acp.timeline.jsonl` fresh from disk, so the write always uses the
     /// latest state even if the session was still streaming during earlier
     /// attempts.
-    pub fn index_session_with_retry(
-        &self,
-        attempt_dir: &Utf8Path,
-        ctx: &AttemptIndexContext,
-    ) {
+    pub fn index_session_with_retry(&self, attempt_dir: &Utf8Path, ctx: &AttemptIndexContext) {
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt as usize]));
@@ -359,8 +409,8 @@ impl SearchIndex {
             ],
         )?;
 
-        let timeline = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl"))
-            .unwrap_or_default();
+        let timeline =
+            load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap_or_default();
         for item in &timeline {
             if item.kind != "userTextDelta" {
                 continue;
@@ -385,7 +435,15 @@ impl SearchIndex {
                  ON CONFLICT(attempt_path, id) DO UPDATE SET
                     text=excluded.text,
                     normalized_text=excluded.normalized_text",
-                params![item.id, attempt_path, session_id, prompt_id, item.timestamp, content, normalized],
+                params![
+                    item.id,
+                    attempt_path,
+                    session_id,
+                    prompt_id,
+                    item.timestamp,
+                    content,
+                    normalized
+                ],
             )?;
         }
 
@@ -411,7 +469,7 @@ impl SearchIndex {
              JOIN sessions s ON s.attempt_path = sp.attempt_path
              WHERE session_prompts_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![normalized, limit as i64], |row| {
             Ok(PromptSearchResult {
@@ -455,15 +513,14 @@ impl SearchIndex {
         }
     }
 
-    fn index_task(
-        &self,
-        task_dir: &Utf8Path,
-        task_id: &str,
-    ) -> Result<(), rusqlite::Error> {
+    fn index_task(&self, task_dir: &Utf8Path, task_id: &str) -> Result<(), rusqlite::Error> {
         let task_path = task_dir.to_string();
         let task: Option<TaskState> = read_json(&task_dir.join("task.json")).ok();
         let requirement_text = std::fs::read_to_string(
-            task_dir.join("authoring").join("requirement.md").as_std_path(),
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
         )
         .unwrap_or_default();
 
@@ -473,8 +530,8 @@ impl SearchIndex {
                 (
                     t.title.as_deref().unwrap_or(""),
                     t.description.as_deref().unwrap_or(""),
-                    "",  // TaskState has no created_at; snapshot-based timestamps don't apply here
-                    "",  // We could derive from file mtime, but keep it simple
+                    "", // TaskState has no created_at; snapshot-based timestamps don't apply here
+                    "", // We could derive from file mtime, but keep it simple
                 )
             })
             .unwrap_or(("", "", "", ""));
@@ -495,6 +552,16 @@ impl SearchIndex {
 
     // ── task search ────────────────────────────────────────────
 
+    pub fn delete_task(&self, task_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM session_prompts WHERE attempt_path IN (SELECT attempt_path FROM sessions WHERE task_id = ?1)", params![task_id])?;
+        tx.execute("DELETE FROM sessions WHERE task_id = ?1", params![task_id])?;
+        tx.execute("DELETE FROM tasks WHERE task_id = ?1", params![task_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn search_tasks(
         &self,
         query: &str,
@@ -509,7 +576,7 @@ impl SearchIndex {
              JOIN tasks t ON fts.rowid = t.rowid
              WHERE tasks_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![normalized, limit as i64], |row| {
             Ok(TaskSearchResult {
@@ -539,7 +606,7 @@ impl SearchIndex {
              FROM sessions
              WHERE title LIKE ?1 ESCAPE '\\'
              ORDER BY updated_at DESC
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |row| {
             Ok(SessionSearchResult {
@@ -650,4 +717,67 @@ pub struct SessionSearchResult {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rebuilds_outdated_search_index_schema() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+
+        {
+            let conn = Connection::open(db_path.as_std_path()).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    task_id TEXT NOT NULL PRIMARY KEY,
+                    task_path TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    requirement_text TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
+                VALUES ('task-1', '/tmp/task-1', 'Task 1', '', '', '', '');
+                CREATE TABLE session_prompts (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    prompt_id TEXT,
+                    timestamp TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '',
+                    normalized_text TEXT NOT NULL DEFAULT ''
+                );",
+            )
+            .unwrap();
+        }
+
+        let index = SearchIndex::open(&db_path).unwrap();
+        let conn = index.conn.lock().unwrap();
+        let schema_version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version, SEARCH_INDEX_SCHEMA_VERSION);
+
+        let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
+        let column_names = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(column_names.iter().any(|name| name == "attempt_path"));
+
+        let task_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE task_id = 'task-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_count, 1);
+    }
 }

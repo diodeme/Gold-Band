@@ -21,7 +21,7 @@ import type {
   WorkflowVm,
 } from './types';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
 export const mockAppInfo = {
   channel: 'default',
   appName: 'Gold Band',
@@ -53,6 +53,17 @@ const profileTimestamp = localTimestamp();
 function localTimestamp(date = new Date()) {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function runtimeDisplay(status?: string | null, outcome?: string | null, current = false, pauseReason?: string | null) {
+  if (outcome === 'success') return { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (outcome === 'failure') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (outcome === 'killed') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: true };
+  if (status === 'running') return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason, blockingError: true };
+  if (status === 'paused') return { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: true, reasonCode: pauseReason ?? null, blockingError: false };
+  if (status === 'completed') return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
+  return { code: status ?? 'pending', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
 }
 
 const latestRun: RunSummaryVm = {
@@ -133,11 +144,11 @@ const task = {
 
 const graph = {
   nodes: [
-    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
-    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
-    { id: 'test', label: 'Checking output result...', nodeType: 'worker', status: 'running', outcome: null, attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
-    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'prepare', label: 'Initialization complete', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'plan', label: 'Workflow strategy defined', nodeType: 'worker', status: 'success', outcome: 'success', runtimeDisplay: runtimeDisplay('success', 'success'), attemptId: 'att-1', artifactCount: 3, attachmentCount: 0, current: false },
+    { id: 'test', label: 'Checking output result...', nodeType: 'worker', status: 'running', outcome: null, runtimeDisplay: runtimeDisplay('running', null, true), attemptId: 'att-test-001', artifactCount: 3, attachmentCount: 2, current: true },
+    { id: 'validate', label: 'Acceptance pending', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'finalize', label: 'Finalize result', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'prepare', to: 'plan', label: 'success' },
@@ -149,8 +160,8 @@ const graph = {
 
 const failedAcceptanceGraph = {
   nodes: [
-    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', status: 'completed', outcome: 'success', attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'completed', outcome: 'failure', attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
+    { id: 'dev', label: '现在我们在测试异常场景，任务会让你输出一个 python 类...', nodeType: 'worker', status: 'completed', outcome: 'success', runtimeDisplay: runtimeDisplay('completed', 'success'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'completed', outcome: 'failure', runtimeDisplay: runtimeDisplay('completed', 'failure'), attemptId: 'attempt-001', artifactCount: 1, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'observed' },
@@ -159,8 +170,8 @@ const failedAcceptanceGraph = {
 
 const errorBlockedGraph = {
   nodes: [
-    { id: 'dev', label: 'dev', nodeType: 'worker', status: 'paused', outcome: null, attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
-    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'pending', outcome: null, attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
+    { id: 'dev', label: 'dev', nodeType: 'worker', status: 'paused', outcome: null, runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'), attemptId: 'attempt-001', artifactCount: 0, attachmentCount: 0, current: true },
+    { id: 'accept', label: 'accept', nodeType: 'worker', status: 'pending', outcome: null, runtimeDisplay: runtimeDisplay('pending'), attemptId: null, artifactCount: 0, attachmentCount: 0, current: false },
   ],
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
@@ -292,6 +303,7 @@ export const mockBootstrap: AppBootstrapVm = {
   recentWorkspaces: ['D:\\Projects\\code\\ai\\Gold-Band'],
   preferences,
   updaterSettings: mockUpdaterSettings,
+  metricsSettings: { enabled: false, toggleLocked: false, heartbeatEndpoint: null, nodeMetricsEndpoint: null, apiKeySet: false },
   updateStatus: mockUpdateStatus,
   updateBadges: mockUpdateBadges,
   persistedAvailableUpdate: null,

@@ -1,12 +1,7 @@
 "use client"
 
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import React, {
   createContext,
@@ -107,16 +102,19 @@ function PromptInput({
 
 export type PromptInputTextareaProps = {
   disableAutosize?: boolean
+  textareaDisabled?: boolean
 } & React.ComponentProps<typeof Textarea>
 
 function PromptInputTextarea({
   className,
   onKeyDown,
   disableAutosize = false,
+  textareaDisabled,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput()
+  const effectiveDisabled = textareaDisabled ?? disabled
 
   const adjustHeight = (el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
@@ -173,7 +171,7 @@ function PromptInputTextarea({
         className
       )}
       rows={1}
-      disabled={disabled}
+      disabled={effectiveDisabled}
       {...props}
     />
   )
@@ -198,31 +196,32 @@ export type PromptInputActionProps = {
   tooltip: React.ReactNode
   children: React.ReactNode
   side?: "top" | "bottom" | "left" | "right"
-} & React.ComponentProps<typeof Tooltip>
+} & React.HTMLAttributes<HTMLSpanElement>
 
 function PromptInputAction({
   tooltip,
   children,
-  className,
-  side = "top",
-  ...props
+  className: _className,
+  side: _side = "top",
+  ..._props
 }: PromptInputActionProps) {
-  const { disabled } = usePromptInput()
+  const title = promptInputActionTitle(tooltip)
 
   return (
-    <Tooltip {...props}>
-      <TooltipTrigger
-        asChild
-        disabled={disabled}
-        onClick={(event) => event.stopPropagation()}
-      >
-        {children}
-      </TooltipTrigger>
-      <TooltipContent side={side} className={className}>
-        {tooltip}
-      </TooltipContent>
-    </Tooltip>
+    <span
+      data-slot="prompt-input-action"
+      className="inline-flex"
+      title={title}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {children}
+    </span>
   )
+}
+
+function promptInputActionTitle(node: React.ReactNode) {
+  if (typeof node === "string" || typeof node === "number") return String(node)
+  return undefined
 }
 
 export {
@@ -230,4 +229,5 @@ export {
   PromptInputTextarea,
   PromptInputActions,
   PromptInputAction,
+  promptInputActionTitle,
 }

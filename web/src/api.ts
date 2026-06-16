@@ -1,4 +1,5 @@
 import { getRuntimeApi } from './api/client';
+import type { RuntimeApi } from './api/client';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -98,6 +99,26 @@ export function deleteWorkflowTemplate(templateId: string) {
   return getRuntimeApi().deleteWorkflowTemplate(templateId);
 }
 
+export function getAutoTemplates() {
+  return getRuntimeApi().getAutoTemplates();
+}
+
+export function saveAutoTemplate(name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['saveAutoTemplate']>[1]) {
+  return getRuntimeApi().saveAutoTemplate(name, config);
+}
+
+export function updateAutoTemplate(templateId: string, name: string, config: Parameters<ReturnType<typeof getRuntimeApi>['updateAutoTemplate']>[2]) {
+  return getRuntimeApi().updateAutoTemplate(templateId, name, config);
+}
+
+export function deleteAutoTemplate(templateId: string) {
+  return getRuntimeApi().deleteAutoTemplate(templateId);
+}
+
+export function replaceAutoTemplates(templates: Parameters<ReturnType<typeof getRuntimeApi>['replaceAutoTemplates']>[0]) {
+  return getRuntimeApi().replaceAutoTemplates(templates);
+}
+
 export function getRunDetail(taskId: string, runId: string) {
   return getRuntimeApi().getRunDetail(taskId, runId);
 }
@@ -110,8 +131,16 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(taskId: string, runId: string, promptId?: string | null) {
-  return getRuntimeApi().continueRun(taskId, runId, promptId);
+export function continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
+  return getRuntimeApi().continueRun(taskId, runId, promptId, prompt);
+}
+
+export function pauseRun(taskId: string, runId: string) {
+  return getRuntimeApi().pauseRun(taskId, runId);
+}
+
+export function stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().stopActiveSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
 export function submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
@@ -134,8 +163,20 @@ export function getAcpSession(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
-export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId);
+export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
+  return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+}
+
+export function setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionModel(taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
+}
+
+export function setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionPermissionMode(taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
 export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -166,8 +207,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
-export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3]) {
-  return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude);
+export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
+  return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -198,8 +239,12 @@ export function downloadAndInstallUpdate() {
   return getRuntimeApi().downloadAndInstallUpdate();
 }
 
-export function getStartupCheckResult() {
-  return getRuntimeApi().getStartupCheckResult();
+export function getMetricsSettings() {
+  return getRuntimeApi().getMetricsSettings();
+}
+
+export function saveMetricsSettings(enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) {
+  return getRuntimeApi().saveMetricsSettings(enabled, heartbeatEndpoint, nodeMetricsEndpoint, apiKey);
 }
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
@@ -232,6 +277,10 @@ export function rerunConversationTask(projectId: string, taskId: string) {
 
 export function updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null) {
   return getRuntimeApi().updateTaskMetadata(projectId, taskId, title, description);
+}
+
+export function deleteConversationTask(projectId: string, taskId: string) {
+  return getRuntimeApi().deleteConversationTask(projectId, taskId);
 }
 
 export function pinConversation(projectId: string, taskId: string) {
@@ -277,9 +326,21 @@ export function syncConversationWorkspace(workspacePath: string) {
 export function saveConversationPreference(key: string, value: unknown) {
   return getRuntimeApi().saveConversationPreference(key, value);
 }
+
+export function saveLastConversationWorkspace(projectId: string) {
+  return getRuntimeApi().saveLastConversationWorkspace(projectId);
+}
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function materializeConversationAttachments(files: Parameters<ReturnType<typeof getRuntimeApi>['materializeConversationAttachments']>[0]) {
+  return getRuntimeApi().materializeConversationAttachments(files);
+}
+
+export function getSupportedAttachmentExtensions() {
+  return getRuntimeApi().getSupportedAttachmentExtensions();
 }
 
 export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {

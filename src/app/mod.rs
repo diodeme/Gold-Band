@@ -10,19 +10,24 @@ mod transition_context;
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
 use crate::config::{
-    ConsoleThemeName, DesktopAvailableUpdate, DesktopFontPreference,
+    ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
+<<<<<<< HEAD
     ManagedAgentType, McpServerConfig, McpServerHealthResult, ProjectAppConfig, RuntimeConfig,
     SettingsConfig, SkillMeta, SkillSource, StateConfig,
+=======
+    ManagedAgentType, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
+    StateConfig,
+>>>>>>> main
 };
 use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
-    END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE, NodeDsl, OutputContractDsl,
-    OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl, WorkflowDsl,
-    WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
+    AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
+    NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
+    WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
 use crate::process::kill_process_tree;
@@ -43,7 +48,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use self::ids::{next_task_id, next_workflow_id, now_rfc3339_like};
+use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
     build_dynamic_prompt_bundle, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
@@ -75,6 +80,34 @@ fn logical_artifact_name(name: &str) -> &str {
     name.strip_suffix(".json").unwrap_or(name)
 }
 
+pub(crate) fn task_inputs_dir(app: &App, task_id: &str) -> Utf8PathBuf {
+    app.paths.task_dir(task_id).join("authoring").join("inputs")
+}
+
+pub(crate) fn existing_task_inputs_dir(app: &App, task_id: &str) -> Option<Utf8PathBuf> {
+    let dir = task_inputs_dir(app, task_id);
+    dir.exists().then_some(dir)
+}
+
+pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<String> {
+    let inputs_dir = task_inputs_dir(app, task_id);
+    if !inputs_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut paths = std::fs::read_dir(inputs_dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
+                .map(|entry| entry.path().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    paths.sort();
+    paths
+}
+
 fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
@@ -100,6 +133,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
             provider: Some(provider.to_string()),
+            model: None,
             profile: Some(
                 profiles
                     .get(role_key)
@@ -279,6 +313,39 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
     candidate
 }
 
+fn unique_auto_template_id(store: &AutoTemplateStore, name: &str) -> String {
+    let slug = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if slug.is_empty() {
+        "auto-template".to_string()
+    } else {
+        slug
+    };
+    let mut candidate = base.clone();
+    let mut index = 1;
+    while store
+        .templates
+        .iter()
+        .any(|template| template.id == candidate)
+    {
+        index += 1;
+        candidate = format!("{base}-{index}");
+    }
+    candidate
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateTaskInput {
     pub title: Option<String>,
@@ -309,6 +376,25 @@ pub struct WorkflowTemplate {
     #[serde(alias = "created_at")]
     pub created_at: String,
     #[serde(alias = "updated_at")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTemplateStore {
+    pub version: String,
+    pub templates: Vec<AutoTemplate>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTemplate {
+    pub id: String,
+    pub name: String,
+    pub config: ConversationAutoConfig,
+    #[serde(default, alias = "created_at")]
+    pub created_at: String,
+    #[serde(default, alias = "updated_at")]
     pub updated_at: String,
 }
 
@@ -343,11 +429,59 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
+/// Context provided to the metrics callback when a node starts or completes execution.
+#[derive(Debug, Clone)]
+pub struct MetricsEventContext {
+    pub repo_root: String,
+    // Display IDs
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    // UUIDs (for metrics reporting)
+    pub task_uuid: Option<String>,
+    pub run_uuid: Option<String>,
+    pub round_uuid: Option<String>,
+    pub node_uuid: Option<String>,
+    // Node metadata
+    pub seq: Option<u32>,
+    pub node_name: Option<String>,
+    pub agent_type: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    pub acp_session_path: Option<String>,
+    // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
+    // Used by NodeCompleted to report the real status instead of hardcoding.
+    pub outcome: Option<String>,
+}
+
+/// Event types emitted by the orchestrator for metrics reporting.
+#[derive(Debug, Clone)]
+pub enum MetricsEvent {
+    /// A node has started executing. Includes the predecessor node's last-executed data if available.
+    NodeStarted {
+        predecessor: Option<crate::runtime::LastExecutedNode>,
+    },
+    /// A node has completed execution. The orchestrator updates `run.last_executed_node`.
+    NodeCompleted,
+}
+
 pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
-    acp_live_update: Option<Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>>,
+    acp_live_update: Option<
+        Arc<
+            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+        >,
+    >,
+    acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
+    metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -481,7 +615,51 @@ fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => dynamic.bootstrap_provider().map(|provider| vec![provider.to_string()]).unwrap_or_default(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                available_agents,
+                ..
+            } => {
+                let mut providers = vec![bootstrap_provider.clone()];
+                for agent_ref in available_agents {
+                    if !providers.contains(&agent_ref.provider) {
+                        providers.push(agent_ref.provider.clone());
+                    }
+                }
+                providers
+            }
+        },
+    }
+}
+
+/// Returns (provider, model) pairs for model validation.
+fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+    match node {
+        NodeDsl::Worker(worker) => worker
+            .provider
+            .as_ref()
+            .map(|p| (p.clone(), worker.model.clone()))
+            .into_iter()
+            .collect(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, model } => {
+                vec![(provider.clone(), model.clone())]
+            }
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                bootstrap_model,
+                available_agents,
+                ..
+            } => {
+                let mut pairs = vec![(bootstrap_provider.clone(), bootstrap_model.clone())];
+                for agent_ref in available_agents {
+                    pairs.push((agent_ref.provider.clone(), agent_ref.model.clone()));
+                }
+                pairs
+            }
+        },
     }
 }
 
@@ -502,20 +680,52 @@ impl App {
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
+            acp_session_update: self.acp_session_update.clone(),
+            metrics_callback: self.metrics_callback.clone(),
         }
     }
 
     pub fn with_acp_live_update(
         mut self,
-        live_update: Arc<dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync>,
+        live_update: Arc<
+            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+        >,
     ) -> Self {
         self.acp_live_update = Some(live_update);
         self
     }
 
-    pub fn acp_live_update_for<'a>(&'a self, context: AcpLiveEventContext) -> Option<impl Fn(&crate::acp::events::AcpUiEvent) -> Result<()> + 'a> {
+    pub fn with_acp_session_update(
+        mut self,
+        session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.acp_session_update = Some(session_update);
+        self
+    }
+
+    pub fn with_metrics_callback(
+        mut self,
+        callback: Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>,
+    ) -> Self {
+        self.metrics_callback = Some(callback);
+        self
+    }
+
+    pub fn acp_live_update_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent) -> Result<()> + 'a> {
         let live_update = self.acp_live_update.as_ref()?.clone();
-        Some(move |event: &crate::acp::events::AcpUiEvent| live_update(context.clone(), event.clone()))
+        Some(move |event: &crate::acp::events::AcpUiEvent| {
+            live_update(context.clone(), event.clone())
+        })
+    }
+
+    pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
+        if let Some(session_update) = &self.acp_session_update {
+            session_update(context)?;
+        }
+        Ok(())
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -582,6 +792,21 @@ impl App {
         settings.use_local_claude = Some(use_local_claude);
         self.save_settings(&settings)?;
         Ok(settings)
+    }
+
+    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.log_level = Some(log_level);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
+        self.set_user_log_level(if enabled {
+            RuntimeLogLevel::Debug
+        } else {
+            RuntimeLogLevel::Info
+        })
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -772,6 +997,10 @@ impl App {
         self.load_workflow_template_store()
     }
 
+    pub fn auto_templates(&self) -> Result<AutoTemplateStore> {
+        self.load_auto_template_store()
+    }
+
     pub fn profiles(&self) -> Result<ProfileList> {
         list_profiles(&self.paths, self.config.desktop_language)
     }
@@ -817,7 +1046,7 @@ impl App {
         }
         let mut store = self.load_workflow_template_store()?;
         let mut workflow = workflow;
-        loop {
+        for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
                 .templates
@@ -825,6 +1054,9 @@ impl App {
                 .any(|template| template.workflow.id == workflow.id);
             if !conflicts {
                 break;
+            }
+            if attempt == 2 {
+                bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
         let validated = validate_workflow(workflow)?;
@@ -907,10 +1139,135 @@ impl App {
         Ok(store)
     }
 
+    pub fn save_auto_template(
+        &self,
+        name: String,
+        config: ConversationAutoConfig,
+    ) -> Result<AutoTemplateStore> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("auto template name cannot be empty");
+        }
+        let mut store = self.load_auto_template_store()?;
+        if store.templates.iter().any(|template| template.name == name) {
+            bail!("auto template name `{name}` already exists");
+        }
+        let now = now_rfc3339_like();
+        let id = unique_auto_template_id(&store, name);
+        store.templates.push(AutoTemplate {
+            id,
+            name: name.to_string(),
+            config,
+            created_at: now.clone(),
+            updated_at: now,
+        });
+        self.save_auto_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn update_auto_template(
+        &self,
+        template_id: &str,
+        name: String,
+        config: ConversationAutoConfig,
+    ) -> Result<AutoTemplateStore> {
+        let name = name.trim();
+        if template_id.trim().is_empty() {
+            bail!("auto template id cannot be empty");
+        }
+        if name.is_empty() {
+            bail!("auto template name cannot be empty");
+        }
+        let mut store = self.load_auto_template_store()?;
+        if store
+            .templates
+            .iter()
+            .any(|template| template.id != template_id && template.name == name)
+        {
+            bail!("auto template name `{name}` already exists");
+        }
+        let template = store
+            .templates
+            .iter_mut()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("auto template `{template_id}` not found"))?;
+        template.name = name.to_string();
+        template.config = config;
+        template.updated_at = now_rfc3339_like();
+        self.save_auto_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn delete_auto_template(&self, template_id: &str) -> Result<AutoTemplateStore> {
+        if template_id.trim().is_empty() {
+            bail!("auto template id cannot be empty");
+        }
+        let mut store = self.load_auto_template_store()?;
+        let original_len = store.templates.len();
+        store
+            .templates
+            .retain(|template| template.id != template_id);
+        if store.templates.len() == original_len {
+            bail!("auto template `{template_id}` not found");
+        }
+        self.save_auto_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn replace_auto_templates(
+        &self,
+        templates: Vec<AutoTemplate>,
+    ) -> Result<AutoTemplateStore> {
+        let now = now_rfc3339_like();
+        let mut store = AutoTemplateStore {
+            version: VERSION.to_string(),
+            templates: Vec::new(),
+        };
+        for template in templates {
+            let name = template.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let mut id = template.id.trim().to_string();
+            if id.is_empty() || store.templates.iter().any(|item| item.id == id) {
+                id = unique_auto_template_id(&store, name);
+            }
+            if store.templates.iter().any(|item| item.name == name) {
+                continue;
+            }
+            store.templates.push(AutoTemplate {
+                id,
+                name: name.to_string(),
+                config: template.config,
+                created_at: if template.created_at.trim().is_empty() {
+                    now.clone()
+                } else {
+                    template.created_at
+                },
+                updated_at: if template.updated_at.trim().is_empty() {
+                    now.clone()
+                } else {
+                    template.updated_at
+                },
+            });
+        }
+        self.save_auto_template_store(&store)?;
+        Ok(store)
+    }
+
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template = default_workflow_template(&default_profiles);
         let path = self.paths.workflow_templates_file();
+        if !path.exists() {
+            let legacy_path = self.paths.legacy_project_workflow_templates_file();
+            if legacy_path.exists() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent.as_std_path())?;
+                }
+                fs::copy(legacy_path.as_std_path(), path.as_std_path())?;
+            }
+        }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
             if store.templates.is_empty() {
@@ -938,8 +1295,26 @@ impl App {
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
-        fs::create_dir_all(self.paths.authoring_dir().as_std_path())?;
+        fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
         write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
+        let path = self.paths.auto_templates_file();
+        if path.exists() {
+            return read_json(&path);
+        }
+        let store = AutoTemplateStore {
+            version: VERSION.to_string(),
+            templates: Vec::new(),
+        };
+        self.save_auto_template_store(&store)?;
+        Ok(store)
+    }
+
+    fn save_auto_template_store(&self, store: &AutoTemplateStore) -> Result<()> {
+        fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
+        write_json(&self.paths.auto_templates_file(), store)
     }
 
     fn record_created_task_workflow(
@@ -975,6 +1350,8 @@ impl App {
             config,
             self.config.use_local_claude,
             self.config.acp_session_title_refresh_enabled,
+            self.config.acp_raw_max_size_bytes,
+            self.config.acp_raw_target_size_bytes,
         )?))
     }
 
@@ -1018,6 +1395,8 @@ impl App {
             config,
             provider_override: None,
             acp_live_update: None,
+            acp_session_update: None,
+            metrics_callback: None,
         }
     }
 
@@ -1038,6 +1417,8 @@ impl App {
             config,
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
+            acp_session_update: None,
+            metrics_callback: None,
         }
     }
 
@@ -1090,6 +1471,7 @@ impl App {
             id: task_id.clone(),
             title: input.title.filter(|value| !value.trim().is_empty()),
             description: input.description.filter(|value| !value.trim().is_empty()),
+            uuid: Some(generate_uuid()),
         };
         validate_task_state(&task)?;
         fs::create_dir_all(
@@ -1577,11 +1959,7 @@ impl App {
                     validate_node_state(&node)?;
                     write_json(&node_path, &node)?;
                     self.kill_dynamic_descendants_best_effort(
-                        task_id,
-                        run_id,
-                        round_id,
-                        node_id,
-                        attempt_id,
+                        task_id, run_id, round_id, node_id, attempt_id,
                     );
                 }
             }
@@ -1600,7 +1978,9 @@ impl App {
                 if run.status != RunStatus::Running {
                     continue;
                 }
-                if let Ok(paused_run) = self.run_pause(&task.id, &run.id, PauseReason::ProcessInterrupted) {
+                if let Ok(paused_run) =
+                    self.run_pause(&task.id, &run.id, PauseReason::ProcessInterrupted)
+                {
                     paused.push(paused_run);
                 }
             }
@@ -1618,8 +1998,16 @@ impl App {
         else {
             return;
         };
-        self.cancel_attempt_dir_best_effort(&self.paths.attempt_dir(task_id, run_id, round_id, node_id, attempt_id));
-        self.kill_provider_pid_file_best_effort(&self.paths.provider_pid_file(task_id, run_id, round_id, node_id, attempt_id));
+        self.cancel_attempt_dir_best_effort(
+            &self
+                .paths
+                .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        );
+        self.kill_provider_pid_file_best_effort(
+            &self
+                .paths
+                .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id),
+        );
         self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
     }
 
@@ -1679,7 +2067,9 @@ impl App {
                 None => {
                     dynamic_node.status = DynamicNodeStatus::Completed;
                     dynamic_node.outcome = Some(NodeOutcome::Killed);
-                    dynamic_node.finished_at.get_or_insert_with(now_rfc3339_like);
+                    dynamic_node
+                        .finished_at
+                        .get_or_insert_with(now_rfc3339_like);
                 }
             }
         }
@@ -1708,7 +2098,14 @@ impl App {
         graph.run.current_node_ids = graph
             .nodes
             .iter()
-            .filter(|node| matches!(node.status, DynamicNodeStatus::Ready | DynamicNodeStatus::Running | DynamicNodeStatus::Paused))
+            .filter(|node| {
+                matches!(
+                    node.status,
+                    DynamicNodeStatus::Ready
+                        | DynamicNodeStatus::Running
+                        | DynamicNodeStatus::Paused
+                )
+            })
             .map(|node| node.id.clone())
             .collect();
         graph.run.updated_at = now_rfc3339_like();
@@ -1729,7 +2126,9 @@ impl App {
         node_id: &str,
         attempt_id: &str,
     ) {
-        self.update_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id, None);
+        self.update_dynamic_descendants_best_effort(
+            task_id, run_id, round_id, node_id, attempt_id, None,
+        );
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
@@ -1750,13 +2149,18 @@ impl App {
         write_json(&self.paths.run_file(task_id, run_id), &run)?;
 
         if let Some(round_id) = current_round.as_deref() {
-            let mut round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+            let mut round: RoundState =
+                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
             round.status = RunStatus::Paused;
             validate_round_state(&round)?;
             write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
 
-            if let (Some(node_id), Some(attempt_id)) = (current_node.as_deref(), current_attempt.as_deref()) {
-                let node_path = self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id);
+            if let (Some(node_id), Some(attempt_id)) =
+                (current_node.as_deref(), current_attempt.as_deref())
+            {
+                let node_path = self
+                    .paths
+                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
                 if node_path.exists() {
                     let mut node: NodeState = read_json(&node_path)?;
                     if node.status != RunStatus::Completed {
@@ -1818,7 +2222,9 @@ impl App {
             }
         }
 
-        let node_path = self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id);
+        let node_path = self
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
         if node_path.exists() {
             let mut node: NodeState = read_json(&node_path)?;
             if node.status != RunStatus::Completed {
@@ -1871,9 +2277,9 @@ impl App {
             }
         }
 
-        let outer_node_path = self
-            .paths
-            .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+        let outer_node_path =
+            self.paths
+                .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
         if outer_node_path.exists() {
             let mut outer_node: NodeState = read_json(&outer_node_path)?;
             if outer_node.status != RunStatus::Completed {
@@ -1885,9 +2291,13 @@ impl App {
             }
         }
 
-        let graph_path = self
-            .paths
-            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+        let graph_path = self.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
         if graph_path.exists() {
             let mut graph: DynamicGraphState = read_json(&graph_path)?;
             if graph.run.status == DynamicRunStatus::Running {
@@ -1896,7 +2306,11 @@ impl App {
                 graph.run.pause_reason = Some(reason);
                 graph.run.updated_at = now.clone();
             }
-            if let Some(dynamic_node) = graph.nodes.iter_mut().find(|candidate| candidate.id == node_id) {
+            if let Some(dynamic_node) = graph
+                .nodes
+                .iter_mut()
+                .find(|candidate| candidate.id == node_id)
+            {
                 if dynamic_node.status != DynamicNodeStatus::Completed {
                     dynamic_node.status = DynamicNodeStatus::Paused;
                     dynamic_node.outcome = None;
@@ -1905,9 +2319,13 @@ impl App {
             }
             write_json(&graph_path, &graph)?;
             write_json(
-                &self
-                    .paths
-                    .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+                &self.paths.dynamic_run_file(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                ),
                 &graph.run,
             )?;
         }
@@ -2054,8 +2472,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn run_continue_background(
@@ -2063,8 +2482,9 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
+        prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
     }
 
     pub fn submit_manual_check(
@@ -2121,6 +2541,19 @@ impl App {
                 let (agent_type, _) = self.managed_agent(&provider)?;
                 if !agent_type.is_supported() {
                     bail!("agent `{provider}` is not supported yet");
+                }
+            }
+        }
+        // Validate model references are not blank (capability-level validation
+        // happens at runtime via provider_capabilities when the node executes).
+        for node in workflow.nodes_by_id.values() {
+            for (provider, model) in models_for_node(node) {
+                if let Some(model) = model {
+                    if model.trim().is_empty() {
+                        bail!(WorkflowValidationError::AgentModelBlank {
+                            provider: provider.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -2352,11 +2785,7 @@ impl App {
             return Ok((Some(err.to_string()), None));
         }
 
-        match resolve_workflow_profiles(
-            &self.paths,
-            &validated.raw,
-            self.config.desktop_language,
-        ) {
+        match resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language) {
             Ok(_) => Ok((None, None)),
             Err(err) => Ok((Some(err.to_string()), None)),
         }
@@ -2395,11 +2824,13 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{AcpLiveEventContext, App};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
+    use crate::observability::touch_log_file_best_effort;
     use camino::Utf8PathBuf;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -2408,6 +2839,38 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    #[test]
+    fn emits_acp_session_update_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+            seen_for_callback.lock().unwrap().push(context);
+            Ok(())
+        }));
+
+        app.emit_acp_session_update(AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "验收".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        })
+        .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].run_id, "run-001");
+        assert_eq!(calls[0].node_id, "验收");
+        assert_eq!(calls[0].attempt_id, "attempt-001");
     }
 
     #[test]
@@ -2430,6 +2893,21 @@ mod tests {
 
         let tail = app.runtime_log_tail_show(3).unwrap().unwrap();
         assert_eq!(tail, "line-998\nline-999\nline-1000");
+    }
+
+    #[test]
+    fn touch_runtime_log_creates_file_before_first_event() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+
+        let app = App::new(repo_root);
+        touch_log_file_best_effort(&app.paths);
+
+        assert!(app.paths.runtime_log_file().as_std_path().exists());
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { PortalContainerContext } from "@/lib/portal-container"
 import { Button } from "@/components/ui/button"
 
 function Dialog({
@@ -13,11 +14,13 @@ function Dialog({
   return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
 
-function DialogTrigger({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
-  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
-}
+const DialogTrigger = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Trigger>
+>(({ ...props }, ref) => (
+  <DialogPrimitive.Trigger ref={ref} data-slot="dialog-trigger" {...props} />
+))
+DialogTrigger.displayName = "DialogTrigger"
 
 function DialogPortal({
   ...props
@@ -25,11 +28,13 @@ function DialogPortal({
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
 }
 
-function DialogClose({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Close>) {
-  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
-}
+const DialogClose = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Close>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Close>
+>(({ ...props }, ref) => (
+  <DialogPrimitive.Close ref={ref} data-slot="dialog-close" {...props} />
+))
+DialogClose.displayName = "DialogClose"
 
 function DialogOverlay({
   className,
@@ -57,10 +62,18 @@ function DialogContent({
   showCloseButton?: boolean
   overlayClassName?: string
 }) {
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
+  const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    setPortalContainerEl(node)
+  }, [])
+
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
+        ref={setContentRef}
         data-slot="dialog-content"
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
@@ -68,7 +81,9 @@ function DialogContent({
         )}
         {...props}
       >
-        {children}
+        <PortalContainerContext.Provider value={portalContainerEl}>
+          {children}
+        </PortalContainerContext.Provider>
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"

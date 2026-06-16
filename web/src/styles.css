@@ -362,7 +362,8 @@
   stroke: transparent;
 }
 
-.workflow-edge-branch .react-flow__edge-path {
+.workflow-edge-branch .react-flow__edge-path,
+.workflow-edge-branch.react-flow__edge-path {
   opacity: 0.86;
 }
 
@@ -436,8 +437,22 @@
   transform: translateX(-70%);
 }
 
-.workflow-edge-running .react-flow__edge-path {
+.workflow-node-running::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  border: 1px solid color-mix(in srgb, var(--gold-running) 36%, transparent);
+  border-radius: inherit;
+  opacity: 0.45;
+  transform: scale(0.99);
+  will-change: opacity, transform;
+}
+
+.workflow-edge-running .react-flow__edge-path,
+.workflow-edge-running.react-flow__edge-path {
   stroke-dasharray: 7 9;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--gold-running) 55%, transparent));
 }
 
 .workflow-timeline-dot-running {
@@ -445,12 +460,12 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .workflow-node-running {
-    animation: workflow-running-halo 1.8s ease-in-out infinite;
-  }
-
   .workflow-node-running::before {
     animation: workflow-node-sheen 2.4s ease-in-out infinite;
+  }
+
+  .workflow-node-running::after {
+    animation: workflow-running-halo 1.8s ease-in-out infinite;
   }
 
   .workflow-running-dot,
@@ -459,9 +474,13 @@
     animation: workflow-running-pulse 1.35s ease-in-out infinite;
   }
 
-  .workflow-edge-running .react-flow__edge-path,
   .workflow-edge-flow .react-flow__edge-path,
   .workflow-edge-flow.react-flow__edge-path {
+    animation: workflow-edge-flow 3.6s linear infinite;
+  }
+
+  .workflow-edge-running .react-flow__edge-path,
+  .workflow-edge-running.react-flow__edge-path {
     animation: workflow-edge-flow 2.4s linear infinite;
   }
 
@@ -472,10 +491,12 @@
 
 @keyframes workflow-running-halo {
   0%, 100% {
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold-running) 18%, transparent), 0 12px 30px color-mix(in srgb, var(--gold-running) 10%, transparent);
+    opacity: 0.45;
+    transform: scale(0.99);
   }
   50% {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold-running) 34%, transparent), 0 16px 40px color-mix(in srgb, var(--gold-running) 22%, transparent);
+    opacity: 0.9;
+    transform: scale(1.02);
   }
 }
 

@@ -3,6 +3,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { PortalContainerContext } from "@/lib/portal-container"
 
 const sheetResizeStoragePrefix = "gold-band:sheet-size:"
 const defaultSheetMinSize = 360
@@ -16,17 +17,21 @@ function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
 }
 
-function SheetTrigger({
-  ...props
-}: React.ComponentProps<typeof SheetPrimitive.Trigger>) {
-  return <SheetPrimitive.Trigger data-slot="sheet-trigger" {...props} />
-}
+const SheetTrigger = React.forwardRef<
+  React.ElementRef<typeof SheetPrimitive.Trigger>,
+  React.ComponentPropsWithoutRef<typeof SheetPrimitive.Trigger>
+>(({ ...props }, ref) => (
+  <SheetPrimitive.Trigger ref={ref} data-slot="sheet-trigger" {...props} />
+))
+SheetTrigger.displayName = "SheetTrigger"
 
-function SheetClose({
-  ...props
-}: React.ComponentProps<typeof SheetPrimitive.Close>) {
-  return <SheetPrimitive.Close data-slot="sheet-close" {...props} />
-}
+const SheetClose = React.forwardRef<
+  React.ElementRef<typeof SheetPrimitive.Close>,
+  React.ComponentPropsWithoutRef<typeof SheetPrimitive.Close>
+>(({ ...props }, ref) => (
+  <SheetPrimitive.Close ref={ref} data-slot="sheet-close" {...props} />
+))
+SheetClose.displayName = "SheetClose"
 
 function SheetPortal({
   ...props
@@ -125,6 +130,11 @@ function SheetContent({
   viewportMargin?: number
 }) {
   const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
+  const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node;
+    setPortalContainerEl(node);
+  }, [])
   const dragCleanupRef = React.useRef<(() => void) | null>(null)
   const resizeEnabled = resizable && (side === "right" || side === "left")
 
@@ -294,7 +304,7 @@ function SheetContent({
     <SheetPortal>
       {showOverlay ? <SheetOverlay /> : null}
       <SheetPrimitive.Content
-        ref={contentRef}
+        ref={setContentRef}
         data-slot="sheet-content"
         className={cn(
           "fixed z-50 flex flex-col gap-4 bg-background shadow-lg transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500",
@@ -311,7 +321,9 @@ function SheetContent({
         style={resolvedStyle}
         {...props}
       >
-        {children}
+        <PortalContainerContext.Provider value={portalContainerEl}>
+          {children}
+        </PortalContainerContext.Provider>
         {showCloseButton && (
           <SheetPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
             <XIcon className="size-4" />

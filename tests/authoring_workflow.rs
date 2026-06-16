@@ -559,7 +559,9 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
             .all(|profile| profile.id != created.id)
     );
 
-    let err = app.run_continue("task-001", "run-001", None).unwrap_err();
+    let err = app
+        .run_continue("task-001", "run-001", None, None)
+        .unwrap_err();
     assert!(
         err.to_string()
             .contains("associated role visibility changed; reset it")

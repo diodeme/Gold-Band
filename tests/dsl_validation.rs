@@ -43,6 +43,7 @@ fn validates_basic_workflow() {
                 { "from": "dev", "to": "test", "on": "success" },
                 { "from": "test", "to": "accept", "on": "success" },
                 { "from": "test", "to": "dev", "on": "failure", "session": "continue" },
+                { "from": "accept", "to": "$end", "on": "success" },
                 { "from": "accept", "to": "$new-round", "on": "failure" }
             ]
         }"#,
@@ -77,7 +78,11 @@ fn rejects_workflow_without_end_node() {
     );
 
     let error = validate_workflow(workflow).expect_err("workflow should require an end node");
-    assert!(error.to_string().contains("must include an edge targeting `$end`"));
+    assert!(
+        error
+            .to_string()
+            .contains("must include an edge targeting `$end`")
+    );
 }
 
 #[test]
@@ -99,7 +104,11 @@ fn rejects_unreachable_node() {
     );
 
     let error = validate_workflow(workflow).expect_err("workflow should reject unreachable node");
-    assert!(error.to_string().contains("node `accept` is unreachable from entry"));
+    assert!(
+        error
+            .to_string()
+            .contains("node `accept` is unreachable from entry")
+    );
 }
 
 #[test]
@@ -138,7 +147,9 @@ fn rejects_unknown_node_type() {
             "nodes": [
                 { "id": "custom", "type": "custom", "provider": "claude-acp" }
             ],
-            "edges": []
+            "edges": [
+                { "from": "review", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 
@@ -174,7 +185,9 @@ fn accepts_missing_loop_limits() {
             "nodes": [
                 { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
-            "edges": []
+            "edges": [
+                { "from": "dev", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 
@@ -312,6 +325,7 @@ fn accepts_worker_json_output_validation() {
             ],
             "edges": [
                 { "from": "review", "to": "test", "on": "success" },
+                { "from": "test", "to": "$end", "on": "success" },
                 { "from": "test", "to": "$new-round", "on": "failure" }
             ]
         }"#,
@@ -342,7 +356,9 @@ fn accepts_simplified_output_schema_with_matching_expression() {
                     "success_condition": { "expression": "$.result == true" }
                 }
             ],
-            "edges": []
+            "edges": [
+                { "from": "review", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 
@@ -370,7 +386,9 @@ fn rejects_success_expression_missing_from_simplified_schema() {
                     "success_condition": { "expression": "$.result == true" }
                 }
             ],
-            "edges": []
+            "edges": [
+                { "from": "review", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 
@@ -398,7 +416,9 @@ fn accepts_nested_simplified_schema_path() {
                     "success_condition": { "expression": "$.xx.yy[0].zz == true" }
                 }
             ],
-            "edges": []
+            "edges": [
+                { "from": "review", "to": "$end", "on": "success" }
+            ]
         }"#,
     );
 

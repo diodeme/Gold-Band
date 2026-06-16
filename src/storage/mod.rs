@@ -186,7 +186,15 @@ impl GoldBandPaths {
     }
 
     pub fn workflow_templates_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("workflows.json")
+    }
+
+    pub fn legacy_project_workflow_templates_file(&self) -> Utf8PathBuf {
         self.authoring_dir().join("workflows.json")
+    }
+
+    pub fn auto_templates_file(&self) -> Utf8PathBuf {
+        self.user_context_dir().join("auto-templates.json")
     }
 
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
@@ -568,8 +576,15 @@ impl GoldBandPaths {
         attempt_id: &str,
         dynamic_node_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
-            .join("node.json")
+        self.dynamic_node_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+        )
+        .join("node.json")
     }
 
     pub fn dynamic_node_attempt_dir(
@@ -582,8 +597,15 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id)
-            .join(dynamic_attempt_id)
+        self.dynamic_node_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+        )
+        .join(dynamic_attempt_id)
     }
 
     pub fn dynamic_node_artifacts_dir(
@@ -596,8 +618,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("artifacts")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("artifacts")
     }
 
     pub fn dynamic_node_artifact_file(
@@ -611,8 +641,16 @@ impl GoldBandPaths {
         dynamic_attempt_id: &str,
         name: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_artifacts_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join(format!("{name}.json"))
+        self.dynamic_node_artifacts_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join(format!("{name}.json"))
     }
 
     pub fn dynamic_node_attachments_dir(
@@ -625,8 +663,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("attachments")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("attachments")
     }
 
     pub fn dynamic_node_worker_ref_file(
@@ -639,8 +685,16 @@ impl GoldBandPaths {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
     ) -> Utf8PathBuf {
-        self.dynamic_node_attempt_dir(task_id, run_id, round_id, node_id, attempt_id, dynamic_node_id, dynamic_attempt_id)
-            .join("worker-ref.json")
+        self.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+        )
+        .join("worker-ref.json")
     }
 }
 
@@ -703,7 +757,12 @@ fn project_id(repo_root: &Utf8Path) -> String {
             id.push('-');
         }
     }
-    id.trim_matches('-').to_string()
+    let trimmed = id.trim_matches('-');
+    if trimmed.is_empty() {
+        "root".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
@@ -747,6 +806,37 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
         .open(path.as_std_path())?;
     serde_json::to_writer(&mut file, value)?;
     file.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Trim a JSONL file from the beginning when it exceeds `max_size`,
+/// keeping the most recent lines that fit within `target_size`.
+pub fn roll_jsonl(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+    let meta = match std::fs::metadata(path.as_std_path()) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    if meta.len() <= max_size {
+        return Ok(());
+    }
+    let content = std::fs::read(path.as_std_path())?;
+    let total = content.len() as u64;
+    if total <= target_size {
+        return Ok(());
+    }
+    let excess = total.saturating_sub(target_size);
+    let mut cumulative = 0u64;
+    let mut drop_bytes = 0usize;
+    for line in content.split_inclusive(|byte| *byte == b'\n') {
+        if cumulative >= excess {
+            break;
+        }
+        cumulative += line.len() as u64;
+        drop_bytes += line.len();
+    }
+    let drop_bytes = drop_bytes.min(content.len());
+    let keep = &content[drop_bytes..];
+    std::fs::write(path.as_std_path(), keep)?;
     Ok(())
 }
 
@@ -835,7 +925,12 @@ mod tests {
             DEFAULT_STORAGE_PATH_CONFIG,
         );
         let settings = paths.user_settings_file();
-        assert!(settings.to_string().replace('\\', "/").ends_with("/.gold-band/settings.json"));
+        assert!(
+            settings
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/settings.json")
+        );
     }
 
     #[test]
@@ -847,8 +942,14 @@ mod tests {
         );
         let state = paths.user_state_file();
         let normalized = state.to_string().replace('\\', "/");
-        assert!(normalized.ends_with("state.json"), "expected state.json path, got: {normalized}");
-        assert!(normalized.contains("gold-band"), "expected gold-band in path, got: {normalized}");
+        assert!(
+            normalized.ends_with("state.json"),
+            "expected state.json path, got: {normalized}"
+        );
+        assert!(
+            normalized.contains("gold-band"),
+            "expected gold-band in path, got: {normalized}"
+        );
     }
 
     #[test]
@@ -860,7 +961,86 @@ mod tests {
             DEFAULT_STORAGE_PATH_CONFIG,
         );
         let state = paths.user_state_file();
-        assert!(state.to_string().replace('\\', "/").ends_with("/.gold-band/state.json"));
+        assert!(
+            state
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/state.json")
+        );
         assert!(state.to_string().replace('\\', "/").contains("gold-band"));
+    }
+
+    #[test]
+    fn roll_jsonl_trims_oldest_lines_when_over_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();
+
+        // Write 3 lines totaling ~60+ bytes
+        append_jsonl(&path, &"line-one-is-longer").unwrap();
+        append_jsonl(&path, &"line-two").unwrap();
+        append_jsonl(&path, &"line-three-even-longer").unwrap();
+
+        let original = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(original.lines().count(), 3);
+
+        // Set max so we need to drop first line
+        let meta = std::fs::metadata(path.as_std_path()).unwrap();
+        let target = meta.len() / 2; // keep roughly half
+        roll_jsonl(&path, target.saturating_sub(1), target).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        let lines: Vec<&str> = after.lines().collect();
+        assert!(lines.len() < 3, "should have dropped some lines");
+        assert!(
+            after.len() as u64 <= target + 10,
+            "should be roughly under target"
+        );
+    }
+
+    #[test]
+    fn roll_jsonl_noop_when_under_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();
+
+        append_jsonl(&path, &"hello").unwrap();
+        let before = std::fs::read_to_string(path.as_std_path()).unwrap();
+
+        // max far above current size
+        roll_jsonl(&path, 1024 * 1024, 512 * 1024).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn roll_jsonl_trims_unicode_file_without_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("unicode.jsonl")).unwrap();
+        let first = r#"{"content":"本次任务包含中文内容一"}"#;
+        let second = r#"{"content":"本次任务包含中文内容二"}"#;
+        std::fs::write(path.as_std_path(), format!("{first}\n{second}")).unwrap();
+
+        roll_jsonl(&path, 1, second.len() as u64).unwrap();
+
+        let after = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(after, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_workspace_uses_stable_non_empty_project_id() {
+        let temp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
+        let paths =
+            GoldBandPaths::new_with_path_config(Utf8PathBuf::from("/"), DEFAULT_STORAGE_PATH_CONFIG);
+
+        assert_eq!(paths.project_id, "root");
+        assert!(
+            paths
+                .runtime_log_file()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/.gold-band/projects/root/logs/runtime.log")
+        );
     }
 }

@@ -79,8 +79,8 @@ export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['c
   return getRuntimeApi().createTask(input);
 }
 
-export function saveTaskWorkflow(taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[1]) {
-  return getRuntimeApi().saveTaskWorkflow(taskId, workflow);
+export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2]) {
+  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow);
 }
 
 export function getWorkflowTemplates() {
@@ -131,20 +131,20 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
-  return getRuntimeApi().continueRun(taskId, runId, promptId, prompt);
+export function continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
+  return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
 }
 
 export function pauseRun(taskId: string, runId: string) {
   return getRuntimeApi().pauseRun(taskId, runId);
 }
 
-export function stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().stopActiveSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
+export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
-  return getRuntimeApi().submitManualCheck(taskId, runId, roundId, nodeId, attemptId, outcome);
+export function submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
+  return getRuntimeApi().submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome);
 }
 
 export function retryRun(taskId: string, runId: string) {
@@ -159,44 +159,44 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
   return getRuntimeApi().getLogPage(query);
 }
 
-export function getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[5], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().getAcpSession(taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
+export function getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[7], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
-  return getRuntimeApi().sendAcpPrompt(taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
-export function setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().setAcpSessionModel(taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
+export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
 }
 
-export function setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().setAcpSessionPermissionMode(taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
+export function setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
-export function respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().respondAcpPermission(taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
+export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().cancelAcpSession(taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
+export function cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
-export function getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpRawFrames']>[5], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().getAcpRawFrames(taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+export function getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpRawFrames']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }
 
-export function showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().showArtifact(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
+export function showArtifact(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showArtifact(projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
-export function showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().showAttachment(taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
+export function showAttachment(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showAttachment(projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId);
 }
 
 export function showConversationAttachment(projectId: string, taskId: string, name: string) {
@@ -343,6 +343,6 @@ export function getSupportedAttachmentExtensions() {
   return getRuntimeApi().getSupportedAttachmentExtensions();
 }
 
-export function openInFileManager(taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+export function openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }

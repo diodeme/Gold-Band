@@ -189,6 +189,7 @@ export function ConversationRunPage({
   const handleOpenInFileManager = useCallback(() => {
     if (!selectedLeaf) return;
     openInFileManager(
+      run.projectId,
       run.taskId,
       run.runId,
       selectedLeaf.roundId,
@@ -197,7 +198,7 @@ export function ConversationRunPage({
       selectedLeaf.outerNodeId,
       selectedLeaf.outerAttemptId,
     );
-  }, [run.taskId, run.runId, selectedLeaf]);
+  }, [run.projectId, run.taskId, run.runId, selectedLeaf]);
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;

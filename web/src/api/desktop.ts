@@ -65,8 +65,11 @@ export const desktopApi: RuntimeApi = {
   deleteProfile(id: string, force = false) {
     return invokeCommand('delete_profile', { id, force });
   },
-  chooseWorkspace() {
-    return invokeCommand('choose_workspace');
+  async chooseWorkspace() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const path = await open({ directory: true });
+    if (!path) return null;
+    return invokeCommand('choose_workspace', { path });
   },
   selectRecentWorkspace(workspace: string) {
     return invokeCommand('select_recent_workspace', { workspace });
@@ -80,8 +83,8 @@ export const desktopApi: RuntimeApi = {
   createTask(input: CreateTaskInput) {
     return invokeCommand('create_task', { input });
   },
-  saveTaskWorkflow(taskId: string, workflow: WorkflowDsl) {
-    return invokeCommand('save_task_workflow', { taskId, input: { workflow } });
+  saveTaskWorkflow(projectId, taskId, workflow) {
+    return invokeCommand('save_task_workflow', { projectId, taskId, input: { workflow } });
   },
   getWorkflowTemplates() {
     return invokeCommand('get_workflow_templates');
@@ -119,17 +122,17 @@ export const desktopApi: RuntimeApi = {
   startRun(taskId: string) {
     return invokeCommand('start_run', { taskId });
   },
-  continueRun(taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
-    return invokeCommand('continue_run', { taskId, runId, promptId, prompt });
+  continueRun(projectId, taskId, runId, promptId, prompt) {
+    return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
   },
   pauseRun(taskId: string, runId: string) {
     return invokeCommand('pause_run', { taskId, runId });
   },
-  stopActiveSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand('stop_active_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
+    return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  submitManualCheck(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure') {
-    return invokeCommand('submit_manual_check', { taskId, runId, roundId, nodeId, attemptId, outcome });
+  submitManualCheck(projectId, taskId, runId, roundId, nodeId, attemptId, outcome) {
+    return invokeCommand('submit_manual_check', { projectId, taskId, runId, roundId, nodeId, attemptId, outcome });
   },
   retryRun(taskId: string, runId: string) {
     return invokeCommand('retry_run', { taskId, runId });
@@ -140,32 +143,32 @@ export const desktopApi: RuntimeApi = {
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });
   },
-  getAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('get_acp_session', { taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  sendAcpPrompt(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
-    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
-  setAcpSessionModel(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
+  setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
   },
-  setAcpSessionPermissionMode(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
+  setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_permission_mode', { projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId });
   },
-  respondAcpPermission(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
+  respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, _fallback, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },
-  cancelAcpSession(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, _fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  getAcpRawFrames(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand('get_acp_raw_frames', { taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+    return invokeCommand('get_acp_raw_frames', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
-  showArtifact(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand('show_artifact', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
+  showArtifact(projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId) {
+    return invokeCommand('show_artifact', { projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
-  showAttachment(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-    return invokeCommand('show_attachment', { taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
+  showAttachment(projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId) {
+    return invokeCommand('show_attachment', { projectId, taskId, runId, roundId, nodeId, attemptId, name, outerNodeId, outerAttemptId });
   },
   showConversationAttachment(projectId: string, taskId: string, name: string) {
     return invokeCommand('show_conversation_attachment', { projectId, taskId, name });
@@ -253,8 +256,13 @@ export const desktopApi: RuntimeApi = {
   chooseConversationWorkspace() {
     return invokeCommand<ConversationWorkspaceVm>('choose_conversation_workspace');
   },
-  addConversationWorkspace() {
-    return invokeCommand<ConversationSidebarVm>('add_conversation_workspace');
+  async addConversationWorkspace() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const path = await open({ directory: true });
+    if (!path) {
+      throw new Error('workspace.cancelled');
+    }
+    return invokeCommand<ConversationSidebarVm>('add_conversation_workspace', { path });
   },
   removeConversationWorkspace(projectId) {
     return invokeCommand<ConversationSidebarVm>('remove_conversation_workspace', { projectId });
@@ -268,8 +276,12 @@ export const desktopApi: RuntimeApi = {
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
   },
-  pickAttachmentFiles() {
-    return invokeCommand('pick_attachment_files');
+  async pickAttachmentFiles() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const result = await open({ multiple: true });
+    if (!result) return [];
+    const paths = Array.isArray(result) ? result : [result];
+    return invokeCommand('stat_attachment_files', { paths });
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });
@@ -277,7 +289,7 @@ export const desktopApi: RuntimeApi = {
   getSupportedAttachmentExtensions() {
     return invokeCommand<string[]>('get_supported_attachment_extensions');
   },
-  openInFileManager(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
-    return invokeCommand('open_in_file_manager', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('open_in_file_manager', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
 };

@@ -4,6 +4,8 @@
 
 会话运行时窗口是用户与 agent 交互的核心区域。左侧选中最小单位是 run，右侧主区域永远展示当前选中 session 的具体对话。
 
+运行态身份以 `projectId + taskId + runId + session locator` 为准。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
+
 ## 顶部信息栏
 
 - 标题显示：可 inline edit，修改后同步到 task 和所有 run

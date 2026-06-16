@@ -100,7 +100,7 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2) });
   },
-  saveTaskWorkflow(taskId: string, workflow: WorkflowDsl) {
+  saveTaskWorkflow(_projectId, taskId, workflow) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2) });
   },
   getWorkflowTemplates() {
@@ -189,16 +189,16 @@ export const browserApi: RuntimeApi = {
   startRun(taskId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
-  continueRun(taskId: string, runId: string, _promptId?: string | null, _prompt?: string | null) {
+  continueRun(_projectId, taskId, runId, _promptId, _prompt) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
   pauseRun(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },
-  stopActiveSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  stopActiveSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ kind: 'session-cancelled', run: null, session: fallback ?? null });
   },
-  submitManualCheck(taskId: string, runId: string, _roundId: string, _nodeId: string, _attemptId: string, _outcome: 'success' | 'failure') {
+  submitManualCheck(_projectId, taskId, runId, _roundId, _nodeId, _attemptId, _outcome) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
   retryRun(taskId: string, runId: string) {
@@ -210,28 +210,28 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  getAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _query, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
-  sendAcpPrompt(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _prompt: string, _promptId?: string | null, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null, _attachmentPaths?: string[]) {
+  sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve(fallback ?? null);
   },
-  setAcpSessionModel(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _modelId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  setAcpSessionModel(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _modelId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
-  setAcpSessionPermissionMode(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _permissionModeId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  setAcpSessionPermissionMode(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _permissionModeId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
-  respondAcpPermission(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _requestId: string, _optionId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  respondAcpPermission(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _requestId, _optionId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
-  cancelAcpSession(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, fallback?: AcpSessionVm | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  cancelAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
-  getAcpRawFrames(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, query?: AcpRawFrameQueryInput, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  getAcpRawFrames(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, query, _outerNodeId, _outerAttemptId) {
     const empty: AcpRawFramePageVm = {
       items: [],
       page: query?.page ?? 0,
@@ -246,10 +246,10 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(empty);
   },
-  showArtifact(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  showArtifact(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, name, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ ...mockContent, title: name });
   },
-  showAttachment(_taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+  showAttachment(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, name, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ ...mockContent, title: name, kind: 'attachment' });
   },
   showConversationAttachment(_projectId: string, _taskId: string, name: string) {
@@ -446,7 +446,7 @@ export const browserApi: RuntimeApi = {
       "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
     ]);
   },
-  openInFileManager(_taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+  openInFileManager(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();
   },
 };

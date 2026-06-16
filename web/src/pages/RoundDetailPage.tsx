@@ -61,7 +61,7 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
     let cancelled = false;
     setAssetLoading(true);
     const loader = asset.kind === 'attachment' ? showAttachment : showArtifact;
-    loader(vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
+    loader(undefined, vm.run.taskId, vm.run.id, vm.round.id, asset.nodeId, asset.attemptId, asset.name, nodeDetailOuterNodeId(asset, vm.selectedNodeDetail), nodeDetailOuterAttemptId(asset, vm.selectedNodeDetail))
       .then((content) => { if (!cancelled) setAssetContent(content); })
       .catch((error) => { if (!cancelled) setAssetContent({ title: asset.title, kind: asset.kind, content: displayAppError(t, error), metadata: {} }); })
       .finally(() => { if (!cancelled) setAssetLoading(false); });

@@ -8,7 +8,7 @@ use gold_band::acp::permission::{
     write_permission_response,
 };
 use gold_band::app::{
-    AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
+    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
     ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
@@ -35,12 +35,10 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_dialog::{DialogExt, FileDialogBuilder, FilePath};
-use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
-use crate::state::{DesktopState, UpdateBadgeSeenTarget};
+use crate::state::{DesktopContext, DesktopState, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -116,6 +114,7 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -125,6 +124,77 @@ struct AcpSessionUpdatedEventVm {
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
+}
+
+fn normalize_workspace_project_id(workspace_path: &str) -> String {
+    workspace_path
+        .to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+}
+
+fn resolve_workspace_app(
+    context: &DesktopContext,
+    project_id: Option<&str>,
+) -> Result<(App, String), CommandErrorVm> {
+    match project_id {
+        None | Some("") => {
+            let pid = normalize_workspace_project_id(context.repo_root.as_str());
+            Ok((context.app(), pid))
+        }
+        Some(pid) => {
+            let default_pid = normalize_workspace_project_id(context.repo_root.as_str());
+            if pid == default_pid {
+                return Ok((context.app(), default_pid));
+            }
+            let global_app = context.app();
+            let state = global_app.load_state().map_err(command_error)?;
+            for w in &state.conversation_workspaces {
+                if w.project_id == pid {
+                    let app = App::with_config(
+                        Utf8PathBuf::from(&w.workspace_path),
+                        context.config.clone(),
+                    );
+                    return Ok((app, w.project_id.clone()));
+                }
+            }
+            Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": pid }),
+            ))
+        }
+    }
+}
+
+fn resolve_command_app(
+    state: &DesktopState,
+    project_id: Option<&str>,
+) -> Result<App, CommandErrorVm> {
+    let context = state.context().map_err(command_error)?;
+    let (app, _) = resolve_workspace_app(&context, project_id)?;
+    Ok(app)
+}
+
+fn resolve_command_app_with_emitters(
+    app_handle: &AppHandle,
+    context: &DesktopContext,
+    project_id: Option<&str>,
+) -> Result<App, CommandErrorVm> {
+    let (base_app, _) = resolve_workspace_app(context, project_id)?;
+    let pid = project_id.map(|s| s.to_string());
+    let bg_app = base_app.clone_for_background();
+    Ok(base_app
+        .with_acp_live_update(acp_live_update_emitter(
+            app_handle.clone(),
+            pid.clone(),
+        ))
+        .with_acp_session_update(acp_session_update_emitter(
+            app_handle.clone(),
+            bg_app,
+            pid,
+        ))
+        .with_metrics_callback(crate::metrics::create_metrics_callback(
+            app_handle.clone(),
+        )))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -436,23 +506,9 @@ pub fn delete_profile(
 pub async fn choose_workspace(
     app: AppHandle,
     state: State<'_, DesktopState>,
-) -> CommandResult<Option<AppBootstrapVm>> {
-    let current = state.context().map_err(command_error)?.repo_root;
-    info!(current_repo_root = %current, "opening workspace picker");
-    let Some(path) = pick_folder_result(
-        app.dialog()
-            .file()
-            .set_directory(current.as_std_path()),
-    )
-    .await
-    else {
-        info!(current_repo_root = %current, "workspace picker cancelled");
-        return Ok(None);
-    };
-    let path = path
-        .into_path()
-        .map_err(|_| CommandErrorVm::new("workspace.path-resolve-failed", serde_json::json!({})))?;
-    let repo_root = Utf8PathBuf::from_path_buf(path)
+    path: String,
+) -> CommandResult<AppBootstrapVm> {
+    let repo_root = Utf8PathBuf::from_path_buf(std::path::PathBuf::from(&path))
         .map_err(|_| CommandErrorVm::new("workspace.path-invalid-utf8", serde_json::json!({})))?;
     info!(selected_repo_root = %repo_root, "workspace picker returned selection");
     let context = state.set_workspace(repo_root).map_err(command_error)?;
@@ -462,13 +518,13 @@ pub async fn choose_workspace(
         "workspace selection applied"
     );
     let update_status = state.update_status().map_err(command_error)?;
-    Ok(Some(bootstrap_vm(
+    Ok(bootstrap_vm(
         &context.app(),
         context.recent_workspaces,
         update_status,
         app.package_info().version.to_string(),
         false,
-    )))
+    ))
 }
 
 #[tauri::command]
@@ -532,11 +588,12 @@ pub fn create_task(
 #[tauri::command]
 pub fn save_task_workflow(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
     ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     app.save_task_workflow(&task_id, input.workflow)
         .map_err(command_error)?;
     workflow_vm(&app, &task_id).map_err(command_error)
@@ -666,8 +723,8 @@ pub fn start_run(
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
+        acp_live_update_emitter(app_handle.clone(), None),
+        acp_session_update_emitter(app_handle.clone(), context.app(), None),
         crate::metrics::create_metrics_callback(app_handle),
     );
     app.run_start_background(&task_id, None)
@@ -679,17 +736,14 @@ pub fn start_run(
 pub fn continue_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     prompt_id: Option<String>,
     prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
-        crate::metrics::create_metrics_callback(app_handle),
-    );
+    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
     app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -711,6 +765,7 @@ pub fn pause_run(
 pub fn stop_active_session(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -719,7 +774,7 @@ pub fn stop_active_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ActiveSessionStopVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let was_running = app
         .run_status(&task_id, &run_id)
         .map(|run| run.status == RunStatus::Running)
@@ -728,6 +783,7 @@ pub fn stop_active_session(
     let session = cancel_acp_session(
         app_handle,
         state,
+        project_id.clone(),
         task_id.clone(),
         run_id.clone(),
         round_id,
@@ -757,6 +813,7 @@ pub fn stop_active_session(
 pub fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -765,11 +822,7 @@ pub fn submit_manual_check(
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
-        crate::metrics::create_metrics_callback(app_handle),
-    );
+    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -794,8 +847,8 @@ pub fn retry_run(
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
-        acp_live_update_emitter(app_handle.clone()),
-        acp_session_update_emitter(app_handle.clone(), context.app()),
+        acp_live_update_emitter(app_handle.clone(), None),
+        acp_session_update_emitter(app_handle.clone(), context.app(), None),
         crate::metrics::create_metrics_callback(app_handle),
     );
     app.run_retry(&task_id, &run_id)
@@ -818,6 +871,7 @@ pub fn kill_run(
 #[tauri::command]
 pub fn show_artifact(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -827,7 +881,7 @@ pub fn show_artifact(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ContentVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let labels = Translator::new(app.config.desktop_language);
     let content = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (&outer_node_id, &outer_attempt_id)
@@ -906,11 +960,13 @@ pub fn save_metrics_settings(
 
 pub(crate) fn acp_live_update_emitter(
     app_handle: AppHandle,
+    project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
         emit_acp_event_update(
             &app_handle,
+            project_id.clone(),
             &context.task_id,
             &context.run_id,
             &context.round_id,
@@ -927,6 +983,7 @@ pub(crate) fn acp_live_update_emitter(
 pub(crate) fn acp_session_update_emitter(
     app_handle: AppHandle,
     app: gold_band::app::App,
+    project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
         let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -959,6 +1016,7 @@ pub(crate) fn acp_session_update_emitter(
         };
         emit_acp_session_update(
             &app_handle,
+            project_id.clone(),
             &context.task_id,
             &context.run_id,
             &context.round_id,
@@ -974,6 +1032,7 @@ pub(crate) fn acp_session_update_emitter(
 
 fn emit_acp_session_update(
     app_handle: &AppHandle,
+    project_id: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -985,6 +1044,7 @@ fn emit_acp_session_update(
 ) {
     emit_acp_update(
         app_handle,
+        project_id,
         task_id,
         run_id,
         round_id,
@@ -999,6 +1059,7 @@ fn emit_acp_session_update(
 
 fn emit_acp_event_update(
     app_handle: &AppHandle,
+    project_id: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -1010,6 +1071,7 @@ fn emit_acp_event_update(
 ) {
     emit_acp_update(
         app_handle,
+        project_id,
         task_id,
         run_id,
         round_id,
@@ -1025,6 +1087,7 @@ fn emit_acp_event_update(
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_update(
     app_handle: &AppHandle,
+    project_id: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -1038,6 +1101,7 @@ fn emit_acp_update(
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
+            project_id,
             task_id: task_id.to_string(),
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
@@ -1054,6 +1118,7 @@ fn emit_acp_update(
 #[tauri::command]
 pub fn get_acp_session(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1063,7 +1128,7 @@ pub fn get_acp_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -1098,6 +1163,7 @@ pub fn get_acp_session(
 pub async fn send_acp_prompt(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1109,7 +1175,9 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let project_id_for_emit = project_id.clone();
+    let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
     let run_id_for_emit = run_id.clone();
     let round_id_for_emit = round_id.clone();
@@ -1224,6 +1292,7 @@ pub async fn send_acp_prompt(
                 Some(&|event| {
                     emit_acp_event_update(
                         &app_handle_for_live,
+                        project_id_for_spawn.clone(),
                         &task_id_for_live,
                         &run_id_for_live,
                         &round_id_for_live,
@@ -1336,6 +1405,7 @@ pub async fn send_acp_prompt(
             Some(&|event| {
                 emit_acp_event_update(
                     &app_handle_for_live,
+                    project_id_for_spawn.clone(),
                     &task_id_for_live,
                     &run_id_for_live,
                     &round_id_for_live,
@@ -1366,6 +1436,7 @@ pub async fn send_acp_prompt(
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
     emit_acp_session_update(
         &app_handle,
+        project_id_for_emit,
         &task_id_for_emit,
         &run_id_for_emit,
         &round_id_for_emit,
@@ -1395,6 +1466,7 @@ pub async fn send_acp_prompt(
 pub fn respond_acp_permission(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1405,7 +1477,7 @@ pub fn respond_acp_permission(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -1471,6 +1543,7 @@ pub fn respond_acp_permission(
     };
     emit_acp_session_update(
         &app_handle,
+        project_id.clone(),
         &task_id,
         &run_id,
         &round_id,
@@ -1531,6 +1604,7 @@ fn spawn_index_attempt(
 fn spawn_acp_cancel_shutdown(
     app_handle: AppHandle,
     app: gold_band::app::App,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1645,6 +1719,7 @@ fn spawn_acp_cancel_shutdown(
         );
         emit_acp_session_update(
             &app_handle,
+            project_id,
             &task_id,
             &run_id,
             &round_id,
@@ -1798,6 +1873,7 @@ fn append_permission_decision_artifacts(
 pub fn cancel_acp_session(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1806,7 +1882,7 @@ pub fn cancel_acp_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let requested_at = current_timestamp();
     let background_app = app.clone_for_background();
     let task_id_for_shutdown = task_id.clone();
@@ -1816,6 +1892,7 @@ pub fn cancel_acp_session(
     let attempt_id_for_shutdown = attempt_id.clone();
     let outer_node_id_for_shutdown = outer_node_id.clone();
     let outer_attempt_id_for_shutdown = outer_attempt_id.clone();
+    let pid_for_shutdown = project_id.clone();
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -1845,6 +1922,7 @@ pub fn cancel_acp_session(
         spawn_acp_cancel_shutdown(
             app_handle.clone(),
             background_app,
+            pid_for_shutdown,
             task_id_for_shutdown,
             run_id_for_shutdown,
             round_id_for_shutdown,
@@ -1885,6 +1963,7 @@ pub fn cancel_acp_session(
         spawn_acp_cancel_shutdown(
             app_handle.clone(),
             background_app,
+            pid_for_shutdown,
             task_id_for_shutdown,
             run_id_for_shutdown,
             round_id_for_shutdown,
@@ -1907,6 +1986,7 @@ pub fn cancel_acp_session(
     };
     emit_acp_session_update(
         &app_handle,
+        project_id,
         &task_id,
         &run_id,
         &round_id,
@@ -1932,6 +2012,7 @@ pub fn cancel_acp_session(
 #[tauri::command]
 pub async fn get_acp_raw_frames(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -1941,7 +2022,7 @@ pub async fn get_acp_raw_frames(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<AcpRawFramePageVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
@@ -1994,6 +2075,7 @@ pub async fn get_acp_raw_frames(
 #[tauri::command]
 pub fn show_attachment(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -2003,7 +2085,7 @@ pub fn show_attachment(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ContentVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let labels = Translator::new(app.config.desktop_language);
     let content = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (&outer_node_id, &outer_attempt_id)
@@ -2494,6 +2576,7 @@ pub async fn search_tasks(
 pub async fn set_acp_session_model(
     _app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -2503,7 +2586,7 @@ pub async fn set_acp_session_model(
     outer_attempt_id: Option<String>,
     model_id: String,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -2591,6 +2674,7 @@ pub async fn set_acp_session_model(
 pub async fn set_acp_session_permission_mode(
     _app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -2600,7 +2684,7 @@ pub async fn set_acp_session_permission_mode(
     outer_attempt_id: Option<String>,
     permission_mode_id: String,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -2733,6 +2817,7 @@ pub async fn search_acp_sessions(
 #[tauri::command]
 pub fn open_in_file_manager(
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -2741,7 +2826,7 @@ pub fn open_in_file_manager(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     // outer_node_id is the container node (e.g. "ai-dynamic"),
     // node_id is the actual dynamic internal node (e.g. "create-hello-world-python-class").
     let path = match (&outer_node_id, &outer_attempt_id, &node_id, &attempt_id) {

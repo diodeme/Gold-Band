@@ -13,8 +13,8 @@
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
 - AI-DYNAMIC internal worker 的 system prompt 会额外注入”当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。
-- AI-DYNAMIC fanout 可写分支已采用 worktree 隔离协议：proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。
-- 非 git workspace worktree 能力检测：runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），非 git 目录、无 HEAD 提交或 git 不可用时，system prompt 与 proposal repair reference 会注入约束，fanout prompt 禁止模型输出 `worktree`；proposal 校验层对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议使用 `readonly`/`main`；`ensure_dynamic_workspace` 在执行前再做能力检查并返回结构化错误阻断，确保不因模型绕过而执行 git worktree 命令。
+- AI-DYNAMIC fanout 可写分支已采用 worktree 隔离协议：proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；worktree 根目录改为目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>`，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 用户级运行目录叠加仓库长文件名后触发 checkout 路径限制并保证同一 run 内不冲突；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。dynamic run 的 run/graph/node/group/proposal 状态读写已增加 run 级互斥锁，公共 JSON 状态写入改为同目录临时文件原子替换，避免状态推进期间读到半写入 graph 导致 `trailing characters` 等瞬时解析错误。
+- 非 git workspace worktree 能力检测：runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），非 git 目录、无 HEAD 提交或 git 不可用时，system prompt 与 proposal repair reference 会注入约束，fanout prompt 禁止模型输出 `worktree`；proposal 校验层对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议使用 `readonly`/`main`；`ensure_dynamic_workspace` 在执行前再做能力检查，并在创建前清理同名 stale branch 与不完整 worktree 目录，Git 创建失败时保留 stdout/stderr 作为 error-blocked 诊断，确保不因模型绕过或半失败状态而静默污染后续重试。
 - `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、provider/model 需求、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema，并同时用于 prompt、provider output contract、runtime 结构校验与 repair 诊断。
 - proposal repair 已统一使用结构化诊断：JSON Schema 结构错误、serde parse 错误与业务校验错误都会渲染 code、path、actual、expected、allowed values、suggested repair，并附带当前 provider/model、worker profile ID、allowed workflow ID 参考；缺失字段会尽量补细到 `next.merge.task` 这类可执行 JSON path。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
@@ -879,12 +879,13 @@ type WorkspaceMode = 'readonly' | 'worktree' | 'main';
 
 runtime 负责：
 
-- 为 `workspace.mode=worktree` 的分支创建独立 worktree 与稳定 branch
+- 为 `workspace.mode=worktree` 的分支创建独立 worktree 与稳定 branch；worktree 使用目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>`，branch 也使用同一稳定短 id，创建前清理同名 stale branch 和不完整目录
 - 记录 workspace path
 - 把 workspace path 注入 prompt
 - 在 merge 节点输入里列出当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status
 - 让 merge / acceptance 使用 main workspace，普通 fanout 可写分支使用独立 worktree
 - 成功后按策略清理 worktree
+- 对同一 dynamic run 的状态快照读写使用 run 级状态锁；`graph.json` 等 JSON 状态文件通过同目录临时文件原子替换写入，避免并发读写时出现半写入或新旧内容混合
 
 runtime 不负责：
 

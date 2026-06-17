@@ -149,7 +149,7 @@ impl AcpAttemptPaths {
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
-/// First reads `acp.session.json`, then scans `acp.timeline.jsonl` for usage events
+/// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
 pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
     let mut input = 0u64;

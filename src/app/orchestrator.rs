@@ -6660,7 +6660,22 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        let completed_snapshot = completed_node_snapshot(round, &node, 0, 0, 0, 0);
+        // Read real token data from ACP session metadata before building the snapshot
+        let attempt_dir =
+            app.paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+        let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
+        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+            crate::acp::events::read_session_tokens(&session_paths.session);
+
+        let completed_snapshot = completed_node_snapshot(
+            round,
+            &node,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            total_tokens,
+        );
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -6686,10 +6701,7 @@ fn drive_from_node_with_initial_session(
         // Workflow ended — send final metrics for the last completed node
         run.last_executed_node = Some(completed_snapshot.clone());
         if let Some(metrics_cb) = &app.metrics_callback {
-            let attempt_dir =
-                app.paths
-                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-            let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
+            // Re-use token data already read above for completed_node_snapshot
             let metrics_ctx = super::MetricsEventContext {
                 repo_root: app.paths.repo_root.to_string(),
                 task_id: task_id.to_string(),
@@ -6706,10 +6718,10 @@ fn drive_from_node_with_initial_session(
                 agent_type: completed_snapshot.agent_type.clone(),
                 started_at: node.started_at.clone(),
                 finished_at: node.finished_at.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                total_tokens: 0,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                total_tokens,
                 acp_session_path: Some(session_paths.session.to_string()),
                 outcome: Some(completed_snapshot.status.clone()),
             };

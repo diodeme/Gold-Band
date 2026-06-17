@@ -31,15 +31,51 @@ export function missingAcpSessionRetryDelay(attempt: number) {
 
 export interface AcpSessionMetadataInput {
   systemPromptAppend?: string | null;
-  currentModelId?: string | null;
-  currentModeId?: string | null;
+  config?: {
+    currentModelId?: string | null;
+    currentModeId?: string | null;
+    models?: unknown | null;
+    modes?: unknown | null;
+    configOptions?: unknown | null;
+  } | null;
 }
 
 export function hasAcpSessionMetadata(session: AcpSessionMetadataInput | null | undefined): boolean {
   if (!session) return false;
+  return Boolean(session.systemPromptAppend?.trim()) && hasAcpSessionConfigChoices(session.config);
+}
+
+function hasAcpSessionConfigChoices(config: AcpSessionMetadataInput['config']): boolean {
+  if (!config) return false;
+  const hasModelChoices =
+    hasConfigOption(config.models, 'availableModels') ||
+    hasSelectConfigOption(config.configOptions, 'model') ||
+    Boolean(config.currentModelId);
+  const hasModeChoices =
+    hasConfigOption(config.modes, 'availableModes') ||
+    hasSelectConfigOption(config.configOptions, 'mode') ||
+    Boolean(config.currentModeId);
+  return hasModelChoices && hasModeChoices;
+}
+
+function hasConfigOption(value: unknown, key: string): boolean {
   return Boolean(
-    session.systemPromptAppend &&
-    session.currentModelId &&
-    session.currentModeId,
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Array.isArray((value as Record<string, unknown>)[key]) &&
+      ((value as Record<string, unknown>)[key] as unknown[]).length > 0,
+  );
+}
+
+function hasSelectConfigOption(value: unknown, category: string): boolean {
+  return Boolean(
+    Array.isArray(value) &&
+      value.some((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        const option = item as Record<string, unknown>;
+        const matches = option.id === category || option.category === category;
+        return matches && Array.isArray(option.options) && option.options.length > 0;
+      }),
   );
 }

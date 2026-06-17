@@ -3109,7 +3109,13 @@ pub fn dynamic_acp_session_vm(
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    let system_prompt_append = extract_system_prompt_append(&raw_path);
+    let system_prompt_append = session
+        .get("systemPromptAppend")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| extract_system_prompt_append(&raw_path));
     apply_stale_session_completion_fuse_dynamic(
         app,
         task_id,
@@ -3355,7 +3361,13 @@ pub fn acp_session_vm(
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    let system_prompt_append = extract_system_prompt_append(&raw_path);
+    let system_prompt_append = session
+        .get("systemPromptAppend")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| extract_system_prompt_append(&raw_path));
     apply_stale_cancel_fuse(
         app,
         task_id,
@@ -5677,6 +5689,44 @@ mod tests {
         ));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn acp_session_config_preserves_options_without_current_values() {
+        let config = acp_session_config_vm(&json!({
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "options": [
+                        { "value": "default", "name": "Default" },
+                        { "value": "opus", "name": "Opus" }
+                    ]
+                },
+                {
+                    "id": "mode",
+                    "category": "mode",
+                    "type": "select",
+                    "options": [
+                        { "value": "default", "name": "Default" },
+                        { "value": "acceptEdits", "name": "Accept Edits" }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(config.current_model_id.is_none());
+        assert!(config.current_mode_id.is_none());
+        assert_eq!(
+            config
+                .config_options
+                .as_ref()
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
     }
 
     #[test]

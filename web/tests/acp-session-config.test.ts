@@ -66,6 +66,26 @@ describe("ACP session config view model", () => {
     ]);
   });
 
+  it("normalizes options even when current ids are absent", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      configOptions: [
+        {
+          category: "model",
+          options: [{ value: "opus", name: "Opus" }],
+        },
+        {
+          category: "mode",
+          options: [{ value: "default", name: "Default" }],
+        },
+      ],
+    });
+
+    expect(viewModel.currentModelId).toBeNull();
+    expect(viewModel.currentModeId).toBeNull();
+    expect(viewModel.availableModels.map((option) => option.id)).toEqual(["opus"]);
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual(["default"]);
+  });
+
   it("falls back to configOptions and preserves unknown ids", () => {
     const config = baseConfig();
 

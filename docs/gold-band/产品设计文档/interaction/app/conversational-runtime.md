@@ -63,10 +63,11 @@
 
 会话窗口 header 中的模型名称/选择器、权限模式标签和系统提示词按钮依赖于完整的 `AcpSessionVm` 元数据（`config.currentModelId`、`config.currentModeId`、`systemPromptAppend`）。为保证这些信息在实时流式开始后即可见：
 
-- **后端 session-ready 快照**：provider 在 ACP `session/new` 或 `session/load` 完成、session metadata 已写盘（`acp.snapshot.json` 与 `acp.raw.jsonl` 均已可读）之后、`prompt(...)` 开始流式输出之前，通过 `acp_session_update_emitter` 发送完整 `AcpSessionVm`。此时 `extract_system_prompt_append` 可从 raw frame 提取系统提示词，`acp_session_config_vm` 可从 snapshot 提取模型/模式信息。
-- **前端兜底 hydration**：若第一条 live event 到达时 base session 仍缺少系统提示词或模型信息，前端触发一次性 `getAcpSession` 请求从磁盘补充元数据；同一 session identity 不重复请求。
+- **后端 session-ready 快照**：provider 在 ACP `session/new` 或 `session/load` 完成后，必须先把 Gold Band synthetic user prompt 写入 timeline，再写 `acp.snapshot.json` 并通过 `acp_session_update_emitter` 发送完整 `AcpSessionVm`，最后才开始真实 `session/prompt` 流式输出。首个可见 snapshot 必须同时具备 `systemPromptAppend`、模型/权限配置和首个用户消息，避免首屏先渲染 agent thinking。
+- **系统提示词来源**：新 session 的 `systemPromptAppend` 属于 snapshot metadata，`acp.raw.jsonl` 只作为旧历史 session 的 fallback 和协议排障事实源；前端不直接解析 raw 来展示系统提示词。
+- **前端兜底 hydration**：若第一条 live event 到达时 base session 仍缺少系统提示词、配置枚举或首个 Gold Band 用户消息，前端触发短重试 `getAcpSession` 从磁盘补充元数据；同一 session 只有拿到可展示 metadata 后才视为 hydrated。
 - **event-only shell**：`createLiveAcpSessionShell` 只在没有任何 base session 且 runtime 确认为运行中时创建临时渲染壳，不作为稳定元数据来源；壳中不含 system prompt 与 model/config 字段。
-- **session 等价判断**：`sessionsEquivalent` 必须比较 session config 与 adapter 元数据签名，使后端在启动阶段发出的元数据-only session 快照（事件数可能没有变化）能刷新 UI。
+- **session 等价判断**：`sessionsEquivalent` 必须比较 session config 与 adapter 元数据签名，使后端在启动阶段发出的元数据-only session 快照（事件数可能没有变化）能刷新 UI。模型/权限栏只要存在可选项就应展示，不以 `currentModelId/currentModeId` 是否已归一化作为隐藏条件。
 
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史

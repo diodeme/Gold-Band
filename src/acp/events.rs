@@ -37,6 +37,8 @@ pub struct AcpSessionMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt_append: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window_size: Option<u64>,
@@ -660,8 +662,9 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpUiEvent, append_timeline_patch, extract_usage_fields, kind_to_ui_kind,
-        load_timeline_items, permission_request_event, user_prompt_event, write_timeline_items,
+        AcpSessionMetadata, AcpUiEvent, append_timeline_patch, extract_usage_fields,
+        kind_to_ui_kind, load_timeline_items, permission_request_event, user_prompt_event,
+        write_timeline_items,
     };
     use serde_json::json;
 
@@ -794,6 +797,49 @@ mod tests {
     }
 
     // --- existing tests ---
+
+    #[test]
+    fn session_metadata_system_prompt_append_is_optional() {
+        let metadata: AcpSessionMetadata = serde_json::from_value(json!({
+            "adapterId": "npx",
+            "adapterDisplayName": "Claude",
+            "cwd": "C:/tmp/attempt",
+            "status": "running",
+            "restored": false,
+            "stopReason": null,
+            "capabilities": {},
+            "createdAt": "1778771541Z",
+            "updatedAt": "1778771542Z"
+        }))
+        .unwrap();
+
+        assert!(metadata.system_prompt_append.is_none());
+    }
+
+    #[test]
+    fn session_metadata_serializes_system_prompt_append() {
+        let metadata: AcpSessionMetadata = serde_json::from_value(json!({
+            "adapterId": "npx",
+            "adapterDisplayName": "Claude",
+            "cwd": "C:/tmp/attempt",
+            "status": "running",
+            "restored": false,
+            "stopReason": null,
+            "capabilities": {},
+            "systemPromptAppend": "You are Gold Band.",
+            "createdAt": "1778771541Z",
+            "updatedAt": "1778771542Z"
+        }))
+        .unwrap();
+
+        let value = serde_json::to_value(metadata).unwrap();
+        assert_eq!(
+            value
+                .get("systemPromptAppend")
+                .and_then(|value| value.as_str()),
+            Some("You are Gold Band.")
+        );
+    }
 
     #[test]
     fn permission_request_event_preserves_original_request_id_in_raw() {

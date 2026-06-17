@@ -6660,13 +6660,17 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // Read real token data from ACP session metadata before building the snapshot
+        // Read real token data from ACP session metadata before building the snapshot.
+        // Wrapped in catch_unwind so a filesystem or parse failure never blocks the workflow.
         let attempt_dir =
             app.paths
                 .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
         let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
         let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-            crate::acp::events::read_session_tokens(&session_paths.session);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::acp::events::read_session_tokens(&session_paths.session)
+            }))
+            .unwrap_or((0, 0, 0, 0));
 
         let completed_snapshot = completed_node_snapshot(
             round,

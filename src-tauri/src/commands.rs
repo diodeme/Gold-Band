@@ -4,8 +4,8 @@ use gold_band::acp::events::{
     load_timeline_items, permission_decision_event, write_timeline_items,
 };
 use gold_band::acp::permission::{
-    cancel_pending_permission_requests, clear_cancel_request, request_cancel,
-    write_permission_response,
+    PendingPermissionState, cancel_pending_permission_requests, clear_cancel_request,
+    request_cancel, write_permission_response,
 };
 use gold_band::app::{
     App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
@@ -1457,16 +1457,22 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
+        let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
         write_permission_response(
             &attempt_dir,
-            &request_id,
+            &canonical_request_id,
             option_id.clone(),
             false,
             current_timestamp(),
         )
         .map_err(command_error)?;
         let events_path = attempt_dir.join("acp.events.jsonl");
-        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        append_permission_decision_artifacts(
+            &attempt_dir,
+            &events_path,
+            canonical_request_id,
+            option_id,
+        )?;
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -1484,9 +1490,10 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
         write_permission_response(
             &attempt_dir,
-            &request_id,
+            &canonical_request_id,
             option_id.clone(),
             false,
             current_timestamp(),
@@ -1495,7 +1502,12 @@ pub fn respond_acp_permission(
         let events_path =
             app.paths
                 .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        append_permission_decision_artifacts(&attempt_dir, &events_path, request_id, option_id)?;
+        append_permission_decision_artifacts(
+            &attempt_dir,
+            &events_path,
+            canonical_request_id,
+            option_id,
+        )?;
         acp_session_vm(
             &app,
             &task_id,
@@ -1798,6 +1810,26 @@ fn should_append_legacy_permission_event(
     timeline_path: &camino::Utf8Path,
 ) -> bool {
     events_path.exists() && !timeline_path.exists()
+}
+
+fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &str) -> String {
+    let stripped_request_id = strip_permission_display_prefix(request_id);
+    let candidates = [request_id.to_string(), stripped_request_id.clone()];
+    for candidate in candidates {
+        let path = gold_band::acp::permission::pending_permission_file(attempt_dir, &candidate);
+        if let Ok(pending) = read_json::<PendingPermissionState>(&path) {
+            return pending.request_id;
+        }
+    }
+    stripped_request_id
+}
+
+fn strip_permission_display_prefix(request_id: &str) -> String {
+    let mut current = request_id;
+    while let Some(next) = current.strip_prefix("permission-") {
+        current = next;
+    }
+    current.to_string()
 }
 
 fn append_permission_decision_artifacts(
@@ -2831,4 +2863,34 @@ pub fn open_in_file_manager(
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8PathBuf;
+
+    #[test]
+    fn canonical_permission_request_id_maps_display_id_to_pending_file_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-permission-id-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        gold_band::acp::permission::write_pending_permission(
+            &attempt_dir,
+            "0",
+            serde_json::json!({}),
+            "1778771541Z".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            canonical_permission_request_id(&attempt_dir, "permission-permission-0"),
+            "0"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

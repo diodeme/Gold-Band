@@ -36,12 +36,19 @@ export function createAcpSessionConfigViewModel(
     config?.configOptions,
     "mode",
   );
+  const resolvedCurrentModelName = currentModelName ?? (
+    currentModelId ? null : singleOptionName(availableModels)
+  );
+  const resolvedCurrentModeName = currentModeName ?? (
+    currentModeId ? null : singleOptionName(availablePermissionModes)
+  );
+  const resolvedModeLabel = resolvedCurrentModeName ?? currentModeId;
   const viewModel = {
     currentModelId,
-    currentModelName,
+    currentModelName: resolvedCurrentModelName,
     currentModeId,
-    currentModeName,
-    modeLabel: currentModeName ?? currentModeId,
+    currentModeName: resolvedCurrentModeName,
+    modeLabel: resolvedModeLabel,
     availableModels,
     availablePermissionModes,
   };
@@ -94,6 +101,10 @@ function createAcpSessionConfigSignature(
 
 function signatureOption(option: AcpSessionConfigOption) {
   return [option.id, option.name, option.description ?? null];
+}
+
+function singleOptionName(options: AcpSessionConfigOption[]) {
+  return options.length === 1 ? options[0]?.name ?? null : null;
 }
 
 function groupedConfigOptions(

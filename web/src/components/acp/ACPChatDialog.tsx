@@ -106,6 +106,7 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -1318,8 +1319,7 @@ export const ACPChatDialog = forwardRef<
             latest
               ? {
                   systemPromptAppend: latest.systemPromptAppend,
-                  currentModelId: latest.config?.currentModelId,
-                  currentModeId: latest.config?.currentModeId,
+                  config: latest.config,
                 }
               : null,
           );
@@ -1347,12 +1347,14 @@ export const ACPChatDialog = forwardRef<
               .then((updated) => {
                 if (active && sessionRefreshSeqRef.current === refreshSeq) {
                   applySessionUpdate(updated);
+                  if (updated && isAcpInitialSessionReady(updated)) {
+                    hydratedSessionKeysRef.current.add(sessionKey);
+                  }
                 }
               })
               .catch(() => {})
               .finally(() => {
                 hydrationInflightRef.current = false;
-                hydratedSessionKeysRef.current.add(sessionKey);
               });
           }
         } else {
@@ -1368,30 +1370,40 @@ export const ACPChatDialog = forwardRef<
           applySessionUpdate(incoming ?? null);
         }
       });
-      try {
-        const updated = await getAcpSession(
-          projectId,
-          taskId,
-          runId,
-          roundId,
-          nodeId,
-          attemptId,
-          {
-            pageSize: effectiveEventPageSize,
-            eventLimit: effectiveEventPageSize,
-          },
-          latestSessionRef.current,
-          outerNodeId,
-          outerAttemptId,
-        );
-        if (active && sessionRefreshSeqRef.current === refreshSeq)
-          applySessionUpdate(updated);
-      } catch {
-        if (active) applySessionUpdate(latestSessionRef.current);
-      } finally {
-        if (active && sessionRefreshSeqRef.current === refreshSeq)
-          setLoadingInitialSession(false);
+      let retryAttempt = 0;
+      while (true) {
+        try {
+          const updated = await getAcpSession(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            {
+              pageSize: effectiveEventPageSize,
+              eventLimit: effectiveEventPageSize,
+            },
+            latestSessionRef.current,
+            outerNodeId,
+            outerAttemptId,
+          );
+          if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
+            applySessionUpdate(updated);
+            if (isAcpInitialSessionReady(updated) || isSessionTerminalStatus(updated.status)) {
+              break;
+            }
+          }
+        } catch {
+          // provider resolution / IO error — retry may not help but we try once more
+        }
+        const delay = missingAcpSessionRetryDelay(retryAttempt);
+        if (delay === null) break;
+        retryAttempt += 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
+      if (active && sessionRefreshSeqRef.current === refreshSeq)
+        setLoadingInitialSession(false);
     })();
     return () => {
       active = false;
@@ -2557,7 +2569,12 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     [onPermissionModeChange],
   );
 
-  if (!currentModelId && !modeLabel) return null;
+  const modelLabel = currentModelName ?? currentModelId ?? t('conversation.home.selectModel');
+  const permissionModeLabel = modeLabel ?? currentModeId ?? t('acp.permissionMode');
+  const showModels = availableModels.length > 0 || Boolean(currentModelId);
+  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(modeLabel);
+
+  if (!showModels && !showPermissionModes) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
@@ -2567,7 +2584,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             <span className="shrink-0 text-muted-foreground">
               {t('acp.currentModel')}
             </span>
-            <span className="min-w-0 flex-1 truncate text-left">{currentModelName ?? currentModelId}</span>
+            <span className="min-w-0 flex-1 truncate text-left">{modelLabel}</span>
           </SelectTrigger>
           <SelectContent
             side="top"
@@ -2588,20 +2605,20 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             ))}
           </SelectContent>
         </Select>
-      ) : currentModelId ? (
+      ) : showModels ? (
         <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
           <span className="shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
-          <span className="min-w-0 truncate text-foreground">{currentModelName ?? currentModelId}</span>
+          <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
         </Badge>
       ) : null}
-      {modeLabel ? (
+      {showPermissionModes ? (
         availablePermissionModes.length > 1 ? (
           <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
             <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
               <span className="shrink-0 text-muted-foreground">
                 {t('acp.permissionMode')}
               </span>
-              <span className="min-w-0 flex-1 truncate text-left">{currentModeName ?? currentModeId}</span>
+              <span className="min-w-0 flex-1 truncate text-left">{permissionModeLabel}</span>
             </SelectTrigger>
             <SelectContent
               side="top"
@@ -2625,7 +2642,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         ) : (
           <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
-            <span className="min-w-0 truncate text-foreground">{modeLabel}</span>
+            <span className="min-w-0 truncate text-foreground">{permissionModeLabel}</span>
           </Badge>
         )
       ) : null}
@@ -4242,21 +4259,32 @@ function findPlanInterventionOption(request: AcpPermissionRequestVm) {
   );
 }
 
-function pendingPermissionFromEvents(
+export function permissionRequestIdFromEvent(event: AcpUiEventVm) {
+  return canonicalPermissionRequestId(
+    stringValue(rawObject(event.raw)?.requestId) ?? event.id,
+  );
+}
+
+function canonicalPermissionRequestId(value: string) {
+  return value.replace(/^(permission-)+/, "");
+}
+
+export function pendingPermissionFromEvents(
   events: AcpUiEventVm[],
   dismissedIds: Set<string>,
 ) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (
-      event.kind !== "permissionRequest" ||
-      event.status !== "pending" ||
-      dismissedIds.has(event.id)
-    )
+    if (event.kind !== "permissionRequest" || event.status !== "pending")
       continue;
-    const raw = rawObject(event.raw) ?? {};
+    const requestId = permissionRequestIdFromEvent(event);
+    if (dismissedIds.has(requestId)) continue;
+    const raw: Record<string, unknown> = {
+      ...(rawObject(event.raw) ?? {}),
+      requestId,
+    };
     return {
-      requestId: event.id,
+      requestId,
       title: event.title ?? "Permission required",
       toolCallId: event.toolCallId,
       options:
@@ -4726,7 +4754,11 @@ export function limitAcpEvents(
 
 function acpEventKey(event: AcpUiEventVm) {
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
-  return `${attemptId}:${event.kind}:${event.id}`;
+  const eventId =
+    event.kind === "permissionRequest"
+      ? `permission-${permissionRequestIdFromEvent(event)}`
+      : event.id;
+  return `${attemptId}:${event.kind}:${eventId}`;
 }
 
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
@@ -4773,6 +4805,15 @@ function mergeOptimisticSession(
   );
   if (pending.length === 0) return session;
   return { ...session, events: [...session.events, ...pending] };
+}
+
+function isAcpInitialSessionReady(session: AcpSessionVm) {
+  return (
+    hasAcpSessionMetadata({
+      systemPromptAppend: session.systemPromptAppend,
+      config: session.config,
+    }) && session.events.some(isGoldBandUserPrompt)
+  );
 }
 
 function sessionsEquivalent(

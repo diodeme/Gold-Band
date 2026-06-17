@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAcpSessionShellState, shouldCreateLiveAcpSessionShell } from '@/lib/acp-session-shell';
+import { missingAcpSessionRetryDelay, resolveAcpSessionShellState, shouldCreateLiveAcpSessionShell } from '@/lib/acp-session-shell';
 
 describe('shouldCreateLiveAcpSessionShell', () => {
   it('creates a shell when runtime is active even before session payload exists', () => {
@@ -55,5 +55,27 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('missing');
+  });
+});
+
+describe('missingAcpSessionRetryDelay', () => {
+  it('returns a positive delay for the first retry attempt', () => {
+    expect(missingAcpSessionRetryDelay(0)).toBeGreaterThan(0);
+  });
+
+  it('returns null when retry attempts are exhausted', () => {
+    expect(missingAcpSessionRetryDelay(4)).toBeNull();
+  });
+
+  it('returns increasing delays within the retry window', () => {
+    const d0 = missingAcpSessionRetryDelay(0);
+    const d1 = missingAcpSessionRetryDelay(1);
+    const d2 = missingAcpSessionRetryDelay(2);
+    const d3 = missingAcpSessionRetryDelay(3);
+    expect(d0).toBeGreaterThan(0);
+    expect(d1).toBeGreaterThan(d0!);
+    expect(d2).toBeGreaterThan(d1!);
+    expect(d3).toBeGreaterThan(d2!);
+    expect(missingAcpSessionRetryDelay(4)).toBeNull();
   });
 });

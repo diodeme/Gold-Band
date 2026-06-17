@@ -66,7 +66,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 创建新会话时校验：
 - workspace 已选择
 - AUTO 模式：固定策略要求 agent；动态策略要求 bootstrap agent 和至少一个可用 agent；决策指南为空时，每个可用 agent 必须配置模型
-- WORKFLOW 模式：workflow 模板有效
+- WORKFLOW 模式：workflow 模板存在且通过与运行模式管理保存相同的 DSL/Agent/Profile 校验；例如节点权限模式不属于当前 Agent 时必须阻断启动
 - 校验失败时在 composer 下方持续展示错误和修复入口，直到用户重新发送或页面重新加载；不使用短暂消失的顶部 toast 承载阻断错误
 - 工作流模板保存/另存被 DSL 校验或后端校验拦截时，必须在模板编辑区域展示错误原因，不允许表现为按钮无反应
 

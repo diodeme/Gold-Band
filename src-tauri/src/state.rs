@@ -79,7 +79,7 @@ impl DesktopContext {
             .with_acp_session_update(session_update)
     }
 
-    pub fn app_with_metrics(
+    pub fn app_with_acp_live_updates(
         &self,
         live_update: Arc<
             dyn Fn(
@@ -92,14 +92,10 @@ impl DesktopContext {
         session_update: Arc<
             dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
         >,
-        metrics_callback: Arc<
-            dyn Fn(gold_band::app::MetricsEventContext, gold_band::app::MetricsEvent) + Send + Sync,
-        >,
     ) -> App {
         self.app()
             .with_acp_live_update(live_update)
             .with_acp_session_update(session_update)
-            .with_metrics_callback(metrics_callback)
     }
 }
 

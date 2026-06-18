@@ -62,7 +62,7 @@ use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profile
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
-use super::{AcpLiveEventContext, App, is_run_continuable};
+use super::{AcpLiveEventContext, App, WorkflowEvent, is_run_continuable};
 
 struct PreparedRun {
     validated: ValidatedWorkflow,
@@ -1014,10 +1014,7 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
 fn completed_node_snapshot(
     round: &RoundState,
     node: &NodeState,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-    total_tokens: u64,
+    attempt_dir: Option<String>,
 ) -> crate::runtime::LastExecutedNode {
     let status = match node.outcome {
         Some(crate::domain::NodeOutcome::Success) => "SUCCESS",
@@ -1032,6 +1029,7 @@ fn completed_node_snapshot(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .or_else(|| node.resolved_config.get("provider").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
     let seq = round
@@ -1056,10 +1054,7 @@ fn completed_node_snapshot(
         status: status.to_string(),
         started_at: node.started_at.clone(),
         finished_at: node.finished_at.clone(),
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        total_tokens,
+        attempt_dir,
     }
 }
 
@@ -1433,6 +1428,11 @@ struct DynamicExecutionContext<'a> {
     outer_node_id: &'a str,
     outer_attempt_id: &'a str,
     dynamic: &'a AiDynamicNode,
+    // UUIDs from the outer run/round/node — used for metrics reporting
+    task_uuid: Option<&'a str>,
+    run_uuid: Option<&'a str>,
+    round_uuid: Option<&'a str>,
+    outer_node_uuid: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -1902,7 +1902,7 @@ fn dynamic_state_lock_for(
 fn execute_ai_dynamic_node(
     app: &App,
     task_id: &str,
-    run_id: &str,
+    run: &RunState,
     round: &RoundState,
     attempt_id: &str,
     dynamic: &AiDynamicNode,
@@ -1911,11 +1911,15 @@ fn execute_ai_dynamic_node(
     let ctx = DynamicExecutionContext {
         app,
         task_id,
-        run_id,
+        run_id: &run.id,
         round_id: &round.id,
         outer_node_id: &outer_node.node_id,
         outer_attempt_id: attempt_id,
         dynamic,
+        task_uuid: run.task_uuid.as_deref(),
+        run_uuid: run.uuid.as_deref(),
+        round_uuid: round.uuid.as_deref(),
+        outer_node_uuid: outer_node.uuid.as_deref(),
     };
     let mut graph = load_or_create_dynamic_graph(&ctx)?;
     if graph.run.status == DynamicRunStatus::Paused {
@@ -2144,6 +2148,10 @@ fn launch_ready_dynamic_nodes(
         let outer_attempt_id = ctx.outer_attempt_id.to_string();
         let dynamic = ctx.dynamic.clone();
         let tx = tx.clone();
+        let task_uuid = ctx.task_uuid.map(|s| s.to_string());
+        let run_uuid = ctx.run_uuid.map(|s| s.to_string());
+        let round_uuid = ctx.round_uuid.map(|s| s.to_string());
+        let outer_node_uuid = ctx.outer_node_uuid.map(|s| s.to_string());
         thread::spawn(move || {
             let app = background_app;
             let node_id = node_clone.id.clone();
@@ -2157,6 +2165,10 @@ fn launch_ready_dynamic_nodes(
                     &outer_attempt_id,
                     &dynamic,
                     node_clone,
+                    task_uuid.as_deref(),
+                    run_uuid.as_deref(),
+                    round_uuid.as_deref(),
+                    outer_node_uuid.as_deref(),
                 )
             }))
             .unwrap_or_else(|payload| {
@@ -2266,6 +2278,52 @@ fn apply_dynamic_execution_message(
     persist_dynamic_graph(ctx, graph)
 }
 
+fn emit_dynamic_worker_completed(
+    app: &App,
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) {
+    let attempt_dir = app
+        .paths
+        .dynamic_node_attempt_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            &node.id,
+            &dynamic_attempt_id(node),
+        )
+        .to_string();
+
+    let outcome = match node.outcome {
+        Some(NodeOutcome::Success) => "SUCCESS",
+        _ => "FAILED",
+    };
+
+    app.observability_bus
+        .emit(WorkflowEvent::NodeCompleted {
+            task_id: ctx.task_id.to_string(),
+            task_uuid: ctx.task_uuid.map(|s| s.to_string()),
+            run_id: ctx.run_id.to_string(),
+            run_uuid: ctx.run_uuid.map(|s| s.to_string()),
+            round_id: ctx.round_id.to_string(),
+            round_uuid: ctx.round_uuid.map(|s| s.to_string()),
+            node_id: node.id.clone(),
+            node_uuid: None,
+            attempt_id: dynamic_attempt_id(node),
+            repo_root: app.paths.repo_root.to_string(),
+            seq: None,
+            node_name: node.title.clone(),
+            agent_type: node.provider.clone(),
+            started_at: node.started_at.clone().unwrap_or_default(),
+            finished_at: node.finished_at.clone(),
+            outcome: outcome.to_string(),
+            attempt_dir,
+            suppress_sentinel: true,
+        });
+}
+
 fn execute_dynamic_node_job(
     app: &App,
     task_id: &str,
@@ -2275,6 +2333,10 @@ fn execute_dynamic_node_job(
     outer_attempt_id: &str,
     dynamic: &AiDynamicNode,
     node: DynamicNodeState,
+    task_uuid: Option<&str>,
+    run_uuid: Option<&str>,
+    round_uuid: Option<&str>,
+    outer_node_uuid: Option<&str>,
 ) -> Result<DynamicExecutionResult> {
     let dynamic_run_path =
         app.paths
@@ -2298,6 +2360,10 @@ fn execute_dynamic_node_job(
         outer_node_id,
         outer_attempt_id,
         dynamic,
+        task_uuid,
+        run_uuid,
+        round_uuid,
+        outer_node_uuid,
     };
     let index = graph
         .nodes
@@ -2306,7 +2372,8 @@ fn execute_dynamic_node_job(
         .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", node.id))?;
     graph.run = run;
     graph.nodes[index] = node.clone();
-    match node.kind {
+
+    let result = match node.kind {
         DynamicNodeKind::Worker => execute_dynamic_worker(&ctx, &graph, node),
         DynamicNodeKind::WorkflowInvocation => {
             execute_dynamic_workflow_invocation(&ctx, &graph, node)
@@ -2314,7 +2381,15 @@ fn execute_dynamic_node_job(
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
             execute_dynamic_agent_stage(&ctx, &graph, node)
         }
+    }?;
+
+    // Only emit NodeCompleted if the worker reached a terminal state
+    // (not Paused — paused workers will be retried and emit fresh events).
+    if result.node.status != DynamicNodeStatus::Paused {
+        emit_dynamic_worker_completed(app, &ctx, &result.node);
     }
+
+    Ok(result)
 }
 
 fn dynamic_node_continue_ref(
@@ -4900,6 +4975,10 @@ pub(crate) fn build_dynamic_prompt_bundle(
         outer_node_id,
         outer_attempt_id,
         dynamic,
+        task_uuid: None,
+        run_uuid: None,
+        round_uuid: None,
+        outer_node_uuid: None,
     };
     let output_contract = match node.kind {
         DynamicNodeKind::Worker | DynamicNodeKind::WorkflowInvocation => {
@@ -6285,8 +6364,8 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // ── Metrics: notify node started (predecessor + current) ──
-        if let Some(metrics_cb) = &app.metrics_callback {
+        // ── Observability: notify node started ──
+        {
             let seq = round
                 .trace
                 .iter()
@@ -6299,43 +6378,31 @@ fn drive_from_node_with_initial_session(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+                .or_else(|| node.resolved_config.get("provider").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
             let agent_type = node
                 .resolved_config
                 .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let metrics_ctx = super::MetricsEventContext {
-                repo_root: app.paths.repo_root.to_string(),
+            app.observability_bus.emit(super::WorkflowEvent::NodeStarted {
                 task_id: task_id.to_string(),
-                run_id: run.id.clone(),
-                round_id: round.id.clone(),
-                node_id: node.node_id.clone(),
-                attempt_id: node.attempt_id.clone(),
                 task_uuid: run.task_uuid.clone(),
+                run_id: run.id.clone(),
                 run_uuid: run.uuid.clone(),
+                round_id: round.id.clone(),
                 round_uuid: round.uuid.clone(),
+                node_id: node.node_id.clone(),
                 node_uuid: node.uuid.clone(),
+                attempt_id: node.attempt_id.clone(),
+                repo_root: app.paths.repo_root.to_string(),
                 seq,
                 node_name,
                 agent_type,
                 started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                total_tokens: 0,
-                acp_session_path: None,
-                outcome: None,
-            };
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                metrics_cb(
-                    metrics_ctx,
-                    super::MetricsEvent::NodeStarted {
-                        predecessor: run.last_executed_node.clone(),
-                    },
-                );
-            }));
+                attempt_dir: None,
+                predecessor: run.last_executed_node.clone(),
+            });
         }
 
         let current_node_dsl = workflow
@@ -6363,7 +6430,7 @@ fn drive_from_node_with_initial_session(
             NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
                 app,
                 task_id,
-                &run.id,
+                run,
                 round,
                 &current_attempt_id,
                 dynamic,
@@ -6662,27 +6729,13 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // Read real token data from ACP session metadata before building the snapshot.
-        // Wrapped in catch_unwind so a filesystem or parse failure never blocks the workflow.
-        let attempt_dir =
-            app.paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
-        let session_paths = crate::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir);
-        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+        // Build attempt_dir for both snapshot persistence and observability event.
+        let attempt_dir = app
+            .paths
+            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+            .to_string();
 
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::acp::events::read_session_tokens(&session_paths.session)
-        }))
-        .unwrap_or((0, 0, 0, 0));
-
-        let completed_snapshot = completed_node_snapshot(
-            round,
-            &node,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            total_tokens,
-        );
+        let completed_snapshot = completed_node_snapshot(round, &node, Some(attempt_dir.clone()));
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -6705,38 +6758,28 @@ fn drive_from_node_with_initial_session(
             invalid_output_repair_prompts = 0;
             continue;
         }
-        // Workflow ended — send final metrics for the last completed node
+        // Workflow ended — emit completed event for observability subscribers
         run.last_executed_node = Some(completed_snapshot.clone());
-        if let Some(metrics_cb) = &app.metrics_callback {
-            // Re-use token data already read above for completed_node_snapshot
-            let metrics_ctx = super::MetricsEventContext {
-                repo_root: app.paths.repo_root.to_string(),
-                task_id: task_id.to_string(),
-                run_id: run.id.clone(),
-                round_id: round.id.clone(),
-                node_id: node.node_id.clone(),
-                attempt_id: node.attempt_id.clone(),
-                task_uuid: run.task_uuid.clone(),
-                run_uuid: run.uuid.clone(),
-                round_uuid: round.uuid.clone(),
-                node_uuid: node.uuid.clone(),
-                seq: completed_snapshot.seq,
-                node_name: Some(completed_snapshot.node_name.clone()),
-                agent_type: completed_snapshot.agent_type.clone(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                total_tokens,
-                acp_session_path: Some(session_paths.session.to_string()),
-                outcome: Some(completed_snapshot.status.clone()),
-            };
-            // Send with predecessor = this node's final state
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                metrics_cb(metrics_ctx, super::MetricsEvent::NodeCompleted);
-            }));
-        }
+        app.observability_bus.emit(super::WorkflowEvent::NodeCompleted {
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            run_uuid: run.uuid.clone(),
+            round_id: round.id.clone(),
+            round_uuid: round.uuid.clone(),
+            node_id: node.node_id.clone(),
+            node_uuid: node.uuid.clone(),
+            attempt_id: node.attempt_id.clone(),
+            repo_root: app.paths.repo_root.to_string(),
+            seq: completed_snapshot.seq,
+            node_name: completed_snapshot.node_name.clone(),
+            agent_type: completed_snapshot.agent_type.clone(),
+            started_at: node.started_at.clone(),
+            finished_at: node.finished_at.clone(),
+            outcome: completed_snapshot.status.clone(),
+            attempt_dir: attempt_dir.clone(),
+            suppress_sentinel: false,
+        });
         return Ok(());
     }
 }

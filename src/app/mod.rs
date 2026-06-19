@@ -1,5 +1,6 @@
 mod ids;
 mod node_executor;
+mod notification;
 mod orchestrator;
 mod profile_resolver;
 mod profiles;
@@ -7,6 +8,10 @@ mod state_access;
 mod state_factory;
 mod transition_context;
 pub mod observability;
+
+pub use self::notification::{
+    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
+};
 
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
@@ -502,6 +507,8 @@ pub struct App {
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     pub observability_bus: observability::ObservabilityBus,
+    intervention_notifier:
+    Option<Arc<dyn Fn(InterventionNotification) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -696,6 +703,7 @@ impl App {
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
             observability_bus: self.observability_bus.clone(),
+                        intervention_notifier: self.intervention_notifier.clone(),
         }
     }
 
@@ -714,6 +722,16 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
+        self
+    }
+
+    /// 注入干预通知回调。编排器在暂停分支调用 [`App::notify_intervention`] 时触发，
+    /// 由桌面端闭包完成「去重 → OS 通知 → emit」流程（方案 §5.1/§6.3）。
+    pub fn with_intervention_notifier(
+        mut self,
+        notifier: Arc<dyn Fn(InterventionNotification) + Send + Sync>,
+    ) -> Self {
+        self.intervention_notifier = Some(notifier);
         self
     }
 
@@ -740,6 +758,14 @@ impl App {
             session_update(context)?;
         }
         Ok(())
+    }
+
+    /// 触发干预通知回调。无回调时静默跳过（如 CLI 模式无桌面端注入）。
+    /// 由编排器暂停分支 helper 调用（路径 A），桌面端闭包完成去重→OS→emit（方案 §6.3）。
+    pub fn notify_intervention(&self, notification: InterventionNotification) {
+        if let Some(notifier) = &self.intervention_notifier {
+            notifier(notification);
+        }
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -1411,6 +1437,7 @@ impl App {
             acp_live_update: None,
             acp_session_update: None,
             observability_bus: observability::ObservabilityBus::new(),
+            intervention_notifier: None,
         }
     }
 
@@ -1433,6 +1460,7 @@ impl App {
             acp_live_update: None,
             acp_session_update: None,
             observability_bus: observability::ObservabilityBus::new(),
+            intervention_notifier: None,
         }
     }
 
@@ -2839,9 +2867,11 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{AcpLiveEventContext, App};
+    use crate::app::InterventionNotification;
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
+    use crate::domain::PauseReason;
     use crate::observability::touch_log_file_best_effort;
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
@@ -2853,6 +2883,55 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    fn sample_notification() -> InterventionNotification {
+        InterventionNotification::new(
+            "task-1",
+            Some("标题"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "节点",
+            PauseReason::WaitingForUserInput,
+        )
+    }
+
+    #[test]
+    fn intervention_notifier_invoked_and_propagated_to_background() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::new(repo_root)
+            .with_intervention_notifier(Arc::new(move |n| {
+                seen_for_callback.lock().unwrap().push(n.dedup_key.clone());
+            }));
+
+        // 注入后能触发回调。
+        app.notify_intervention(sample_notification());
+        assert_eq!(seen.lock().unwrap().len(), 1);
+
+        // clone_for_background 应传播同一回调（Arc 共享）。
+        let bg = app.clone_for_background();
+        bg.notify_intervention(sample_notification());
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn intervention_notifier_silent_when_absent() {
+        // 未注入回调时静默跳过，不 panic（CLI 模式）。
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let gold_band_home = repo_root.join("gold-band-home");
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        let app = App::new(repo_root);
+        app.notify_intervention(sample_notification());
     }
 
     #[test]

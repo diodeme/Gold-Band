@@ -5,6 +5,7 @@ mod commands;
 mod commands_conversation;
 mod i18n;
 mod metrics;
+mod notifications;
 mod state;
 mod updater;
 mod view_models;

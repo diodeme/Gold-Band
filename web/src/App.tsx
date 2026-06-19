@@ -81,6 +81,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -89,7 +90,9 @@ import type {
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
+  ConversationSessionLeafVm,
   ConversationSessionTreeVm,
+  ConversationTreeNodeVm,
   WorkflowTemplateStore,
   ConversationSidebarVm,
   CreateTaskInput,
@@ -110,6 +113,7 @@ import type {
   UpdaterSettingsVm,
   WorkflowDsl,
   WorkflowVm,
+  InterventionNavigateEventVm,
 } from './types';
 
 const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
@@ -644,6 +648,124 @@ export function App() {
     setRoundSelection({ kind: 'round' });
     pushRoute('task-orchestration', page);
   };
+
+  // 在会话模式 sessionTree 中按 (roundId, nodeId, attemptId) 匹配出叶子（含 outer 字段）。
+  const findSessionLeaf = (
+    tree: ConversationSessionTreeVm | undefined | null,
+    roundId: string,
+    nodeId: string,
+    attemptId: string,
+  ): ConversationSessionLeafVm | null => {
+    if (!tree) return null;
+    const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
+      if (node.nodeId === nodeId) {
+        const hit = node.attempts.find((a) => a.attemptId === attemptId && a.roundId === roundId);
+        if (hit) return hit;
+      }
+      for (const child of node.outerNodes ?? []) {
+        const found = walkNode(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    for (const round of tree.rounds) {
+      for (const node of round.nodes) {
+        const found = walkNode(node);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
+  const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
+    setWorkspacePickerOpen(false);
+    if (uiMode !== 'conversation') {
+      // 工作台模式：定位到 round-detail 并选中节点。
+      setPrimaryModule('task-orchestration');
+      const page: TaskPage = { kind: 'round-detail', taskId: event.taskId, runId: event.runId, roundId: event.roundId };
+      setTaskPage(page);
+      setRoundSelection({ kind: 'node', nodeId: event.nodeId, attemptId: event.attemptId });
+      pushRoute('task-orchestration', page);
+      return;
+    }
+
+    // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
+    const projectId = conversationSidebarRef.current
+      ? Object.entries(conversationSidebarRef.current.tasksByWorkspace)
+          .find(([, tasks]) => tasks.some((task) => task.taskId === event.taskId))
+          ?.[0]
+      : undefined;
+    const targetProjectId = projectId ?? effectiveWorkspaceId;
+    const runPage: ConversationPage = { kind: 'conversation-run', projectId: targetProjectId, taskId: event.taskId, runId: event.runId };
+    setPrimaryModule('task-orchestration');
+    setConversationPage(runPage);
+    pushRoute('task-orchestration', taskPage, runPage);
+
+    let run = conversationRunRef.current
+      && conversationRunRef.current.taskId === event.taskId
+      && conversationRunRef.current.runId === event.runId
+      ? conversationRunRef.current
+      : null;
+    if (!run) {
+      try {
+        const loaded = await getConversationRun(targetProjectId, event.taskId, event.runId, null);
+        applyConversationRunSnapshot(loaded, 'initial-load', { selectedSessionKey: null, preserveSelectedSession: false });
+        run = loaded;
+      } catch {
+        return;
+      }
+    }
+
+    const leaf = findSessionLeaf(run.sessionTree, event.roundId, event.nodeId, event.attemptId);
+    if (!leaf) return;
+    const key = conversationSessionKeyFromParts({
+      roundId: leaf.roundId,
+      nodeId: leaf.nodeId,
+      attemptId: leaf.attemptId,
+      outerNodeId: leaf.outerNodeId,
+      outerAttemptId: leaf.outerAttemptId,
+    });
+    conversationSelectedSessionKeyRef.current = key;
+    updateConversationSessionFollow('manual', key);
+    try {
+      const switched = await switchConversationSession(
+        targetProjectId,
+        event.taskId,
+        event.runId,
+        leaf.roundId,
+        leaf.nodeId,
+        leaf.attemptId,
+        leaf.outerNodeId,
+        leaf.outerAttemptId,
+      );
+      if (conversationSelectedSessionKeyRef.current !== key) return;
+      startTransition(() => {
+        setConversationRun((prev) => {
+          if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
+          const next: ConversationRunVm = {
+            ...prev,
+            selectedSession: switched.selectedSession,
+            artifacts: switched.artifacts,
+            attachments: switched.attachments,
+            sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
+          };
+          conversationRunRef.current = next;
+          return next;
+        });
+      });
+    } catch {
+      // 切换 session 失败时静默：用户已在 run 页面，可手动选择。
+    }
+  }, [
+    uiMode,
+    effectiveWorkspaceId,
+    taskPage,
+    applyConversationRunSnapshot,
+    updateConversationSessionFollow,
+  ]);
+
+  useInterventionNotifications(handleInterventionNavigate);
 
   const runAction = async <T,>(
     action: () => Promise<T>,

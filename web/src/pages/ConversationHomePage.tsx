@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -9,9 +9,10 @@ interface ConversationHomePageProps {
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
+  profiles: ProfileVm[];
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
-  onSubmit: (input: ConversationCreateInput) => void;
+  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -23,6 +24,7 @@ export function ConversationHomePage({
   runMode,
   agentRegistry,
   workflowTemplates,
+  profiles,
   busy,
   onRunModeChange,
   onSubmit,
@@ -46,6 +48,7 @@ export function ConversationHomePage({
           runMode={runMode}
           agentRegistry={agentRegistry}
           workflowTemplates={workflowTemplates}
+          profiles={profiles}
           busy={busy}
           onRunModeChange={onRunModeChange}
           onSubmit={onSubmit}

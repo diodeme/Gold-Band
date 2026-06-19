@@ -453,6 +453,18 @@ export const browserApi: RuntimeApi = {
   openInFileManager(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();
   },
+  // MCP & SKILL stubs
+  listMcpServers() { return Promise.resolve([]); },
+  addMcpServer(_jsonContent: string) { return Promise.resolve([]); },
+  updateMcpServer(_id: string, _jsonContent: string) { return Promise.resolve([]); },
+  deleteMcpServer(_id: string) { return Promise.resolve([]); },
+  toggleMcpServer(_id: string, _enabled: boolean) { return Promise.resolve([]); },
+  checkMcpServerHealth(_id: string) { return Promise.resolve({ status: 'unknown' }); },
+  listSkills() { return Promise.resolve({ global: [], project: [] }); },
+  listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
+  readSkill(_name: string, _source: string) { return Promise.resolve({ meta: { name: '', description: '', source: 'global', directoryPath: '', disableModelInvocation: false, loadWarnings: [] }, body: '' }); },
+  writeSkill(_name: string, _source: string, _content: string) { return Promise.resolve({ global: [], project: [] }); },
+  deleteSkill(_name: string, _source: string) { return Promise.resolve({ global: [], project: [] }); },
 };
 
 function browserProfileId() {

@@ -1048,3 +1048,51 @@ export interface AcpModelVm {
   id: string;
   name: string;
 }
+
+// ── MCP & SKILL types ──
+
+export interface McpServerHealthResult {
+  status: 'healthy' | 'unhealthy' | 'auth_required' | 'unknown';
+  message?: string | null;
+  authUrl?: string | null;
+  needsClientSecret?: boolean | null;
+}
+
+export interface McpServerVm {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: 'stdio' | 'http';
+  command?: string | null;
+  args?: string[] | null;
+  env?: AgentEnvEntryVm[] | null;
+  url?: string | null;
+  headers?: AgentEnvEntryVm[] | null;
+  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null;
+  healthMessage?: string | null;
+}
+
+export interface ToolInfo {
+  name: string;
+  description?: string | null;
+  inputSchema?: Record<string, unknown> | null;
+}
+
+export interface SkillMetaVm {
+  name: string;
+  description: string;
+  source: 'built-in' | 'global' | 'project';
+  directoryPath: string;
+  disableModelInvocation: boolean;
+  loadWarnings: string[];
+}
+
+export interface SkillListVm {
+  global: SkillMetaVm[];
+  project: SkillMetaVm[];
+}
+
+export interface SkillContentVm {
+  meta: SkillMetaVm;
+  body: string;
+}

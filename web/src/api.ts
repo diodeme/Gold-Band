@@ -351,3 +351,49 @@ export function getSupportedAttachmentExtensions() {
 export function openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
+
+// ── MCP & SKILL management ──
+
+export function listMcpServers() {
+  return getRuntimeApi().listMcpServers();
+}
+
+export function addMcpServer(jsonContent: string) {
+  return getRuntimeApi().addMcpServer(jsonContent);
+}
+
+export function updateMcpServer(id: string, jsonContent: string) {
+  return getRuntimeApi().updateMcpServer(id, jsonContent);
+}
+
+export function deleteMcpServer(id: string) {
+  return getRuntimeApi().deleteMcpServer(id);
+}
+
+export function toggleMcpServer(id: string, enabled: boolean) {
+  return getRuntimeApi().toggleMcpServer(id, enabled);
+}
+
+export function checkMcpServerHealth(id: string) {
+  return getRuntimeApi().checkMcpServerHealth(id);
+}
+
+export function listSkills() {
+  return getRuntimeApi().listSkills();
+}
+
+export function listProjectSkills(workspacePath: string) {
+  return getRuntimeApi().listProjectSkills(workspacePath);
+}
+
+export function readSkill(name: string, source: string, workspacePath?: string | null) {
+  return getRuntimeApi().readSkill(name, source, workspacePath);
+}
+
+export function writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
+  return getRuntimeApi().writeSkill(name, source, content, workspacePath, oldName);
+}
+
+export function deleteSkill(name: string, source: string, workspacePath?: string | null) {
+  return getRuntimeApi().deleteSkill(name, source, workspacePath);
+}

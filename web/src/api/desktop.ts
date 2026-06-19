@@ -300,4 +300,38 @@ export const desktopApi: RuntimeApi = {
   openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
+  // ── MCP & SKILL management ──
+  listMcpServers() {
+    return invokeCommand('list_mcp_servers');
+  },
+  addMcpServer(jsonContent: string) {
+    return invokeCommand('add_mcp_server', { jsonContent });
+  },
+  updateMcpServer(id: string, jsonContent: string) {
+    return invokeCommand('update_mcp_server', { id, jsonContent });
+  },
+  deleteMcpServer(id: string) {
+    return invokeCommand('delete_mcp_server', { id });
+  },
+  toggleMcpServer(id: string, enabled: boolean) {
+    return invokeCommand('toggle_mcp_server', { id, enabled });
+  },
+  checkMcpServerHealth(id: string) {
+    return invokeCommand('check_mcp_server_health', { id });
+  },
+  listSkills() {
+    return invokeCommand('list_skills');
+  },
+  listProjectSkills(workspacePath: string) {
+    return invokeCommand('list_project_skills', { workspacePath });
+  },
+  readSkill(name: string, source: string, workspacePath?: string | null) {
+    return invokeCommand('read_skill', { name, source, workspacePath });
+  },
+  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
+    return invokeCommand('write_skill', { name, source, content, workspacePath, oldName });
+  },
+  deleteSkill(name: string, source: string, workspacePath?: string | null) {
+    return invokeCommand('delete_skill', { name, source, workspacePath });
+  },
 };

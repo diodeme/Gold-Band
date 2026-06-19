@@ -1,7 +1,9 @@
+import { validateWorkflowForSave } from '@/components/WorkflowEditor';
 import type {
   AgentRegistryVm,
   ConversationAutoConfigVm,
   ManagedAgentVm,
+  ProfileVm,
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
@@ -57,6 +59,30 @@ export function selectableWorkflowOptions(
         : null;
     return { template, workflowId, selectable: !reason, reason: reason ?? undefined };
   });
+}
+
+export function validateWorkflowTemplateForConversationStart(
+  templateId: string | null | undefined,
+  agentRegistry: AgentRegistryVm | null,
+  profiles: ProfileVm[],
+  workflowTemplates: WorkflowTemplateStore | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string[] {
+  const selectedId = templateId?.trim();
+  if (!selectedId) return [t('conversation.home.selectWorkflowTemplate')];
+  const template = workflowTemplates?.templates.find((item) => item.id === selectedId);
+  if (!template) return [t('conversation.validation.workflow.not-found')];
+  const agents = agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [];
+  const validation = validateWorkflowForSave(
+    template.workflow,
+    profiles,
+    agents,
+    t,
+    workflowTemplates,
+    template.id,
+    template.name,
+  );
+  return validation.valid ? [] : validation.issues.map((issue) => issue.message);
 }
 
 export function validateAutoConfig(

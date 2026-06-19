@@ -28,6 +28,7 @@ pub enum UpdateCheckStatus {
     Idle,
     Checking,
     Available,
+    #[allow(dead_code)]
     Downloading,
     NotAvailable,
     Error,

@@ -13,21 +13,23 @@ mod view_models_conversation;
 
 use anyhow::Context;
 use commands::{
-    cancel_acp_session, check_local_claude, check_update_manual, choose_workspace, continue_run,
-    create_agent, create_profile, create_task, delete_agent, delete_auto_template, delete_profile,
-    delete_workflow_template, dismiss_update_announcement, doctor_agent,
-    download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
-    get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
-    get_profiles, get_round_detail, get_run_detail, get_system_fonts, get_task_detail,
-    get_task_list, get_update_status, get_workflow, get_workflow_templates, kill_run,
-    mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
-    replace_auto_templates, respond_acp_permission, retry_run, save_auto_template,
-    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
-    select_recent_workspace, send_acp_prompt, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
-    stop_active_session, submit_manual_check, update_agent, update_auto_template, update_profile,
-    update_workflow_template,
+    add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
+check_update_manual, choose_workspace, continue_run, create_agent, create_profile, create_task,
+delete_agent, delete_auto_template, delete_mcp_server, delete_profile, delete_skill,
+delete_workflow_template, dismiss_update_announcement, doctor_agent,
+download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
+get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
+get_profiles, get_round_detail, get_run_detail, get_system_fonts,
+get_task_detail, get_task_list, get_update_status, get_workflow, get_workflow_templates,
+kill_run, list_mcp_servers, list_project_skills, list_skills,
+mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
+read_skill, replace_auto_templates, respond_acp_permission, retry_run, save_auto_template,
+save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
+save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+select_recent_workspace, send_acp_prompt, set_acp_session_model,
+set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
+stop_active_session, submit_manual_check, toggle_mcp_server, update_agent, update_auto_template,
+update_mcp_server, update_profile, update_workflow_template, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
@@ -202,6 +204,18 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            // MCP & SKILL management
+            list_mcp_servers,
+            add_mcp_server,
+            update_mcp_server,
+            delete_mcp_server,
+            toggle_mcp_server,
+            check_mcp_server_health,
+            list_skills,
+            list_project_skills,
+            read_skill,
+            write_skill,
+            delete_skill,
         ])
         .run(tauri::generate_context!())
         .context("tauri runtime failed")?;

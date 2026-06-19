@@ -49,6 +49,7 @@
 - proposal 的业务校验会尽可能聚合错误，而不是命中第一条就返回。典型错误包括 profile 不存在、provider 不可用、fanout 超出 `maxFanout`、group depth 超出 `maxGroupDepth`、workflowId 不在 allowed snapshot、merge/acceptance spec 不完整等。
 - rejected proposal 不再只保存字符串错误，而是保存结构化错误对象：至少包含 `code`、`message`、`params`，并可携带 `path / actual / expected / allowedValues / suggestion`。其中 `code` 用于稳定识别错误类型，`path` 指向 proposal JSON 路径，`params` 提供 nodeId / field / profile / provider / limit / actual 等上下文字段，便于后续 UI、日志和 prompt 复用。
 - 外层 edge 仍然只消费 `ai-dynamic` 的最终 `success / failure / killed` outcome；若内部 dynamic worker、merge/acceptance 节点或 `workflow-invocation` child run 进入暂停，外层 `ai-dynamic` node 也以复合节点形式暂停，并在继续时由 runtime 委托内部 paused node 或 `childRunId` 从自身断点恢复。
+- Round 详情运行态主图内联展示 AI-DYNAMIC 内部节点时，外层 workflow 的后续边仍按 `ai-dynamic` 最终 outcome 前进，但可视化连接端点必须落到内部 dynamic graph 的出口节点，而不是复合节点占位。出口节点按内部图真实边语义计算：显式 `dependsOn`、`sessionMode=continue` 和 runtime 由 `chainId/depth` 派生的隐式成功边都会让上游节点不再视为出口；当前 V1 常见为单出口，后续允许多个无下游出口同时连接到外层后继节点。
 - 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 killed；应用关闭则递归把这些活跃资源收敛到 `ProcessInterrupted` paused，供后续 continue 恢复。
 
 ## 4. 内部控制 artifact

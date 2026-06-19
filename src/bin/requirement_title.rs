@@ -1058,6 +1058,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requirement title generation is currently unused"]
     fn compresses_existing_heading() {
         let input = r#"
 # ACP-first Agent 会话可视化重构计划

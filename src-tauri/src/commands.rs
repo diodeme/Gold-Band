@@ -47,11 +47,13 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
-    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, PreferencesVm,
-    RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm,
-    UpdateBadgeStateVm, WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
-    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, preferences_vm, round_detail_vm,
-    run_detail_vm, run_summary_vm, task_detail_vm, task_list_vm, workflow_vm,
+    AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
+    PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
+    SkillListVm, SkillMetaVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
+    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
+    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
+    round_detail_vm, run_detail_vm, run_summary_vm, skill_content_vm, skill_list_vm,
+    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -157,13 +159,15 @@ fn resolve_command_app_with_emitters(
     let (base_app, _) = resolve_workspace_app(context, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     let bg_app = base_app.clone_for_background();
-    Ok(base_app
+    let app = base_app
         .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
-        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle.clone()))
         .with_intervention_notifier(crate::notifications::create_intervention_notifier(
-            app_handle.clone(),
-        )))
+                    app_handle.clone(),
+                ));
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    Ok(app)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -691,12 +695,13 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
+    let app = context.app_with_acp_live_updates(
         &app_handle,
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle.clone()),
     );
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -816,12 +821,13 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
+    let app = context.app_with_acp_live_updates(
         &app_handle,
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle.clone()),
     );
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1320,6 +1326,7 @@ pub async fn send_acp_prompt(
                     );
                     Ok(())
                 }),
+                &app.acp_mcp_servers().unwrap_or_else(|e| { eprintln!("WARN: failed to load MCP servers for ACP session: {e}"); Vec::new() }),
                 None, // session_update
             )
             .map_err(command_error)?;
@@ -1433,6 +1440,7 @@ pub async fn send_acp_prompt(
                 );
                 Ok(())
             }),
+            &app.acp_mcp_servers().unwrap_or_else(|e| { eprintln!("WARN: failed to load MCP servers for ACP session: {e}"); Vec::new() }),
             None, // session_update
         )
         .map_err(command_error)?;
@@ -2912,6 +2920,186 @@ pub fn open_in_file_manager(
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
+}
+
+// ── MCP Server Commands ──
+
+#[tauri::command]
+pub fn list_mcp_servers(state: State<'_, DesktopState>) -> CommandResult<Vec<McpServerVm>> {
+    let app = state.app().map_err(command_error)?;
+    Ok(mcp_server_list_vm(&app.list_mcp_servers().map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn add_mcp_server(
+    state: State<'_, DesktopState>,
+    json_content: String,
+) -> CommandResult<Vec<McpServerVm>> {
+    let app = state.app().map_err(command_error)?;
+    Ok(mcp_server_list_vm(&app.add_mcp_server(&json_content).map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn update_mcp_server(
+    state: State<'_, DesktopState>,
+    id: String,
+    json_content: String,
+) -> CommandResult<Vec<McpServerVm>> {
+    let app = state.app().map_err(command_error)?;
+    Ok(mcp_server_list_vm(&app.update_mcp_server(&id, &json_content).map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn delete_mcp_server(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<Vec<McpServerVm>> {
+    let app = state.app().map_err(command_error)?;
+    Ok(mcp_server_list_vm(&app.delete_mcp_server(&id).map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn toggle_mcp_server(
+    state: State<'_, DesktopState>,
+    id: String,
+    enabled: bool,
+) -> CommandResult<Vec<McpServerVm>> {
+    let app = state.app().map_err(command_error)?;
+    Ok(mcp_server_list_vm(&app.toggle_mcp_server(&id, enabled).map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn check_mcp_server_health(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<gold_band::config::McpServerHealthResult> {
+    let app = state.app().map_err(command_error)?;
+    app.check_mcp_server_health(&id).map_err(command_error)
+}
+
+// ── SKILL Commands ──
+
+#[tauri::command]
+pub fn list_skills(state: State<'_, DesktopState>) -> CommandResult<SkillListVm> {
+    let app = state.app().map_err(command_error)?;
+    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn list_project_skills(
+    state: State<'_, DesktopState>,
+    workspace_path: String,
+) -> CommandResult<Vec<SkillMetaVm>> {
+    let app = state.app().map_err(command_error)?;
+    let manager = app.skill_manager();
+    let skills = manager.list_by_workspace(&workspace_path).map_err(command_error)?;
+    Ok(skills.iter().map(|s| skill_meta_vm(s)).collect())
+}
+
+#[tauri::command]
+pub fn read_skill(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    workspace_path: Option<String>,
+) -> CommandResult<SkillContentVm> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+    if let Some(ref ws_path) = workspace_path {
+        if skill_source == gold_band::config::SkillSource::Project {
+            let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path);
+            let skill_path = dir.join(&name).join(gold_band::config::SKILL_FILE_NAME);
+            let raw = std::fs::read_to_string(&skill_path).map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            let (meta, body) = gold_band::skill::parse_skill_md_public(&raw, &name, skill_source, skill_path.as_str());
+            return Ok(skill_content_vm(&gold_band::skill::SkillContent { meta, body }));
+        }
+    }
+    Ok(skill_content_vm(&app.read_skill(&name, skill_source).map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn write_skill(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    content: String,
+    workspace_path: Option<String>,
+    old_name: Option<String>,
+) -> CommandResult<SkillListVm> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+
+    // 写入新 SKILL
+    if let Some(ref ws_path) = workspace_path {
+        if skill_source == gold_band::config::SkillSource::Project {
+            app.skill_manager().write_to_workspace(&name, ws_path, &content).map_err(command_error)?;
+        } else {
+            app.write_skill(&name, skill_source, &content).map_err(command_error)?;
+        }
+    } else {
+        app.write_skill(&name, skill_source, &content).map_err(command_error)?;
+    }
+
+    // 同步 symlink 到 .claude/skills/
+    app.sync_skill_symlinks(workspace_path.as_deref());
+
+    // 如果改名了，删除旧 SKILL
+    if let Some(old) = old_name {
+        if old != name {
+            if let Some(ref ws_path) = workspace_path {
+                if skill_source == gold_band::config::SkillSource::Project {
+                    let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path).join(&old);
+                    if dir.exists() {
+                        let _ = std::fs::remove_dir_all(dir.as_std_path());
+                    }
+                }
+            } else {
+                let _ = app.delete_skill(&old, skill_source);
+            }
+            // 改名后旧目录已删，再次 sync 清理旧名 symlink
+            app.sync_skill_symlinks(workspace_path.as_deref());
+        }
+    }
+
+    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn delete_skill(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    workspace_path: Option<String>,
+) -> CommandResult<SkillListVm> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+    if let Some(ref ws_path) = workspace_path {
+        if skill_source == gold_band::config::SkillSource::Project {
+            let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path);
+            let skill_dir = dir.join(&name);
+            if !skill_dir.exists() {
+                return Err(command_error(anyhow::anyhow!("SKILL `{name}` not found")));
+            }
+            std::fs::remove_dir_all(skill_dir.as_std_path()).map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            app.sync_skill_symlinks(workspace_path.as_deref());
+            return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
+        }
+    }
+    app.delete_skill(&name, skill_source).map_err(command_error)?;
+    app.sync_skill_symlinks(workspace_path.as_deref());
+    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, CommandErrorVm> {
+    match source {
+        "global" => Ok(gold_band::config::SkillSource::Global),
+        "project" => Ok(gold_band::config::SkillSource::Project),
+        "built-in" => Ok(gold_band::config::SkillSource::BuiltIn),
+        _ => Err(CommandErrorVm::new(
+            "skill.invalid-source",
+            serde_json::json!({ "source": source }),
+        )),
+    }
 }
 
 #[cfg(test)]

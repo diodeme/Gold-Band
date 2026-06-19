@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
-use gold_band::app::{MetricsEvent, MetricsEventContext};
+use gold_band::app::WorkflowEvent;
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -72,17 +72,6 @@ fn to_iso8601(ts: &str) -> String {
     } else {
         ts.to_string()
     }
-}
-
-fn read_tokens_best_effort(session_path: Option<String>) -> (u64, u64, u64, u64) {
-    let Some(session_path) = session_path else {
-        return (0, 0, 0, 0);
-    };
-    let session_path = Utf8PathBuf::from(session_path);
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        gold_band::acp::events::read_session_tokens(&session_path)
-    }))
-    .unwrap_or((0, 0, 0, 0))
 }
 
 // ── Settings VM ──────────────────────────────────────────────────────────────
@@ -366,61 +355,79 @@ pub fn start_sentinel_metric(
 
 // ── Orchestrator Callback ────────────────────────────────────────────────────
 
-/// Create a metrics callback that can be passed to `App::with_metrics_callback`.
-/// This bridges the library-crate orchestrator events to the src-tauri metrics module.
-pub fn create_metrics_callback<R: Runtime>(
+/// Create a metrics subscriber for the ObservabilityBus.
+/// Replaces the old `create_metrics_callback`.
+///
+/// The subscriber is called **synchronously** by the bus, so it does the
+/// minimum work needed (settings lookup, token read, metric construction)
+/// and then delegates the HTTP request to `tauri::async_runtime::spawn`.
+pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
-) -> Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync> {
-    Arc::new(move |ctx: MetricsEventContext, event: MetricsEvent| {
+) -> Arc<dyn Fn(WorkflowEvent) + Send + Sync> {
+    Arc::new(move |event: WorkflowEvent| {
+        // ── Guard: settings check (shared by both branches) ──
+        let settings = match app.try_state::<DesktopState>() {
+            Some(state) => match state.context() {
+                Ok(ctx) => metrics_settings(&ctx.config),
+                Err(_) => return,
+            },
+            None => return,
+        };
+        if !settings.enabled {
+            return;
+        }
+        let node_metrics_endpoint = match &settings.node_metrics_endpoint {
+            Some(ep) => ep.clone(),
+            None => return,
+        };
+        let api_key = match app.try_state::<DesktopState>() {
+            Some(state) => match state.context() {
+                Ok(ctx) => match get_api_key(&ctx.config) {
+                    Some(k) => k,
+                    None => return,
+                },
+                Err(_) => return,
+            },
+            None => return,
+        };
+
+        let user_id = get_system_username();
+        let reported_at = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+
         match event {
-            MetricsEvent::NodeStarted { predecessor } => {
+            WorkflowEvent::NodeStarted {
+                repo_root,
+                task_id,
+                task_uuid,
+                run_id,
+                run_uuid,
+                round_id,
+                round_uuid,
+                node_id,
+                node_uuid,
+                attempt_id,
+                seq,
+                node_name,
+                agent_type,
+                started_at,
+                predecessor,
+                ..
+            } => {
                 metrics_log(&format!(
                     "[node-metrics] NodeStarted task={} run={} node={} has_predecessor={}",
-                    ctx.task_id,
-                    ctx.run_id,
-                    ctx.node_id,
+                    task_id,
+                    run_id,
+                    node_id,
                     predecessor.is_some()
                 ));
-                let settings = if let Some(state) = app.try_state::<DesktopState>() {
-                    if let Ok(desktop_ctx) = state.context() {
-                        metrics_settings(&desktop_ctx.config)
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                };
 
-                if !settings.enabled {
-                    return;
-                }
-                let node_metrics_endpoint = match &settings.node_metrics_endpoint {
-                    Some(ep) => ep.clone(),
-                    None => return,
-                };
-                let api_key = if let Some(state) = app.try_state::<DesktopState>() {
-                    if let Ok(desktop_ctx) = state.context() {
-                        match get_api_key(&desktop_ctx.config) {
-                            Some(k) => k,
-                            None => return,
-                        }
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                };
-
-                let user_id = get_system_username();
-                let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-
-                // Determine reentrancy: parse attempt number from attempt_id
-                let attempt_count = ctx
-                    .attempt_id
+                let attempt_count = attempt_id
                     .strip_prefix("attempt-")
                     .and_then(|n| n.parse::<u32>().ok())
                     .unwrap_or(0)
-                    .saturating_sub(1); // attempt-001 → 0, attempt-002 → 1
+                    .saturating_sub(1);
 
                 let node_status = if attempt_count > 0 {
                     "Reentrancy".to_string()
@@ -428,19 +435,65 @@ pub fn create_metrics_callback<R: Runtime>(
                     "RUNNING".to_string()
                 };
 
-                // Build current node metric (use UUIDs for IDs)
+                // ── Build predecessor metric ──
+                let predecessor_item = match &predecessor {
+                    Some(pred) => {
+                        // Read predecessor tokens from ITS attempt_dir
+                        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+                            pred.attempt_dir.as_ref().map(|d| {
+                                let path =
+                                    Utf8PathBuf::from(d).join("acp.session.json");
+                                gold_band::acp::events::read_session_tokens(&path)
+                            }).unwrap_or((0, 0, 0, 0));
+
+                        NodeMetricItem {
+                            workspace: repo_root.clone(),
+                            user_id: user_id.clone(),
+                            task_id: task_uuid.clone().unwrap_or(task_id.clone()),
+                            run_id: run_uuid.clone().unwrap_or(run_id.clone()),
+                            round_id: pred.round_uuid.clone(),
+                            node_id: pred.uuid.clone(),
+                            seq: pred.seq,
+                            node_name: Some(pred.node_name.clone()),
+                            agent_type: pred.agent_type.clone(),
+                            attempt_count: 0,
+                            started_at: Some(to_iso8601(&pred.started_at)),
+                            ended_at: pred
+                                .finished_at
+                                .as_ref()
+                                .map(|s| to_iso8601(s)),
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens,
+                            total_tokens,
+                            status: pred.status.clone(),
+                            reported_at: Some(reported_at.clone()),
+                        }
+                    }
+                    None => start_sentinel_metric(
+                        &repo_root,
+                        &user_id,
+                        &task_uuid.clone().unwrap_or(task_id.clone()),
+                        &run_uuid.clone().unwrap_or(run_id.clone()),
+                        &round_uuid.clone().unwrap_or(round_id.clone()),
+                        &to_iso8601(&started_at),
+                        &reported_at,
+                    ),
+                };
+
+                // ── Build current node metric (token=0 — hasn't executed yet) ──
                 let current = NodeMetricItem {
-                    workspace: ctx.repo_root.clone(),
+                    workspace: repo_root.clone(),
                     user_id: user_id.clone(),
-                    task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                    run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                    round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
-                    node_id: ctx.node_uuid.clone().unwrap_or(ctx.node_id.clone()),
-                    seq: ctx.seq,
-                    node_name: ctx.node_name.clone(),
-                    agent_type: ctx.agent_type.clone(),
+                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
+                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
+                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
+                    node_id: node_uuid.clone().unwrap_or(node_id.clone()),
+                    seq,
+                    node_name: node_name.clone(),
+                    agent_type: agent_type.clone(),
                     attempt_count,
-                    started_at: Some(to_iso8601(&ctx.started_at)),
+                    started_at: Some(to_iso8601(&started_at)),
                     ended_at: None,
                     input_tokens: 0,
                     output_tokens: 0,
@@ -448,39 +501,6 @@ pub fn create_metrics_callback<R: Runtime>(
                     total_tokens: 0,
                     status: node_status,
                     reported_at: Some(reported_at.clone()),
-                };
-
-                // Build predecessor metric
-                let predecessor_item = match &predecessor {
-                    Some(pred) => NodeMetricItem {
-                        workspace: ctx.repo_root.clone(),
-                        user_id: user_id.clone(),
-                        task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                        run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                        round_id: pred.round_uuid.clone(),
-                        node_id: pred.uuid.clone(),
-                        seq: pred.seq,
-                        node_name: Some(pred.node_name.clone()),
-                        agent_type: pred.agent_type.clone(),
-                        attempt_count: 0,
-                        started_at: Some(to_iso8601(&pred.started_at)),
-                        ended_at: pred.finished_at.as_ref().map(|s| to_iso8601(s)),
-                        input_tokens: pred.input_tokens,
-                        output_tokens: pred.output_tokens,
-                        cache_read_tokens: pred.cache_read_tokens,
-                        total_tokens: pred.total_tokens,
-                        status: pred.status.clone(),
-                        reported_at: Some(reported_at.clone()),
-                    },
-                    None => start_sentinel_metric(
-                        &ctx.repo_root,
-                        &user_id,
-                        &current.task_id,
-                        &current.run_id,
-                        &current.round_id,
-                        &to_iso8601(&ctx.started_at),
-                        &reported_at,
-                    ),
                 };
 
                 let batch = NodeMetricBatch {
@@ -501,108 +521,99 @@ pub fn create_metrics_callback<R: Runtime>(
                         .map(|m| m.status.as_str())
                         .unwrap_or("?")
                 ));
-                // Fire-and-forget: spawn async task
+
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     send_node_metrics_batch(&node_metrics_endpoint, &api_key, batch).await;
-                    let _ = app_handle; // keep handle alive
+                    let _ = app_handle;
                 });
             }
-            MetricsEvent::NodeCompleted => {
-                // Workflow ended — send last completed node + end sentinel.
+
+            WorkflowEvent::NodeCompleted {
+                repo_root,
+                task_id,
+                task_uuid,
+                run_id,
+                run_uuid,
+                round_id,
+                round_uuid,
+                node_id,
+                node_uuid,
+                seq,
+                node_name,
+                agent_type,
+                started_at,
+                finished_at,
+                outcome,
+                attempt_dir,
+                suppress_sentinel,
+                ..
+            } => {
                 metrics_log(&format!(
                     "[node-metrics] WorkflowEnded: task={} run={} node={}",
-                    ctx.task_id, ctx.run_id, ctx.node_id
+                    task_id, run_id, node_id
                 ));
-                let settings = if let Some(state) = app.try_state::<DesktopState>() {
-                    if let Ok(desktop_ctx) = state.context() {
-                        metrics_settings(&desktop_ctx.config)
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
+
+                // Read tokens from this node's attempt_dir
+                let path = Utf8PathBuf::from(&attempt_dir).join("acp.session.json");
+                let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
+                    gold_band::acp::events::read_session_tokens(&path);
+
+                let last_node = NodeMetricItem {
+                    workspace: repo_root.clone(),
+                    user_id: user_id.clone(),
+                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
+                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
+                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
+                    node_id: node_uuid.clone().unwrap_or(node_id.clone()),
+                    seq,
+                    node_name: Some(node_name.clone()),
+                    agent_type: agent_type.clone(),
+                    attempt_count: 0,
+                    started_at: Some(to_iso8601(&started_at)),
+                    ended_at: finished_at.as_ref().map(|s| to_iso8601(s)),
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    total_tokens,
+                    status: outcome.clone(),
+                    reported_at: Some(reported_at.clone()),
                 };
 
-                if !settings.enabled {
-                    return;
+                let end_started = finished_at
+                    .as_ref()
+                    .map(|s| to_iso8601(s))
+                    .unwrap_or_else(|| reported_at.clone());
+
+                let end_sentinel = NodeMetricItem {
+                    workspace: repo_root.clone(),
+                    user_id: user_id.clone(),
+                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
+                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
+                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
+                    node_id: uuid::Uuid::new_v4().simple().to_string(),
+                    seq: None,
+                    node_name: Some("结束".to_string()),
+                    agent_type: None,
+                    attempt_count: 0,
+                    started_at: Some(end_started),
+                    ended_at: Some(reported_at.clone()),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    total_tokens: 0,
+                    status: outcome,
+                    reported_at: Some(reported_at.clone()),
+                };
+
+                let mut metrics = vec![last_node];
+                if !suppress_sentinel {
+                    metrics.push(end_sentinel);
                 }
-                let node_metrics_endpoint = match &settings.node_metrics_endpoint {
-                    Some(ep) => ep.clone(),
-                    None => return,
-                };
-                let api_key = if let Some(state) = app.try_state::<DesktopState>() {
-                    if let Ok(desktop_ctx) = state.context() {
-                        match get_api_key(&desktop_ctx.config) {
-                            Some(k) => k,
-                            None => return,
-                        }
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                };
+                let batch = NodeMetricBatch { metrics };
 
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let user_id = get_system_username();
-                    let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-                    let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                        read_tokens_best_effort(ctx.acp_session_path.clone());
-
-                    // Last completed node — use actual outcome from orchestrator
-                    let last_node_status =
-                        ctx.outcome.clone().unwrap_or_else(|| "SUCCESS".to_string());
-                    let last_node = NodeMetricItem {
-                        workspace: ctx.repo_root.clone(),
-                        user_id: user_id.clone(),
-                        task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                        run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                        round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
-                        node_id: ctx.node_uuid.clone().unwrap_or(ctx.node_id.clone()),
-                        seq: ctx.seq,
-                        node_name: ctx.node_name.clone(),
-                        agent_type: ctx.agent_type.clone(),
-                        attempt_count: 0,
-                        started_at: Some(to_iso8601(&ctx.started_at)),
-                        ended_at: ctx.finished_at.as_ref().map(|s| to_iso8601(s)),
-                        input_tokens,
-                        output_tokens,
-                        cache_read_tokens,
-                        total_tokens,
-                        status: last_node_status.clone(),
-                        reported_at: Some(reported_at.clone()),
-                    };
-                    let end_started = ctx
-                        .finished_at
-                        .as_ref()
-                        .map(|s| to_iso8601(s))
-                        .unwrap_or_else(|| reported_at.clone());
-                    // End sentinel inherits the last node's outcome
-                    let end_sentinel = NodeMetricItem {
-                        workspace: ctx.repo_root.clone(),
-                        user_id: user_id.clone(),
-                        task_id: ctx.task_uuid.clone().unwrap_or(ctx.task_id.clone()),
-                        run_id: ctx.run_uuid.clone().unwrap_or(ctx.run_id.clone()),
-                        round_id: ctx.round_uuid.clone().unwrap_or(ctx.round_id.clone()),
-                        node_id: uuid::Uuid::new_v4().simple().to_string(),
-                        seq: None,
-                        node_name: Some("结束".to_string()),
-                        agent_type: None,
-                        attempt_count: 0,
-                        started_at: Some(end_started),
-                        ended_at: Some(reported_at.clone()),
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_read_tokens: 0,
-                        total_tokens: 0,
-                        status: last_node_status,
-                        reported_at: Some(reported_at.clone()),
-                    };
-                    let batch = NodeMetricBatch {
-                        metrics: vec![last_node, end_sentinel],
-                    };
                     send_node_metrics_batch(&node_metrics_endpoint, &api_key, batch).await;
                     let _ = app_handle;
                 });

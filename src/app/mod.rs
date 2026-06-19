@@ -7,6 +7,7 @@ mod profiles;
 mod state_access;
 mod state_factory;
 mod transition_context;
+pub mod observability;
 
 pub use self::notification::{
     InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
@@ -17,8 +18,10 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+    ManagedAgentType, McpServerConfig, McpServerHealthResult, RuntimeConfig, RuntimeLogLevel,
+    SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
+use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
@@ -427,46 +430,70 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
-/// Context provided to the metrics callback when a node starts or completes execution.
+/// Workflow lifecycle events emitted by the orchestrator via ObservabilityBus.
+/// Subscribers (metrics, tracing, audit, etc.) observe these events without
+/// the orchestrator knowing who is listening.
+///
+/// Each event is self-contained — it carries all IDs, metadata, and
+/// filesystem paths a subscriber needs.
+///
+/// Token counts (input/output/cache/total) are NOT included. Subscribers read
+/// token data themselves from `attempt_dir/acp.snapshot.json`.
 #[derive(Debug, Clone)]
-pub struct MetricsEventContext {
-    pub repo_root: String,
-    // Display IDs
-    pub task_id: String,
-    pub run_id: String,
-    pub round_id: String,
-    pub node_id: String,
-    pub attempt_id: String,
-    // UUIDs (for metrics reporting)
-    pub task_uuid: Option<String>,
-    pub run_uuid: Option<String>,
-    pub round_uuid: Option<String>,
-    pub node_uuid: Option<String>,
-    // Node metadata
-    pub seq: Option<u32>,
-    pub node_name: Option<String>,
-    pub agent_type: Option<String>,
-    pub started_at: String,
-    pub finished_at: Option<String>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub total_tokens: u64,
-    pub acp_session_path: Option<String>,
-    // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
-    // Used by NodeCompleted to report the real status instead of hardcoding.
-    pub outcome: Option<String>,
-}
-
-/// Event types emitted by the orchestrator for metrics reporting.
-#[derive(Debug, Clone)]
-pub enum MetricsEvent {
-    /// A node has started executing. Includes the predecessor node's last-executed data if available.
+pub enum WorkflowEvent {
+    /// A node has started executing. The orchestrator is about to invoke the
+    /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
+        // ── IDs (display + UUID) ──
+        task_id: String,
+        task_uuid: Option<String>,
+        run_id: String,
+        run_uuid: Option<String>,
+        round_id: String,
+        round_uuid: Option<String>,
+        node_id: String,
+        node_uuid: Option<String>,
+        attempt_id: String,
+        // ── Metadata ──
+        repo_root: String,
+        seq: Option<u32>,
+        node_name: Option<String>,
+        agent_type: Option<String>,
+        started_at: String,
+        /// Path to the current node's attempt directory. `None` because the
+        /// node just started — attempt dir hasn't been populated yet.
+        attempt_dir: Option<String>,
+        /// The immediately preceding node in this run (None for first node).
         predecessor: Option<crate::runtime::LastExecutedNode>,
     },
-    /// A node has completed execution. The orchestrator updates `run.last_executed_node`.
-    NodeCompleted,
+    /// A node has completed execution (the AI provider returned). The
+    /// orchestrator has already persisted runtime state.
+    NodeCompleted {
+        // ── IDs (display + UUID) ──
+        task_id: String,
+        task_uuid: Option<String>,
+        run_id: String,
+        run_uuid: Option<String>,
+        round_id: String,
+        round_uuid: Option<String>,
+        node_id: String,
+        node_uuid: Option<String>,
+        attempt_id: String,
+        // ── Metadata ──
+        repo_root: String,
+        seq: Option<u32>,
+        node_name: String,
+        agent_type: Option<String>,
+        started_at: String,
+        finished_at: Option<String>,
+        outcome: String, // "SUCCESS" | "FAILED"
+        /// Path to this node's attempt directory for reading token data.
+        attempt_dir: String,
+        /// When true, the subscriber skips the 「结束」sentinel. Used by
+        /// dynamic workers so that only the outer AiDynamic node produces
+        /// the single begin/end sentinel pair for the whole workflow.
+        suppress_sentinel: bool,
+    },
 }
 
 pub struct App {
@@ -479,9 +506,9 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
-    metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
+    pub observability_bus: observability::ObservabilityBus,
     intervention_notifier:
-        Option<Arc<dyn Fn(InterventionNotification) + Send + Sync>>,
+    Option<Arc<dyn Fn(InterventionNotification) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone)]
@@ -675,8 +702,8 @@ impl App {
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            metrics_callback: self.metrics_callback.clone(),
-            intervention_notifier: self.intervention_notifier.clone(),
+            observability_bus: self.observability_bus.clone(),
+                        intervention_notifier: self.intervention_notifier.clone(),
         }
     }
 
@@ -695,14 +722,6 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
-        self
-    }
-
-    pub fn with_metrics_callback(
-        mut self,
-        callback: Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>,
-    ) -> Self {
-        self.metrics_callback = Some(callback);
         self
     }
 
@@ -924,6 +943,94 @@ impl App {
         let mut agents = self.config.agents.clone();
         agents.remove(&agent_type);
         self.set_user_agents(agents)
+    }
+
+    // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
+
+    fn mcp_manager(&self) -> McpManager {
+        McpManager::new(self.paths.user_settings_file())
+    }
+
+    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().list()?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().add(json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().update(id, json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().delete(id)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().toggle(id, enabled)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
+        self.mcp_manager().check_health(id)
+    }
+
+    pub fn enabled_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        self.mcp_manager().enabled_servers()
+    }
+
+    pub fn acp_mcp_servers(&self) -> Result<Vec<serde_json::Value>> {
+        self.mcp_manager().to_acp_mcp_servers()
+    }
+
+    // ── SKILL (delegates to skill::SkillManager) ──
+
+    pub fn skill_manager(&self) -> crate::skill::SkillManager {
+        crate::skill::SkillManager::new(self.paths.clone())
+    }
+
+    pub fn list_skills(&self) -> Result<crate::skill::SkillListResult> {
+        self.skill_manager().list()
+    }
+
+    pub fn read_skill(&self, name: &str, source: SkillSource) -> Result<crate::skill::SkillContent> {
+        self.skill_manager().read(name, source)
+    }
+
+    pub fn write_skill(&self, name: &str, source: SkillSource, content: &str) -> Result<SkillMeta> {
+        self.skill_manager().write(name, source, content)
+    }
+
+    pub fn delete_skill(&self, name: &str, source: SkillSource) -> Result<()> {
+        self.skill_manager().delete(name, source)
+    }
+
+    /// 同步 SKILL symlink 到 .claude/skills/（保存/删除时自动调用）
+    /// workspace_path 用于指定项目级 SKILL 的实际工作空间目录
+    pub fn sync_skill_symlinks(&self, workspace_path: Option<&str>) {
+        use crate::skill::scan_skills_dir;
+        use crate::config::{SkillSource, AGENTS_DIR_NAME, SKILLS_DIR_NAME};
+
+        let global_dir = crate::storage::GoldBandPaths::global_skills_dir();
+        let global = scan_skills_dir(&global_dir, SkillSource::Global);
+        let global: Vec<_> = global.into_iter().filter(|s| !s.disable_model_invocation).collect();
+
+        // 全局 SKILL → 始终同步到 ~/.claude/skills/
+        // 不需要 workspace 路径：直接用空路径 + 仅 global skills
+        crate::skill::symlink::sync_all(std::path::Path::new(""), &global, &[]);
+
+        // 项目 SKILL → 仅在有 workspace_path 时同步到 <workspace>/.claude/skills/
+        if let Some(ws) = workspace_path {
+            let p = std::path::Path::new(ws);
+            let project_dir = camino::Utf8PathBuf::from_path_buf(
+                p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
+            ).unwrap_or_default();
+            let project = scan_skills_dir(&project_dir, SkillSource::Project);
+            let project: Vec<_> = project.into_iter().filter(|s| !s.disable_model_invocation).collect();
+            crate::skill::symlink::sync_all(p, &global, &project);
+        }
     }
 
     pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {
@@ -1329,7 +1436,7 @@ impl App {
             provider_override: None,
             acp_live_update: None,
             acp_session_update: None,
-            metrics_callback: None,
+            observability_bus: observability::ObservabilityBus::new(),
             intervention_notifier: None,
         }
     }
@@ -1352,7 +1459,7 @@ impl App {
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
             acp_session_update: None,
-            metrics_callback: None,
+            observability_bus: observability::ObservabilityBus::new(),
             intervention_notifier: None,
         }
     }

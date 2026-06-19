@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, Paperclip, Workflow, Bot, Folders } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { selectableAgentOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStart } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 
@@ -16,9 +16,10 @@ interface ConversationComposerProps {
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
+  profiles: ProfileVm[];
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
-  onSubmit: (input: ConversationCreateInput) => void;
+  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -30,6 +31,7 @@ export function ConversationComposer({
   runMode,
   agentRegistry,
   workflowTemplates,
+  profiles,
   busy,
   onRunModeChange,
   onSubmit,
@@ -131,9 +133,7 @@ export function ConversationComposer({
     };
     const localIssues = isAuto
       ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
-      : !inputBase.workflowTemplateId
-        ? [t('conversation.home.selectWorkflowTemplate')]
-        : [];
+      : validateWorkflowTemplateForConversationStart(inputBase.workflowTemplateId, agentRegistry, profiles, workflowTemplates, t);
     if (localIssues.length > 0) {
       setRunModeError(localIssues.join('\n'));
       return;
@@ -142,10 +142,14 @@ export function ConversationComposer({
     try {
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      onSubmit({
+      const submitError = await onSubmit({
         ...inputBase,
         attachmentPaths: paths.length > 0 ? paths : undefined,
       });
+      if (submitError) {
+        setRunModeError(submitError);
+        return;
+      }
       setContent('');
       clearAttachments();
     } catch {

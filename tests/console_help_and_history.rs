@@ -125,7 +125,7 @@ fn developer_profile_id(app: &App) -> String {
 
 fn worker_workflow(app: &App) -> String {
     format!(
-        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-acp","profile":"{}"}}],"edges":[]}}"#,
+        r#"{{"version":"0.1","id":"full-flow","entry":"dev","control":{{"max_attempts":1,"max_rounds":1}},"nodes":[{{"type":"worker","id":"dev","provider":"claude-acp","profile":"{}"}}],"edges":[{{"from":"dev","to":"$end","on":"success"}}]}}"#,
         developer_profile_id(app)
     )
 }

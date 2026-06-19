@@ -29,6 +29,9 @@ import type {
   LogPageVm,
   LogQueryInput,
   ManagedAgentInput,
+  McpServerVm,
+  SkillContentVm,
+  SkillListVm,
   PreferencesVm,
   ProfileInput,
   ProfileListVm,
@@ -167,6 +170,18 @@ export interface RuntimeApi {
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
+  // MCP & SKILL management
+  listMcpServers(): Promise<McpServerVm[]>;
+  addMcpServer(jsonContent: string): Promise<McpServerVm[]>;
+  updateMcpServer(id: string, jsonContent: string): Promise<McpServerVm[]>;
+  deleteMcpServer(id: string): Promise<McpServerVm[]>;
+  toggleMcpServer(id: string, enabled: boolean): Promise<McpServerVm[]>;
+  checkMcpServerHealth(id: string): Promise<import('../types').McpServerHealthResult>;
+  listSkills(): Promise<SkillListVm>;
+  listProjectSkills(workspacePath: string): Promise<import('../types').SkillMetaVm[]>;
+  readSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillContentVm>;
+  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null): Promise<SkillListVm>;
+  deleteSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillListVm>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

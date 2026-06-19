@@ -14,6 +14,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationSidebar,
+  getProfiles,
   getWorkflowTemplates,
   switchConversationSession,
   markSettingsAdvancedUpdateSeen,
@@ -92,6 +93,7 @@ import type {
   WorkflowTemplateStore,
   ConversationSidebarVm,
   CreateTaskInput,
+  ProfileVm,
   DesktopFontPreference,
   DesktopLanguage,
   DesktopThemePreference,
@@ -262,6 +264,7 @@ export function App() {
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
@@ -383,6 +386,7 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
+    getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [bootstrap, uiMode]);
 
@@ -1131,41 +1135,44 @@ export function App() {
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
+          profiles={profiles}
           busy={busy}
           onRunModeChange={updateConversationRunMode}
-          onSubmit={(input) => {
+          onSubmit={async (input) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'auto'
               ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
               : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId };
             setConversationRunMode(nextMode);
             setBusy(true);
             saveConversationRunMode(input.projectId, nextMode).catch(() => {});
-            validateConversationCreate(input)
-              .then(async (validation) => {
-                if (!validation.valid) {
-                  setError(validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n'));
-                  return;
-                }
-                const run = await createConversationRun(input);
-                rememberConversationWorkspace(run.projectId);
-                updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
-                applyConversationRunSnapshot(run, 'create');
-                setConversationPage({
-                  kind: 'conversation-run',
-                  projectId: run.projectId,
-                  taskId: run.taskId,
-                  runId: run.runId,
-                });
-                getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
-                pushRoute('task-orchestration', taskListPage, {
-                  kind: 'conversation-run',
-                  projectId: run.projectId,
-                  taskId: run.taskId,
-                  runId: run.runId,
-                });
-              })
-              .catch((err) => setError(displayAppError(t, err)))
-              .finally(() => setBusy(false));
+            try {
+              const validation = await validateConversationCreate(input);
+              if (!validation.valid) {
+                return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
+              }
+              const run = await createConversationRun(input);
+              rememberConversationWorkspace(run.projectId);
+              updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
+              applyConversationRunSnapshot(run, 'create');
+              setConversationPage({
+                kind: 'conversation-run',
+                projectId: run.projectId,
+                taskId: run.taskId,
+                runId: run.runId,
+              });
+              getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
+              pushRoute('task-orchestration', taskListPage, {
+                kind: 'conversation-run',
+                projectId: run.projectId,
+                taskId: run.taskId,
+                runId: run.runId,
+              });
+              return null;
+            } catch (err) {
+              return displayAppError(t, err);
+            } finally {
+              setBusy(false);
+            }
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
@@ -1330,9 +1337,10 @@ export function App() {
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
+          profiles={profiles}
           busy={busy}
       onRunModeChange={updateConversationRunMode}
-      onSubmit={(_input) => {}}
+      onSubmit={(_input) => null}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {
         setDraftConversationWorkspaceId(projectId);

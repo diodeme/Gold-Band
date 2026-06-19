@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, Paperclip, Workflow, Bot, Folders } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { selectableAgentOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStart } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 
@@ -16,9 +16,10 @@ interface ConversationComposerProps {
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
+  profiles: ProfileVm[];
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
-  onSubmit: (input: ConversationCreateInput) => void;
+  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -30,6 +31,7 @@ export function ConversationComposer({
   runMode,
   agentRegistry,
   workflowTemplates,
+  profiles,
   busy,
   onRunModeChange,
   onSubmit,
@@ -45,6 +47,11 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId);
+
+  useEffect(() => {
+    setSelectedProjectId(projectId);
+  }, [projectId]);
 
   const {
     attachments,
@@ -116,7 +123,7 @@ export function ConversationComposer({
     if (!canSubmit) return;
     const trimmed = content.trim();
     const inputBase: ConversationCreateInput = {
-      projectId,
+      projectId: selectedProjectId,
       content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
@@ -126,9 +133,7 @@ export function ConversationComposer({
     };
     const localIssues = isAuto
       ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
-      : !inputBase.workflowTemplateId
-        ? [t('conversation.home.selectWorkflowTemplate')]
-        : [];
+      : validateWorkflowTemplateForConversationStart(inputBase.workflowTemplateId, agentRegistry, profiles, workflowTemplates, t);
     if (localIssues.length > 0) {
       setRunModeError(localIssues.join('\n'));
       return;
@@ -137,10 +142,14 @@ export function ConversationComposer({
     try {
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      onSubmit({
+      const submitError = await onSubmit({
         ...inputBase,
         attachmentPaths: paths.length > 0 ? paths : undefined,
       });
+      if (submitError) {
+        setRunModeError(submitError);
+        return;
+      }
       setContent('');
       clearAttachments();
     } catch {
@@ -203,7 +212,7 @@ export function ConversationComposer({
                 </span>
               ) : null}
               {workspaces.length > 1 ? (
-                <Select value={projectId} onValueChange={onWorkspaceChange}>
+                <Select value={selectedProjectId} onValueChange={(id) => { setSelectedProjectId(id); onWorkspaceChange(id); }}>
                   <SelectTrigger className="h-9 min-w-[170px] max-w-[240px] gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />

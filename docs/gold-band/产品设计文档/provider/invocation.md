@@ -149,6 +149,22 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 
 ---
 
-## 7. 一句话总结
+## 7. ACP session lifecycle
+
+每次 ACP worker 调用按如下顺序执行，确保前端在第一条 stream event 前拿到完整 session metadata：
+
+1. `initialize` — 启动 ACP adapter 进程
+2. `session/new` 或 `session/load` — 建立或复用 session，写入 raw outbound frame（含 `_meta.systemPrompt.append`）
+3. `capture_session_config` — 从 adapter 响应捕获 `models`、`modes`、`configOptions`
+4. `apply_session_mode_options` — 按 workflow 节点配置设置 model / permission_mode
+5. `write_session("running")` — 写 `acp.snapshot.json`（此时已含 model、mode config）
+6. **session-ready snapshot** — 调用 `acp_session_update_emitter` 向前端推送完整 `AcpSessionVm`（含 `systemPromptAppend` 与 `config`）
+7. `prompt(...)` — 发送用户消息，开始流式输出 live timeline events
+
+session-ready snapshot 与 live timeline event 是两类独立 Tauri 事件，共享 `gold-band://acp-session-updated` 事件类型，通过 payload 中 `session` 或 `event` 字段互斥分发：`session: Some(AcpSessionVm)` 为 full session snapshot；`event: Some(AcpUiEvent)` 为 single live event。
+
+---
+
+## 8. 一句话总结
 
 > 每次调用 AI 节点时，Gold Band 显式传入 runtime context、前序链、profile 和 output DSL；prompt bundle 再将这些内容稳定映射到 system/user prompt，provider 不再通过旧 invocation kind 或 artifact 名称猜测节点语义。

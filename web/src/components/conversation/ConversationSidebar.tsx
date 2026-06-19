@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
+  activeWorkspaceId?: string | null;
   onSelect: (page: ConversationPage) => void;
   onToggleUiMode: () => void;
   onNewConversation: () => void;
@@ -31,6 +32,7 @@ interface ConversationSidebarProps {
 export function ConversationSidebar({
   vm,
   active,
+  activeWorkspaceId,
   onSelect,
   onToggleUiMode: _onToggleUiMode,
   onNewConversation,
@@ -61,14 +63,21 @@ export function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
+  const prevExpandTargetRef = useRef<string | null>(null);
+
   useEffect(() => {
-    const targetWorkspaceId = active.kind === 'conversation-run'
+    const targetWorkspaceId: string | null = active.kind === 'conversation-run'
       ? active.projectId
-      : vm.lastActiveWorkspaceId;
+      : (activeWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
+
+    const prevTarget = prevExpandTargetRef.current;
+    prevExpandTargetRef.current = targetWorkspaceId;
+    const targetChanged = targetWorkspaceId !== prevTarget;
+
     setExpandedWorkspaces((prev) => {
       const next: Record<string, boolean> = {};
       vm.workspaces.forEach((ws) => {
-        if (prev[ws.projectId] != null) {
+        if (!targetChanged && prev[ws.projectId] != null) {
           next[ws.projectId] = prev[ws.projectId];
           return;
         }
@@ -79,7 +88,7 @@ export function ConversationSidebar({
       }
       return next;
     });
-  }, [active, vm.workspaces, vm.lastActiveWorkspaceId]);
+  }, [active, activeWorkspaceId, vm.workspaces, vm.lastActiveWorkspaceId]);
 
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
@@ -559,6 +568,18 @@ function formatRelativeTime(isoString: string, t: (key: string, options?: Record
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo`;
   return `${Math.floor(days / 365)}y`;
+}
+
+export function prioritizeConversationSidebarWorkspace(sidebar: ConversationSidebarVm, projectId?: string | null): ConversationSidebarVm {
+  if (!projectId) return sidebar;
+  const workspaceIndex = sidebar.workspaces.findIndex((workspace) => workspace.projectId === projectId);
+  if (workspaceIndex < 0) return sidebar;
+  const workspaces = [
+    sidebar.workspaces[workspaceIndex],
+    ...sidebar.workspaces.slice(0, workspaceIndex),
+    ...sidebar.workspaces.slice(workspaceIndex + 1),
+  ];
+  return { ...sidebar, workspaces, lastActiveWorkspaceId: projectId };
 }
 
 export function conversationSidebarTaskKey(projectId: string, taskId: string) {

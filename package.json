@@ -1,6 +1,6 @@
 {
   "name": "gold-band-desktop",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -16,6 +16,7 @@
     "release:tag": "node scripts/release-tag.mjs",
     "web:dev": "vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",
+    "test:channel-config": "node --test scripts/channel-config.test.mjs",
     "web:build": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
     "web:preview": "vite preview --config web/vite.config.ts"
   },
@@ -31,6 +32,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tailwindcss/vite": "^4.2.4",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

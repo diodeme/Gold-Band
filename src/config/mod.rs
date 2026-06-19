@@ -1,8 +1,23 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
+
+fn embedded_project_app_config() -> &'static ProjectAppConfig {
+    static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        config::Config::builder()
+            .add_source(config::File::from_str(
+                include_str!("../../configs/app-config.toml"),
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("embedded app-config.toml is valid")
+            .try_deserialize()
+            .expect("embedded app-config.toml deserializes to ProjectAppConfig")
+    })
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(u8)]
@@ -441,8 +456,7 @@ pub struct SettingsConfig {
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
-    pub desktop_heartbeat_endpoint: Option<String>,
-    pub desktop_node_metrics_endpoint: Option<String>,
+    pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
@@ -499,8 +513,7 @@ pub struct RuntimeConfig {
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
     pub desktop_metrics_enabled: bool,
-    pub desktop_heartbeat_endpoint: Option<String>,
-    pub desktop_node_metrics_endpoint: Option<String>,
+    pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
@@ -516,7 +529,7 @@ impl Default for RuntimeConfig {
             ManagedAgentType::ClaudeAcp,
             ManagedAgentConfig::new(AcpAdapterConfig::default()),
         );
-        Self {
+        let base = Self {
             log_level: RuntimeLogLevel::Info,
             log_prompts: true,
             log_provider_command: true,
@@ -532,15 +545,15 @@ impl Default for RuntimeConfig {
             agents,
             use_local_claude: false,
             desktop_metrics_enabled: false,
-            desktop_heartbeat_endpoint: None,
-            desktop_node_metrics_endpoint: None,
+            desktop_metrics_base_url: None,
             desktop_metrics_api_key: None,
             acp_session_title_refresh_enabled: false,
             acp_chat_event_page_size: 360,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
-        }
+        };
+        base.apply_app_config(embedded_project_app_config())
     }
 }
 
@@ -580,8 +593,7 @@ impl RuntimeConfig {
         if let Some(desktop_metrics_enabled) = settings.desktop_metrics_enabled {
             self.desktop_metrics_enabled = desktop_metrics_enabled;
         }
-        self.desktop_heartbeat_endpoint = settings.desktop_heartbeat_endpoint.clone();
-        self.desktop_node_metrics_endpoint = settings.desktop_node_metrics_endpoint.clone();
+        self.desktop_metrics_base_url = settings.desktop_metrics_base_url.clone();
         self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
         self
     }

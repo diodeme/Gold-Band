@@ -34,10 +34,11 @@ interface ShellProps {
   onConversationNewInWorkspace?: (projectId: string) => void;
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => void;
+  activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
@@ -59,6 +60,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onNewConversationInWorkspace={onConversationNewInWorkspace}
         onAddWorkspace={onConversationAddWorkspace}
         onRemoveWorkspace={onConversationRemoveWorkspace}
+        activeWorkspaceId={activeWorkspaceId}
       >
         {children}
       </ConversationShell>

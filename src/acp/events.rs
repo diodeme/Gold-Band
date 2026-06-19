@@ -37,6 +37,8 @@ pub struct AcpSessionMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt_append: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window_size: Option<u64>,
@@ -147,7 +149,7 @@ impl AcpAttemptPaths {
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
-/// First reads `acp.session.json`, then scans `acp.timeline.jsonl` for usage events
+/// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
 pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
     let mut input = 0u64;
@@ -481,24 +483,30 @@ pub fn normalize_session_update(
 }
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
+    let mut raw = params;
+    if let Some(object) = raw.as_object_mut() {
+        object
+            .entry("requestId".to_string())
+            .or_insert_with(|| Value::String(request_id.clone()));
+    }
     AcpUiEvent {
         id: request_id,
         seq,
         timestamp: current_timestamp(),
         kind: "permissionRequest".to_string(),
-        session_id: params
+        session_id: raw
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_string),
         content: None,
-        title: extract_title(&params).or_else(|| Some("Permission required".to_string())),
-        tool_call_id: extract_tool_call_id(&params),
+        title: extract_title(&raw).or_else(|| Some("Permission required".to_string())),
+        tool_call_id: extract_tool_call_id(&raw),
         status: Some("pending".to_string()),
         started_seq: None,
         ended_seq: None,
         started_at: None,
         ended_at: None,
-        raw: Some(params),
+        raw: Some(raw),
     }
 }
 
@@ -654,8 +662,9 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpUiEvent, append_timeline_patch, extract_usage_fields, kind_to_ui_kind,
-        load_timeline_items, user_prompt_event, write_timeline_items,
+        AcpSessionMetadata, AcpUiEvent, append_timeline_patch, extract_usage_fields,
+        kind_to_ui_kind, load_timeline_items, permission_request_event, user_prompt_event,
+        write_timeline_items,
     };
     use serde_json::json;
 
@@ -788,6 +797,71 @@ mod tests {
     }
 
     // --- existing tests ---
+
+    #[test]
+    fn session_metadata_system_prompt_append_is_optional() {
+        let metadata: AcpSessionMetadata = serde_json::from_value(json!({
+            "adapterId": "npx",
+            "adapterDisplayName": "Claude",
+            "cwd": "C:/tmp/attempt",
+            "status": "running",
+            "restored": false,
+            "stopReason": null,
+            "capabilities": {},
+            "createdAt": "1778771541Z",
+            "updatedAt": "1778771542Z"
+        }))
+        .unwrap();
+
+        assert!(metadata.system_prompt_append.is_none());
+    }
+
+    #[test]
+    fn session_metadata_serializes_system_prompt_append() {
+        let metadata: AcpSessionMetadata = serde_json::from_value(json!({
+            "adapterId": "npx",
+            "adapterDisplayName": "Claude",
+            "cwd": "C:/tmp/attempt",
+            "status": "running",
+            "restored": false,
+            "stopReason": null,
+            "capabilities": {},
+            "systemPromptAppend": "You are Gold Band.",
+            "createdAt": "1778771541Z",
+            "updatedAt": "1778771542Z"
+        }))
+        .unwrap();
+
+        let value = serde_json::to_value(metadata).unwrap();
+        assert_eq!(
+            value
+                .get("systemPromptAppend")
+                .and_then(|value| value.as_str()),
+            Some("You are Gold Band.")
+        );
+    }
+
+    #[test]
+    fn permission_request_event_preserves_original_request_id_in_raw() {
+        let event = permission_request_event(
+            9,
+            "0".to_string(),
+            json!({
+                "sessionId": "session-123",
+                "options": [{ "optionId": "allow", "name": "Allow", "kind": "allow_once" }]
+            }),
+        );
+
+        assert_eq!(event.id, "0");
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(|value| value.as_str()),
+            Some("0")
+        );
+    }
 
     #[test]
     fn user_prompt_event_persists_prompt_id_metadata() {

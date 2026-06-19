@@ -2,6 +2,7 @@ pub mod sqlite;
 
 use crate::domain::VERSION;
 use anyhow::Result;
+use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -137,14 +138,6 @@ impl GoldBandPaths {
             .join("state.json")
     }
 
-    pub fn repo_configs_dir(&self) -> Utf8PathBuf {
-        self.repo_root.join("configs")
-    }
-
-    pub fn repo_app_config_file(&self) -> Utf8PathBuf {
-        self.repo_configs_dir().join("app-config.json")
-    }
-
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
         self.user_gold_band_dir().join("presets")
     }
@@ -174,7 +167,7 @@ impl GoldBandPaths {
     }
 
     pub fn logs_dir(&self) -> Utf8PathBuf {
-        self.runtime_root.join("logs")
+        self.user_gold_band_root.join("logs")
     }
 
     pub fn runtime_log_file(&self) -> Utf8PathBuf {
@@ -198,7 +191,20 @@ impl GoldBandPaths {
     }
 
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
-        self.runtime_root.join("desktop/agent-diagnostics.json")
+        self.user_gold_band_root
+            .join("desktop/agent-diagnostics.json")
+    }
+
+    pub fn doctor_dir(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("doctor")
+    }
+
+    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+        self.doctor_dir().join("acp")
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
+        self.doctor_acp_dir().join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
@@ -774,8 +780,10 @@ pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
 
 pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     ensure_parent_dir(path)?;
-    let content = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_vec_pretty(value)?;
+    let mut file = AtomicWriteFile::open(path.as_std_path())?;
+    file.write_all(&content)?;
+    file.commit()?;
     Ok(())
 }
 
@@ -786,9 +794,7 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
         match serde_json::from_str(&content) {
             Ok(value) => return Ok(value),
             Err(error)
-                if attempt + 1 < MAX_ATTEMPTS
-                    && (content.trim().is_empty()
-                        || matches!(error.classify(), serde_json::error::Category::Eof)) =>
+                if attempt + 1 < MAX_ATTEMPTS && should_retry_json_read(&content, &error) =>
             {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -796,6 +802,14 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
         }
     }
     unreachable!("read_json should have returned within retry loop")
+}
+
+fn should_retry_json_read(content: &str, error: &serde_json::Error) -> bool {
+    content.trim().is_empty()
+        || matches!(
+            error.classify(),
+            serde_json::error::Category::Eof | serde_json::error::Category::Syntax
+        )
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
@@ -868,7 +882,7 @@ mod tests {
                 .runtime_log_file()
                 .to_string()
                 .replace('\\', "/")
-                .contains("/.gold-band/projects/D--Projects-Example-App/")
+                .ends_with("/.gold-band/logs/runtime.log")
         );
     }
 
@@ -971,6 +985,43 @@ mod tests {
     }
 
     #[test]
+    fn write_json_replaces_longer_existing_file_without_trailing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("state.json")).unwrap();
+        std::fs::write(path.as_std_path(), r#"{"items":[1,2,3],"stale":true}"#).unwrap();
+
+        write_json(&path, &serde_json::json!({"ok": true})).unwrap();
+
+        let contents = std::fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(
+            contents,
+            r#"{
+  "ok": true
+}"#
+        );
+        assert_eq!(
+            read_json::<serde_json::Value>(&path).unwrap(),
+            serde_json::json!({"ok": true})
+        );
+        assert!(!contents.contains("stale"));
+    }
+
+    #[test]
+    fn write_json_does_not_leave_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("state.json")).unwrap();
+
+        write_json(&path, &serde_json::json!({"ok": true})).unwrap();
+
+        let files = std::fs::read_dir(dir.path())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().to_string_lossy(), "state.json");
+    }
+
+    #[test]
     fn roll_jsonl_trims_oldest_lines_when_over_max() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();
@@ -1031,8 +1082,10 @@ mod tests {
     fn root_workspace_uses_stable_non_empty_project_id() {
         let temp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
-        let paths =
-            GoldBandPaths::new_with_path_config(Utf8PathBuf::from("/"), DEFAULT_STORAGE_PATH_CONFIG);
+        let paths = GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from("/"),
+            DEFAULT_STORAGE_PATH_CONFIG,
+        );
 
         assert_eq!(paths.project_id, "root");
         assert!(
@@ -1040,7 +1093,7 @@ mod tests {
                 .runtime_log_file()
                 .to_string()
                 .replace('\\', "/")
-                .ends_with("/.gold-band/projects/root/logs/runtime.log")
+                .ends_with("/.gold-band/logs/runtime.log")
         );
     }
 }

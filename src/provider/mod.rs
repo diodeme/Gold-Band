@@ -414,6 +414,7 @@ impl Default for PromptVisibility {
 }
 
 pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
+pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
@@ -425,6 +426,14 @@ pub trait ProviderAdapter: Send + Sync {
         _live_update: Option<AcpLiveUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker(req)
+    }
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        _session_update: Option<AcpSessionUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        self.run_worker_with_live_update(req, live_update)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
@@ -619,6 +628,15 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
+        self.run_worker_with_callbacks(req, live_update, None)
+    }
+
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -647,6 +665,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_target_size_bytes,
             live_update,
             &req.mcp_servers,
+            session_update,
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {

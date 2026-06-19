@@ -140,6 +140,25 @@ fn workflow(app: &App, entry: &str) -> WorkflowDsl {
         .unwrap()
         .workflow;
     workflow.entry = entry.to_string();
+    let mut reachable = std::collections::HashSet::new();
+    let mut pending = vec![entry.to_string()];
+    while let Some(node_id) = pending.pop() {
+        if !reachable.insert(node_id.clone()) {
+            continue;
+        }
+        pending.extend(
+            workflow
+                .edges
+                .iter()
+                .filter(|edge| edge.from == node_id && edge.to != gold_band::dsl::END_NODE)
+                .map(|edge| edge.to.clone()),
+        );
+    }
+    workflow.nodes.retain(|node| reachable.contains(node.id()));
+    workflow.edges.retain(|edge| {
+        reachable.contains(&edge.from)
+            && (edge.to == gold_band::dsl::END_NODE || reachable.contains(&edge.to))
+    });
     workflow
 }
 
@@ -641,7 +660,14 @@ fn creating_task_with_template_duplicate_workflow_id_fails() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::new(repo_root);
 
-    std::fs::create_dir_all(app.paths.authoring_dir().as_std_path()).unwrap();
+    std::fs::create_dir_all(
+        app.paths
+            .workflow_templates_file()
+            .parent()
+            .unwrap()
+            .as_std_path(),
+    )
+    .unwrap();
     std::fs::write(
         app.paths.workflow_templates_file().as_std_path(),
         r#"{

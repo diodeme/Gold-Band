@@ -114,6 +114,7 @@ struct AcpRuntime<'a> {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    system_prompt_append: Option<String>,
     session_title: Option<String>,
     used_tokens: Option<u64>,
     context_window_size: Option<u64>,
@@ -145,7 +146,7 @@ pub fn doctor(
     let mut runtime = AcpRuntime::start(
         config,
         cwd.clone(),
-        paths.runtime_root.join("doctor/acp"),
+        paths.doctor_acp_dir(),
         use_local_claude,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
@@ -178,6 +179,7 @@ pub fn run_prompt(
     acp_raw_target_size_bytes: u64,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
     mcp_servers: &[Value],
+    session_update: Option<&dyn Fn() -> Result<()>>,
 ) -> Result<AcpPromptRun> {
     clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(
@@ -205,6 +207,7 @@ pub fn run_prompt(
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
+    runtime.record_user_prompt_event(prompt, session_update.is_none())?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -214,6 +217,9 @@ pub fn run_prompt(
             None,
             &capabilities,
         );
+    }
+    if let Some(session_update) = session_update {
+        let _ = session_update();
     }
     let prompt_result = runtime.prompt(
         provider_id,
@@ -243,6 +249,9 @@ pub fn run_prompt(
                 Some("error".to_string()),
             )?;
             runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
+            if let Some(session_update) = session_update {
+                let _ = session_update();
+            }
             runtime.shutdown();
             return Err(error);
         }
@@ -255,6 +264,9 @@ pub fn run_prompt(
         stop_reason.clone(),
     )?;
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    if let Some(session_update) = session_update {
+        let _ = session_update();
+    }
     if status != "running" {
         let _ = clear_cancel_request(&runtime.paths.attempt_dir);
     }
@@ -483,6 +495,7 @@ impl<'a> AcpRuntime<'a> {
             models: None,
             modes: None,
             config_options: None,
+            system_prompt_append: None,
             session_title: None,
             used_tokens: None,
             context_window_size: None,
@@ -540,6 +553,11 @@ impl<'a> AcpRuntime<'a> {
         strict_continue: bool,
         mcp_servers: &[Value],
     ) -> Result<bool> {
+        self.system_prompt_append = if system_prompt.trim().is_empty() {
+            None
+        } else {
+            Some(system_prompt.to_string())
+        };
         if let Some(session_id) = continue_ref
             .as_ref()
             .and_then(|value| value.get("acpSessionId"))
@@ -837,6 +855,31 @@ impl<'a> AcpRuntime<'a> {
         let _ = self.write_session(status, restored, stop_reason, capabilities.clone());
     }
 
+    fn record_user_prompt_event(
+        &mut self,
+        prompt: &PromptBundle,
+        emit_live_update: bool,
+    ) -> Result<()> {
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
+        self.seq += 1;
+        let user_event = user_prompt_event(
+            self.seq,
+            session_id,
+            prompt.user_prompt.clone(),
+            prompt.prompt_id.clone(),
+            prompt.visibility == PromptVisibility::Hidden,
+            prompt.attachment_metas.clone(),
+        );
+        if emit_live_update {
+            self.persist_event(&user_event)
+        } else {
+            self.persist_event_without_live_update(&user_event)
+        }
+    }
+
     fn prompt(
         &mut self,
         provider_id: &str,
@@ -850,16 +893,6 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
-        self.seq += 1;
-        let user_event = user_prompt_event(
-            self.seq,
-            session_id.clone(),
-            prompt.user_prompt.clone(),
-            prompt.prompt_id.clone(),
-            prompt.visibility == PromptVisibility::Hidden,
-            prompt.attachment_metas.clone(),
-        );
-        self.persist_event(&user_event)?;
         let result = self.request_with_progress(
             "session/prompt",
             session_prompt_params(provider_id, &session_id, prompt),
@@ -1222,6 +1255,7 @@ impl<'a> AcpRuntime<'a> {
             models: self.models.clone(),
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
+            system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.used_tokens,
             context_window_size: self.context_window_size,
             total_cost_usd: self.total_cost_usd,
@@ -1236,6 +1270,21 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
+        self.persist_event_inner(event, true)
+    }
+
+    fn persist_event_without_live_update(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+    ) -> Result<()> {
+        self.persist_event_inner(event, false)
+    }
+
+    fn persist_event_inner(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+        emit_live_update: bool,
+    ) -> Result<()> {
         if should_write_legacy_events(&self.paths) {
             append_ui_event(&self.paths.events, event)?;
         }
@@ -1244,7 +1293,9 @@ impl<'a> AcpRuntime<'a> {
             .insert(timeline_item.id.clone(), timeline_item.clone());
         self.timeline_revision = self.timeline_revision.saturating_add(1);
         self.persist_timeline_update(timeline_item.clone())?;
-        self.emit_timeline_live_update(timeline_item)?;
+        if emit_live_update {
+            self.emit_timeline_live_update(timeline_item)?;
+        }
         Ok(())
     }
 

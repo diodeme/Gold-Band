@@ -29,6 +29,7 @@ export interface UpdaterSettingsVm {
 export interface MetricsSettingsVm {
   enabled: boolean;
   toggleLocked: boolean;
+  metricsBaseUrl: string | null;
   heartbeatEndpoint: string | null;
   nodeMetricsEndpoint: string | null;
   apiKeySet: boolean;

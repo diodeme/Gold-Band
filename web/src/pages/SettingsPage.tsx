@@ -44,7 +44,7 @@ interface SettingsPageProps {
   initialTab?: 'general' | 'appearance' | 'advanced';
   onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => void;
   metricsSettings?: MetricsSettingsVm | null;
-  onSaveMetricsSettings?: (enabled: boolean, heartbeatEndpoint: string | null, nodeMetricsEndpoint: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
+  onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
   onCheckUpdate: () => Promise<UpdateStatusVm | undefined>;
   onInstallUpdate: () => Promise<void>;
@@ -76,33 +76,29 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   // ── Metrics ──
   const [metricsEnabled, setMetricsEnabled] = useState(metricsSettings?.enabled ?? false);
-  const [metricsHeartbeatEndpoint, setMetricsHeartbeatEndpoint] = useState(metricsSettings?.heartbeatEndpoint ?? '');
-  const [metricsNodeEndpoint, setMetricsNodeEndpoint] = useState(metricsSettings?.nodeMetricsEndpoint ?? '');
+  const [metricsBaseUrl, setMetricsBaseUrl] = useState(metricsSettings?.metricsBaseUrl ?? '');
   const [metricsApiKey, setMetricsApiKey] = useState('');
   const [metricsSaving, setMetricsSaving] = useState(false);
   useEffect(() => {
     setMetricsEnabled(metricsSettings?.enabled ?? false);
-    setMetricsHeartbeatEndpoint(metricsSettings?.heartbeatEndpoint ?? '');
-    setMetricsNodeEndpoint(metricsSettings?.nodeMetricsEndpoint ?? '');
-  }, [metricsSettings?.enabled, metricsSettings?.heartbeatEndpoint, metricsSettings?.nodeMetricsEndpoint]);
+    setMetricsBaseUrl(metricsSettings?.metricsBaseUrl ?? '');
+  }, [metricsSettings?.enabled, metricsSettings?.metricsBaseUrl]);
 
   async function handleSaveMetrics() {
     setMetricsSaving(true);
     try {
       if (onSaveMetricsSettings) {
-        const saved = await onSaveMetricsSettings(metricsEnabled, metricsHeartbeatEndpoint || null, metricsNodeEndpoint || null, metricsApiKey || null);
+        const saved = await onSaveMetricsSettings(metricsEnabled, metricsBaseUrl || null, metricsApiKey || null);
         if (saved) {
           setMetricsEnabled(saved.enabled);
-          setMetricsHeartbeatEndpoint(saved.heartbeatEndpoint ?? '');
-          setMetricsNodeEndpoint(saved.nodeMetricsEndpoint ?? '');
+          setMetricsBaseUrl(saved.metricsBaseUrl ?? '');
         }
       } else {
         // Fallback: save directly via barrel API
-        const saved = await saveMetricsSettings(metricsEnabled, metricsHeartbeatEndpoint || null, metricsNodeEndpoint || null, metricsApiKey || null);
+        const saved = await saveMetricsSettings(metricsEnabled, metricsBaseUrl || null, metricsApiKey || null);
         if (saved) {
           setMetricsEnabled(saved.enabled);
-          setMetricsHeartbeatEndpoint(saved.heartbeatEndpoint ?? '');
-          setMetricsNodeEndpoint(saved.nodeMetricsEndpoint ?? '');
+          setMetricsBaseUrl(saved.metricsBaseUrl ?? '');
         }
       }
     } finally {
@@ -116,8 +112,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     getMetricsSettings().then((s) => {
       if (s) {
         setMetricsEnabled(s.enabled);
-        setMetricsHeartbeatEndpoint(s.heartbeatEndpoint ?? '');
-        setMetricsNodeEndpoint(s.nodeMetricsEndpoint ?? '');
+        setMetricsBaseUrl(s.metricsBaseUrl ?? '');
       }
     }).catch(() => {});
   }, [metricsSettings]);
@@ -496,12 +491,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   {metricsEnabled && (
                     <>
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.heartbeatEndpoint')}</div>
-                        <Input value={metricsHeartbeatEndpoint} placeholder="http://..." disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsHeartbeatEndpoint(event.target.value)} />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.nodeMetricsEndpoint')}</div>
-                        <Input value={metricsNodeEndpoint} placeholder="http://..." disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsNodeEndpoint(event.target.value)} />
+                        <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.baseUrl')}</div>
+                        <Input value={metricsBaseUrl} placeholder="http://..." disabled={metricsSettings?.toggleLocked} className="h-9 min-w-0 font-mono text-xs" onChange={(event) => setMetricsBaseUrl(event.target.value)} />
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-muted-foreground">{t('settings.metrics.apiKey')}</div>

@@ -37,7 +37,7 @@
 - 当前 MVP 中默认返回“任务编排 / 任务列表”，并重置任务编排内部的深层页面状态。
 
 ### 3.2 Workspace 选择与记忆
-左侧 Logo 下方显示当前 workspace 路径，并作为“切换工作空间”入口。
+左侧 Logo 下方显示当前 workspace 路径，并作为”切换工作空间”入口。
 
 规则：
 - 桌面端启动时优先恢复用户上次选择的 workspace。
@@ -45,6 +45,9 @@
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
+- **新旧 UI 切换同步**：旧 UI → 新 UI 时，将旧 UI 当前 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；新 UI → 旧 UI 时，将新 UI 最后活跃 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）。查看历史 run 或切换 composer 草稿目标不改变该同步目标。
+- **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
 
 ### 3.3 一级菜单
 当前菜单：
@@ -168,7 +171,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
-- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；前端启动后通过 Tauri window API 关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制。
+- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；Tauri 基础配置和 channel overlay 均关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制；同时关闭 Tauri 原生 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 
 ---
 

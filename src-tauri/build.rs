@@ -17,14 +17,15 @@ struct ChannelConfig {
     allow_http_updater: bool,
     metrics_enabled: bool,
     metrics_toggle_locked: bool,
-    heartbeat_endpoint: String,
-    node_metrics_endpoint: String,
+    #[serde(default)]
+    metrics_base_url: String,
     metrics_api_key: String,
 }
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_BASE_URL");
     println!("cargo:rerun-if-changed=../configs/channels");
 
     let channel = env::var("GOLD_BAND_RELEASE_CHANNEL").unwrap_or_else(|_| "default".to_string());
@@ -92,13 +93,11 @@ fn main() {
         "cargo:rustc-env=GOLD_BAND_METRICS_TOGGLE_LOCKED={}",
         config.metrics_toggle_locked
     );
+    let metrics_base_url =
+        env::var("GOLD_BAND_METRICS_BASE_URL").unwrap_or(config.metrics_base_url);
     println!(
-        "cargo:rustc-env=GOLD_BAND_HEARTBEAT_ENDPOINT={}",
-        config.heartbeat_endpoint
-    );
-    println!(
-        "cargo:rustc-env=GOLD_BAND_NODE_METRICS_ENDPOINT={}",
-        config.node_metrics_endpoint
+        "cargo:rustc-env=GOLD_BAND_METRICS_BASE_URL={}",
+        metrics_base_url
     );
     // Allow env var to override JSON value — keeps secrets out of the repo.
     let metrics_api_key = env::var("GOLD_BAND_METRICS_API_KEY")

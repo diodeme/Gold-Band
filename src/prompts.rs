@@ -50,6 +50,8 @@ pub const AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/output_protocol.md");
 pub const AI_DYNAMIC_OUTPUT_PROTOCOL_EN: &str =
     include_str!("prompts/en/runtime/ai-dynamic/output_protocol.md");
+pub const SKILL_CATALOG_BLOCK_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/skill_catalog_block.md");
+pub const SKILL_CATALOG_BLOCK_EN: &str = include_str!("prompts/en/runtime/skill_catalog_block.md");
 
 pub fn render<T: Serialize>(template: &str, context: T) -> Result<String> {
     let mut env = Environment::new();

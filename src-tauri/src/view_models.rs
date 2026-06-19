@@ -125,6 +125,51 @@ pub struct AgentEnvEntryVm {
     pub value: String,
 }
 
+// ── MCP ViewModels ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerVm {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<Vec<AgentEnvEntryVm>>,
+    pub url: Option<String>,
+    pub headers: Option<Vec<AgentEnvEntryVm>>,
+    pub health_status: Option<String>,  // "healthy" | "unhealthy" | "unknown"
+    pub health_message: Option<String>,
+}
+
+// ── SKILL ViewModels ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMetaVm {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub directory_path: String,
+    pub disable_model_invocation: bool,
+    pub load_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillListVm {
+    pub global: Vec<SkillMetaVm>,
+    pub project: Vec<SkillMetaVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillContentVm {
+    pub meta: SkillMetaVm,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentDiagnosticVm {
@@ -5485,6 +5530,99 @@ fn preview_text(text: &str, limit: usize) -> String {
 fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
     items.reverse();
     items
+}
+
+// ── MCP Server VM ──
+
+pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec<McpServerVm> {
+    servers
+        .iter()
+        .map(|s| {
+            let (transport, command, args, env, url, headers) = match &s.transport {
+                gold_band::config::McpTransportConfig::Stdio {
+                    command: cmd,
+                    args: a,
+                    env: e,
+                } => (
+                    "stdio".to_string(),
+                    Some(cmd.clone()),
+                    Some(a.clone()),
+                    Some(env_to_entries(e)),
+                    None,
+                    None,
+                ),
+                gold_band::config::McpTransportConfig::Http {
+                    url: u,
+                    headers: h,
+                    ..
+                } => (
+                    "http".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
+            };
+            McpServerVm {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                enabled: s.enabled,
+                transport,
+                command,
+                args,
+                env,
+                url,
+                headers,
+                health_status: None,
+                health_message: None,
+            }
+        })
+        .collect()
+}
+
+fn env_to_entries(map: &std::collections::BTreeMap<String, String>) -> Vec<AgentEnvEntryVm> {
+    map.iter()
+        .map(|(k, v)| AgentEnvEntryVm {
+            key: k.clone(),
+            value: v.clone(),
+        })
+        .collect()
+}
+
+// ── SKILL VM ──
+
+pub fn skill_list_vm(result: &gold_band::skill::SkillListResult) -> SkillListVm {
+    SkillListVm {
+        global: result.global.iter().map(skill_meta_vm).collect(),
+        project: result.project.iter().map(skill_meta_vm).collect(),
+    }
+}
+
+pub fn skill_content_vm(content: &gold_band::skill::SkillContent) -> SkillContentVm {
+    SkillContentVm {
+        meta: skill_meta_vm(&content.meta),
+        body: content.body.clone(),
+    }
+}
+
+pub fn skill_meta_vm(meta: &gold_band::config::SkillMeta) -> SkillMetaVm {
+    SkillMetaVm {
+        name: meta.name.clone(),
+        description: meta.description.clone(),
+        source: skill_source_str(meta.source),
+        directory_path: meta.directory_path.clone(),
+        disable_model_invocation: meta.disable_model_invocation,
+        load_warnings: meta.load_warnings.clone(),
+    }
+}
+
+fn skill_source_str(source: gold_band::config::SkillSource) -> String {
+    match source {
+        gold_band::config::SkillSource::BuiltIn => "built-in".to_string(),
+        gold_band::config::SkillSource::Global => "global".to_string(),
+        gold_band::config::SkillSource::Project => "project".to_string(),
+    }
 }
 
 #[cfg(test)]

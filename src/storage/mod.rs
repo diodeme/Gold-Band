@@ -211,6 +211,22 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("gold-band.db")
     }
 
+    // ── SKILL paths ──
+
+    pub fn global_skills_dir() -> Utf8PathBuf {
+        let home = dirs::home_dir()
+            .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
+            .unwrap_or_else(|| Utf8PathBuf::from("."));
+        home.join(crate::config::AGENTS_DIR_NAME)
+            .join(crate::config::SKILLS_DIR_NAME)
+    }
+
+    pub fn project_skills_dir(&self) -> Utf8PathBuf {
+        self.repo_root
+            .join(crate::config::AGENTS_DIR_NAME)
+            .join(crate::config::SKILLS_DIR_NAME)
+    }
+
     pub fn projects_dir(&self) -> Utf8PathBuf {
         self.user_gold_band_root.join("projects")
     }

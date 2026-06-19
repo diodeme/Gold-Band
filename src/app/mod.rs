@@ -12,8 +12,10 @@ use crate::acp::permission::{cancel_pending_permission_requests, request_cancel}
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+    ManagedAgentType, McpServerConfig, McpServerHealthResult, RuntimeConfig, RuntimeLogLevel,
+    SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
+use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
@@ -898,6 +900,94 @@ impl App {
         let mut agents = self.config.agents.clone();
         agents.remove(&agent_type);
         self.set_user_agents(agents)
+    }
+
+    // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
+
+    fn mcp_manager(&self) -> McpManager {
+        McpManager::new(self.paths.user_settings_file())
+    }
+
+    pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().list()?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().add(json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn update_mcp_server(&self, id: &str, json_content: &str) -> Result<Vec<McpServerConfig>> {
+        let (_, list) = self.mcp_manager().update(id, json_content)?;
+        Ok(list.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().delete(id)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
+        Ok(self.mcp_manager().toggle(id, enabled)?.into_iter().map(|s| s.config).collect())
+    }
+
+    pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
+        self.mcp_manager().check_health(id)
+    }
+
+    pub fn enabled_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
+        self.mcp_manager().enabled_servers()
+    }
+
+    pub fn acp_mcp_servers(&self) -> Result<Vec<serde_json::Value>> {
+        self.mcp_manager().to_acp_mcp_servers()
+    }
+
+    // ── SKILL (delegates to skill::SkillManager) ──
+
+    pub fn skill_manager(&self) -> crate::skill::SkillManager {
+        crate::skill::SkillManager::new(self.paths.clone())
+    }
+
+    pub fn list_skills(&self) -> Result<crate::skill::SkillListResult> {
+        self.skill_manager().list()
+    }
+
+    pub fn read_skill(&self, name: &str, source: SkillSource) -> Result<crate::skill::SkillContent> {
+        self.skill_manager().read(name, source)
+    }
+
+    pub fn write_skill(&self, name: &str, source: SkillSource, content: &str) -> Result<SkillMeta> {
+        self.skill_manager().write(name, source, content)
+    }
+
+    pub fn delete_skill(&self, name: &str, source: SkillSource) -> Result<()> {
+        self.skill_manager().delete(name, source)
+    }
+
+    /// 同步 SKILL symlink 到 .claude/skills/（保存/删除时自动调用）
+    /// workspace_path 用于指定项目级 SKILL 的实际工作空间目录
+    pub fn sync_skill_symlinks(&self, workspace_path: Option<&str>) {
+        use crate::skill::scan_skills_dir;
+        use crate::config::{SkillSource, AGENTS_DIR_NAME, SKILLS_DIR_NAME};
+
+        let global_dir = crate::storage::GoldBandPaths::global_skills_dir();
+        let global = scan_skills_dir(&global_dir, SkillSource::Global);
+        let global: Vec<_> = global.into_iter().filter(|s| !s.disable_model_invocation).collect();
+
+        // 全局 SKILL → 始终同步到 ~/.claude/skills/
+        // 不需要 workspace 路径：直接用空路径 + 仅 global skills
+        crate::skill::symlink::sync_all(std::path::Path::new(""), &global, &[]);
+
+        // 项目 SKILL → 仅在有 workspace_path 时同步到 <workspace>/.claude/skills/
+        if let Some(ws) = workspace_path {
+            let p = std::path::Path::new(ws);
+            let project_dir = camino::Utf8PathBuf::from_path_buf(
+                p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
+            ).unwrap_or_default();
+            let project = scan_skills_dir(&project_dir, SkillSource::Project);
+            let project: Vec<_> = project.into_iter().filter(|s| !s.disable_model_invocation).collect();
+            crate::skill::symlink::sync_all(p, &global, &project);
+        }
     }
 
     pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {

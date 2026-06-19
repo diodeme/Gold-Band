@@ -865,6 +865,7 @@ export function App() {
         updateBadges: defaultUpdateBadges,
         metricsSettings: defaultMetricsSettings,
         clientVersion: '',
+        platform: 'unknown',
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
         needsWorkspace: false,
@@ -1077,6 +1078,7 @@ export function App() {
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
       appName={appInfo.appName}
+      platform={bootstrap?.platform}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}

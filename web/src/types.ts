@@ -3,6 +3,7 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
@@ -66,6 +67,7 @@ export interface AppBootstrapVm {
   updateBadges: UpdateBadgeStateVm;
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
+  platform: DesktopPlatform;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
   needsWorkspace: boolean;

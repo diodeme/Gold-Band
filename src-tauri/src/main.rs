@@ -63,6 +63,13 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
+    let mut tauri_context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
+        window.decorations = true;
+        window.title_bar_style = tauri::TitleBarStyle::Overlay;
+        window.hidden_title = true;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -217,7 +224,7 @@ fn run() -> anyhow::Result<()> {
             write_skill,
             delete_skill,
         ])
-        .run(tauri::generate_context!())
+        .run(tauri_context)
         .context("tauri runtime failed")?;
     Ok(())
 }

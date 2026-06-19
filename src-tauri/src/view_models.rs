@@ -67,6 +67,7 @@ pub struct AppBootstrapVm {
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
+    pub platform: String,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
     pub needs_workspace: bool,
@@ -909,6 +910,15 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     }
 }
 
+#[cfg(target_os = "macos")]
+const DESKTOP_PLATFORM: &str = "macos";
+#[cfg(target_os = "windows")]
+const DESKTOP_PLATFORM: &str = "windows";
+#[cfg(target_os = "linux")]
+const DESKTOP_PLATFORM: &str = "linux";
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const DESKTOP_PLATFORM: &str = "unknown";
+
 pub fn bootstrap_vm(
     app: &App,
     recent_workspaces: Vec<String>,
@@ -937,6 +947,7 @@ pub fn bootstrap_vm(
             &client_version_string,
         ),
         client_version: client_version_string,
+        platform: DESKTOP_PLATFORM.to_string(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),

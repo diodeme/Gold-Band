@@ -9,7 +9,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ 自定义顶栏：折叠按钮 / 品牌 icon+标题 / Workbench·Conversation toggle / 窗口控制 │
+│ 共享顶栏：折叠按钮 / 品牌 icon+标题 / Workbench·Conversation toggle / 窗口控制 │
 ├───────────────┬──────────────────────────────────────────────┤
 │ Logo          │ 当前一级功能区                                │
 │               │                                              │
@@ -144,12 +144,12 @@ round 详情
 - 详情页滚动
 - 大屏展示更多列
 - 小窗口下保留左侧一级导航和当前页面核心内容
-- 应用整窗统一使用自定义顶栏，不保留可感知的原生 header
+- 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
-- 顶栏左侧只保留一个侧边栏折叠按钮；Workbench / Conversation 形态切换集中到顶栏中部
+- 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；Workbench / Conversation 形态切换集中到顶栏中部
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
-- 顶栏右侧统一承载窗口最小化、最大化/还原、关闭操作，保证跨平台桌面可用性
+- Windows/Linux 顶栏右侧承载窗口最小化、最大化/还原、关闭操作；macOS 使用系统原生左上角 traffic lights，顶栏不重复渲染自定义窗口按钮
 
 ### 6.4 运行态生命周期
 - Round 详情页的“继续运行”只在当前 run / round / node 处于可恢复暂停态时出现；成功、失败或 killed 的终局 round 不展示该入口。
@@ -171,7 +171,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
-- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 自定义顶栏；Tauri 基础配置和 channel overlay 均关闭整窗 decorations，并由共享顶栏接管侧边栏折叠、形态切换和窗口控制；同时关闭 Tauri 原生 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
+- 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
+- 2026-06-19 起桌面 bootstrap 暴露 `platform` 作为前端唯一平台事实源：macOS 启用原生 traffic lights + overlay 标题栏并隐藏系统标题文本；Windows/Linux 继续关闭整窗 decorations，由共享顶栏右侧自定义窗口控制接管最小化、最大化/还原和关闭。
 
 ---
 

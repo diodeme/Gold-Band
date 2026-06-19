@@ -673,6 +673,18 @@ export interface AcpPermissionOptionVm {
   kind: string;
 }
 
+// Toast「查看详情」点击后后端 emit 的导航事件 payload（含完整定位字段 + dedupKey）。
+// 应用内不再保留右上角弹窗；系统级 Toast 是唯一干预提醒表面。
+export interface InterventionNavigateEventVm {
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  dedupKey: string;
+}
+
+
 export interface AcpDiagnosticsVm {
   rawFrameCount: number;
   eventCount: number;

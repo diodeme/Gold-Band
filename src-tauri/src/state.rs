@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
-use gold_band::app::App;
+use gold_band::app::{App, NotificationDedup};
 use gold_band::config::{ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
@@ -81,6 +81,7 @@ impl DesktopContext {
 
     pub fn app_with_metrics(
         &self,
+        app_handle: &tauri::AppHandle,
         live_update: Arc<
             dyn Fn(
                     gold_band::app::AcpLiveEventContext,
@@ -100,6 +101,9 @@ impl DesktopContext {
             .with_acp_live_update(live_update)
             .with_acp_session_update(session_update)
             .with_metrics_callback(metrics_callback)
+            .with_intervention_notifier(crate::notifications::create_intervention_notifier(
+                app_handle.clone(),
+            ))
     }
 }
 
@@ -123,6 +127,8 @@ pub struct DesktopState {
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
+    /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
+    notification_dedup: Arc<NotificationDedup>,
 }
 
 impl DesktopState {
@@ -134,7 +140,13 @@ impl DesktopState {
             agent_diagnostics: Mutex::new(persisted_diagnostics),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
+            notification_dedup: Arc::new(NotificationDedup::new()),
         }
+    }
+
+    /// 干预通知去重表（共享实例）。路径 A/B 与 dismiss 命令均经此访问。
+    pub fn notification_dedup(&self) -> Arc<NotificationDedup> {
+        self.notification_dedup.clone()
     }
 
     pub fn app(&self) -> Result<App> {

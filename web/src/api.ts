@@ -167,6 +167,11 @@ export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<Runt
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+// 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
+export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
+  return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
   return getRuntimeApi().sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }

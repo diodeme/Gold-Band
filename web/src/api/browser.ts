@@ -216,6 +216,9 @@ export const browserApi: RuntimeApi = {
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
+  subscribeInterventionNavigate() {
+    return Promise.resolve(() => {});
+  },
   sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve(fallback ?? null);
   },

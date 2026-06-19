@@ -1011,6 +1011,45 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
         )
 }
 
+/// 路径 A：在编排器暂停分支触发干预通知（人工确认 / 错误阻塞 / 进程中断）。
+///
+/// 只读挂接：仅读 `run.pause_reason` 构造通知并触发回调，不改任何控制流、状态写入
+/// 或事件持久化（方案 §6.1）。未注入回调时（如 CLI 模式）静默跳过，零额外开销。
+/// `node_label` 复用既有 profile 名提取（与 `completed_node_snapshot` 同源），缺省回退
+/// `node.node_id`；`task_title` 经 `task_show` 读取，失败回退 None（body 用 task_id）。
+fn emit_intervention_notification(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) {
+    let Some(notifier) = &app.intervention_notifier else {
+        return;
+    };
+    let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
+    let node_label = node
+        .resolved_config
+        .get("profileName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| node.node_id.clone());
+    let task_title = app.task_show(task_id).ok().and_then(|t| t.title);
+    let notification = super::InterventionNotification::new(
+        task_id,
+        task_title.as_deref(),
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+        &node_label,
+        reason,
+    );
+    notifier(notification);
+}
+
 fn completed_node_snapshot(
     round: &RoundState,
     node: &NodeState,
@@ -1347,6 +1386,7 @@ fn apply_control_decision(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, node)?;
+            emit_intervention_notification(app, task_id, run, round, node);
             Ok(None)
         }
         ControlDecision::CompleteRun(outcome) => {
@@ -6418,6 +6458,7 @@ fn drive_from_node_with_initial_session(
                     &ctx,
                 );
                 persist_runtime_state(app, task_id, run, round, &failed_node)?;
+                emit_intervention_notification(app, task_id, run, round, &failed_node);
                 return Ok(());
             }
         };
@@ -6485,6 +6526,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
+            emit_intervention_notification(app, task_id, run, round, &node);
             return Ok(());
         }
 
@@ -6626,6 +6668,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
+            emit_intervention_notification(app, task_id, run, round, &node);
             return Ok(());
         }
 

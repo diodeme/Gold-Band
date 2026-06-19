@@ -8,8 +8,8 @@ use gold_band::acp::permission::{
     request_cancel, write_permission_response,
 };
 use gold_band::app::{
-    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
-    ProfileInput, ProfileList, WorkflowTemplateStore,
+    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, InterventionNotification,
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -34,8 +34,8 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
-use tracing::info;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tracing::{info, warn};
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
@@ -160,7 +160,10 @@ fn resolve_command_app_with_emitters(
     Ok(base_app
         .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
-        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle.clone())))
+        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle.clone()))
+        .with_intervention_notifier(crate::notifications::create_intervention_notifier(
+            app_handle.clone(),
+        )))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -689,9 +692,10 @@ pub fn start_run(
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
+        &app_handle,
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle),
+        crate::metrics::create_metrics_callback(app_handle.clone()),
     );
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
@@ -813,9 +817,10 @@ pub fn retry_run(
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app_with_metrics(
+        &app_handle,
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle),
+        crate::metrics::create_metrics_callback(app_handle.clone()),
     );
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
@@ -829,9 +834,11 @@ pub fn kill_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let app = state.app().map_err(command_error)?;
-    app.run_kill(&task_id, &run_id)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let summary = app.run_kill(&task_id, &run_id).map_err(command_error)?;
+    // run 终态：清理该 run 的全部干预通知 dedup key，防常驻 EXE 内存泄漏（方案 §8.3）。
+    // 幂等；clear_run 不影响其他 run。
+    state.notification_dedup().clear_run(&summary.id);
+    Ok(run_summary_vm(summary))
 }
 
 #[tauri::command]
@@ -931,6 +938,9 @@ pub(crate) fn acp_live_update_emitter(
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
+        // 路径 B 旁路挂接：检测到权限请求 pending → 强制 PermissionRequested 发通知。
+        // 先于主干 emit 调用（仅借用 context/event），不改主干 emit 逻辑（方案 §6.2）。
+        maybe_emit_permission_intervention(&app_handle, &context, &event);
         emit_acp_event_update(
             &app_handle,
             project_id.clone(),
@@ -945,6 +955,45 @@ pub(crate) fn acp_live_update_emitter(
         );
         Ok(())
     })
+}
+
+/// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
+///
+/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。文案用一般性
+/// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
+/// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
+fn maybe_emit_permission_intervention(
+    app_handle: &AppHandle,
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+) {
+    if event.kind != "permissionRequest" {
+        return;
+    }
+    let is_pending = event
+        .status
+        .as_deref()
+        .map(|s| s == "pending")
+        .unwrap_or(false);
+    if !is_pending {
+        return;
+    }
+    let Some(state) = app_handle.try_state::<DesktopState>() else {
+        warn!("DesktopState unavailable; permission intervention dropped");
+        return;
+    };
+    let dedup = state.notification_dedup();
+    let notification = InterventionNotification::new(
+        &context.task_id,
+        None,
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+        &context.node_id,
+        PauseReason::PermissionRequested,
+    );
+    crate::notifications::send_intervention_notification(app_handle, &dedup, notification);
 }
 
 pub(crate) fn acp_session_update_emitter(

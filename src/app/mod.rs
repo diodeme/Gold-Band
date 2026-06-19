@@ -6,6 +6,7 @@ mod profiles;
 mod state_access;
 mod state_factory;
 mod transition_context;
+pub mod observability;
 
 use crate::acp::client as acp_client;
 use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
@@ -424,46 +425,70 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
-/// Context provided to the metrics callback when a node starts or completes execution.
+/// Workflow lifecycle events emitted by the orchestrator via ObservabilityBus.
+/// Subscribers (metrics, tracing, audit, etc.) observe these events without
+/// the orchestrator knowing who is listening.
+///
+/// Each event is self-contained — it carries all IDs, metadata, and
+/// filesystem paths a subscriber needs.
+///
+/// Token counts (input/output/cache/total) are NOT included. Subscribers read
+/// token data themselves from `attempt_dir/acp.snapshot.json`.
 #[derive(Debug, Clone)]
-pub struct MetricsEventContext {
-    pub repo_root: String,
-    // Display IDs
-    pub task_id: String,
-    pub run_id: String,
-    pub round_id: String,
-    pub node_id: String,
-    pub attempt_id: String,
-    // UUIDs (for metrics reporting)
-    pub task_uuid: Option<String>,
-    pub run_uuid: Option<String>,
-    pub round_uuid: Option<String>,
-    pub node_uuid: Option<String>,
-    // Node metadata
-    pub seq: Option<u32>,
-    pub node_name: Option<String>,
-    pub agent_type: Option<String>,
-    pub started_at: String,
-    pub finished_at: Option<String>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub total_tokens: u64,
-    pub acp_session_path: Option<String>,
-    // Actual outcome of the node (e.g. "SUCCESS", "FAILED").
-    // Used by NodeCompleted to report the real status instead of hardcoding.
-    pub outcome: Option<String>,
-}
-
-/// Event types emitted by the orchestrator for metrics reporting.
-#[derive(Debug, Clone)]
-pub enum MetricsEvent {
-    /// A node has started executing. Includes the predecessor node's last-executed data if available.
+pub enum WorkflowEvent {
+    /// A node has started executing. The orchestrator is about to invoke the
+    /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
+        // ── IDs (display + UUID) ──
+        task_id: String,
+        task_uuid: Option<String>,
+        run_id: String,
+        run_uuid: Option<String>,
+        round_id: String,
+        round_uuid: Option<String>,
+        node_id: String,
+        node_uuid: Option<String>,
+        attempt_id: String,
+        // ── Metadata ──
+        repo_root: String,
+        seq: Option<u32>,
+        node_name: Option<String>,
+        agent_type: Option<String>,
+        started_at: String,
+        /// Path to the current node's attempt directory. `None` because the
+        /// node just started — attempt dir hasn't been populated yet.
+        attempt_dir: Option<String>,
+        /// The immediately preceding node in this run (None for first node).
         predecessor: Option<crate::runtime::LastExecutedNode>,
     },
-    /// A node has completed execution. The orchestrator updates `run.last_executed_node`.
-    NodeCompleted,
+    /// A node has completed execution (the AI provider returned). The
+    /// orchestrator has already persisted runtime state.
+    NodeCompleted {
+        // ── IDs (display + UUID) ──
+        task_id: String,
+        task_uuid: Option<String>,
+        run_id: String,
+        run_uuid: Option<String>,
+        round_id: String,
+        round_uuid: Option<String>,
+        node_id: String,
+        node_uuid: Option<String>,
+        attempt_id: String,
+        // ── Metadata ──
+        repo_root: String,
+        seq: Option<u32>,
+        node_name: String,
+        agent_type: Option<String>,
+        started_at: String,
+        finished_at: Option<String>,
+        outcome: String, // "SUCCESS" | "FAILED"
+        /// Path to this node's attempt directory for reading token data.
+        attempt_dir: String,
+        /// When true, the subscriber skips the 「结束」sentinel. Used by
+        /// dynamic workers so that only the outer AiDynamic node produces
+        /// the single begin/end sentinel pair for the whole workflow.
+        suppress_sentinel: bool,
+    },
 }
 
 pub struct App {
@@ -476,7 +501,7 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
-    metrics_callback: Option<Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>>,
+    pub observability_bus: observability::ObservabilityBus,
 }
 
 #[derive(Debug, Clone)]
@@ -670,7 +695,7 @@ impl App {
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            metrics_callback: self.metrics_callback.clone(),
+            observability_bus: self.observability_bus.clone(),
         }
     }
 
@@ -689,14 +714,6 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
-        self
-    }
-
-    pub fn with_metrics_callback(
-        mut self,
-        callback: Arc<dyn Fn(MetricsEventContext, MetricsEvent) + Send + Sync>,
-    ) -> Self {
-        self.metrics_callback = Some(callback);
         self
     }
 
@@ -1393,7 +1410,7 @@ impl App {
             provider_override: None,
             acp_live_update: None,
             acp_session_update: None,
-            metrics_callback: None,
+            observability_bus: observability::ObservabilityBus::new(),
         }
     }
 
@@ -1415,7 +1432,7 @@ impl App {
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
             acp_session_update: None,
-            metrics_callback: None,
+            observability_bus: observability::ObservabilityBus::new(),
         }
     }
 

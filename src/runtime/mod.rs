@@ -20,10 +20,10 @@ pub struct LastExecutedNode {
     pub status: String,
     pub started_at: String,
     pub finished_at: Option<String>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub total_tokens: u64,
+    /// Path to this node's attempt directory. Subscribers read
+    /// `acp.snapshot.json` from here for token counts.
+    #[serde(default)]
+    pub attempt_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -159,10 +159,12 @@ fn resolve_command_app_with_emitters(
     let (base_app, _) = resolve_workspace_app(context, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     let bg_app = base_app.clone_for_background();
-    Ok(base_app
+    let app = base_app
         .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
-        .with_metrics_callback(crate::metrics::create_metrics_callback(app_handle.clone())))
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid));
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    Ok(app)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -690,11 +692,12 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
+    let app = context.app_with_acp_live_updates(
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle),
     );
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -814,11 +817,12 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_metrics(
+    let app = context.app_with_acp_live_updates(
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
-        crate::metrics::create_metrics_callback(app_handle),
     );
+    app.observability_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)

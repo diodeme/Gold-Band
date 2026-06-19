@@ -1660,6 +1660,11 @@ fn round_trace_graph_vm(
     node_labels: &HashMap<String, String>,
     control_failure: Option<&ControlFailureVm>,
 ) -> Result<GraphVm> {
+    const TRACE_SEQUENCE_RANK_WIDTH: u32 = 100;
+    fn trace_rank_sequence(sequence: u32) -> u32 {
+        sequence.saturating_mul(TRACE_SEQUENCE_RANK_WIDTH)
+    }
+
     let mut steps = round.trace.clone();
     steps.sort_by_key(|step| step.sequence);
 
@@ -1686,7 +1691,7 @@ fn round_trace_graph_vm(
                 &node.node_id,
                 &node.attempt_id,
             ) {
-                let base_sequence = step.sequence.saturating_mul(100);
+                let base_sequence = trace_rank_sequence(step.sequence);
                 let pause_reason = run.pause_reason.as_ref().map(enum_label);
                 let run_resumable = is_run_continuable(run);
                 let mut internal_nodes = dynamic_graph
@@ -1721,19 +1726,14 @@ fn round_trace_graph_vm(
                 if let Some(first) = internal_nodes.first() {
                     ai_dynamic_entry_map.insert(node.node_id.clone(), first.id.clone());
                 }
-                let terminal_ids = internal_nodes
-                    .iter()
-                    .filter(|candidate| {
-                        !dynamic_graph.nodes.iter().any(|other| {
-                            other
-                                .depends_on
-                                .iter()
-                                .any(|dep| dep == candidate.node_id.as_deref().unwrap_or_default())
-                        })
-                    })
-                    .map(|candidate| candidate.id.clone())
-                    .collect::<Vec<_>>();
-                ai_dynamic_terminal_map.insert(node.node_id.clone(), terminal_ids);
+                ai_dynamic_terminal_map.insert(
+                    node.node_id.clone(),
+                    dynamic_external_exit_graph_node_ids(
+                        &node.node_id,
+                        &node.attempt_id,
+                        &dynamic_graph,
+                    ),
+                );
 
                 for vm in internal_nodes.drain(..) {
                     if added_ids.insert(vm.id.clone()) {
@@ -1779,7 +1779,9 @@ fn round_trace_graph_vm(
             candidate.node_id == latest_step.node_id
                 && candidate.attempt_id == latest_step.attempt_id
         });
-        let first_sequence = node_steps.first().map(|candidate| candidate.sequence);
+        let first_sequence = node_steps
+            .first()
+            .map(|candidate| trace_rank_sequence(candidate.sequence));
         let mut attempts = Vec::new();
         for node_step in &node_steps {
             if let Some(node_attempt) = nodes.iter().find(|candidate| {
@@ -2158,7 +2160,7 @@ fn dynamic_node_graph_vm(
         resumable,
     );
     GraphNodeVm {
-        id: format!("{outer_node_id}::{outer_attempt_id}::{}", node.id),
+        id: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id),
         node_id: Some(node.id.clone()),
         sequence: Some(sequence_hint.unwrap_or(sequence)),
         label: node.title.clone(),
@@ -2227,12 +2229,12 @@ fn dynamic_internal_graph_vm(
 
     let mut edges = Vec::new();
     for node in &graph.nodes {
-        let to = format!("{outer_node_id}::{outer_attempt_id}::{}", node.id);
+        let to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id);
         let mut has_dependency = false;
         for dependency in &node.depends_on {
             has_dependency = true;
             edges.push(GraphEdgeVm {
-                from: format!("{outer_node_id}::{outer_attempt_id}::{dependency}"),
+                from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, dependency),
                 to: to.clone(),
                 label: "depends-on".to_string(),
                 traversal_count: 1,
@@ -2240,34 +2242,11 @@ fn dynamic_internal_graph_vm(
                 blocked_reason: None,
             });
         }
-        if !has_dependency && node.depth > 0 {
-            let upstream = graph
-                .nodes
-                .iter()
-                .find(|candidate| {
-                    candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth
-                })
-                .or_else(|| {
-                    node.group_id.as_deref().and_then(|group_id| {
-                        graph
-                            .groups
-                            .iter()
-                            .find(|group| {
-                                group.id == group_id
-                                    && group.root_node_ids.iter().any(|id| id == &node.id)
-                            })
-                            .map(|group| &group.created_by_node_id)
-                            .and_then(|source_id| {
-                                graph
-                                    .nodes
-                                    .iter()
-                                    .find(|candidate| candidate.id == *source_id)
-                            })
-                    })
-                });
+        if !has_dependency {
+            let upstream = dynamic_implicit_upstream_node(graph, node);
             if let Some(upstream) = upstream {
                 edges.push(GraphEdgeVm {
-                    from: format!("{outer_node_id}::{outer_attempt_id}::{}", upstream.id),
+                    from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &upstream.id),
                     to: to.clone(),
                     label: "success".to_string(),
                     traversal_count: 1,
@@ -2279,7 +2258,11 @@ fn dynamic_internal_graph_vm(
         if node.session_mode == SessionMode::Continue {
             if let Some(continue_from_node_id) = &node.continue_from_node_id {
                 edges.push(GraphEdgeVm {
-                    from: format!("{outer_node_id}::{outer_attempt_id}::{continue_from_node_id}"),
+                    from: dynamic_graph_node_vm_id(
+                        outer_node_id,
+                        outer_attempt_id,
+                        continue_from_node_id,
+                    ),
                     to: to.clone(),
                     label: "continue".to_string(),
                     traversal_count: 1,
@@ -2291,6 +2274,68 @@ fn dynamic_internal_graph_vm(
     }
 
     GraphVm { nodes, edges }
+}
+
+fn dynamic_graph_node_vm_id(outer_node_id: &str, outer_attempt_id: &str, node_id: &str) -> String {
+    format!("{outer_node_id}::{outer_attempt_id}::{node_id}")
+}
+
+fn dynamic_external_exit_graph_node_ids(
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    graph: &DynamicGraphState,
+) -> Vec<String> {
+    let mut non_exit_node_ids = HashSet::<String>::new();
+    for node in &graph.nodes {
+        for dependency in &node.depends_on {
+            non_exit_node_ids.insert(dependency.clone());
+        }
+        if let Some(upstream) = dynamic_implicit_upstream_node(graph, node) {
+            non_exit_node_ids.insert(upstream.id.clone());
+        }
+        if node.session_mode == SessionMode::Continue {
+            if let Some(continue_from_node_id) = &node.continue_from_node_id {
+                non_exit_node_ids.insert(continue_from_node_id.clone());
+            }
+        }
+    }
+
+    graph
+        .nodes
+        .iter()
+        .filter(|node| !non_exit_node_ids.contains(&node.id))
+        .map(|node| dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id))
+        .collect()
+}
+
+fn dynamic_implicit_upstream_node<'a>(
+    graph: &'a DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<&'a gold_band::dynamic::DynamicNodeState> {
+    if !node.depends_on.is_empty() || node.depth == 0 {
+        return None;
+    }
+    graph
+        .nodes
+        .iter()
+        .find(|candidate| candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth)
+        .or_else(|| {
+            node.group_id.as_deref().and_then(|group_id| {
+                graph
+                    .groups
+                    .iter()
+                    .find(|group| {
+                        group.id == group_id && group.root_node_ids.iter().any(|id| id == &node.id)
+                    })
+                    .map(|group| &group.created_by_node_id)
+                    .and_then(|source_id| {
+                        graph
+                            .nodes
+                            .iter()
+                            .find(|candidate| candidate.id == *source_id)
+                    })
+            })
+        })
 }
 
 pub fn dynamic_runtime_graph_vm(
@@ -5556,6 +5601,222 @@ mod tests {
         state.finish_at(session_active, now)
     }
 
+    fn seed_dynamic_round_graph_fixture(app: &App) {
+        let task_id = "task-dynamic-round-graph";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let workflow = json!({
+            "version": "0.1",
+            "id": "dynamic-to-accept",
+            "entry": "ai-dynamic1",
+            "control": {},
+            "nodes": [
+                {
+                    "type": "ai-dynamic",
+                    "id": "ai-dynamic1",
+                    "agentStrategy": { "mode": "fixed", "provider": "claude-acp" },
+                    "control": {}
+                },
+                {
+                    "type": "worker",
+                    "id": "accept",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-accept"
+                }
+            ],
+            "edges": [
+                { "from": "ai-dynamic1", "to": "accept", "on": "success" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        });
+        write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": "0.1",
+                "id": task_id,
+                "title": "Dynamic round graph"
+            }),
+        )
+        .unwrap();
+        write_json(&app.paths.workflow_file(task_id), &workflow).unwrap();
+        write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &workflow,
+        )
+        .unwrap();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": "0.1",
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:00:00Z",
+                "updated_at": "2026-06-17T10:03:00Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": null,
+                "current_node": null,
+                "current_attempt": null,
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &json!({
+                "version": "0.1",
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "success",
+                "trigger": "initial",
+                "started_at": "2026-06-17T10:00:00Z",
+                "trace": [
+                    {
+                        "sequence": 1,
+                        "node_id": "ai-dynamic1",
+                        "attempt_id": "attempt-001",
+                        "from_node_id": null,
+                        "edge_outcome": null,
+                        "entered_at": "2026-06-17T10:00:00Z"
+                    },
+                    {
+                        "sequence": 2,
+                        "node_id": "accept",
+                        "attempt_id": "attempt-001",
+                        "from_node_id": "ai-dynamic1",
+                        "edge_outcome": "success",
+                        "entered_at": "2026-06-17T10:03:00Z"
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "node_id": "ai-dynamic1",
+                "node_type": "ai-dynamic",
+                "run_id": run_id,
+                "round_id": round_id,
+                "attempt_id": "attempt-001",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:00:00Z",
+                "finished_at": "2026-06-17T10:02:50Z",
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "accept", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "node_id": "accept",
+                "node_type": "worker",
+                "run_id": run_id,
+                "round_id": round_id,
+                "attempt_id": "attempt-001",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:03:00Z",
+                "finished_at": "2026-06-17T10:03:20Z",
+                "manual_check_pending": false,
+                "resolved_config": { "provider": "claude-acp" }
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .dynamic_graph_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "run": {
+                    "version": "0.1",
+                    "id": "dynamic-run-001",
+                    "parentRunId": run_id,
+                    "parentRoundId": round_id,
+                    "parentNodeId": "ai-dynamic1",
+                    "parentAttemptId": "attempt-001",
+                    "status": "completed",
+                    "outcome": "success",
+                    "pauseReason": null,
+                    "startedAt": "2026-06-17T10:00:00Z",
+                    "updatedAt": "2026-06-17T10:02:50Z",
+                    "control": {},
+                    "allowedWorkflowSnapshots": [],
+                    "currentNodeIds": []
+                },
+                "nodes": [
+                    {
+                        "version": "0.1",
+                        "id": "bootstrap",
+                        "dynamicRunId": "dynamic-run-001",
+                        "kind": "worker",
+                        "title": "AI-DYNAMIC bootstrap",
+                        "task": "Design the first internal dynamic step.",
+                        "status": "completed",
+                        "outcome": "success",
+                        "groupId": null,
+                        "chainId": "bootstrap",
+                        "depth": 0,
+                        "dependsOn": [],
+                        "workspace": { "mode": "readonly" },
+                        "workspacePath": null,
+                        "provider": "claude-acp",
+                        "profile": null,
+                        "permissionMode": "bypassPermissions",
+                        "model": null,
+                        "sessionMode": "new",
+                        "continueFromNodeId": null,
+                        "workflowId": null,
+                        "workflowSnapshotId": null,
+                        "childRunId": null,
+                        "startedAt": "2026-06-17T10:00:00Z",
+                        "finishedAt": "2026-06-17T10:01:00Z"
+                    },
+                    {
+                        "version": "0.1",
+                        "id": "create-hello-world-py",
+                        "dynamicRunId": "dynamic-run-001",
+                        "kind": "worker",
+                        "title": "Create hello-world Python class",
+                        "task": "Create hello_world.py.",
+                        "status": "completed",
+                        "outcome": "success",
+                        "groupId": null,
+                        "chainId": "bootstrap",
+                        "depth": 1,
+                        "dependsOn": [],
+                        "workspace": { "mode": "main" },
+                        "workspacePath": null,
+                        "provider": "claude-acp",
+                        "profile": "pf-builtin-dev",
+                        "permissionMode": "bypassPermissions",
+                        "model": null,
+                        "sessionMode": "new",
+                        "continueFromNodeId": null,
+                        "workflowId": null,
+                        "workflowSnapshotId": null,
+                        "childRunId": null,
+                        "startedAt": "2026-06-17T10:01:00Z",
+                        "finishedAt": "2026-06-17T10:02:50Z"
+                    }
+                ],
+                "groups": [],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn runtime_display_marks_workflow_failure_as_non_blocking() {
         let failure = runtime_display_vm(Some("completed"), Some("failure"), false, None, false);
@@ -5567,6 +5828,57 @@ mod tests {
         assert!(!failure.blocking_error);
         assert!(error_blocked.blocking_error);
         assert!(killed.blocking_error);
+    }
+
+    #[test]
+    fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-dynamic-round-graph-test-{}",
+            std::process::id()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let app = App::new(repo_root);
+        seed_dynamic_round_graph_fixture(&app);
+
+        let detail = round_detail_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            None,
+        )
+        .unwrap();
+
+        assert!(detail.graph.edges.iter().any(|edge| {
+            edge.from == "ai-dynamic1::attempt-001::create-hello-world-py"
+                && edge.to == "accept"
+                && edge.label == "success"
+        }));
+        assert!(!detail.graph.edges.iter().any(|edge| {
+            edge.from == "ai-dynamic1::attempt-001::bootstrap"
+                && edge.to == "accept"
+                && edge.label == "success"
+        }));
+        let dynamic_exit_sequence = detail
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "ai-dynamic1::attempt-001::create-hello-world-py")
+            .and_then(|node| node.sequence)
+            .unwrap();
+        let accept_sequence = detail
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "accept")
+            .and_then(|node| node.sequence)
+            .unwrap();
+        assert!(
+            dynamic_exit_sequence < accept_sequence,
+            "AI-DYNAMIC exit should rank before the next workflow node"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

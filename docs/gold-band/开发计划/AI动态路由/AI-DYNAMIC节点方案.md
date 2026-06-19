@@ -21,6 +21,8 @@
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
 - view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals；同时 Round 详情主图已改为把 AI-DYNAMIC 内部实际执行节点内联到主执行图中，点击后复用普通节点详情 / 会话 / 产物链路。
 - 动态内联节点的详情与 ACP 会话定位必须读取真实 dynamic attempt 目录，并与主图边关系保持一致；不能把所有内部节点固定映射成同一个 attempt，否则会出现节点看似运行但会话/边信息错位。
+- Round 详情主图中，AI-DYNAMIC 外层 success/failure 边仍按普通 workflow trace 判定，但展示连接端点改为内部 dynamic graph 出口节点：显式 `dependsOn`、`sessionMode=continue` 和 `chainId/depth` 隐式成功边都会参与出口判定，避免 bootstrap 等中间层节点被误连到后续普通节点；当前常见单出口，保留多个出口 fan-in 到后续节点的能力。
+- 动态内联节点在主图中的 rank 必须位于其外层 AI-DYNAMIC trace 步骤与后续普通 workflow 节点之间；外层后继节点不能因为原始 trace sequence 更小而排到内部节点前面，否则出口边会被前端布局识别成回退边并走顶部绕线路由。
 - 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot、schema 策略收窄、repair prompt 路径、merge/acceptance profile 禁用、非 git worktree 提示词注入与 proposal 拒绝；同时通过 `cargo test`、`npm run web:test`、`npm run web:build`。
 
 V1 仍保持以下边界：不做 direct mode、triage-result、route-decision/replan、nested AI-DYNAMIC 和局部失败恢复。
@@ -835,9 +837,7 @@ runs/run-001/
             proposal-node-plan-001.json
 ```
 
-外层 round graph 只显示 `AI-DYNAMIC` 一个节点。
-
-进入该节点后，展示内部 dynamic graph。
+Round 详情主图会把 AI-DYNAMIC 内部实际执行节点内联进外层执行路径。外层 workflow 后续边仍消费 `AI-DYNAMIC` 的最终 outcome，但展示上从内部 dynamic graph 的出口节点连到后续普通节点；出口节点按内部图下游关系判定，包含显式 `dependsOn`、继续会话引用以及 `chainId/depth` 隐式成功边。
 
 ---
 
@@ -1231,24 +1231,9 @@ workflow.id = dev-review-test-accept
 
 ### 21.2 外层 Round 图
 
-AI-DYNAMIC 作为一个节点显示：
+Round 详情主图优先内联 AI-DYNAMIC 内部实际执行节点，而不是只展示一个复合占位节点。内部 bootstrap / worker / workflow-invocation / merge / acceptance 节点复用普通节点卡片、选择、详情、会话、产物和附件入口。
 
-```text
-AI-DYNAMIC
-running
-internal nodes: 8
-groups: 2
-current: merge group-core-refactor
-```
-
-点击：
-
-- 选中 AI-DYNAMIC
-- 下方信息流显示 dynamic summary
-
-双击：
-
-- 打开内部 dynamic graph
+当外层 workflow 从 AI-DYNAMIC 继续到普通节点时，展示边从内部 dynamic graph 的出口节点连接到后续节点。出口节点通常是 `next.type=end` 前的最后一个内部节点；如果未来存在多个无下游出口，则这些出口都可以连接到同一个外层后继节点。
 
 ### 21.3 内部 Dynamic Graph
 

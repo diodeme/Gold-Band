@@ -57,7 +57,10 @@ pub fn encode_view_action(payload: &ViewActionPayload) -> String {
 /// 编码 `dismiss:` + base64(json(payload))。
 pub fn encode_dismiss_action(payload: &DismissActionPayload) -> String {
     let json = serde_json::to_string(payload).unwrap_or_default();
-    format!("{ACTION_DISMISS}{}", URL_SAFE_NO_PAD.encode(json.as_bytes()))
+    format!(
+        "{ACTION_DISMISS}{}",
+        URL_SAFE_NO_PAD.encode(json.as_bytes())
+    )
 }
 
 /// 解析结构化 action。返回 `(is_view, payload_json)`：`is_view=true` 表示查看详情，
@@ -269,7 +272,10 @@ fn ensure_notification_registry() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         if let Err(error) = register_aumid_and_shortcut() {
-            warn!(?error, "ensure_notification_registry failed; toast may not appear");
+            warn!(
+                ?error,
+                "ensure_notification_registry failed; toast may not appear"
+            );
         }
     });
 }
@@ -318,15 +324,7 @@ fn register_aumid_in_registry(exe_path: &str) -> Result<(), Box<dyn std::error::
     }
     let status = std::process::Command::new("reg")
         .args([
-            "ADD",
-            &key,
-            "/v",
-            "IconUri",
-            "/t",
-            "REG_SZ",
-            "/d",
-            exe_path,
-            "/f",
+            "ADD", &key, "/v", "IconUri", "/t", "REG_SZ", "/d", exe_path, "/f",
         ])
         .status();
     if let Err(error) = status {
@@ -382,10 +380,7 @@ fn create_or_rebuild_shortcut(
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
         .status()?;
     if !status.success() {
-        return Err(format!(
-            "powershell shortcut creation failed with status {status}"
-        )
-        .into());
+        return Err(format!("powershell shortcut creation failed with status {status}").into());
     }
     Ok(())
 }
@@ -414,39 +409,49 @@ pub fn create_intervention_notification_subscriber(
     app_handle: AppHandle,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event| {
-        let RuntimeLifecycleEvent::RunPaused {
-            task_id,
-            task_title,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            node_label,
-            pause_reason,
-            ..
-        } = event
-        else {
-            return;
+        let notification = match event {
+            RuntimeLifecycleEvent::InterventionRequested {
+                task_id,
+                task_title,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                node_label,
+                kind,
+                ..
+            } => InterventionNotification::from_intervention_kind(
+                &task_id,
+                task_title.as_deref(),
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                &node_label,
+                kind,
+            ),
+            RuntimeLifecycleEvent::RunCompleted {
+                task_id,
+                task_title,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                node_label,
+                outcome,
+                ..
+            } => InterventionNotification::run_completed(
+                &task_id,
+                task_title.as_deref(),
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                &node_label,
+                outcome,
+            ),
+            _ => return,
         };
-        if !matches!(
-            pause_reason,
-            gold_band::domain::PauseReason::WaitingForUserInput
-                | gold_band::domain::PauseReason::ErrorBlocked
-                | gold_band::domain::PauseReason::ProcessInterrupted
-                | gold_band::domain::PauseReason::PermissionRequested
-        ) {
-            return;
-        }
-        let notification = InterventionNotification::new(
-            &task_id,
-            task_title.as_deref(),
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            &node_label,
-            pause_reason,
-        );
         let Some(state) = app_handle.try_state::<DesktopState>() else {
             warn!(
                 dedup_key = %notification.dedup_key,
@@ -454,6 +459,20 @@ pub fn create_intervention_notification_subscriber(
             );
             return;
         };
+        let target = crate::state::NotificationAttentionTarget {
+            task_id: &notification.task_id,
+            run_id: &notification.run_id,
+            round_id: &notification.round_id,
+            node_id: &notification.node_id,
+            attempt_id: &notification.attempt_id,
+        };
+        if !state.should_send_notification(&target, true) {
+            tracing::debug!(
+                dedup_key = %notification.dedup_key,
+                "intervention notification suppressed while target is visible"
+            );
+            return;
+        }
         let dedup = state.notification_dedup();
         send_intervention_notification(&app_handle, &dedup, notification);
     })

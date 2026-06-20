@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
-use gold_band::app::WorkflowEvent;
+use gold_band::app::RuntimeLifecycleEvent;
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -362,8 +362,8 @@ pub fn start_sentinel_metric(
 /// settings and metric construction.
 pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
-) -> Arc<dyn Fn(WorkflowEvent) + Send + Sync> {
-    Arc::new(move |event: WorkflowEvent| {
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event: RuntimeLifecycleEvent| {
         // ── Guard: settings check (shared by both branches) ──
         let settings = match app.try_state::<DesktopState>() {
             Some(state) => match state.context() {
@@ -391,12 +391,10 @@ pub fn create_metrics_subscriber<R: Runtime>(
         };
 
         let user_id = get_system_username();
-        let reported_at = chrono::Local::now()
-            .format("%Y-%m-%dT%H:%M:%S")
-            .to_string();
+        let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
         match event {
-            WorkflowEvent::NodeStarted {
+            RuntimeLifecycleEvent::NodeStarted {
                 repo_root,
                 task_id,
                 task_uuid,
@@ -438,12 +436,14 @@ pub fn create_metrics_subscriber<R: Runtime>(
                 let predecessor_item = match &predecessor {
                     Some(pred) => {
                         // Read predecessor tokens from ITS attempt_dir
-                        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                            pred.attempt_dir.as_ref().map(|d| {
-                                let path =
-                                    Utf8PathBuf::from(d).join("acp.session.json");
+                        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) = pred
+                            .attempt_dir
+                            .as_ref()
+                            .map(|d| {
+                                let path = Utf8PathBuf::from(d).join("acp.session.json");
                                 gold_band::acp::events::read_session_tokens(&path)
-                            }).unwrap_or((0, 0, 0, 0));
+                            })
+                            .unwrap_or((0, 0, 0, 0));
 
                         NodeMetricItem {
                             workspace: repo_root.clone(),
@@ -457,10 +457,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                             agent_type: pred.agent_type.clone(),
                             attempt_count: 0,
                             started_at: Some(to_iso8601(&pred.started_at)),
-                            ended_at: pred
-                                .finished_at
-                                .as_ref()
-                                .map(|s| to_iso8601(s)),
+                            ended_at: pred.finished_at.as_ref().map(|s| to_iso8601(s)),
                             input_tokens,
                             output_tokens,
                             cache_read_tokens,
@@ -528,7 +525,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                 });
             }
 
-            WorkflowEvent::NodeCompleted {
+            RuntimeLifecycleEvent::NodeCompleted {
                 repo_root,
                 task_id,
                 task_uuid,

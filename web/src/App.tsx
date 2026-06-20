@@ -41,6 +41,7 @@ import {
   saveConversationRunMode,
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
+  updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -176,6 +177,24 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
 function workspacePathForProject(sidebar: ConversationSidebarVm, projectId?: string | null) {
   if (!projectId) return undefined;
   return sidebar.workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
+}
+
+function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
+  const selectedKey = tree?.selectedSessionKey;
+  if (!tree || !selectedKey) return null;
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      for (const attempt of node.attempts) {
+        if (conversationSessionKeyFromParts(attempt) === selectedKey) return attempt;
+      }
+      for (const outer of node.outerNodes ?? []) {
+        for (const attempt of outer.attempts) {
+          if (conversationSessionKeyFromParts(attempt) === selectedKey) return attempt;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 export function App() {
@@ -342,6 +361,56 @@ export function App() {
     if (!isTauriRuntime()) return;
     getCurrentWindow().setDecorations(false).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let active = true;
+    const appWindow = getCurrentWindow();
+    const convPage = conversationPage.kind === 'conversation-run' ? conversationPage : null;
+    const sync = async () => {
+      try {
+        const [windowFocused, windowMinimized, windowVisible] = await Promise.all([
+          appWindow.isFocused(),
+          appWindow.isMinimized(),
+          appWindow.isVisible(),
+        ]);
+        if (!active) return;
+        const leaf = convPage
+          ? selectedConversationLeaf(conversationRunRef.current?.sessionTree)
+          : null;
+        await updateNotificationAttention({
+          windowFocused: windowFocused && !document.hidden,
+          windowMinimized,
+          windowVisible,
+          projectId: convPage?.projectId ?? null,
+          taskId: convPage?.taskId ?? null,
+          runId: convPage?.runId ?? null,
+          roundId: leaf?.roundId ?? null,
+          nodeId: leaf?.nodeId ?? null,
+          attemptId: leaf?.attemptId ?? null,
+          outerNodeId: leaf?.outerNodeId ?? null,
+          outerAttemptId: leaf?.outerAttemptId ?? null,
+        });
+      } catch {
+      }
+    };
+    void sync();
+    const onVisibilityChange = () => void sync();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    let unlistenFocus: (() => void) | undefined;
+    void appWindow.onFocusChanged(() => void sync()).then((dispose) => {
+      if (active) {
+        unlistenFocus = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      unlistenFocus?.();
+    };
+  }, [conversationPage, conversationRun]);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));

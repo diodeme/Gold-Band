@@ -1,13 +1,13 @@
 mod ids;
 mod node_executor;
 mod notification;
+pub mod observability;
 mod orchestrator;
 mod profile_resolver;
 mod profiles;
 mod state_access;
 mod state_factory;
 mod transition_context;
-pub mod observability;
 
 pub use self::notification::{
     InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
@@ -21,7 +21,6 @@ use crate::config::{
     ManagedAgentType, McpServerConfig, McpServerHealthResult, RuntimeConfig, RuntimeLogLevel,
     SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
-use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
@@ -31,6 +30,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
+use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
@@ -432,6 +432,36 @@ pub struct NodeRuntimeSummary {
 
 /// Runtime lifecycle events emitted by the orchestrator via RuntimeLifecycleBus.
 /// Subscribers observe these facts without changing runtime control flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInterventionKind {
+    ManualDecisionRequired,
+    PermissionRequested,
+    ErrorBlocked,
+    ProcessInterrupted,
+}
+
+impl From<PauseReason> for RuntimeInterventionKind {
+    fn from(reason: PauseReason) -> Self {
+        match reason {
+            PauseReason::WaitingForUserInput => Self::ManualDecisionRequired,
+            PauseReason::PermissionRequested => Self::PermissionRequested,
+            PauseReason::ErrorBlocked => Self::ErrorBlocked,
+            PauseReason::ProcessInterrupted => Self::ProcessInterrupted,
+        }
+    }
+}
+
+impl From<RuntimeInterventionKind> for PauseReason {
+    fn from(kind: RuntimeInterventionKind) -> Self {
+        match kind {
+            RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
+            RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
+            RuntimeInterventionKind::ErrorBlocked => Self::ErrorBlocked,
+            RuntimeInterventionKind::ProcessInterrupted => Self::ProcessInterrupted,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
@@ -499,9 +529,31 @@ pub enum RuntimeLifecycleEvent {
         pause_reason: PauseReason,
         task_title: Option<String>,
     },
+    InterventionRequested {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        kind: RuntimeInterventionKind,
+        task_title: Option<String>,
+    },
+    RunCompleted {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        outcome: RunOutcome,
+        task_title: Option<String>,
+    },
 }
-
-pub type WorkflowEvent = RuntimeLifecycleEvent;
 
 pub struct App {
     pub paths: GoldBandPaths,
@@ -958,7 +1010,12 @@ impl App {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().list()?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .list()?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
@@ -972,11 +1029,21 @@ impl App {
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().delete(id)?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .delete(id)?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().toggle(id, enabled)?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .toggle(id, enabled)?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
@@ -1001,7 +1068,11 @@ impl App {
         self.skill_manager().list()
     }
 
-    pub fn read_skill(&self, name: &str, source: SkillSource) -> Result<crate::skill::SkillContent> {
+    pub fn read_skill(
+        &self,
+        name: &str,
+        source: SkillSource,
+    ) -> Result<crate::skill::SkillContent> {
         self.skill_manager().read(name, source)
     }
 
@@ -1016,12 +1087,15 @@ impl App {
     /// 同步 SKILL symlink 到 .claude/skills/（保存/删除时自动调用）
     /// workspace_path 用于指定项目级 SKILL 的实际工作空间目录
     pub fn sync_skill_symlinks(&self, workspace_path: Option<&str>) {
+        use crate::config::{AGENTS_DIR_NAME, SKILLS_DIR_NAME, SkillSource};
         use crate::skill::scan_skills_dir;
-        use crate::config::{SkillSource, AGENTS_DIR_NAME, SKILLS_DIR_NAME};
 
         let global_dir = crate::storage::GoldBandPaths::global_skills_dir();
         let global = scan_skills_dir(&global_dir, SkillSource::Global);
-        let global: Vec<_> = global.into_iter().filter(|s| !s.disable_model_invocation).collect();
+        let global: Vec<_> = global
+            .into_iter()
+            .filter(|s| !s.disable_model_invocation)
+            .collect();
 
         // 全局 SKILL → 始终同步到 ~/.claude/skills/
         // 不需要 workspace 路径：直接用空路径 + 仅 global skills
@@ -1030,11 +1104,14 @@ impl App {
         // 项目 SKILL → 仅在有 workspace_path 时同步到 <workspace>/.claude/skills/
         if let Some(ws) = workspace_path {
             let p = std::path::Path::new(ws);
-            let project_dir = camino::Utf8PathBuf::from_path_buf(
-                p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
-            ).unwrap_or_default();
+            let project_dir =
+                camino::Utf8PathBuf::from_path_buf(p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME))
+                    .unwrap_or_default();
             let project = scan_skills_dir(&project_dir, SkillSource::Project);
-            let project: Vec<_> = project.into_iter().filter(|s| !s.disable_model_invocation).collect();
+            let project: Vec<_> = project
+                .into_iter()
+                .filter(|s| !s.disable_model_invocation)
+                .collect();
             crate::skill::symlink::sync_all(p, &global, &project);
         }
     }

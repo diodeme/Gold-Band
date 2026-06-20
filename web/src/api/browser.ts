@@ -286,6 +286,9 @@ export const browserApi: RuntimeApi = {
       effectiveUrl: normalized ?? current.builtInUrl,
     }));
   },
+  updateNotificationAttention(_input) {
+    return Promise.resolve();
+  },
   getMetricsSettings() {
     return Promise.resolve({
       enabled: false,

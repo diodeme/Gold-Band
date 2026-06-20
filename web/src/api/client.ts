@@ -20,6 +20,7 @@ import type {
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
   InterventionNavigateEventVm,
+  NotificationAttentionInput,
   PinRef,
   CreateTaskInput,
   DesktopFontPreference,
@@ -146,6 +147,7 @@ export interface RuntimeApi {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
+  updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;

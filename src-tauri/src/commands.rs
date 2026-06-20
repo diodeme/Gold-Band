@@ -8,8 +8,9 @@ use gold_band::acp::permission::{
     request_cancel, write_permission_response,
 };
 use gold_band::app::{
-    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, InterventionNotification,
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, WorkflowTemplateStore,
+    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
+    ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
+    WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -34,12 +35,14 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
-use tracing::{info, warn};
+use tauri::{AppHandle, Emitter, State};
+use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::state::{DesktopContext, DesktopState, UpdateBadgeSeenTarget};
+use crate::state::{
+    DesktopContext, DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget,
+};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -50,10 +53,10 @@ use crate::view_models::{
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
     SkillListVm, SkillMetaVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
-    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm,
-    bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
-    round_detail_vm, run_detail_vm, run_summary_vm, skill_content_vm, skill_list_vm,
-    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
+    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
+    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
+    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
+    workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
@@ -143,7 +146,6 @@ impl AttemptLocator {
             )
         }
     }
-
 }
 
 fn resolve_acp_attempt_dir(
@@ -168,7 +170,10 @@ fn resolve_acp_attempt_dir(
     .attempt_dir(app)
 }
 
-fn lifecycle_for_locator(app: &App, locator: &AttemptLocator) -> Option<ConversationAttemptLifecycleVm> {
+fn lifecycle_for_locator(
+    app: &App,
+    locator: &AttemptLocator,
+) -> Option<ConversationAttemptLifecycleVm> {
     conversation_attempt_lifecycle_vm(
         app,
         &locator.task_id,
@@ -248,10 +253,21 @@ fn resolve_command_app(
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
     app.lifecycle_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+        .subscribe(crate::metrics::create_metrics_subscriber(
+            app_handle.clone(),
+        ));
     app.lifecycle_bus.subscribe(
         crate::notifications::create_intervention_notification_subscriber(app_handle.clone()),
     );
+}
+
+pub(crate) fn acp_live_update_emitter_for_app(
+    app: &App,
+    app_handle: AppHandle,
+    project_id: Option<String>,
+) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
+{
+    acp_live_update_emitter(app_handle, project_id, Some(app.lifecycle_bus.clone()))
 }
 
 fn resolve_command_app_with_emitters(
@@ -262,8 +278,10 @@ fn resolve_command_app_with_emitters(
     let (base_app, _) = resolve_workspace_app(context, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     let bg_app = base_app.clone_for_background();
-    let app = base_app
-        .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
+    let app = base_app;
+    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), pid.clone());
+    let app = app
+        .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid));
     register_lifecycle_subscribers(&app, app_handle);
     Ok(app)
@@ -804,11 +822,15 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_updates(
-        &app_handle,
-        acp_live_update_emitter(app_handle.clone(), None),
-        acp_session_update_emitter(app_handle.clone(), context.app(), None),
-    );
+    let app = context.app();
+    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
+    let app = app
+        .with_acp_live_update(live_update)
+        .with_acp_session_update(acp_session_update_emitter(
+            app_handle.clone(),
+            context.app(),
+            None,
+        ));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
@@ -941,11 +963,15 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app_with_acp_live_updates(
-        &app_handle,
-        acp_live_update_emitter(app_handle.clone(), None),
-        acp_session_update_emitter(app_handle.clone(), context.app(), None),
-    );
+    let app = context.app();
+    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
+    let app = app
+        .with_acp_live_update(live_update)
+        .with_acp_session_update(acp_session_update_emitter(
+            app_handle.clone(),
+            context.app(),
+            None,
+        ));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
@@ -1035,6 +1061,16 @@ pub fn get_metrics_settings(state: State<'_, DesktopState>) -> CommandResult<Met
 }
 
 #[tauri::command]
+pub fn update_notification_attention(
+    state: State<'_, DesktopState>,
+    input: NotificationAttentionInput,
+) -> CommandResult<()> {
+    state
+        .update_notification_attention(input)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
     enabled: bool,
@@ -1060,12 +1096,13 @@ pub fn save_metrics_settings(
 pub(crate) fn acp_live_update_emitter(
     app_handle: AppHandle,
     project_id: Option<String>,
+    lifecycle_bus: Option<gold_band::app::observability::RuntimeLifecycleBus>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
-        // 路径 B 旁路挂接：检测到权限请求 pending → 强制 PermissionRequested 发通知。
-        // 先于主干 emit 调用（仅借用 context/event），不改主干 emit 逻辑（方案 §6.2）。
-        maybe_emit_permission_intervention(&app_handle, &context, &event);
+        if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
+            maybe_emit_permission_intervention(lifecycle_bus, &context, &event);
+        }
         emit_acp_event_update(
             &app_handle,
             project_id.clone(),
@@ -1088,7 +1125,7 @@ pub(crate) fn acp_live_update_emitter(
 /// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
 /// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
 fn maybe_emit_permission_intervention(
-    app_handle: &AppHandle,
+    lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
 ) {
@@ -1103,22 +1140,24 @@ fn maybe_emit_permission_intervention(
     if !is_pending {
         return;
     }
-    let Some(state) = app_handle.try_state::<DesktopState>() else {
-        warn!("DesktopState unavailable; permission intervention dropped");
-        return;
-    };
-    let dedup = state.notification_dedup();
-    let notification = InterventionNotification::new(
-        &context.task_id,
-        None,
-        &context.run_id,
-        &context.round_id,
-        &context.node_id,
-        &context.attempt_id,
-        &context.node_id,
-        PauseReason::PermissionRequested,
-    );
-    crate::notifications::send_intervention_notification(app_handle, &dedup, notification);
+    lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
+        event_id: gold_band::app::make_dedup_key(
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            PauseReason::PermissionRequested,
+        ),
+        occurred_at: current_timestamp(),
+        task_id: context.task_id.clone(),
+        run_id: context.run_id.clone(),
+        round_id: context.round_id.clone(),
+        node_id: context.node_id.clone(),
+        attempt_id: context.attempt_id.clone(),
+        node_label: context.node_id.clone(),
+        kind: RuntimeInterventionKind::PermissionRequested,
+        task_title: None,
+    });
 }
 
 pub(crate) fn acp_session_update_emitter(
@@ -1427,7 +1466,8 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let context = state.context().map_err(command_error)?;
+    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -1571,6 +1611,19 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
                 Some(&|event| {
+                    maybe_emit_permission_intervention(
+                        &app.lifecycle_bus,
+                        &gold_band::app::AcpLiveEventContext {
+                            task_id: task_id_for_live.clone(),
+                            run_id: run_id_for_live.clone(),
+                            round_id: round_id_for_live.clone(),
+                            node_id: node_id_for_live.clone(),
+                            attempt_id: attempt_id_for_live.clone(),
+                            outer_node_id: outer_node_id_for_live.clone(),
+                            outer_attempt_id: outer_attempt_id_for_live.clone(),
+                        },
+                        event,
+                    );
                     emit_acp_event_update(
                         &app_handle_for_live,
                         project_id_for_spawn.clone(),
@@ -1585,7 +1638,10 @@ pub async fn send_acp_prompt(
                     );
                     Ok(())
                 }),
-                &app.acp_mcp_servers().unwrap_or_else(|e| { eprintln!("WARN: failed to load MCP servers for ACP session: {e}"); Vec::new() }),
+                &app.acp_mcp_servers().unwrap_or_else(|e| {
+                    eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
+                    Vec::new()
+                }),
                 None, // session_update
             )
             .map_err(command_error)?;
@@ -1685,6 +1741,19 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
             Some(&|event| {
+                maybe_emit_permission_intervention(
+                    &app.lifecycle_bus,
+                    &gold_band::app::AcpLiveEventContext {
+                        task_id: task_id_for_live.clone(),
+                        run_id: run_id_for_live.clone(),
+                        round_id: round_id_for_live.clone(),
+                        node_id: node_id_for_live.clone(),
+                        attempt_id: attempt_id_for_live.clone(),
+                        outer_node_id: None,
+                        outer_attempt_id: None,
+                    },
+                    event,
+                );
                 emit_acp_event_update(
                     &app_handle_for_live,
                     project_id_for_spawn.clone(),
@@ -1699,7 +1768,10 @@ pub async fn send_acp_prompt(
                 );
                 Ok(())
             }),
-            &app.acp_mcp_servers().unwrap_or_else(|e| { eprintln!("WARN: failed to load MCP servers for ACP session: {e}"); Vec::new() }),
+            &app.acp_mcp_servers().unwrap_or_else(|e| {
+                eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
+                Vec::new()
+            }),
             None, // session_update
         )
         .map_err(command_error)?;
@@ -3190,7 +3262,9 @@ fn open_path(path: &std::path::Path) -> Result<(), String> {
 #[tauri::command]
 pub fn list_mcp_servers(state: State<'_, DesktopState>) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
-    Ok(mcp_server_list_vm(&app.list_mcp_servers().map_err(command_error)?))
+    Ok(mcp_server_list_vm(
+        &app.list_mcp_servers().map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3199,7 +3273,9 @@ pub fn add_mcp_server(
     json_content: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
-    Ok(mcp_server_list_vm(&app.add_mcp_server(&json_content).map_err(command_error)?))
+    Ok(mcp_server_list_vm(
+        &app.add_mcp_server(&json_content).map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3209,7 +3285,10 @@ pub fn update_mcp_server(
     json_content: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
-    Ok(mcp_server_list_vm(&app.update_mcp_server(&id, &json_content).map_err(command_error)?))
+    Ok(mcp_server_list_vm(
+        &app.update_mcp_server(&id, &json_content)
+            .map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3218,7 +3297,9 @@ pub fn delete_mcp_server(
     id: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
-    Ok(mcp_server_list_vm(&app.delete_mcp_server(&id).map_err(command_error)?))
+    Ok(mcp_server_list_vm(
+        &app.delete_mcp_server(&id).map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3228,7 +3309,9 @@ pub fn toggle_mcp_server(
     enabled: bool,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
-    Ok(mcp_server_list_vm(&app.toggle_mcp_server(&id, enabled).map_err(command_error)?))
+    Ok(mcp_server_list_vm(
+        &app.toggle_mcp_server(&id, enabled).map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3255,7 +3338,9 @@ pub fn list_project_skills(
 ) -> CommandResult<Vec<SkillMetaVm>> {
     let app = state.app().map_err(command_error)?;
     let manager = app.skill_manager();
-    let skills = manager.list_by_workspace(&workspace_path).map_err(command_error)?;
+    let skills = manager
+        .list_by_workspace(&workspace_path)
+        .map_err(command_error)?;
     Ok(skills.iter().map(|s| skill_meta_vm(s)).collect())
 }
 
@@ -3272,12 +3357,23 @@ pub fn read_skill(
         if skill_source == gold_band::config::SkillSource::Project {
             let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path);
             let skill_path = dir.join(&name).join(gold_band::config::SKILL_FILE_NAME);
-            let raw = std::fs::read_to_string(&skill_path).map_err(|e| command_error(anyhow::anyhow!(e)))?;
-            let (meta, body) = gold_band::skill::parse_skill_md_public(&raw, &name, skill_source, skill_path.as_str());
-            return Ok(skill_content_vm(&gold_band::skill::SkillContent { meta, body }));
+            let raw = std::fs::read_to_string(&skill_path)
+                .map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            let (meta, body) = gold_band::skill::parse_skill_md_public(
+                &raw,
+                &name,
+                skill_source,
+                skill_path.as_str(),
+            );
+            return Ok(skill_content_vm(&gold_band::skill::SkillContent {
+                meta,
+                body,
+            }));
         }
     }
-    Ok(skill_content_vm(&app.read_skill(&name, skill_source).map_err(command_error)?))
+    Ok(skill_content_vm(
+        &app.read_skill(&name, skill_source).map_err(command_error)?,
+    ))
 }
 
 #[tauri::command]
@@ -3295,12 +3391,16 @@ pub fn write_skill(
     // 写入新 SKILL
     if let Some(ref ws_path) = workspace_path {
         if skill_source == gold_band::config::SkillSource::Project {
-            app.skill_manager().write_to_workspace(&name, ws_path, &content).map_err(command_error)?;
+            app.skill_manager()
+                .write_to_workspace(&name, ws_path, &content)
+                .map_err(command_error)?;
         } else {
-            app.write_skill(&name, skill_source, &content).map_err(command_error)?;
+            app.write_skill(&name, skill_source, &content)
+                .map_err(command_error)?;
         }
     } else {
-        app.write_skill(&name, skill_source, &content).map_err(command_error)?;
+        app.write_skill(&name, skill_source, &content)
+            .map_err(command_error)?;
     }
 
     // 同步 symlink 到 .claude/skills/
@@ -3311,7 +3411,8 @@ pub fn write_skill(
         if old != name {
             if let Some(ref ws_path) = workspace_path {
                 if skill_source == gold_band::config::SkillSource::Project {
-                    let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path).join(&old);
+                    let dir =
+                        gold_band::skill::SkillManager::workspace_skills_dir(ws_path).join(&old);
                     if dir.exists() {
                         let _ = std::fs::remove_dir_all(dir.as_std_path());
                     }
@@ -3343,12 +3444,14 @@ pub fn delete_skill(
             if !skill_dir.exists() {
                 return Err(command_error(anyhow::anyhow!("SKILL `{name}` not found")));
             }
-            std::fs::remove_dir_all(skill_dir.as_std_path()).map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            std::fs::remove_dir_all(skill_dir.as_std_path())
+                .map_err(|e| command_error(anyhow::anyhow!(e)))?;
             app.sync_skill_symlinks(workspace_path.as_deref());
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
-    app.delete_skill(&name, skill_source).map_err(command_error)?;
+    app.delete_skill(&name, skill_source)
+        .map_err(command_error)?;
     app.sync_skill_symlinks(workspace_path.as_deref());
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }

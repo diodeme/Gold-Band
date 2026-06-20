@@ -224,6 +224,10 @@ export function saveUpdaterSettings(overrideUrl: string | null) {
   return getRuntimeApi().saveUpdaterSettings(overrideUrl);
 }
 
+export function updateNotificationAttention(input: Parameters<NonNullable<RuntimeApi['updateNotificationAttention']>>[0]) {
+  return getRuntimeApi().updateNotificationAttention?.(input) ?? Promise.resolve();
+}
+
 export function getUpdateStatus() {
   return getRuntimeApi().getUpdateStatus();
 }

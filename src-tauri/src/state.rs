@@ -59,48 +59,6 @@ impl DesktopContext {
     pub fn app(&self) -> App {
         App::with_config(self.repo_root.clone(), self.config.clone())
     }
-
-    pub fn app_with_acp_live_update(
-        &self,
-        live_update: Arc<
-            dyn Fn(
-                    gold_band::app::AcpLiveEventContext,
-                    gold_band::acp::events::AcpUiEvent,
-                ) -> anyhow::Result<()>
-                + Send
-                + Sync,
-        >,
-        session_update: Arc<
-            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
-        >,
-    ) -> App {
-        self.app()
-            .with_acp_live_update(live_update)
-            .with_acp_session_update(session_update)
-    }
-
-    pub fn app_with_acp_live_updates(
-        &self,
-        app_handle: &tauri::AppHandle,
-        live_update: Arc<
-            dyn Fn(
-                    gold_band::app::AcpLiveEventContext,
-                    gold_band::acp::events::AcpUiEvent,
-                ) -> anyhow::Result<()>
-                + Send
-                + Sync,
-        >,
-        session_update: Arc<
-            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
-        >,
-    ) -> App {
-        let app = self
-            .app()
-            .with_acp_live_update(live_update)
-            .with_acp_session_update(session_update);
-        crate::commands::register_lifecycle_subscribers(&app, app_handle);
-        app
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,11 +76,107 @@ pub enum UpdateBadgeSeenTarget {
     Announcement,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAttentionInput {
+    pub window_focused: bool,
+    pub window_minimized: bool,
+    pub window_visible: bool,
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub node_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationAttentionTarget<'a> {
+    pub task_id: &'a str,
+    pub run_id: &'a str,
+    pub round_id: &'a str,
+    pub node_id: &'a str,
+    pub attempt_id: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationAttentionState {
+    window_focused: bool,
+    window_minimized: bool,
+    window_visible: bool,
+    project_id: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
+    round_id: Option<String>,
+    node_id: Option<String>,
+    attempt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+impl Default for NotificationAttentionState {
+    fn default() -> Self {
+        Self {
+            window_focused: false,
+            window_minimized: true,
+            window_visible: false,
+            project_id: None,
+            task_id: None,
+            run_id: None,
+            round_id: None,
+            node_id: None,
+            attempt_id: None,
+            outer_node_id: None,
+            outer_attempt_id: None,
+        }
+    }
+}
+
+impl NotificationAttentionState {
+    fn update(&mut self, input: NotificationAttentionInput) {
+        self.window_focused = input.window_focused;
+        self.window_minimized = input.window_minimized;
+        self.window_visible = input.window_visible;
+        self.project_id = input.project_id;
+        self.task_id = input.task_id;
+        self.run_id = input.run_id;
+        self.round_id = input.round_id;
+        self.node_id = input.node_id;
+        self.attempt_id = input.attempt_id;
+        self.outer_node_id = input.outer_node_id;
+        self.outer_attempt_id = input.outer_attempt_id;
+    }
+
+    pub fn should_notify(
+        &self,
+        target: &NotificationAttentionTarget<'_>,
+        require_session_match: bool,
+    ) -> bool {
+        if !self.window_focused || self.window_minimized || !self.window_visible {
+            return true;
+        }
+        if self.task_id.as_deref() != Some(target.task_id)
+            || self.run_id.as_deref() != Some(target.run_id)
+        {
+            return true;
+        }
+        if !require_session_match {
+            return false;
+        }
+        self.round_id.as_deref() != Some(target.round_id)
+            || self.node_id.as_deref() != Some(target.node_id)
+            || self.attempt_id.as_deref() != Some(target.attempt_id)
+    }
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
+    notification_attention: Mutex<NotificationAttentionState>,
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
 }
@@ -136,6 +190,7 @@ impl DesktopState {
             agent_diagnostics: Mutex::new(persisted_diagnostics),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
+            notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
         }
     }
@@ -143,6 +198,25 @@ impl DesktopState {
     /// 干预通知去重表（共享实例）。路径 A/B 与 dismiss 命令均经此访问。
     pub fn notification_dedup(&self) -> Arc<NotificationDedup> {
         self.notification_dedup.clone()
+    }
+
+    pub fn update_notification_attention(&self, input: NotificationAttentionInput) -> Result<()> {
+        self.notification_attention
+            .lock()
+            .map_err(|_| anyhow::anyhow!("notification attention lock poisoned"))?
+            .update(input);
+        Ok(())
+    }
+
+    pub fn should_send_notification(
+        &self,
+        target: &NotificationAttentionTarget<'_>,
+        require_session_match: bool,
+    ) -> bool {
+        self.notification_attention
+            .lock()
+            .map(|state| state.should_notify(target, require_session_match))
+            .unwrap_or(true)
     }
 
     pub fn app(&self) -> Result<App> {
@@ -464,4 +538,56 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
         }
     }
     workspaces
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target() -> NotificationAttentionTarget<'static> {
+        NotificationAttentionTarget {
+            task_id: "task-1",
+            run_id: "run-1",
+            round_id: "round-1",
+            node_id: "node-1",
+            attempt_id: "attempt-1",
+        }
+    }
+
+    fn input() -> NotificationAttentionInput {
+        NotificationAttentionInput {
+            window_focused: true,
+            window_minimized: false,
+            window_visible: true,
+            project_id: Some("project-1".to_string()),
+            task_id: Some("task-1".to_string()),
+            run_id: Some("run-1".to_string()),
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        }
+    }
+
+    #[test]
+    fn notification_attention_suppresses_visible_selected_session() {
+        let mut state = NotificationAttentionState::default();
+        state.update(input());
+        assert!(!state.should_notify(&target(), true));
+    }
+
+    #[test]
+    fn notification_attention_notifies_when_minimized_or_different_session() {
+        let mut state = NotificationAttentionState::default();
+        let mut minimized = input();
+        minimized.window_minimized = true;
+        state.update(minimized);
+        assert!(state.should_notify(&target(), true));
+
+        let mut other = input();
+        other.attempt_id = Some("attempt-2".to_string());
+        state.update(other);
+        assert!(state.should_notify(&target(), true));
+    }
 }

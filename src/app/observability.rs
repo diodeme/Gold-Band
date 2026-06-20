@@ -20,8 +20,6 @@ pub struct RuntimeLifecycleBus {
     subscribers: Arc<RwLock<Vec<RuntimeLifecycleSubscriber>>>,
 }
 
-pub type ObservabilityBus = RuntimeLifecycleBus;
-
 impl RuntimeLifecycleBus {
     pub fn new() -> Self {
         Self::default()

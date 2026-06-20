@@ -13,7 +13,9 @@ use std::sync::{Mutex, MutexGuard};
 use indexmap::IndexSet;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::PauseReason;
+use crate::domain::{PauseReason, RunOutcome};
+
+use super::RuntimeInterventionKind;
 
 /// 去重表软上限。常驻 EXE 必须有界，达到上限后按最旧淘汰，防止内存无限增长。
 pub const NOTIFICATION_DEDUP_SOFT_CAP: usize = 5000;
@@ -28,6 +30,8 @@ pub enum InterventionType {
     PermissionRequest,
     /// 执行错误 / 进程中断 → `retry_run` / `kill_run`。
     ErrorBlocked,
+    /// 任务完成 → 查看运行结果。
+    RunCompleted,
 }
 
 /// 一次干预提醒的核心数据契约。
@@ -58,10 +62,6 @@ pub struct InterventionNotification {
 }
 
 impl InterventionNotification {
-    /// 由结构化上下文构造通知，集中完成 `PauseReason → (title, body, type)` 映射。
-    ///
-    /// 本次中文硬编码文案。签名设计为便于后续追加 `lang: Language` 参数：
-    /// 文案生成不依赖外部可变状态，加参数时调用方改动机械（方案 §11.2）。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_id: &str,
@@ -73,34 +73,48 @@ impl InterventionNotification {
         node_label: &str,
         pause_reason: PauseReason,
     ) -> Self {
-        let (title, body_template, intervention_type) = match pause_reason {
-            PauseReason::WaitingForUserInput => (
+        let kind = RuntimeInterventionKind::from(pause_reason);
+        Self::from_intervention_kind(
+            task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, kind,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_intervention_kind(
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        node_label: &str,
+        kind: RuntimeInterventionKind,
+    ) -> Self {
+        let pause_reason = pause_reason_for_intervention(kind);
+        let (title, body_template, intervention_type) = match kind {
+            RuntimeInterventionKind::ManualDecisionRequired => (
                 "人工确认",
-                "需要人工确认",
+                "需要判断是否成功",
                 InterventionType::ManualCheck,
             ),
-            PauseReason::PermissionRequested => (
-                "权限请求",
-                "需要授权",
-                InterventionType::PermissionRequest,
-            ),
-            PauseReason::ErrorBlocked => (
+            RuntimeInterventionKind::PermissionRequested => {
+                ("权限请求", "需要授权", InterventionType::PermissionRequest)
+            }
+            RuntimeInterventionKind::ErrorBlocked => (
                 "执行错误",
                 "执行出错，需要处理",
                 InterventionType::ErrorBlocked,
             ),
-            PauseReason::ProcessInterrupted => (
-                "进程中断",
-                "进程已中断",
-                InterventionType::ErrorBlocked,
-            ),
+            RuntimeInterventionKind::ProcessInterrupted => {
+                ("进程中断", "进程异常中断", InterventionType::ErrorBlocked)
+            }
         };
-        // 任务标识：有标题用标题，缺省回退 task_id（方案 §13.1）。
+        let dedup_key = make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason);
         let task_label = task_title.unwrap_or(task_id);
         let body = format!("{} · {} {}", task_label, node_label, body_template);
 
         Self {
-            dedup_key: make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason),
+            dedup_key,
             task_id: task_id.to_string(),
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
@@ -114,6 +128,57 @@ impl InterventionNotification {
             intervention_type,
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_completed(
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        node_label: &str,
+        outcome: RunOutcome,
+    ) -> Self {
+        let task_label = task_title.unwrap_or(task_id);
+        let outcome_label = match outcome {
+            RunOutcome::Success => "已完成",
+            RunOutcome::Failure => "执行失败",
+            RunOutcome::Killed => "已终止",
+        };
+        let pause_reason = PauseReason::WaitingForUserInput;
+        Self {
+            dedup_key: make_completion_dedup_key(run_id, round_id, node_id, attempt_id),
+            task_id: task_id.to_string(),
+            task_title: task_title.map(str::to_string),
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            node_label: node_label.to_string(),
+            pause_reason,
+            title: "任务完成".to_string(),
+            body: format!("{} · {} {}", task_label, node_label, outcome_label),
+            intervention_type: InterventionType::RunCompleted,
+        }
+    }
+}
+
+pub fn pause_reason_for_intervention(kind: RuntimeInterventionKind) -> PauseReason {
+    kind.into()
+}
+
+/// Dedup suffix used by both `InterventionNotification::run_completed` and
+/// `emit_run_completed_lifecycle_event` in orchestrator.
+pub const RUN_COMPLETED_DEDUP_SUFFIX: &str = "run-completed";
+
+pub fn make_completion_dedup_key(
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> String {
+    format!("{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}")
 }
 
 /// 生成统一去重键 `run:round:node:attempt:reason`（不含 request_id，方案 §8.2）。
@@ -216,7 +281,9 @@ fn insert_bounded(set: &mut IndexSet<String>, key: String) {
 
 /// 容错获取锁：Mutex 中毒时返回内部数据，避免主干因通知去重失败而中断。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -250,6 +317,11 @@ mod tests {
     #[test]
     fn pause_reason_maps_to_title_and_type() {
         assert_eq!(sample(PauseReason::WaitingForUserInput).title, "人工确认");
+        assert!(
+            sample(PauseReason::WaitingForUserInput)
+                .body
+                .contains("需要判断是否成功")
+        );
         assert_eq!(
             sample(PauseReason::WaitingForUserInput).intervention_type,
             InterventionType::ManualCheck
@@ -277,6 +349,23 @@ mod tests {
         let interrupted = sample(PauseReason::ProcessInterrupted);
         assert_eq!(err.intervention_type, interrupted.intervention_type);
         assert_ne!(err.title, interrupted.title);
+    }
+
+    #[test]
+    fn run_completed_notification_has_dedicated_type_and_key() {
+        let n = InterventionNotification::run_completed(
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            RunOutcome::Success,
+        );
+        assert_eq!(n.title, "任务完成");
+        assert_eq!(n.intervention_type, InterventionType::RunCompleted);
+        assert_eq!(n.dedup_key, "run-1:round-1:node-1:attempt-1:run-completed");
     }
 
     #[test]

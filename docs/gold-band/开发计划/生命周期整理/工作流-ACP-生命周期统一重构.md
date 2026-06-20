@@ -26,13 +26,20 @@
 - `ConversationAttemptLifecycleVm` 已新增 `runtime.phase` 与 `composer` 决策层，`launching-next-node`、停止中、暂停输入继续、暂停按钮继续等状态都由后端派生。
 - 会话态输入统一走 `submit_conversation_prompt`，前端不再在 `sendAcpPrompt` 与 `continueRun` 之间自行分叉；`process-interrupted/error-blocked` 的文本输入继续与 `waiting-for-user-input` 的按钮继续都指向 `runtime-continue`。
 - AI-DYNAMIC 内部节点继续发送已改为 runtime 恢复：后端根据 outer locator + inner locator 校验 paused dynamic graph，只 re-arm 目标 dynamic node，并让它回到 `drive_dynamic_graph` 的 completion 解析、proposal 校验、materialize 和外层 workflow 后续推进链路。
-- `ObservabilityBus` 已升级为 `RuntimeLifecycleBus`，metrics 与干预通知都改为 subscriber；`App.intervention_notifier` 专用回调已删除。
+- `WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 兼容别名已删除，metrics 代码直接使用 `RuntimeLifecycleEvent` 命名；`App.intervention_notifier` 专用回调已删除。
 - 前端 composer 状态映射已改为消费后端 `lifecycle.composer`，只保留发送中、停止命令待确认、乐观消息等短暂本地 overlay；会话态的旧 `onContinue` 分支已删除。
 - 后端 command 层已抽出 `AttemptLocator`，统一表达顶层 attempt 与 AI-DYNAMIC 内部 attempt，并集中处理 attempt dir、runtime current 匹配、dynamic outer/inner locator 等路径判断。
 - 新旧 UI 的工作流 attempt composer / Round 详情继续发送已统一收敛到 `submit_conversation_prompt`；`send_acp_prompt` 保留为非 runtime 生命周期的窄入口，并在 paused/resumable/current workflow attempt 命中时拒绝直接 ACP prompt，防止绕过 runtime。
 - `stop_active_session` 返回体与 ACP session update event 已附带最新 `lifecycle`，前端收到停止响应或 session update 时可立即更新 composer 和 session tree，不再只等待下一轮完整 run snapshot 收敛。
 - 会话页的 lifecycle-only patch 已同步覆盖 `workflowGraph`：继续/停止命令即使只返回 lifecycle、不返回新 session payload，也会立即更新工作流查看抽屉中的 graph node/attempt 状态，避免 composer 已恢复运行但抽屉节点仍显示暂停。
 - compact 用量栏已统一按 composer lifecycle active 展示运行态：`launching-next-node` 这类 ACP 已 terminal、runtime 仍 active 的阶段也显示旋转状态、当前用时、会话累计与 token 信息。
+- 生命周期别名清理：`WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 已从 `src/app/mod.rs` 与 `src/app/observability.rs` 删除，`metrics.rs` 直接使用 `RuntimeLifecycleEvent` 命名。
+- 系统通知事件收敛：通知 subscriber 不再直接消费 `RunPaused`，改为消费语义事件 `InterventionRequested` 与 `RunCompleted`；新增 `RuntimeInterventionKind` 枚举区分人工确认、权限请求、错误阻塞、进程中断四种干预类型。
+- ACP 权限请求通知旁路移除：`commands.rs` 中的 `maybe_emit_permission_intervention` 不再直接调用 OS toast，改为通过 lifecycle bus 发布 `InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。
+- 用户主动停止过滤：`orchestrator.rs` 中的 `attempt_was_user_cancelled` 与 `attempt_dir_was_cancelled` 在 `ProcessInterrupted` 干预发布前检查 ACP snapshot/session 是否 `cancelled`，阻止用户主动停止触发 OS 通知。
+- 任务完成通知：`ControlDecision::CompleteRun(outcome)` 后新增 `emit_run_completed_lifecycle_event`，经 `RuntimeLifecycleEvent::RunCompleted` → 通知 subscriber 触发 `InterventionNotification::run_completed`。
+- 桌面注意力门禁：前端 `App.tsx` 监听窗口聚焦/最小化/可见性及当前选中 session leaf，通过 `update_notification_attention` Tauri 命令同步到后端 `NotificationAttentionState`；通知 subscriber 发送前调用 `should_send_notification`，窗口聚焦且当前页面匹配对应 task/run/session 时抑制通知。
+- `src-tauri/src/state.rs` 新增 `NotificationAttentionInput`、`NotificationAttentionState`、`NotificationAttentionTarget` 及单元测试；前端 `web/src/types.ts` 与 `web/src/api/*` 同步新增对应类型与 API 端点。
 
 ## 最终架构
 
@@ -66,7 +73,7 @@
 
 - 删除 `App.intervention_notifier`、`with_intervention_notifier`、`notify_intervention` 和 orchestrator 里直接读取 `app.intervention_notifier` 的逻辑。
 - metrics 改成 lifecycle bus 的 subscriber，继续消费 `NodeStarted/NodeCompleted`。
-- intervention notification 改成 lifecycle bus 的 subscriber，匹配 `RunPaused/NodePaused` 且 reason 为 `WaitingForUserInput | ErrorBlocked | ProcessInterrupted` 时触发 `InterventionNotification`。
+- intervention notification 改成 lifecycle bus 的 subscriber，只消费语义化通知事件：`InterventionRequested` 与 `RunCompleted`。`RunPaused` 只保留运行时暂停事实，不再直接等价为系统通知。
 - lifecycle/session UI refresh 可以作为 subscriber 或统一 emit 触发点，但只能通知前端重新取/合并后端 lifecycle，不能在 subscriber 里重新定义业务状态。
 
 边界：
@@ -77,6 +84,14 @@
 - 事件 payload 必须携带统一 Attempt Locator、status/outcome/pause_reason、node label、attempt dir 等通用字段，避免 subscriber 回头散落读取不同路径。
 - subscriber 中的重活应异步派发或保证失败不影响 runtime；任何 subscriber panic/失败都不能影响编排。
 
+系统通知策略：
+
+- 允许通知的语义只包含四类：异常中断、任务完成、权限审批请求、节点结束后请求人工判断是否成功。
+- 用户主动停止不触发系统通知；如果底层 ACP cancel 写成 `cancelled` 或用户停止导致的 interrupted，只作为会话内状态展示。
+- ACP live event 的 `permissionRequest/pending` 不再直接调用 OS toast，而是发布 `RuntimeLifecycleEvent::InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。
+- `RunPaused` 不再等价于通知；它只表示 runtime 暂停事实。只有暂停被提升为明确的 `InterventionRequested` 时才可能弹窗。
+- 通知发送前必须经过桌面注意力门禁：窗口未聚焦、窗口最小化、窗口不可见，或当前前端页面不是该事件对应的 `taskId/runId/roundId/nodeId/attemptId` 时才发送；如果桌面正聚焦且正在查看对应 run/session，则抑制通知。
+
 #### 2.1 Hook Bus 设计模式
 
 采用 Domain Event / Observer 模式，而不是一组散落 callback。
@@ -84,6 +99,8 @@
 runtime 只发布已经发生的生命周期事实，例如：
 
 - `RunPaused`
+- `InterventionRequested`
+- `RunCompleted`
 - `NodeStarted`
 - `NodeCompleted`
 - `AttemptStopped`
@@ -95,7 +112,7 @@ runtime 只发布已经发生的生命周期事实，例如：
 subscriber 只消费事实并执行副作用：
 
 - `MetricsSubscriber`：把 `NodeStarted/NodeCompleted` 转成节点指标。
-- `InterventionNotificationSubscriber`：把 `RunPaused/NodePaused + pauseReason` 转成系统通知。
+- `InterventionNotificationSubscriber`：把 `InterventionRequested/RunCompleted` 转成系统通知。
 - `UiLifecycleRefreshSubscriber`：通知前端重新拉取或合并后端 lifecycle。
 - `AuditLogSubscriber`：记录审计或调试日志。
 
@@ -352,7 +369,7 @@ RuntimeLifecycleBus
 - `npm run web:test -- acp-runtime-composer-state conversation-runtime-workflow`
 - `npm run web:build`
 
-说明：完整 `cargo test -p gold-band` 仍受既有 `tests/entity_uuid_test.rs` 中 `LastExecutedNode` 字段不匹配阻塞，该问题不是本轮 lifecycle 重构引入。
+说明：完整 `cargo test -p gold-band` 已通过，`tests/entity_uuid_test.rs` 中 `LastExecutedNode` 字段已同步当前结构（移除已删除的 token 字段，改用 `attempt_dir`）。
 
 ## 人工页面验证清单
 

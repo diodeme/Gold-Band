@@ -194,6 +194,9 @@ export const desktopApi: RuntimeApi = {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });
   },
+  updateNotificationAttention(input) {
+    return invokeCommand('update_notification_attention', { input });
+  },
   getMetricsSettings() {
     return invokeCommand<MetricsSettingsVm>('get_metrics_settings');
   },

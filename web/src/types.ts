@@ -687,6 +687,20 @@ export interface InterventionNavigateEventVm {
   dedupKey: string;
 }
 
+export interface NotificationAttentionInput {
+  windowFocused: boolean;
+  windowMinimized: boolean;
+  windowVisible: boolean;
+  projectId?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  nodeId?: string | null;
+  attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}
+
 
 export interface AcpDiagnosticsVm {
   rawFrameCount: number;

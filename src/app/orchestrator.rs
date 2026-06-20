@@ -62,7 +62,9 @@ use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profile
 use super::state_access::{current_attempt_state, load_run_workflow, persist_runtime_state};
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
-use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent, is_run_continuable};
+use super::{
+    AcpLiveEventContext, App, RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
+};
 
 struct PreparedRun {
     validated: ValidatedWorkflow,
@@ -592,7 +594,10 @@ pub(crate) fn run_continue_dynamic_inner(
     let validated = validate_workflow(workflow)?;
     app.validate_workflow_agents(&validated)?;
     ensure!(
-        matches!(validated.get_node(outer_node_id), Some(NodeDsl::AiDynamic(_))),
+        matches!(
+            validated.get_node(outer_node_id),
+            Some(NodeDsl::AiDynamic(_))
+        ),
         "node `{outer_node_id}` is not an AI-DYNAMIC node"
     );
     let resolved_profiles =
@@ -608,18 +613,16 @@ pub(crate) fn run_continue_dynamic_inner(
         "dynamic inner attempt is not in the current paused AI-DYNAMIC node"
     );
     let mut round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
-    let mut outer_node: NodeState = read_json(
-        &app
-            .paths
-            .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
-    )?;
-    let graph_path = app.paths.dynamic_graph_file(
+    let mut outer_node: NodeState = read_json(&app.paths.node_file(
         task_id,
         run_id,
         round_id,
         outer_node_id,
         outer_attempt_id,
-    );
+    ))?;
+    let graph_path =
+        app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
     let graph = read_json::<DynamicGraphState>(&graph_path)?;
     ensure!(
         graph.run.status == DynamicRunStatus::Paused,
@@ -1173,7 +1176,21 @@ fn should_pause_for_manual_check(workflow: &ValidatedWorkflow, node: &NodeState)
         )
 }
 
-fn emit_intervention_notification(
+fn node_label(node: &NodeState) -> String {
+    node.resolved_config
+        .get("profileName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| node.node_id.clone())
+}
+
+fn task_title(app: &App, task_id: &str) -> Option<String> {
+    app.task_show(task_id).ok().and_then(|t| t.title)
+}
+
+fn emit_run_paused_lifecycle_event(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -1181,15 +1198,6 @@ fn emit_intervention_notification(
     node: &NodeState,
 ) {
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
-    let node_label = node
-        .resolved_config
-        .get("profileName")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| node.node_id.clone());
-    let task_title = app.task_show(task_id).ok().and_then(|t| t.title);
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
         event_id: super::notification::make_dedup_key(
             &run.id,
@@ -1204,10 +1212,151 @@ fn emit_intervention_notification(
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
         attempt_id: node.attempt_id.clone(),
-        node_label,
+        node_label: node_label(node),
         pause_reason: reason,
-        task_title,
+        task_title: task_title(app, task_id),
     });
+}
+
+fn emit_intervention_requested(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+    kind: RuntimeInterventionKind,
+) {
+    let pause_reason = super::notification::pause_reason_for_intervention(kind);
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
+        event_id: super::notification::make_dedup_key(
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+            pause_reason,
+        ),
+        occurred_at: now_rfc3339_like(),
+        task_id: task_id.to_string(),
+        run_id: run.id.clone(),
+        round_id: round.id.clone(),
+        node_id: node.node_id.clone(),
+        attempt_id: node.attempt_id.clone(),
+        node_label: node_label(node),
+        kind,
+        task_title: task_title(app, task_id),
+    });
+}
+
+fn emit_run_completed_lifecycle_event(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+    outcome: RunOutcome,
+) {
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
+        event_id: super::notification::make_completion_dedup_key(
+            &run.id, &round.id, &node.node_id, &node.attempt_id,
+        ),
+        occurred_at: now_rfc3339_like(),
+        task_id: task_id.to_string(),
+        run_id: run.id.clone(),
+        round_id: round.id.clone(),
+        node_id: node.node_id.clone(),
+        attempt_id: node.attempt_id.clone(),
+        node_label: node_label(node),
+        outcome,
+        task_title: task_title(app, task_id),
+    });
+}
+
+fn intervention_kind_for_pause(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) -> Option<RuntimeInterventionKind> {
+    match run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted) {
+        reason @ (PauseReason::WaitingForUserInput
+        | PauseReason::PermissionRequested
+        | PauseReason::ErrorBlocked) => Some(RuntimeInterventionKind::from(reason)),
+        PauseReason::ProcessInterrupted => {
+            (!attempt_was_user_cancelled(app, task_id, &run.id, &round.id, node))
+                .then_some(RuntimeInterventionKind::ProcessInterrupted)
+        }
+    }
+}
+
+fn emit_pause_side_effects(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) {
+    emit_run_paused_lifecycle_event(app, task_id, run, round, node);
+    if let Some(kind) = intervention_kind_for_pause(app, task_id, run, round, node) {
+        emit_intervention_requested(app, task_id, run, round, node, kind);
+    }
+}
+
+fn attempt_was_user_cancelled(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node: &NodeState,
+) -> bool {
+    let attempt_dir =
+        app.paths
+            .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
+    if attempt_dir_was_cancelled(&attempt_dir) {
+        return true;
+    }
+    if node.node_type != crate::domain::NodeType::AiDynamic {
+        return false;
+    }
+    let graph_path =
+        app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
+    let Ok(graph) = read_json::<DynamicGraphState>(&graph_path) else {
+        return false;
+    };
+    graph.nodes.iter().any(|dynamic_node| {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            &node.node_id,
+            &node.attempt_id,
+            &dynamic_node.id,
+            &dynamic_attempt_id(dynamic_node),
+        );
+        attempt_dir_was_cancelled(&attempt_dir)
+    })
+}
+
+fn attempt_dir_was_cancelled(attempt_dir: &Utf8Path) -> bool {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    [snapshot_path, session_path].iter().any(|path| {
+        read_json::<serde_json::Value>(path)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("stopReason")
+                    .or_else(|| value.get("stop_reason"))
+                    .and_then(|reason| reason.as_str().map(str::to_string))
+                    .or_else(|| {
+                        value
+                            .get("status")
+                            .and_then(|status| status.as_str().map(str::to_string))
+                    })
+            })
+            .is_some_and(|value| value.eq_ignore_ascii_case("cancelled"))
+    })
 }
 
 fn completed_node_snapshot(
@@ -1228,7 +1377,11 @@ fn completed_node_snapshot(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-        .or_else(|| node.resolved_config.get("provider").and_then(|v| v.as_str()))
+        .or_else(|| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("")
         .to_string();
     let seq = round
@@ -1541,7 +1694,7 @@ fn apply_control_decision(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, node)?;
-            emit_intervention_notification(app, task_id, run, round, node);
+            emit_pause_side_effects(app, task_id, run, round, node);
             Ok(None)
         }
         ControlDecision::CompleteRun(outcome) => {
@@ -1583,6 +1736,7 @@ fn apply_control_decision(
             let completed_node_id = node.node_id.clone();
             let completed_attempt_id = node.attempt_id.clone();
             persist_runtime_state(app, task_id, run, round, node)?;
+            emit_run_completed_lifecycle_event(app, task_id, run, round, node, outcome);
             emit_completed_acp_session_update_best_effort(
                 app,
                 task_id,
@@ -4147,7 +4301,8 @@ fn validate_dynamic_node_spec(
                 .find(|node| node.id == continue_from_node_id)
             {
                 Some(target) => {
-                    if dynamic_node_continue_ref(ctx, target, &self::dynamic_attempt_id(target)).is_none()
+                    if dynamic_node_continue_ref(ctx, target, &self::dynamic_attempt_id(target))
+                        .is_none()
                     {
                         errors.push(dynamic_validation_error(
                             "dynamic.node.session.continue-target-missing-ref",
@@ -6647,31 +6802,36 @@ fn drive_from_node_with_initial_session(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .or_else(|| node.resolved_config.get("profile").and_then(|v| v.as_str()))
-                .or_else(|| node.resolved_config.get("provider").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    node.resolved_config
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                })
                 .map(|s| s.to_string());
             let agent_type = node
                 .resolved_config
                 .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            app.lifecycle_bus.emit(super::RuntimeLifecycleEvent::NodeStarted {
-                task_id: task_id.to_string(),
-                task_uuid: run.task_uuid.clone(),
-                run_id: run.id.clone(),
-                run_uuid: run.uuid.clone(),
-                round_id: round.id.clone(),
-                round_uuid: round.uuid.clone(),
-                node_id: node.node_id.clone(),
-                node_uuid: node.uuid.clone(),
-                attempt_id: node.attempt_id.clone(),
-                repo_root: app.paths.repo_root.to_string(),
-                seq,
-                node_name,
-                agent_type,
-                started_at: node.started_at.clone(),
-                attempt_dir: None,
-                predecessor: run.last_executed_node.clone(),
-            });
+            app.lifecycle_bus
+                .emit(super::RuntimeLifecycleEvent::NodeStarted {
+                    task_id: task_id.to_string(),
+                    task_uuid: run.task_uuid.clone(),
+                    run_id: run.id.clone(),
+                    run_uuid: run.uuid.clone(),
+                    round_id: round.id.clone(),
+                    round_uuid: round.uuid.clone(),
+                    node_id: node.node_id.clone(),
+                    node_uuid: node.uuid.clone(),
+                    attempt_id: node.attempt_id.clone(),
+                    repo_root: app.paths.repo_root.to_string(),
+                    seq,
+                    node_name,
+                    agent_type,
+                    started_at: node.started_at.clone(),
+                    attempt_dir: None,
+                    predecessor: run.last_executed_node.clone(),
+                });
         }
 
         let current_node_dsl = workflow
@@ -6757,7 +6917,7 @@ fn drive_from_node_with_initial_session(
                     &ctx,
                 );
                 persist_runtime_state(app, task_id, run, round, &failed_node)?;
-                emit_intervention_notification(app, task_id, run, round, &failed_node);
+                emit_pause_side_effects(app, task_id, run, round, &failed_node);
                 return Ok(());
             }
         };
@@ -6825,7 +6985,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
-            emit_intervention_notification(app, task_id, run, round, &node);
+            emit_pause_side_effects(app, task_id, run, round, &node);
             return Ok(());
         }
 
@@ -6967,7 +7127,7 @@ fn drive_from_node_with_initial_session(
                 ),
             );
             persist_runtime_state(app, task_id, run, round, &node)?;
-            emit_intervention_notification(app, task_id, run, round, &node);
+            emit_pause_side_effects(app, task_id, run, round, &node);
             return Ok(());
         }
 
@@ -7033,26 +7193,27 @@ fn drive_from_node_with_initial_session(
         }
         // Workflow ended — emit completed event for observability subscribers
         run.last_executed_node = Some(completed_snapshot.clone());
-        app.lifecycle_bus.emit(super::RuntimeLifecycleEvent::NodeCompleted {
-            task_id: task_id.to_string(),
-            task_uuid: run.task_uuid.clone(),
-            run_id: run.id.clone(),
-            run_uuid: run.uuid.clone(),
-            round_id: round.id.clone(),
-            round_uuid: round.uuid.clone(),
-            node_id: node.node_id.clone(),
-            node_uuid: node.uuid.clone(),
-            attempt_id: node.attempt_id.clone(),
-            repo_root: app.paths.repo_root.to_string(),
-            seq: completed_snapshot.seq,
-            node_name: completed_snapshot.node_name.clone(),
-            agent_type: completed_snapshot.agent_type.clone(),
-            started_at: node.started_at.clone(),
-            finished_at: node.finished_at.clone(),
-            outcome: completed_snapshot.status.clone(),
-            attempt_dir: attempt_dir.clone(),
-            suppress_sentinel: false,
-        });
+        app.lifecycle_bus
+            .emit(super::RuntimeLifecycleEvent::NodeCompleted {
+                task_id: task_id.to_string(),
+                task_uuid: run.task_uuid.clone(),
+                run_id: run.id.clone(),
+                run_uuid: run.uuid.clone(),
+                round_id: round.id.clone(),
+                round_uuid: round.uuid.clone(),
+                node_id: node.node_id.clone(),
+                node_uuid: node.uuid.clone(),
+                attempt_id: node.attempt_id.clone(),
+                repo_root: app.paths.repo_root.to_string(),
+                seq: completed_snapshot.seq,
+                node_name: completed_snapshot.node_name.clone(),
+                agent_type: completed_snapshot.agent_type.clone(),
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                outcome: completed_snapshot.status.clone(),
+                attempt_dir: attempt_dir.clone(),
+                suppress_sentinel: false,
+            });
         return Ok(());
     }
 }

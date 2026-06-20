@@ -13,10 +13,7 @@ use tauri::{AppHandle, State};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::commands::{
-    CommandErrorVm, CommandResult, acp_live_update_emitter, acp_session_update_emitter,
-    command_error,
-};
+use crate::commands::{CommandErrorVm, CommandResult, acp_session_update_emitter, command_error};
 use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
@@ -122,11 +119,14 @@ pub async fn create_conversation_run(
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let project_id_for_current = input.project_id.clone();
     let project_id_for_emit = input.project_id.clone();
-    let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(
-            app_handle.clone(),
-            Some(project_id_for_emit.clone()),
-        ))
+    let app = workspace_app;
+    let live_update = crate::commands::acp_live_update_emitter_for_app(
+        &app,
+        app_handle.clone(),
+        Some(project_id_for_emit.clone()),
+    );
+    let app = app
+        .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
@@ -162,11 +162,14 @@ pub fn rerun_conversation_task(
         ));
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(
-            app_handle.clone(),
-            Some(project_id.clone()),
-        ))
+    let app = workspace_app;
+    let live_update = crate::commands::acp_live_update_emitter_for_app(
+        &app,
+        app_handle.clone(),
+        Some(project_id.clone()),
+    );
+    let app = app
+        .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,

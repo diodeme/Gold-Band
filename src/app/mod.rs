@@ -430,17 +430,10 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
-/// Workflow lifecycle events emitted by the orchestrator via ObservabilityBus.
-/// Subscribers (metrics, tracing, audit, etc.) observe these events without
-/// the orchestrator knowing who is listening.
-///
-/// Each event is self-contained — it carries all IDs, metadata, and
-/// filesystem paths a subscriber needs.
-///
-/// Token counts (input/output/cache/total) are NOT included. Subscribers read
-/// token data themselves from `attempt_dir/acp.snapshot.json`.
+/// Runtime lifecycle events emitted by the orchestrator via RuntimeLifecycleBus.
+/// Subscribers observe these facts without changing runtime control flow.
 #[derive(Debug, Clone)]
-pub enum WorkflowEvent {
+pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
@@ -494,7 +487,21 @@ pub enum WorkflowEvent {
         /// the single begin/end sentinel pair for the whole workflow.
         suppress_sentinel: bool,
     },
+    RunPaused {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        pause_reason: PauseReason,
+        task_title: Option<String>,
+    },
 }
+
+pub type WorkflowEvent = RuntimeLifecycleEvent;
 
 pub struct App {
     pub paths: GoldBandPaths,
@@ -506,9 +513,7 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
-    pub observability_bus: observability::ObservabilityBus,
-    intervention_notifier:
-    Option<Arc<dyn Fn(InterventionNotification) + Send + Sync>>,
+    pub lifecycle_bus: observability::RuntimeLifecycleBus,
 }
 
 #[derive(Debug, Clone)]
@@ -702,8 +707,7 @@ impl App {
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            observability_bus: self.observability_bus.clone(),
-                        intervention_notifier: self.intervention_notifier.clone(),
+            lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
 
@@ -725,13 +729,19 @@ impl App {
         self
     }
 
-    /// 注入干预通知回调。编排器在暂停分支调用 [`App::notify_intervention`] 时触发，
-    /// 由桌面端闭包完成「去重 → OS 通知 → emit」流程（方案 §5.1/§6.3）。
-    pub fn with_intervention_notifier(
-        mut self,
-        notifier: Arc<dyn Fn(InterventionNotification) + Send + Sync>,
+    pub fn with_lifecycle_subscriber(
+        self,
+        subscriber: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
     ) -> Self {
-        self.intervention_notifier = Some(notifier);
+        self.lifecycle_bus.subscribe(subscriber);
+        self
+    }
+
+    pub fn with_inline_lifecycle_subscriber(
+        self,
+        subscriber: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+    ) -> Self {
+        self.lifecycle_bus.subscribe_inline(subscriber);
         self
     }
 
@@ -760,12 +770,8 @@ impl App {
         Ok(())
     }
 
-    /// 触发干预通知回调。无回调时静默跳过（如 CLI 模式无桌面端注入）。
-    /// 由编排器暂停分支 helper 调用（路径 A），桌面端闭包完成去重→OS→emit（方案 §6.3）。
-    pub fn notify_intervention(&self, notification: InterventionNotification) {
-        if let Some(notifier) = &self.intervention_notifier {
-            notifier(notification);
-        }
+    pub fn emit_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
+        self.lifecycle_bus.emit(event);
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -1436,8 +1442,7 @@ impl App {
             provider_override: None,
             acp_live_update: None,
             acp_session_update: None,
-            observability_bus: observability::ObservabilityBus::new(),
-            intervention_notifier: None,
+            lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
 
@@ -1459,8 +1464,7 @@ impl App {
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
             acp_session_update: None,
-            observability_bus: observability::ObservabilityBus::new(),
-            intervention_notifier: None,
+            lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
 
@@ -2529,6 +2533,35 @@ impl App {
         orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_continue_dynamic_inner_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+        prompt_id: Option<String>,
+        prompt: String,
+        attachment_paths: Vec<String>,
+    ) -> Result<RunState> {
+        orchestrator::run_continue_dynamic_inner_background(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+            prompt_id,
+            prompt,
+            attachment_paths,
+        )
+    }
+
     pub fn submit_manual_check(
         &self,
         task_id: &str,
@@ -2866,8 +2899,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpLiveEventContext, App};
-    use crate::app::InterventionNotification;
+    use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
@@ -2885,21 +2917,23 @@ mod tests {
             .unwrap()
     }
 
-    fn sample_notification() -> InterventionNotification {
-        InterventionNotification::new(
-            "task-1",
-            Some("标题"),
-            "run-1",
-            "round-1",
-            "node-1",
-            "attempt-1",
-            "节点",
-            PauseReason::WaitingForUserInput,
-        )
+    fn sample_run_paused_event() -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunPaused {
+            event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            occurred_at: "2026-01-01T00:00:00".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "节点".to_string(),
+            pause_reason: PauseReason::WaitingForUserInput,
+            task_title: Some("标题".to_string()),
+        }
     }
 
     #[test]
-    fn intervention_notifier_invoked_and_propagated_to_background() {
+    fn lifecycle_subscriber_invoked_and_propagated_to_background() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -2907,31 +2941,29 @@ mod tests {
         unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::new(repo_root)
-            .with_intervention_notifier(Arc::new(move |n| {
-                seen_for_callback.lock().unwrap().push(n.dedup_key.clone());
-            }));
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::RunPaused { event_id, .. } = event {
+                seen_for_callback.lock().unwrap().push(event_id);
+            }
+        }));
 
-        // 注入后能触发回调。
-        app.notify_intervention(sample_notification());
+        app.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 1);
 
-        // clone_for_background 应传播同一回调（Arc 共享）。
         let bg = app.clone_for_background();
-        bg.notify_intervention(sample_notification());
+        bg.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn intervention_notifier_silent_when_absent() {
-        // 未注入回调时静默跳过，不 panic（CLI 模式）。
+    fn lifecycle_bus_silent_when_no_subscribers() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let gold_band_home = repo_root.join("gold-band-home");
         unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let app = App::new(repo_root);
-        app.notify_intervention(sample_notification());
+        app.emit_lifecycle_event(sample_run_paused_event());
     }
 
     #[test]

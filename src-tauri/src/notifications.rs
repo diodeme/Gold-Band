@@ -8,7 +8,7 @@
 use std::sync::{Arc, Once};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use gold_band::app::InterventionNotification;
+use gold_band::app::{InterventionNotification, RuntimeLifecycleEvent};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::warn;
@@ -410,15 +410,43 @@ fn send_notify_rust(notification: &InterventionNotification) {
     }
 }
 
-/// 工厂：创建注入 `App` 的干预通知回调闭包。
-///
-/// 闭包捕获 `AppHandle`，触发时经 `try_state` 取共享 `NotificationDedup`，完成
-/// 「去重 → OS 通知 → emit」（方案 §5.1/§6.3）。延迟取 state 避免改动 4 个运行入口
-/// 的 App 构造签名，且路径 A/B 共享同一 `DesktopState` 中的 dedup 实例。
-pub fn create_intervention_notifier(
+pub fn create_intervention_notification_subscriber(
     app_handle: AppHandle,
-) -> Arc<dyn Fn(InterventionNotification) + Send + Sync> {
-    Arc::new(move |notification| {
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        let RuntimeLifecycleEvent::RunPaused {
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            node_label,
+            pause_reason,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if !matches!(
+            pause_reason,
+            gold_band::domain::PauseReason::WaitingForUserInput
+                | gold_band::domain::PauseReason::ErrorBlocked
+                | gold_band::domain::PauseReason::ProcessInterrupted
+                | gold_band::domain::PauseReason::PermissionRequested
+        ) {
+            return;
+        }
+        let notification = InterventionNotification::new(
+            &task_id,
+            task_title.as_deref(),
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            &node_label,
+            pause_reason,
+        );
         let Some(state) = app_handle.try_state::<DesktopState>() else {
             warn!(
                 dedup_key = %notification.dedup_key,

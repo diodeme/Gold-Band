@@ -28,7 +28,7 @@ save_desktop_preferences, save_metrics_settings, save_task_workflow, save_update
 save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
 select_recent_workspace, send_acp_prompt, set_acp_session_model,
 set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
-stop_active_session, submit_manual_check, toggle_mcp_server, update_agent, update_auto_template,
+stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent, update_auto_template,
 update_mcp_server, update_profile, update_workflow_template, write_skill,
 };
 use commands_conversation::{
@@ -155,6 +155,7 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            submit_conversation_prompt,
             send_acp_prompt,
             set_acp_session_model,
             set_acp_session_permission_mode,

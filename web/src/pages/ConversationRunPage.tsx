@@ -4,7 +4,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
@@ -54,8 +54,8 @@ interface ConversationRunPageProps {
   onSaveWorkflow?: (json: string) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onSessionStopped: () => void;
+  onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
-  onContinueRun: (promptId?: string | null, prompt?: string | null) => Promise<void>;
   onTitleChange?: (title: string) => void;
 }
 
@@ -68,8 +68,8 @@ export function ConversationRunPage({
   onSaveWorkflow,
   onSelectSession,
   onSessionStopped,
+  onLifecycleSnapshot,
   onAutoFollowChange,
-  onContinueRun,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
@@ -249,12 +249,10 @@ export function ConversationRunPage({
     ? {
         lifecycle: selectedLeaf.lifecycle,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
-        runtimeDisplay: selectedLeaf.runtimeDisplay,
         workflowValid: run.workflowValid,
         workflowError: t('conversation.runtime.workflowInvalid'),
         pauseMessage: translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
-        onContinue: (promptId, prompt) => { void onContinueRun(promptId, prompt); },
         onRepair: handleRepairWorkflow,
         continueLabel: selectedSessionWaitingForUserInput
           ? t('conversation.runtime.composerContinue')
@@ -346,6 +344,7 @@ export function ConversationRunPage({
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
             onSessionStopped={handleSessionStopped}
+            onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}

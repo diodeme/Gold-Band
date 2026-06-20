@@ -1413,6 +1413,16 @@ export function App() {
               }
             }).catch(() => {});
           }}
+          onLifecycleSnapshot={(snapshot) => {
+            setConversationRun((current) => {
+              const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
+              const patched = selectedPatched === current
+                ? applyConversationBackgroundSessionRuntimeSnapshot(current, snapshot)
+                : selectedPatched;
+              conversationRunRef.current = patched;
+              return patched;
+            });
+          }}
           onSessionStopped={() => {
             const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
             getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
@@ -1427,23 +1437,6 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
-          onContinueRun={async (promptId, prompt) => {
-            try {
-              await continueRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, promptId, prompt);
-              const selectedKey =
-                conversationSelectedSessionKeyRef.current
-                ?? conversationRunRef.current?.sessionTree.selectedSessionKey
-                ?? null;
-              const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey);
-              applyConversationRunSnapshot(refreshed, 'continue', {
-                selectedSessionKey: selectedKey,
-                preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
-              });
-            } catch (err) {
-              setError(displayAppError(t, err));
-              throw err;
-            }
-          }}
           onTitleChange={(title) => {
             setConversationRun((prev) => prev ? { ...prev, title } : prev);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
@@ -1507,6 +1500,6 @@ export function App() {
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(undefined, taskId, runId, promptId))} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;
   }
 }

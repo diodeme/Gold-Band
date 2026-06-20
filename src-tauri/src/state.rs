@@ -94,12 +94,12 @@ impl DesktopContext {
             dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
         >,
     ) -> App {
-        self.app()
+        let app = self
+            .app()
             .with_acp_live_update(live_update)
-            .with_acp_session_update(session_update)
-            .with_intervention_notifier(crate::notifications::create_intervention_notifier(
-                app_handle.clone(),
-            ))
+            .with_acp_session_update(session_update);
+        crate::commands::register_lifecycle_subscribers(&app, app_handle);
+        app
     }
 }
 

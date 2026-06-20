@@ -132,8 +132,7 @@ pub async fn create_conversation_run(
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
             Some(project_id_for_emit),
         ));
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -173,8 +172,7 @@ pub fn rerun_conversation_task(
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
             Some(project_id.clone()),
         ));
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run =
         crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
             .map_err(command_error)?;

@@ -154,6 +154,9 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  },
   sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },

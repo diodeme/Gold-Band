@@ -1,8 +1,11 @@
 import type {
   AcpSessionVm,
+  ConversationAttemptLifecycleVm,
   ConversationRunVm,
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
+  GraphNodeVm,
+  GraphVm,
 } from '@/types';
 
 export type ConversationRunSnapshotSource =
@@ -43,16 +46,34 @@ export function applyConversationSelectedSessionSnapshot(
     outerNodeId?: string | null;
     outerAttemptId?: string | null;
     session?: AcpSessionVm | null;
+    lifecycle?: ConversationAttemptLifecycleVm | null;
   },
 ): ConversationRunVm | null {
-  if (!current || !snapshot.session) return current;
+  if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
   if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
   const snapshotKey = conversationSessionKeyFromParts(snapshot);
   if (current.sessionTree.selectedSessionKey !== snapshotKey) return current;
-  if (!findConversationLeafByKey(current.sessionTree, snapshotKey)) return current;
+  const leaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
+  if (!leaf) return current;
+  const nextLeaf = mergeLeafRuntimeSession(leaf, snapshot.session, snapshot.lifecycle);
+  const nextActiveSessions = updateActiveSessionsForLeaf(current.activeSessions, nextLeaf);
+  const nextWorkflowGraph = patchWorkflowGraphLeaf(current.workflowGraph, nextLeaf);
+  if (
+    nextLeaf === leaf &&
+    nextActiveSessions === current.activeSessions &&
+    nextWorkflowGraph === current.workflowGraph &&
+    !snapshot.session
+  ) {
+    return current;
+  }
   return {
     ...current,
-    selectedSession: snapshot.session,
+    selectedSession: snapshot.session ?? current.selectedSession,
+    sessionTree: nextLeaf === leaf
+      ? current.sessionTree
+      : mapConversationTreeLeaf(current.sessionTree, snapshotKey, () => nextLeaf),
+    activeSessions: nextActiveSessions,
+    workflowGraph: nextWorkflowGraph,
   };
 }
 
@@ -67,21 +88,21 @@ export function applyConversationBackgroundSessionRuntimeSnapshot(
     outerNodeId?: string | null;
     outerAttemptId?: string | null;
     session?: AcpSessionVm | null;
+    lifecycle?: ConversationAttemptLifecycleVm | null;
   },
 ): ConversationRunVm | null {
-  if (!current || !snapshot.session) return current;
+  if (!current || (!snapshot.session && !snapshot.lifecycle)) return current;
   if (current.taskId !== snapshot.taskId || current.runId !== snapshot.runId) return current;
   const snapshotKey = conversationSessionKeyFromParts(snapshot);
   if (current.sessionTree.selectedSessionKey === snapshotKey) return current;
   const currentLeaf = findConversationLeafByKey(current.sessionTree, snapshotKey);
   if (!currentLeaf) return current;
 
-  const nextLeaf = mergeLeafRuntimeSession(currentLeaf, snapshot.session);
+  const nextLeaf = mergeLeafRuntimeSession(currentLeaf, snapshot.session, snapshot.lifecycle);
   const leafChanged = nextLeaf !== currentLeaf;
-  const nextActiveSessions = isConversationActiveLeaf(nextLeaf)
-    ? upsertActiveSession(current.activeSessions, nextLeaf)
-    : current.activeSessions;
-  if (!leafChanged && nextActiveSessions === current.activeSessions) return current;
+  const nextActiveSessions = updateActiveSessionsForLeaf(current.activeSessions, nextLeaf);
+  const nextWorkflowGraph = patchWorkflowGraphLeaf(current.workflowGraph, nextLeaf);
+  if (!leafChanged && nextActiveSessions === current.activeSessions && nextWorkflowGraph === current.workflowGraph) return current;
 
   return {
     ...current,
@@ -89,6 +110,7 @@ export function applyConversationBackgroundSessionRuntimeSnapshot(
       ? mapConversationTreeLeaf(current.sessionTree, snapshotKey, () => nextLeaf)
       : current.sessionTree,
     activeSessions: nextActiveSessions,
+    workflowGraph: nextWorkflowGraph,
   };
 }
 
@@ -313,24 +335,94 @@ function activeSessionFromLeaf(leaf: ConversationSessionLeafVm): ConversationRun
   };
 }
 
-function mergeLeafRuntimeSession(leaf: ConversationSessionLeafVm, session: AcpSessionVm) {
-  const nextStatus = isConversationActiveStatus(session.status) &&
-    !isConversationActiveStatus(leaf.status) &&
-    !isConversationTerminalLeafStatus(leaf.status)
-    ? session.status
-    : leaf.status;
-  const nextSessionId = session.sessionId ?? leaf.sessionId ?? null;
-  const nextStartedAt = session.sessionStartedAt ?? leaf.startedAt ?? null;
+function patchWorkflowGraphLeaf(graph: GraphVm, leaf: ConversationSessionLeafVm): GraphVm {
+  if (graph.nodes.length === 0) return graph;
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    if (!graphNodeMatchesLeaf(node, leaf)) return node;
+    const next = patchWorkflowGraphNode(node, leaf);
+    if (next !== node) changed = true;
+    return next;
+  });
+  return changed ? { ...graph, nodes } : graph;
+}
+
+function graphNodeMatchesLeaf(node: GraphNodeVm, leaf: ConversationSessionLeafVm) {
+  return (node.nodeId ?? null) === leaf.nodeId &&
+    (node.attemptId ?? null) === leaf.attemptId &&
+    (node.outerNodeId ?? null) === (leaf.outerNodeId ?? null) &&
+    (node.outerAttemptId ?? null) === (leaf.outerAttemptId ?? null);
+}
+
+function patchWorkflowGraphNode(node: GraphNodeVm, leaf: ConversationSessionLeafVm): GraphNodeVm {
+  const outcome = leaf.outcome ?? null;
+  const attempts = node.attempts?.map((attempt) => {
+    if (attempt.attemptId !== leaf.attemptId) return attempt;
+    if (
+      attempt.status === leaf.status &&
+      (attempt.outcome ?? null) === outcome &&
+      attempt.runtimeDisplay === leaf.runtimeDisplay &&
+      attempt.current === leaf.current
+    ) {
+      return attempt;
+    }
+    return {
+      ...attempt,
+      status: leaf.status,
+      outcome,
+      runtimeDisplay: leaf.runtimeDisplay,
+      current: leaf.current,
+    };
+  });
+  const attemptsChanged = attempts !== node.attempts && attempts?.some((attempt, index) => attempt !== node.attempts?.[index]);
+  if (
+    node.status === leaf.status &&
+    (node.outcome ?? null) === outcome &&
+    node.runtimeDisplay === leaf.runtimeDisplay &&
+    node.current === leaf.current &&
+    !attemptsChanged
+  ) {
+    return node;
+  }
+  return {
+    ...node,
+    status: leaf.status,
+    outcome,
+    runtimeDisplay: leaf.runtimeDisplay,
+    current: leaf.current,
+    attempts,
+  };
+}
+
+function mergeLeafRuntimeSession(
+  leaf: ConversationSessionLeafVm,
+  session?: AcpSessionVm | null,
+  lifecycle?: ConversationAttemptLifecycleVm | null,
+) {
+  const nextStatus = lifecycle?.displayStatus
+    ?? (session && isConversationActiveStatus(session.status) &&
+      !isConversationActiveStatus(leaf.status) &&
+      !isConversationTerminalLeafStatus(leaf.status)
+      ? session.status
+      : leaf.status);
+  const nextRuntimeDisplay = lifecycle?.runtimeDisplay ?? leaf.runtimeDisplay;
+  const nextLifecycle = lifecycle ?? leaf.lifecycle;
+  const nextSessionId = session?.sessionId ?? leaf.sessionId ?? null;
+  const nextStartedAt = session?.sessionStartedAt ?? leaf.startedAt ?? null;
   if (
     nextStatus === leaf.status &&
     nextSessionId === (leaf.sessionId ?? null) &&
-    nextStartedAt === (leaf.startedAt ?? null)
+    nextStartedAt === (leaf.startedAt ?? null) &&
+    nextRuntimeDisplay === leaf.runtimeDisplay &&
+    nextLifecycle === leaf.lifecycle
   ) {
     return leaf;
   }
   return {
     ...leaf,
     status: nextStatus,
+    runtimeDisplay: nextRuntimeDisplay,
+    lifecycle: nextLifecycle,
     sessionId: nextSessionId,
     startedAt: nextStartedAt,
   };
@@ -340,6 +432,15 @@ function isConversationTerminalLeafStatus(status?: string | null) {
   return ['completed', 'complete', 'success', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(
     status?.trim().toLowerCase().replace(/_/g, '-') ?? '',
   );
+}
+
+function updateActiveSessionsForLeaf(
+  current: ConversationRunVm['activeSessions'],
+  leaf: ConversationSessionLeafVm,
+): ConversationRunVm['activeSessions'] {
+  if (isConversationActiveLeaf(leaf)) return upsertActiveSession(current, leaf);
+  const next = current.filter((item) => conversationSessionKeyFromParts(item) !== conversationSessionKeyFromParts(leaf));
+  return next.length === current.length ? current : next;
 }
 
 function upsertActiveSession(

@@ -26,6 +26,16 @@ const unknownDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
+const pausedDisplay: RuntimeDisplayVm = {
+  code: 'paused',
+  tone: 'warning',
+  icon: 'pause',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'process-interrupted',
+  blockingError: false,
+};
+
 function leaf(
   status: string,
   runtimeDisplay: RuntimeDisplayVm,
@@ -146,6 +156,56 @@ describe('applyConversationSelectedSessionSnapshot', () => {
 
     expect(patched?.selectedSession?.status).toBe('cancelled');
     expect(patched?.selectedSession?.events).toEqual([{ content: 'stopped' }]);
+  });
+
+  it('patches workflow graph status from a lifecycle-only selected snapshot', () => {
+    const currentLeaf = leaf('paused', pausedDisplay, { current: true });
+    const current = run({
+      selectedSession: { sessionId: 'session-1', status: 'cancelled', events: [] } as any,
+      workflowGraph: {
+        nodes: [{
+          id: '1:dev:attempt-001',
+          nodeId: 'dev',
+          sequence: 1,
+          label: 'dev',
+          nodeType: 'worker',
+          status: 'paused',
+          outcome: null,
+          runtimeDisplay: pausedDisplay,
+          attemptId: 'attempt-001',
+          outerNodeId: null,
+          outerAttemptId: null,
+          attemptCount: 1,
+          attempts: [{ attemptId: 'attempt-001', sequence: 1, status: 'paused', outcome: null, runtimeDisplay: pausedDisplay, current: true }],
+          artifactCount: 0,
+          attachmentCount: 0,
+          current: true,
+        }],
+        edges: [],
+      },
+    }, [currentLeaf]);
+
+    const patched = applyConversationSelectedSessionSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'running',
+        runtimeDisplay: runningDisplay,
+        continueKind: null,
+        composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: true, lockInput: true, showContinueAction: false },
+      },
+    });
+
+    expect(patched?.selectedSession?.status).toBe('cancelled');
+    expect(patched?.sessionTree.rounds[0].nodes[0].attempts[0].status).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].status).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].runtimeDisplay.tone).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].attempts?.[0].status).toBe('running');
   });
 
   it('ignores full snapshots from non-selected session identities', () => {

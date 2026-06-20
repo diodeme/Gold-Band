@@ -168,6 +168,7 @@ pub struct ConversationAttemptLifecycleVm {
     pub display_status: String,
     pub runtime_display: RuntimeDisplayVm,
     pub continue_kind: Option<String>,
+    pub composer: ConversationComposerVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +181,7 @@ pub struct ConversationRuntimeFacetVm {
     pub current: bool,
     pub active: bool,
     pub continuable: bool,
+    pub phase: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +191,18 @@ pub struct ConversationAcpFacetVm {
     pub active: bool,
     pub stopping: bool,
     pub terminal: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationComposerVm {
+    pub mode: String,
+    pub submit_target: String,
+    pub processing_kind: String,
+    pub status_key: Option<String>,
+    pub can_stop: bool,
+    pub lock_input: bool,
+    pub show_continue_action: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -827,9 +841,89 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted") => Some("input".to_string()),
+        Some("process-interrupted") | Some("error-blocked") => Some("input".to_string()),
         Some("waiting-for-user-input") => Some("action".to_string()),
         _ => None,
+    }
+}
+
+fn runtime_phase_for_lifecycle(
+    runtime_status: &str,
+    runtime_active: bool,
+    runtime_terminal: bool,
+    acp_status: Option<&str>,
+    acp_active: bool,
+    acp_terminal: bool,
+) -> String {
+    if runtime_terminal {
+        return "terminal".to_string();
+    }
+    if normalize_lifecycle_code(runtime_status) == "paused" {
+        return "paused".to_string();
+    }
+    if runtime_active && acp_terminal {
+        return "launching-next-node".to_string();
+    }
+    if runtime_active {
+        let session_status = acp_status.map(normalize_lifecycle_code);
+        if !acp_active || matches!(session_status.as_deref(), Some("pending")) {
+            return "launching-session".to_string();
+        }
+        return "provider-running".to_string();
+    }
+    "idle".to_string()
+}
+
+fn composer_for_lifecycle(
+    runtime_phase: &str,
+    runtime_active: bool,
+    acp_active: bool,
+    acp_stopping: bool,
+    continue_kind: Option<&str>,
+    runtime_display: &RuntimeDisplayVm,
+) -> ConversationComposerVm {
+    let mode = if acp_stopping {
+        "stopping"
+    } else if runtime_active || acp_active {
+        "runtime-active"
+    } else if continue_kind == Some("input") {
+        "interrupted-input"
+    } else if continue_kind == Some("action") {
+        "paused-action"
+    } else if runtime_display.blocking_error {
+        "runtime-error"
+    } else {
+        "normal"
+    };
+    let submit_target = match mode {
+        "interrupted-input" | "paused-action" => "runtime-continue",
+        "normal" => "acp-prompt",
+        _ => "none",
+    };
+    let processing_kind = match mode {
+        "stopping" => "stopping",
+        "runtime-active" if runtime_phase == "launching-next-node" => "launching-next-node",
+        "runtime-active" if runtime_phase == "launching-session" => "launching",
+        "runtime-active" => "processing",
+        _ => "processing",
+    };
+    let status_key = match mode {
+        "stopping" => Some("acp.stopping"),
+        "runtime-active" if runtime_phase == "launching-next-node" => {
+            Some("conversation.runtime.launchingNextNode")
+        }
+        "runtime-active" => Some("conversation.runtime.runtimeActive"),
+        _ => None,
+    };
+
+    ConversationComposerVm {
+        mode: mode.to_string(),
+        submit_target: submit_target.to_string(),
+        processing_kind: processing_kind.to_string(),
+        status_key: status_key.map(str::to_string),
+        can_stop: runtime_active || acp_active || acp_stopping,
+        lock_input: !matches!(mode, "normal" | "interrupted-input"),
+        show_continue_action: mode == "paused-action",
     }
 }
 
@@ -905,6 +999,22 @@ fn derive_conversation_attempt_lifecycle(
         run_resumable,
     );
     let continue_kind = runtime_continue_kind(runtime_status, pause_reason, run_resumable);
+    let runtime_phase = runtime_phase_for_lifecycle(
+        runtime_status,
+        runtime_active,
+        runtime_terminal,
+        session_status.as_deref(),
+        acp_active,
+        acp_terminal,
+    );
+    let composer = composer_for_lifecycle(
+        &runtime_phase,
+        runtime_active,
+        acp_active,
+        acp_stopping,
+        continue_kind.as_deref(),
+        &runtime_display,
+    );
 
     ConversationAttemptLifecycleVm {
         runtime: ConversationRuntimeFacetVm {
@@ -915,6 +1025,7 @@ fn derive_conversation_attempt_lifecycle(
             current,
             active: runtime_active,
             continuable: continue_kind.is_some(),
+            phase: runtime_phase,
         },
         acp: ConversationAcpFacetVm {
             status: session_status,
@@ -925,7 +1036,118 @@ fn derive_conversation_attempt_lifecycle(
         display_status,
         runtime_display,
         continue_kind,
+        composer,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn conversation_attempt_lifecycle_vm(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> anyhow::Result<ConversationAttemptLifecycleVm> {
+    let run = app.run_status(task_id, run_id)?;
+    let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
+    let run_resumable = is_run_continuable(&run);
+
+    if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
+        let session_vm = dynamic_acp_session_vm(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
+            None,
+            None,
+        )?;
+        let dynamic_path = app.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let dynamic_graph = read_json::<DynamicGraphState>(&dynamic_path)?;
+        let dynamic_node = dynamic_graph
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .ok_or_else(|| anyhow::anyhow!("dynamic node `{}` not found", node_id))?;
+        let runtime_status = enum_label(&dynamic_node.status);
+        let outcome = dynamic_node.outcome.as_ref().map(enum_label);
+        let current = run.current_round.as_deref() == Some(round_id)
+            && run.current_node.as_deref() == Some(outer_node_id)
+            && run.current_attempt.as_deref() == Some(outer_attempt_id)
+            && dynamic_graph
+                .run
+                .current_node_ids
+                .iter()
+                .any(|id| id == node_id);
+        let pause_reason = display_pause_reason_for_dynamic_attempt(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
+            run_pause_reason.as_deref(),
+        );
+        return Ok(derive_conversation_attempt_lifecycle(
+            session_vm.as_ref().map(|session| session.status.as_str()),
+            &runtime_status,
+            outcome.as_deref(),
+            current,
+            pause_reason.as_deref(),
+            run_resumable,
+        ));
+    }
+
+    let session_vm = acp_session_vm(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        None,
+        None,
+    )?;
+    let node_path = app
+        .paths
+        .node_file(task_id, run_id, round_id, node_id, attempt_id);
+    let node = read_json::<gold_band::runtime::NodeState>(&node_path)?;
+    let runtime_status = enum_label(&node.status);
+    let outcome = node.outcome.as_ref().map(enum_label);
+    let current = run.current_round.as_deref() == Some(round_id)
+        && run.current_node.as_deref() == Some(node_id)
+        && run.current_attempt.as_deref() == Some(attempt_id);
+    let pause_reason = display_pause_reason_for_attempt(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        run_pause_reason.as_deref(),
+    );
+    Ok(derive_conversation_attempt_lifecycle(
+        session_vm.as_ref().map(|session| session.status.as_str()),
+        &runtime_status,
+        outcome.as_deref(),
+        current,
+        pause_reason.as_deref(),
+        run_resumable,
+    ))
 }
 
 fn conversation_status_from_session(
@@ -2100,8 +2322,15 @@ mod tests {
 
         assert_eq!(lifecycle.display_status, "running");
         assert!(lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert!(!lifecycle.acp.active);
         assert!(lifecycle_is_active(&lifecycle));
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.launchingNextNode")
+        );
     }
 
     #[test]
@@ -2131,6 +2360,10 @@ mod tests {
         assert!(lifecycle.acp.active);
         assert!(lifecycle.acp.stopping);
         assert!(lifecycle_is_active(&lifecycle));
+        assert_eq!(lifecycle.composer.mode, "stopping");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert_eq!(lifecycle.composer.processing_kind, "stopping");
+        assert!(lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -2183,6 +2416,10 @@ mod tests {
         assert_eq!(lifecycle.display_status, "paused");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
         assert!(lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.runtime.phase, "paused");
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -2199,6 +2436,27 @@ mod tests {
         assert_eq!(lifecycle.display_status, "paused");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.composer.mode, "paused-action");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(lifecycle.composer.lock_input);
+        assert!(lifecycle.composer.show_continue_action);
+    }
+
+    #[test]
+    fn error_blocked_runtime_pause_is_input_continue() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            true,
+            Some("error-blocked"),
+            true,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
     }
 
     #[test]

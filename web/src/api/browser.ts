@@ -219,6 +219,9 @@ export const browserApi: RuntimeApi = {
   subscribeInterventionNavigate() {
     return Promise.resolve(() => {});
   },
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+    return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
+  },
   sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve(fallback ?? null);
   },

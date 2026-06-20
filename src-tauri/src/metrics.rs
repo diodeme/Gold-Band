@@ -355,12 +355,11 @@ pub fn start_sentinel_metric(
 
 // ── Orchestrator Callback ────────────────────────────────────────────────────
 
-/// Create a metrics subscriber for the ObservabilityBus.
-/// Replaces the old `create_metrics_callback`.
+/// Create a metrics subscriber for the RuntimeLifecycleBus.
 ///
-/// The subscriber is called **synchronously** by the bus, so it does the
-/// minimum work needed (settings lookup, token read, metric construction)
-/// and then delegates the HTTP request to `tauri::async_runtime::spawn`.
+/// The bus invokes subscribers off the runtime hot path; this handler still
+/// delegates HTTP requests to `tauri::async_runtime::spawn` after lightweight
+/// settings and metric construction.
 pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
 ) -> Arc<dyn Fn(WorkflowEvent) + Send + Sync> {
@@ -618,6 +617,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                     let _ = app_handle;
                 });
             }
+            _ => {}
         }
     })
 }

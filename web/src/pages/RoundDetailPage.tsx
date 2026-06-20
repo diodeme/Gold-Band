@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AppConfigVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
-import { getLogPage, showArtifact, showAttachment } from '../api';
+import { getLogPage, showArtifact, showAttachment, submitConversationPrompt } from '../api';
 import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
 import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
@@ -36,7 +36,6 @@ interface RoundDetailPageProps {
   workspaceProjectId?: string;
   onRefresh: () => void;
   onSelect: (selection: RoundSelection) => void;
-  onContinueRun: (taskId: string, runId: string, promptId: string) => Promise<unknown>;
 }
 
 type NodeDrawerTab = 'detail' | 'session';
@@ -44,7 +43,7 @@ type NodeDrawerTab = 'detail' | 'session';
 const defaultLogPageSize = 50;
 const defaultHotLimit = 1000;
 
-export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, appConfig, workspaceProjectId, onRefresh, onSelect, onContinueRun }: RoundDetailPageProps) {
+export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, appConfig, workspaceProjectId, onRefresh, onSelect }: RoundDetailPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
@@ -99,9 +98,10 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   };
 
   const handleContinueRun = async () => {
-    if (!activeNodeId || !activeAttemptId) return;
+    const target = activeAttemptLocator(vm);
+    if (!target) return;
     const promptId = createAcpPromptId();
-    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, activeNodeId, activeAttemptId);
+    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, target.roundId, target.nodeId, target.attemptId);
     const optimisticEvent = optimisticUserEvent(t('acp.continuePrompt'), promptId);
     const appendOptimisticEvent = (events: AcpUiEventVm[]) => [...events.filter((event) => promptIdFromAcpEvent(event) !== promptId), optimisticEvent];
     updateAcpOptimisticEvents(optimisticKey, appendOptimisticEvent);
@@ -109,15 +109,30 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
       ...current,
       [optimisticKey]: appendOptimisticEvent(current[optimisticKey] ?? []),
     }));
-    const result = await onContinueRun(vm.run.taskId, vm.run.id, promptId);
-    if (result) return;
-    const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
-    updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
-    setOptimisticAcpEventsByKey((current) => {
-      const events = markPromptFailed(current[optimisticKey] ?? []);
-      if (events.length === 0) return current;
-      return { ...current, [optimisticKey]: events };
-    });
+    try {
+      const result = await submitConversationPrompt(
+        workspaceProjectId ?? 'default',
+        vm.run.taskId,
+        vm.run.id,
+        target.roundId,
+        target.nodeId,
+        target.attemptId,
+        '',
+        promptId,
+        null,
+        target.outerNodeId,
+        target.outerAttemptId,
+      );
+      if (result.kind === 'runtime-continue-started') onRefresh();
+    } catch {
+      const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
+      updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
+      setOptimisticAcpEventsByKey((current) => {
+        const events = markPromptFailed(current[optimisticKey] ?? []);
+        if (events.length === 0) return current;
+        return { ...current, [optimisticKey]: events };
+      });
+    }
   };
 
   return (
@@ -552,7 +567,6 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           outerAttemptId={detail.outerAttemptId}
           runtimeComposerContext={{
             runtimeStatus,
-            runtimeDisplay: undefined,
             workflowValid: true,
           }}
           manualCheckPending={detail.manualCheckPending && attemptId === detail.attemptId}
@@ -565,6 +579,32 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
       </div>
     </div>
   );
+}
+
+function activeAttemptLocator(vm: RoundDetailVm): { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null } | null {
+  const currentRound = vm.run.currentRound ?? vm.round.id;
+  const currentNode = vm.run.currentNode ?? vm.round.currentNode;
+  const currentAttempt = vm.run.currentAttempt;
+  if (!currentNode || !currentAttempt) return null;
+  const selected = vm.selectedNodeDetail;
+  if (
+    selected?.outerNodeId === currentNode &&
+    selected.outerAttemptId === currentAttempt &&
+    selected.attemptId
+  ) {
+    return {
+      roundId: currentRound,
+      nodeId: selected.nodeId,
+      attemptId: selected.attemptId,
+      outerNodeId: selected.outerNodeId,
+      outerAttemptId: selected.outerAttemptId,
+    };
+  }
+  return {
+    roundId: currentRound,
+    nodeId: currentNode,
+    attemptId: currentAttempt,
+  };
 }
 
 class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {

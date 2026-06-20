@@ -23,7 +23,8 @@
 - 动态内联节点的详情与 ACP 会话定位必须读取真实 dynamic attempt 目录，并与主图边关系保持一致；不能把所有内部节点固定映射成同一个 attempt，否则会出现节点看似运行但会话/边信息错位。
 - Round 详情主图中，AI-DYNAMIC 外层 success/failure 边仍按普通 workflow trace 判定，但展示连接端点改为内部 dynamic graph 出口节点：显式 `dependsOn`、`sessionMode=continue` 和 `chainId/depth` 隐式成功边都会参与出口判定，避免 bootstrap 等中间层节点被误连到后续普通节点；当前常见单出口，保留多个出口 fan-in 到后续节点的能力。
 - 动态内联节点在主图中的 rank 必须位于其外层 AI-DYNAMIC trace 步骤与后续普通 workflow 节点之间；外层后继节点不能因为原始 trace sequence 更小而排到内部节点前面，否则出口边会被前端布局识别成回退边并走顶部绕线路由。
-- 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot、schema 策略收窄、repair prompt 路径、merge/acceptance profile 禁用、非 git worktree 提示词注入与 proposal 拒绝；同时通过 `cargo test`、`npm run web:test`、`npm run web:build`。
+- AI-DYNAMIC 内部节点停止后的继续发送已并入统一 workflow/ACP 生命周期：会话态与旧 Round 详情都只调用 `submit_conversation_prompt`，后端通过 `AttemptLocator` 在 outer run paused 且 locator 匹配时调用 `run_continue_dynamic_inner_background`；runtime 加载 paused dynamic graph、校验目标 internal node 和 attempt id、只恢复目标节点，并继续走 `drive_dynamic_graph` 的 proposal 解析、校验、materialize 和外层 workflow 后续推进。raw `send_acp_prompt` 不再允许命中 paused/resumable/current dynamic inner attempt，以避免绕过 runtime。
+- 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot、schema 策略收窄、repair prompt 路径、merge/acceptance profile 禁用、非 git worktree 提示词注入与 proposal 拒绝，以及 dynamic inner resume 只恢复目标 paused node；同时通过 `cargo test`、`npm run web:test`、`npm run web:build` 的相关目标验证。
 
 V1 仍保持以下边界：不做 direct mode、triage-result、route-decision/replan、nested AI-DYNAMIC 和局部失败恢复。
 

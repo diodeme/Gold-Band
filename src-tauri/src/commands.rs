@@ -14,7 +14,7 @@ use gold_band::app::{
 use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
-use gold_band::runtime::{NodeState, WorkerRefState};
+use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use gold_band::storage::{read_json, write_json};
 use std::{
@@ -55,12 +55,96 @@ use crate::view_models::{
     round_detail_vm, run_detail_vm, run_summary_vm, skill_content_vm, skill_list_vm,
     skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
+use crate::view_models_conversation::{
+    ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
+};
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const ACP_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
+
+#[derive(Debug, Clone)]
+struct AttemptLocator {
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+impl AttemptLocator {
+    fn new(
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        outer_node_id: Option<String>,
+        outer_attempt_id: Option<String>,
+    ) -> Self {
+        let has_outer = outer_node_id.is_some() && outer_attempt_id.is_some();
+        Self {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id: has_outer.then(|| outer_node_id.unwrap()),
+            outer_attempt_id: has_outer.then(|| outer_attempt_id.unwrap()),
+        }
+    }
+
+    fn outer_node_id(&self) -> Option<&str> {
+        self.outer_node_id.as_deref()
+    }
+
+    fn outer_attempt_id(&self) -> Option<&str> {
+        self.outer_attempt_id.as_deref()
+    }
+
+    fn runtime_node_id(&self) -> &str {
+        self.outer_node_id().unwrap_or(&self.node_id)
+    }
+
+    fn runtime_attempt_id(&self) -> &str {
+        self.outer_attempt_id().unwrap_or(&self.attempt_id)
+    }
+
+    fn matches_run_current(&self, run: &RunState) -> bool {
+        run.current_round.as_deref() == Some(self.round_id.as_str())
+            && run.current_node.as_deref() == Some(self.runtime_node_id())
+            && run.current_attempt.as_deref() == Some(self.runtime_attempt_id())
+    }
+
+    fn attempt_dir(&self, app: &gold_band::app::App) -> Utf8PathBuf {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (self.outer_node_id(), self.outer_attempt_id())
+        {
+            app.paths.dynamic_node_attempt_dir(
+                &self.task_id,
+                &self.run_id,
+                &self.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &self.node_id,
+                &self.attempt_id,
+            )
+        } else {
+            app.paths.attempt_dir(
+                &self.task_id,
+                &self.run_id,
+                &self.round_id,
+                &self.node_id,
+                &self.attempt_id,
+            )
+        }
+    }
+
+}
 
 fn resolve_acp_attempt_dir(
     app: &gold_band::app::App,
@@ -72,20 +156,30 @@ fn resolve_acp_attempt_dir(
     outer_node_id: Option<&str>,
     outer_attempt_id: Option<&str>,
 ) -> Utf8PathBuf {
-    if let (Some(on), Some(oa)) = (outer_node_id, outer_attempt_id) {
-        app.paths
-            .dynamic_node_attempt_dir(task_id, run_id, round_id, on, oa, node_id, attempt_id)
-    } else {
-        app.paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id)
-    }
+    AttemptLocator::new(
+        task_id.to_string(),
+        run_id.to_string(),
+        round_id.to_string(),
+        node_id.to_string(),
+        attempt_id.to_string(),
+        outer_node_id.map(str::to_string),
+        outer_attempt_id.map(str::to_string),
+    )
+    .attempt_dir(app)
 }
 
-fn is_acp_session_active_status(status: &str) -> bool {
-    matches!(
-        status.to_ascii_lowercase().as_str(),
-        "pending" | "running" | "in_progress" | "sending" | "cancelling" | "cancel_requested"
+fn lifecycle_for_locator(app: &App, locator: &AttemptLocator) -> Option<ConversationAttemptLifecycleVm> {
+    conversation_attempt_lifecycle_vm(
+        app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
     )
+    .ok()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +195,7 @@ struct AcpSessionUpdatedEventVm {
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
+    lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
 
 fn normalize_workspace_project_id(workspace_path: &str) -> String {
@@ -151,6 +246,14 @@ fn resolve_command_app(
     Ok(app)
 }
 
+pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
+    app.lifecycle_bus
+        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    app.lifecycle_bus.subscribe(
+        crate::notifications::create_intervention_notification_subscriber(app_handle.clone()),
+    );
+}
+
 fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     context: &DesktopContext,
@@ -161,12 +264,8 @@ fn resolve_command_app_with_emitters(
     let bg_app = base_app.clone_for_background();
     let app = base_app
         .with_acp_live_update(acp_live_update_emitter(app_handle.clone(), pid.clone()))
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
-        .with_intervention_notifier(crate::notifications::create_intervention_notifier(
-                    app_handle.clone(),
-                ));
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid));
+    register_lifecycle_subscribers(&app, app_handle);
     Ok(app)
 }
 
@@ -179,10 +278,20 @@ pub struct CommandErrorVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationPromptSubmitVm {
+    pub kind: String,
+    pub session: Option<AcpSessionVm>,
+    pub run: Option<RunSummaryVm>,
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActiveSessionStopVm {
     pub kind: String,
     pub run: Option<RunSummaryVm>,
     pub session: Option<AcpSessionVm>,
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
 
 impl CommandErrorVm {
@@ -700,8 +809,7 @@ pub fn start_run(
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
     );
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    register_lifecycle_subscribers(&app, &app_handle);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -755,10 +863,7 @@ pub fn stop_active_session(
         .map(|run| run.status == RunStatus::Running)
         .map_err(command_error)?;
 
-    let session = cancel_acp_session(
-        app_handle,
-        state,
-        project_id.clone(),
+    let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
         round_id,
@@ -766,7 +871,20 @@ pub fn stop_active_session(
         attempt_id,
         outer_node_id,
         outer_attempt_id,
+    );
+    let session = cancel_acp_session(
+        app_handle,
+        state,
+        project_id.clone(),
+        locator.task_id.clone(),
+        locator.run_id.clone(),
+        locator.round_id.clone(),
+        locator.node_id.clone(),
+        locator.attempt_id.clone(),
+        locator.outer_node_id.clone(),
+        locator.outer_attempt_id.clone(),
     )?;
+    let lifecycle = lifecycle_for_locator(&app, &locator);
 
     if was_running {
         let paused = app.run_status(&task_id, &run_id).map_err(command_error)?;
@@ -774,6 +892,7 @@ pub fn stop_active_session(
             kind: "run-paused".to_string(),
             run: Some(run_summary_vm(paused)),
             session,
+            lifecycle,
         });
     }
 
@@ -781,6 +900,7 @@ pub fn stop_active_session(
         kind: "session-cancelled".to_string(),
         run: None,
         session,
+        lifecycle,
     })
 }
 
@@ -826,8 +946,7 @@ pub fn retry_run(
         acp_live_update_emitter(app_handle.clone(), None),
         acp_session_update_emitter(app_handle.clone(), context.app(), None),
     );
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    register_lifecycle_subscribers(&app, &app_handle);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1038,6 +1157,7 @@ pub(crate) fn acp_session_update_emitter(
         };
         emit_acp_session_update(
             &app_handle,
+            &app,
             project_id.clone(),
             &context.task_id,
             &context.run_id,
@@ -1054,6 +1174,7 @@ pub(crate) fn acp_session_update_emitter(
 
 fn emit_acp_session_update(
     app_handle: &AppHandle,
+    app: &App,
     project_id: Option<String>,
     task_id: &str,
     run_id: &str,
@@ -1066,6 +1187,7 @@ fn emit_acp_session_update(
 ) {
     emit_acp_update(
         app_handle,
+        Some(app),
         project_id,
         task_id,
         run_id,
@@ -1093,6 +1215,7 @@ fn emit_acp_event_update(
 ) {
     emit_acp_update(
         app_handle,
+        None,
         project_id,
         task_id,
         run_id,
@@ -1109,6 +1232,7 @@ fn emit_acp_event_update(
 #[allow(clippy::too_many_arguments)]
 fn emit_acp_update(
     app_handle: &AppHandle,
+    app: Option<&App>,
     project_id: Option<String>,
     task_id: &str,
     run_id: &str,
@@ -1120,6 +1244,19 @@ fn emit_acp_update(
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
 ) {
+    let lifecycle = app.and_then(|app| {
+        conversation_attempt_lifecycle_vm(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        )
+        .ok()
+    });
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -1133,6 +1270,7 @@ fn emit_acp_update(
             outer_attempt_id,
             session,
             event,
+            lifecycle,
         },
     );
 }
@@ -1182,6 +1320,98 @@ pub fn get_acp_session(
 }
 
 #[tauri::command]
+pub async fn submit_conversation_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    prompt: String,
+    prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let run = app
+        .run_status(&locator.task_id, &locator.run_id)
+        .map_err(command_error)?;
+    let submit_target = if run.status == RunStatus::Paused
+        && gold_band::app::is_run_continuable(&run)
+        && locator.matches_run_current(&run)
+    {
+        "runtime-continue"
+    } else {
+        "acp-prompt"
+    };
+
+    if submit_target == "runtime-continue" {
+        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (locator.outer_node_id(), locator.outer_attempt_id())
+        {
+            app.run_continue_dynamic_inner_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                prompt_id,
+                prompt,
+                attachment_paths.unwrap_or_default(),
+            )
+        } else {
+            app.run_continue_background(&locator.task_id, &locator.run_id, prompt_id, Some(prompt))
+        }
+        .map(run_summary_vm)
+        .map_err(command_error)?;
+        return Ok(ConversationPromptSubmitVm {
+            kind: "runtime-continue-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: lifecycle_for_locator(&app, &locator),
+        });
+    }
+
+    let session = send_acp_prompt(
+        app_handle,
+        state,
+        project_id,
+        locator.task_id.clone(),
+        locator.run_id.clone(),
+        locator.round_id.clone(),
+        locator.node_id.clone(),
+        locator.attempt_id.clone(),
+        prompt,
+        prompt_id,
+        locator.outer_node_id.clone(),
+        locator.outer_attempt_id.clone(),
+        attachment_paths,
+    )
+    .await?;
+    Ok(ConversationPromptSubmitVm {
+        kind: "acp-session".to_string(),
+        session,
+        run: None,
+        lifecycle: lifecycle_for_locator(&app, &locator),
+    })
+}
+
+#[tauri::command]
 pub async fn send_acp_prompt(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -1198,6 +1428,34 @@ pub async fn send_acp_prompt(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
+    if let Ok(run) = app.run_status(&task_id, &run_id) {
+        if run.status == RunStatus::Paused
+            && gold_band::app::is_run_continuable(&run)
+            && locator.matches_run_current(&run)
+        {
+            return Err(CommandErrorVm::new(
+                "acp.runtime-submit-required",
+                serde_json::json!({
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "nodeId": node_id,
+                    "attemptId": attempt_id,
+                    "outerNodeId": outer_node_id,
+                    "outerAttemptId": outer_attempt_id,
+                }),
+            ));
+        }
+    }
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -1207,6 +1465,7 @@ pub async fn send_acp_prompt(
     let attempt_id_for_emit = attempt_id.clone();
     let outer_node_id_for_emit = outer_node_id.clone();
     let outer_attempt_id_for_emit = outer_attempt_id.clone();
+    let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let session = tauri::async_runtime::spawn_blocking(move || {
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -1460,6 +1719,7 @@ pub async fn send_acp_prompt(
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
     emit_acp_session_update(
         &app_handle,
+        &app_for_emit,
         project_id_for_emit,
         &task_id_for_emit,
         &run_id_for_emit,
@@ -1579,6 +1839,7 @@ pub fn respond_acp_permission(
     };
     emit_acp_session_update(
         &app_handle,
+        &app,
         project_id.clone(),
         &task_id,
         &run_id,
@@ -1755,6 +2016,7 @@ fn spawn_acp_cancel_shutdown(
         );
         emit_acp_session_update(
             &app_handle,
+            &app,
             project_id,
             &task_id,
             &run_id,
@@ -2042,6 +2304,7 @@ pub fn cancel_acp_session(
     };
     emit_acp_session_update(
         &app_handle,
+        &app,
         project_id,
         &task_id,
         &run_id,

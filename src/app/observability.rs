@@ -1,64 +1,134 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 
-use crate::app::WorkflowEvent;
+use crate::app::RuntimeLifecycleEvent;
 
-/// Lightweight in-process event bus for workflow lifecycle events.
-///
-/// Subscribers register via [`subscribe`] (typically during app setup, before
-/// any workflow starts). The orchestrator publishes via [`emit`]. Each
-/// subscriber is invoked inside `catch_unwind` — a panic in one subscriber
-/// never affects other subscribers or the orchestrator.
-///
-/// # Constraints
-///
-/// - `subscribe()` acquires a write lock. Only call it during setup, not from
-///   hot paths or inside a subscriber handler.
-/// - Subscriber handlers **must not** call `subscribe()` or `emit()` on the
-///   same `ObservabilityBus` instance — the read lock held by `emit()` would
-///   deadlock with the write lock needed by `subscribe()`.
-///
-/// # Thread safety
-///
-/// `ObservabilityBus` is `Send + Sync`. `emit()` takes a read lock — multiple
-/// threads can emit concurrently without blocking each other.
-#[derive(Clone, Default)]
-pub struct ObservabilityBus {
-    subscribers: Arc<RwLock<Vec<Arc<dyn Fn(WorkflowEvent) + Send + Sync>>>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriberMode {
+    Async,
+    Inline,
 }
 
-impl ObservabilityBus {
+#[derive(Clone)]
+struct RuntimeLifecycleSubscriber {
+    mode: SubscriberMode,
+    handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+}
+
+#[derive(Clone, Default)]
+pub struct RuntimeLifecycleBus {
+    subscribers: Arc<RwLock<Vec<RuntimeLifecycleSubscriber>>>,
+}
+
+pub type ObservabilityBus = RuntimeLifecycleBus;
+
+impl RuntimeLifecycleBus {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register a subscriber. Takes a write lock — call during app init,
-    /// not during workflow execution.
-    pub fn subscribe(&self, handler: Arc<dyn Fn(WorkflowEvent) + Send + Sync>) {
-        self.subscribers
-            .write()
-            .expect("ObservabilityBus subscriber list poisoned; this is a bug")
-            .push(handler);
+    pub fn subscribe(&self, handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>) {
+        self.subscribe_with_mode(SubscriberMode::Async, handler);
     }
 
-    /// Publish an event to all subscribers. Each subscriber is wrapped in
-    /// `catch_unwind`. Takes a read lock for the duration of the call.
-    ///
-    /// The event is cloned once per subscriber. With the current single
-    /// subscriber (metrics), this is one clone per emit — negligible. If
-    /// subscriber count grows beyond ~10, consider switching the handler
-    /// signature to `Fn(Arc<WorkflowEvent>)` to avoid per-subscriber clones.
-    pub fn emit(&self, event: WorkflowEvent) {
-        let subs = self
+    pub fn subscribe_inline(&self, handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>) {
+        self.subscribe_with_mode(SubscriberMode::Inline, handler);
+    }
+
+    pub fn subscribe_with_mode(
+        &self,
+        mode: SubscriberMode,
+        handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+    ) {
+        self.subscribers
+            .write()
+            .expect("RuntimeLifecycleBus subscriber list poisoned; this is a bug")
+            .push(RuntimeLifecycleSubscriber { mode, handler });
+    }
+
+    pub fn emit(&self, event: RuntimeLifecycleEvent) {
+        let subscribers = self
             .subscribers
             .read()
-            .expect("ObservabilityBus subscriber list poisoned; this is a bug");
-        for sub in subs.iter() {
-            let sub = Arc::clone(sub);
+            .expect("RuntimeLifecycleBus subscriber list poisoned; this is a bug")
+            .clone();
+        for subscriber in subscribers {
             let event = event.clone();
-            let _ = panic::catch_unwind(AssertUnwindSafe(move || {
-                sub(event);
-            }));
+            match subscriber.mode {
+                SubscriberMode::Async => {
+                    let handler = subscriber.handler;
+                    let run = move || {
+                        let _ = panic::catch_unwind(AssertUnwindSafe(move || {
+                            handler(event);
+                        }));
+                    };
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.spawn(async move { run() });
+                    } else {
+                        let _ = std::thread::Builder::new()
+                            .name("runtime-lifecycle-subscriber".to_string())
+                            .spawn(run);
+                    }
+                }
+                SubscriberMode::Inline => {
+                    let handler = subscriber.handler;
+                    let _ = panic::catch_unwind(AssertUnwindSafe(move || {
+                        handler(event);
+                    }));
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::PauseReason;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn sample_event() -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunPaused {
+            event_id: "event-1".to_string(),
+            occurred_at: "2026-01-01T00:00:00".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "node".to_string(),
+            pause_reason: PauseReason::ProcessInterrupted,
+            task_title: None,
+        }
+    }
+
+    #[test]
+    fn inline_subscriber_panic_does_not_stop_other_subscribers() {
+        let bus = RuntimeLifecycleBus::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_for_handler = count.clone();
+        bus.subscribe_inline(Arc::new(|_| panic!("subscriber panic")));
+        bus.subscribe_inline(Arc::new(move |_| {
+            count_for_handler.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        bus.emit(sample_event());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cloned_bus_shares_subscribers() {
+        let bus = RuntimeLifecycleBus::new();
+        let cloned = bus.clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_for_handler = count.clone();
+        bus.subscribe_inline(Arc::new(move |_| {
+            count_for_handler.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        cloned.emit(sample_event());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }

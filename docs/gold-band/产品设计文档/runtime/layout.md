@@ -320,7 +320,7 @@ attempt-001/
 
 - `acp.snapshot.json`：V2 UI runtime snapshot 与恢复锚点
 - `acp.timeline.jsonl`：V2 聚合 UI timeline final item 列表
-- `acp.raw.jsonl`：ACP 原始 frame
+- `acp.raw.jsonl`：ACP 原始 frame；超过内置 `acpRawMaxSizeBytes` 2MB 后滚动裁剪到约 `acpRawTargetSizeBytes` 1MB，并优先保留首个 `session/update` 前的初始化握手段
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
 - `acp.session.json` / `acp.events.jsonl`：仅历史旧会话可能存在，供 legacy reader 兼容读取
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics

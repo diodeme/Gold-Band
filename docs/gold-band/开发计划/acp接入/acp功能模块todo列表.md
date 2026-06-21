@@ -504,6 +504,7 @@
 - 按 event kind 过滤 raw frame。
 - 普通 session ViewModel 只统计 raw frame 行数，不解析完整 raw JSONL。
 - Raw frame 详情按需读取，并设置读取大小边界，避免大文件阻塞会话主界面。
+- `acp.raw.jsonl` 内置滚动阈值为 2MB / 1MB；滚动时优先保留首个 `session/update` 前的初始化握手段，便于诊断 session 建立问题。
 - 支持复制原始事件。
 - 将 raw frame 关联到 message / tool call / permission request。
 - 展示 adapter crash、auth required、timeout 等错误。

@@ -48,7 +48,7 @@ use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
-use tracing::info;
+use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 
 fn main() {
@@ -111,8 +111,10 @@ fn run() -> anyhow::Result<()> {
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<DesktopState>();
-                if let Ok(app) = state.app() {
-                    let _ = app.stop_all_running_sessions();
+                if let Ok(app) = state.app()
+                    && let Err(error) = app.stop_all_running_sessions()
+                {
+                    warn!(%error, "failed to stop running sessions before window close");
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
                 // 关键更新：退出前安装已下载的包，成功自动删文件

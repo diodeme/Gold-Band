@@ -517,18 +517,6 @@ pub(crate) fn run_continue(
             match validated.get_node(&node.node_id) {
                 Some(NodeDsl::AiDynamic(_)) => (SessionMode::Continue, None, None, None),
                 _ => {
-                    let provider_pid_path = app.paths.provider_pid_file(
-                        task_id,
-                        run_id,
-                        &round.id,
-                        &node.node_id,
-                        &node.attempt_id,
-                    );
-                    if provider_pid_path.exists() {
-                        bail!(
-                            "current attempt is still stopping; wait for provider shutdown before continuing"
-                        );
-                    }
                     let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                         task_id,
                         run_id,
@@ -1934,6 +1922,8 @@ fn dynamic_runtime_context(
         round_id: ctx.round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        runtime_node_id: Some(ctx.outer_node_id.to_string()),
+        runtime_attempt_id: Some(ctx.outer_attempt_id.to_string()),
         language: ctx.app.config.desktop_language,
         run_dir,
         round_dir,
@@ -2472,6 +2462,15 @@ fn drive_dynamic_graph(
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel::<DynamicExecutionMessage>();
     loop {
+        if !outer_attempt_is_still_current_running(ctx)? {
+            pause_dynamic_graph(
+                ctx,
+                graph,
+                PauseReason::ProcessInterrupted,
+                "outer runtime attempt stopped before dynamic graph settled",
+            )?;
+            return Ok(());
+        }
         refresh_dynamic_ready_nodes(graph);
         launch_ready_dynamic_nodes(ctx, graph, &tx)?;
         persist_dynamic_graph(ctx, graph)?;
@@ -2610,6 +2609,18 @@ fn apply_dynamic_execution_message(
         .iter()
         .position(|node| node.id == message.node_id)
         .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", message.node_id))?;
+    if !outer_attempt_is_still_current_running(ctx)? {
+        graph.nodes[index].status = DynamicNodeStatus::Paused;
+        graph.nodes[index].outcome = None;
+        graph.nodes[index].finished_at = Some(now_rfc3339_like());
+        pause_dynamic_graph(
+            ctx,
+            graph,
+            PauseReason::ProcessInterrupted,
+            "outer runtime attempt stopped before dynamic node result was accepted",
+        )?;
+        return Ok(());
+    }
     let result = match message.result {
         Ok(result) => result,
         Err(error) => {
@@ -2690,6 +2701,17 @@ fn apply_dynamic_execution_message(
     }
     graph.run.updated_at = now_rfc3339_like();
     persist_dynamic_graph(ctx, graph)
+}
+
+fn outer_attempt_is_still_current_running(ctx: &DynamicExecutionContext<'_>) -> Result<bool> {
+    attempt_is_still_current_running(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    )
 }
 
 fn emit_dynamic_worker_completed(
@@ -2956,6 +2978,15 @@ fn execute_dynamic_worker(
                     node.id
                 )
             })?;
+        if !outer_attempt_is_still_current_running(ctx)? {
+            node.status = DynamicNodeStatus::Paused;
+            node.outcome = None;
+            node.finished_at = Some(now_rfc3339_like());
+            return Ok(DynamicExecutionResult {
+                node,
+                proposals: Vec::new(),
+            });
+        }
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
         if node.status == DynamicNodeStatus::Paused {
             return Ok(DynamicExecutionResult {
@@ -3157,6 +3188,15 @@ fn execute_dynamic_agent_stage(
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
         )?;
+    if !outer_attempt_is_still_current_running(ctx)? {
+        node.status = DynamicNodeStatus::Paused;
+        node.outcome = None;
+        node.finished_at = Some(now_rfc3339_like());
+        return Ok(DynamicExecutionResult {
+            node,
+            proposals: Vec::new(),
+        });
+    }
     finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
     if node.status == DynamicNodeStatus::Paused {
         return Ok(DynamicExecutionResult {

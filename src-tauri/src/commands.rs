@@ -19,7 +19,6 @@ use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::{
     collections::BTreeSet,
-    fs,
     io::{BufRead, BufReader},
     str::FromStr,
     sync::Arc,
@@ -316,6 +315,37 @@ impl CommandErrorVm {
     }
 }
 
+fn ensure_no_active_acp_prompts_in_workspace(
+    workspace_root: &camino::Utf8Path,
+) -> CommandResult<()> {
+    if gold_band::acp::client::has_active_prompts_in_workspace(workspace_root) {
+        return Err(CommandErrorVm::new(
+            "acp.active-prompt-blocks-config-save",
+            serde_json::json!({ "workspaceRoot": workspace_root.as_str() }),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_no_active_acp_prompts_in_provider_workspace(
+    agent_type: ManagedAgentType,
+    workspace_root: &camino::Utf8Path,
+) -> CommandResult<()> {
+    if gold_band::acp::client::has_active_prompts_in_provider_workspace(
+        agent_type.as_str(),
+        workspace_root,
+    ) {
+        return Err(CommandErrorVm::new(
+            "acp.active-prompt-blocks-config-save",
+            serde_json::json!({
+                "agentType": agent_type.as_str(),
+                "workspaceRoot": workspace_root.as_str(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
@@ -442,6 +472,12 @@ pub fn create_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
+    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
+    gold_band::acp::client::close_provider_workspace_bounded(
+        agent_type.as_str(),
+        &app.paths.repo_root,
+    )
+    .map_err(command_error)?;
     let settings = app
         .save_managed_agent(
             agent_type,
@@ -475,6 +511,12 @@ pub fn update_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
+    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
+    gold_band::acp::client::close_provider_workspace_bounded(
+        agent_type.as_str(),
+        &app.paths.repo_root,
+    )
+    .map_err(command_error)?;
     let settings = app
         .save_managed_agent(
             agent_type,
@@ -504,6 +546,12 @@ pub fn delete_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
+    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
+    gold_band::acp::client::close_provider_workspace_bounded(
+        agent_type.as_str(),
+        &app.paths.repo_root,
+    )
+    .map_err(command_error)?;
     let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
@@ -1981,7 +2029,7 @@ fn stop_acp_session(
         .map_err(command_error)?;
     }
 
-    force_stop_provider_and_persist_session(&app, &attempt_dir);
+    request_acp_cancel_and_persist_interrupted_snapshot(&app, &attempt_dir);
 
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
@@ -2038,14 +2086,11 @@ fn stop_acp_session(
     Ok(session)
 }
 
-fn force_stop_provider_and_persist_session(
+fn request_acp_cancel_and_persist_interrupted_snapshot(
     app: &gold_band::app::App,
     attempt_dir: &camino::Utf8Path,
 ) {
-    let active_runtime = client::request_force_stop(attempt_dir);
-    if !active_runtime {
-        app.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
-    }
+    app.request_attempt_prompt_cancel_best_effort(attempt_dir);
     app.persist_cancelled_session_snapshot_best_effort(attempt_dir);
 }
 
@@ -2350,6 +2395,11 @@ pub fn save_desktop_preferences(
 ) -> CommandResult<PreferencesVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    if context.config.use_local_claude != use_local_claude {
+        ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
+        gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
+            .map_err(command_error)?;
+    }
     app.set_user_desktop_preferences(theme, language, font.clone())
         .map_err(command_error)?;
     app.set_user_use_local_claude(use_local_claude)
@@ -3060,6 +3110,9 @@ pub fn add_mcp_server(
     json_content: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
+    ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
+    gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
+        .map_err(command_error)?;
     Ok(mcp_server_list_vm(
         &app.add_mcp_server(&json_content).map_err(command_error)?,
     ))
@@ -3072,6 +3125,9 @@ pub fn update_mcp_server(
     json_content: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
+    ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
+    gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
+        .map_err(command_error)?;
     Ok(mcp_server_list_vm(
         &app.update_mcp_server(&id, &json_content)
             .map_err(command_error)?,
@@ -3084,6 +3140,9 @@ pub fn delete_mcp_server(
     id: String,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
+    ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
+    gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
+        .map_err(command_error)?;
     Ok(mcp_server_list_vm(
         &app.delete_mcp_server(&id).map_err(command_error)?,
     ))
@@ -3096,6 +3155,9 @@ pub fn toggle_mcp_server(
     enabled: bool,
 ) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
+    ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
+    gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
+        .map_err(command_error)?;
     Ok(mcp_server_list_vm(
         &app.toggle_mcp_server(&id, enabled).map_err(command_error)?,
     ))
@@ -3266,7 +3328,7 @@ mod tests {
             "gold-band-permission-id-test-{}",
             std::process::id()
         ));
-        fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
@@ -3281,6 +3343,6 @@ mod tests {
             "0"
         );
 
-        fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

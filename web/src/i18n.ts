@@ -78,6 +78,7 @@ const resources = {
         },
         acp: {
           "missing-provider": "当前节点缺少 provider 配置。",
+          "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
         },
         app: {
           "task-join-failed": "后台任务执行失败。",
@@ -96,6 +97,7 @@ const resources = {
           "task-not-found": "找不到该会话。",
           "task-running": "该会话仍在运行，请先停止后再删除。",
           "task-delete-failed": "删除会话失败：{{message}}",
+          "workspace-not-found": "找不到该工作空间。",
         },
         workflow: {
           "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
@@ -1212,6 +1214,8 @@ const resources = {
         acp: {
           "missing-provider":
             "The current node is missing provider configuration.",
+          "active-prompt-blocks-config-save":
+            "A session is currently running. Stop it before saving configuration.",
         },
         app: {
           "task-join-failed": "Background task failed.",
@@ -1233,6 +1237,7 @@ const resources = {
           "task-running":
             "This conversation is still running. Stop it before deleting.",
           "task-delete-failed": "Failed to delete conversation: {{message}}",
+          "workspace-not-found": "This workspace could not be found.",
         },
         workflow: {
           "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",

@@ -801,6 +801,16 @@ pub fn remove_conversation_workspace(
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut state = app.load_state().map_err(command_error)?;
+    let workspace_path = workspace_entry_for_project(&app, &state, &project_id)
+        .map(|(workspace_path, _)| workspace_path)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "conversation.workspace-not-found",
+                serde_json::json!({ "projectId": project_id }),
+            )
+        })?;
+    gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(workspace_path))
+        .map_err(command_error)?;
 
     state
         .conversation_workspaces

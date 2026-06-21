@@ -591,6 +591,10 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
     node.status = RunStatus::Running;
     node.outcome = None;
     gold_band::storage::write_json(&node_path, &node).unwrap();
+    let pid_path =
+        app.paths
+            .provider_pid_file(task_id, "run-001", "round-001", "dev", "attempt-001");
+    std::fs::write(pid_path.as_std_path(), "12345").unwrap();
 
     let paused = app
         .run_pause(task_id, "run-001", PauseReason::ProcessInterrupted)
@@ -598,6 +602,7 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
 
     assert_eq!(paused.status, RunStatus::Paused);
     assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert!(pid_path.exists());
     let node: gold_band::runtime::NodeState = gold_band::storage::read_json(&node_path).unwrap();
     assert_eq!(node.status, RunStatus::Paused);
     assert_eq!(node.outcome, None);
@@ -673,6 +678,42 @@ fn run_continue_ignores_cancelled_session_snapshot() {
         }),
     )
     .unwrap();
+
+    let continued = app
+        .run_continue(task_id, "run-001", None, Some("resume".to_string()))
+        .unwrap();
+
+    assert_eq!(continued.status, RunStatus::Completed);
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(
+        invocations[1]
+            .continue_ref
+            .as_ref()
+            .and_then(|value| value.get("sessionId").or_else(|| value.get("acpSessionId")))
+            .and_then(|value| value.as_str()),
+        Some("session-123"),
+    );
+}
+
+#[test]
+fn run_continue_ignores_stale_provider_pid_metadata() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-stale-pid";
+    let provider = InterruptedThenContinueProvider::default();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    write_dev_only_workflow(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let pid_path =
+        app.paths
+            .provider_pid_file(task_id, "run-001", "round-001", "dev", "attempt-001");
+    std::fs::write(pid_path.as_std_path(), "12345").unwrap();
 
     let continued = app
         .run_continue(task_id, "run-001", None, Some("resume".to_string()))

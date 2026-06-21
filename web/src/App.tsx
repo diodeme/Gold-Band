@@ -23,7 +23,7 @@ import {
   getRoundDetail,
   getTaskList,
   getWorkflow,
-  killRun,
+  pauseRun,
   pinConversation,
   rerunConversationTask,
   saveDesktopPreferences,
@@ -864,10 +864,8 @@ export function App() {
     saveConversationRunMode(defaultProjectId, mode).catch(() => {});
   };
 
-  const onKillRun = (taskId: string, runId: string) => {
-    if (window.confirm(t('common.confirmKill'))) {
-      void runAction(() => killRun(taskId, runId));
-    }
+  const onStopRun = (taskId: string, runId: string) => {
+    void runAction(() => pauseRun(taskId, runId));
   };
 
   const onCreateTask = async (input: CreateTaskInput) => {
@@ -1216,6 +1214,7 @@ export function App() {
         addConversationWorkspace().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
       }}
       onConversationRemoveWorkspace={(projectId) => {
+        setError(null);
         removeConversationWorkspace(projectId).then((sidebar) => {
           if (activeWorkspaceIdRef.current === projectId) {
             activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
@@ -1223,7 +1222,7 @@ export function App() {
           }
           setDraftConversationWorkspaceId((current) => current === projectId ? null : current);
           applyConversationSidebar(sidebar, sidebar.lastActiveWorkspaceId);
-        }).catch(() => {});
+        }).catch((err) => setError(displayAppError(t, err)));
       }}
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
@@ -1563,7 +1562,7 @@ export function App() {
           onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
-          onKillRun={onKillRun}
+          onStopRun={onStopRun}
           onSaveWorkflow={onSaveTaskWorkflow}
           onOpenProfileManagement={openProfileManagement}
         />

@@ -5,7 +5,7 @@ vi.mock('../src/api/client', () => ({
 }));
 
 import { getRuntimeApi } from '../src/api/client';
-import { deleteProfile, materializeConversationAttachments, stopActiveSession } from '../src/api';
+import { deleteProfile, materializeConversationAttachments, pauseRun, stopActiveSession } from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {
@@ -51,5 +51,14 @@ describe('api facade', () => {
     await stopActiveSession('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback as never, null, null);
 
     expect(stopImpl).toHaveBeenCalledWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback, null, null);
+  });
+
+  it('routes ordinary run stop through pauseRun', async () => {
+    const pauseImpl = vi.fn().mockResolvedValue({ id: 'run-1', status: 'paused' });
+    vi.mocked(getRuntimeApi).mockReturnValue({ pauseRun: pauseImpl } as never);
+
+    await pauseRun('task-1', 'run-1');
+
+    expect(pauseImpl).toHaveBeenCalledWith('task-1', 'run-1');
   });
 });

@@ -139,6 +139,10 @@ pub struct PromptRuntimeContext {
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    #[serde(default)]
+    pub runtime_node_id: Option<String>,
+    #[serde(default)]
+    pub runtime_attempt_id: Option<String>,
     pub language: crate::config::DesktopLanguage,
     pub run_dir: Utf8PathBuf,
     pub round_dir: Utf8PathBuf,
@@ -669,8 +673,16 @@ impl ProviderAdapter for AcpProvider {
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
                 round_id: req.runtime_context.round_id.clone(),
-                node_id: req.runtime_context.node_id.clone(),
-                attempt_id: req.runtime_context.attempt_id.clone(),
+                node_id: req
+                    .runtime_context
+                    .runtime_node_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
+                attempt_id: req
+                    .runtime_context
+                    .runtime_attempt_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
             }),
         )?;
         let status = match run.stop_reason.as_deref() {
@@ -1119,6 +1131,8 @@ mod tests {
             round_id: "round-001".to_string(),
             node_id: "dev".to_string(),
             attempt_id: "attempt-001".to_string(),
+            runtime_node_id: None,
+            runtime_attempt_id: None,
             language: crate::config::DesktopLanguage::ZhCn,
             run_dir: Utf8PathBuf::from("/run"),
             round_dir: Utf8PathBuf::from("/run/rounds/round-001"),

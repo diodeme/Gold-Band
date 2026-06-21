@@ -2054,7 +2054,7 @@ impl App {
 
     pub fn run_kill(&self, task_id: &str, run_id: &str) -> Result<RunState> {
         let mut run = self.run_status(task_id, run_id)?;
-        self.kill_run_descendants_best_effort(task_id, run_id, &run);
+        self.close_current_run_attempt(task_id, run_id, &run)?;
         run.status = RunStatus::Completed;
         run.outcome = Some(RunOutcome::Killed);
         run.pause_reason = None;
@@ -2112,23 +2112,24 @@ impl App {
     }
 
     pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
-        self.pause_all_running_sessions()
+        let paused = self.pause_all_running_sessions()?;
+        acp_client::close_all_connections_bounded()?;
+        Ok(paused)
     }
 
     pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
         self.pause_all_running_sessions()
     }
 
-    fn kill_run_descendants_best_effort(&self, task_id: &str, run_id: &str, run: &RunState) {
+    fn close_current_run_attempt(&self, task_id: &str, run_id: &str, run: &RunState) -> Result<()> {
         let (Some(round_id), Some(node_id), Some(attempt_id)) =
             (&run.current_round, &run.current_node, &run.current_attempt)
         else {
-            return;
+            return Ok(());
         };
-        self.interrupt_attempt_artifacts_best_effort(
-            task_id, run_id, round_id, node_id, attempt_id,
-        );
+        self.close_attempt_artifacts(task_id, run_id, round_id, node_id, attempt_id)?;
         self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
+        Ok(())
     }
 
     fn interrupt_run_descendants_best_effort(
@@ -2168,12 +2169,25 @@ impl App {
             .paths
             .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
         self.cancel_attempt_dir_best_effort(&attempt_dir);
-        self.kill_provider_pid_file_best_effort(
-            &self
-                .paths
-                .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id),
-        );
+        self.request_attempt_prompt_cancel_best_effort(&attempt_dir);
         self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
+    }
+
+    fn close_attempt_artifacts(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        let attempt_dir = self
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        self.cancel_attempt_dir_best_effort(&attempt_dir);
+        acp_client::close_attempt_session_bounded(&attempt_dir)?;
+        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
+        Ok(())
     }
 
     fn update_dynamic_descendants_best_effort(
@@ -2211,7 +2225,11 @@ impl App {
                         continue;
                     };
                     self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                    self.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
+                    if pause_reason.is_some() {
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                    } else {
+                        let _ = acp_client::close_attempt_session_bounded(attempt_dir.as_path());
+                    }
                     self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                 }
             }
@@ -2520,6 +2538,12 @@ impl App {
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
         let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
+    }
+
+    pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
+        if !acp_client::request_prompt_cancel(attempt_dir) {
+            let _ = acp_client::cancel_attempt_prompt(attempt_dir);
+        }
     }
 
     pub fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {

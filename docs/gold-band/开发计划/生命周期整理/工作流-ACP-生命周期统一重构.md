@@ -28,8 +28,11 @@
 - AI-DYNAMIC 内部节点继续发送已改为 runtime 恢复：后端根据 outer locator + inner locator 校验 paused dynamic graph，只 re-arm 目标 dynamic node，并让它回到 `drive_dynamic_graph` 的 completion 解析、proposal 校验、materialize 和外层 workflow 后续推进链路。
 - `WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 兼容别名已删除，metrics 代码直接使用 `RuntimeLifecycleEvent` 命名；`App.intervention_notifier` 专用回调已删除。
 - 前端 composer 状态映射已改为消费后端 `lifecycle.composer`，只保留发送中、停止命令待确认、乐观消息等短暂本地 overlay；会话态的旧 `onContinue` 分支已删除。
-- `stop_active_session` 已收敛为单一停止语义：先落 `paused + process-interrupted`，再通过 per-attempt provider control 禁止后续 ACP 写入；活跃 ACP runtime 先发送 `session/cancel` 取消底层会话，再退出并清理 adapter 进程。停止仍保持可继续暂停态，不走 terminal killed。
-- `run_pause`、窗口关闭与启动 crash recovery 已统一为 interruption 路径：常规 node、AI-DYNAMIC graph/node、child run 都写 `paused + process-interrupted`，不再复用会把 descendants 写成 killed 的 terminal kill helper。
+- `stop_active_session` 已收敛为单一停止语义：先落 `paused + process-interrupted`，再通过 per-attempt provider control 请求 prompt cancel；活跃 ACP runtime 发送 `session/cancel` 后继续 drain 当前 `session/prompt`，等待 cancelled/interrupted 或 cancel deadline。停止仍保持可继续暂停态，不走 terminal killed，也不把 adapter kill 当作成功兜底。
+- `run_pause`、窗口关闭与启动 crash recovery 已统一为 interruption 路径：常规 node、AI-DYNAMIC graph/node、child run 都写 `paused + process-interrupted`，不再复用会把 descendants 写成 killed 的 terminal kill helper；普通 pause 不再用 `provider.pid` 杀 adapter。
+- ACP adapter lifecycle 已从 attempt-local process 迁移为 `provider_id + workspace_root` 长连接：`AdapterConnectionManager` 复用同 provider/workspace adapter process，JSON-RPC response 按 request id 路由，`session/update` 与 permission request 按 `sessionId` 路由到 attempt timeline；不同 workspace 的 connection 可以在新 UI 中并存，普通 workspace 切换不关闭旧 connection。
+- terminal `run_kill` 与 app close 已接入 bounded `session/close`；app close 先递归暂停所有 running run，再关闭 manager 中所有 live provider/workspace connections，避免多 workspace 并存时只关闭当前 workspace。单个 session close 失败不再短路其他 session close，完成遍历后清理 Gold Band 持有的 adapter connection，并记录/返回 close 错误。agent/provider 配置保存和 MCP 配置保存作为 connection restart boundary：无 active prompt 时 close 旧 connection，有 active prompt 时返回结构化错误并提示先停止会话。adapter crash、stdout 断开或 transport closed 按可恢复中断处理，active runtime 收敛为 `paused + process-interrupted`；startup recovery 只依据 persisted runtime lifecycle 收敛状态，不补发协议。
+- `orchestrator` 的 `provider.pid exists => wait for provider shutdown before continuing` guard 已删除；`provider.pid` 降级为 adapter process metadata / orphan cleanup 线索，不再阻塞 continue 或推导 UI 状态。
 - ACP provider 迟到成功结果已增加三层防线：ACP client 在成功 response 前检查 cancel，node executor 在 finalize 前确认当前 attempt 仍 running/current，orchestrator 在推进下一节点前再次确认 run 未被外部 stop/pause 改写。
 - 后端 command 层已抽出 `AttemptLocator`，统一表达顶层 attempt 与 AI-DYNAMIC 内部 attempt，并集中处理 attempt dir、runtime current 匹配、dynamic outer/inner locator 等路径判断。
 - 新旧 UI 的工作流 attempt composer / Round 详情继续发送已统一收敛到 `submit_conversation_prompt`；`send_acp_prompt` 保留为非 runtime 生命周期的窄入口，并在 paused/resumable/current workflow attempt 命中时拒绝直接 ACP prompt，防止绕过 runtime。
@@ -251,7 +254,7 @@ RuntimeLifecycleBus
 - AI-DYNAMIC 外层停止或关闭时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`，显式 `run_kill` 才允许写 `Killed`。
 - provider 已被调用但 stop 已落盘时，即使 provider 迟到返回 success，也不能写 success artifact，不能完成 run，不能进入下一节点。
 - stop / crash recovery 写入的历史 `cancelled` ACP snapshot/session 不能取消后续 runtime continue；继续入口必须只以当前 runtime lifecycle 和 provider control 为准，不能被历史 ACP cancelled metadata 阻断。
-- `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control、禁止后续普通 stdin 写入；活跃 runtime 必须先发送 `session/cancel` notification 取消底层会话，随后退出并清理 adapter。只有没有活跃 runtime 时才按 `provider.pid` 清理残留 adapter。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后一次性刷新到最终快照。
+- `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control；活跃 runtime 必须发送一次 `session/cancel` notification 取消底层会话，并继续 drain 当前 prompt response，直到 cancelled/interrupted 或 cancel deadline 到期。普通停止不按 `provider.pid` 清理 adapter，不把 kill adapter 当作 cancel 成功兜底。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后按后端 lifecycle 和最终快照收敛。
 - 桌面启动 recovery 扫描 running run，并复用 interruption 路径收敛为可继续暂停态；关闭窗口同理。
 
 ### 5. 同会话 ACP prompt helper

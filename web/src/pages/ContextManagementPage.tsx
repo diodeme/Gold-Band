@@ -532,7 +532,7 @@ export function ContextManagementPage() {
                       )}
                       onClick={async () => {
                         const newEnabled = !s.enabled;
-                        try { setMcpServers(await toggleMcpServer(s.id, newEnabled)); } catch { /* ignore */ }
+                        try { setMcpServers(await toggleMcpServer(s.id, newEnabled)); } catch (err) { setMcpError(displayAppError(t, err)); return; }
                         if (newEnabled) {
                           setMcpCheckTarget(s.id);
                           try {
@@ -753,7 +753,7 @@ export function ContextManagementPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={async () => { if (!mcpDeleteTarget) return; try { setMcpServers(await deleteMcpServer(mcpDeleteTarget.id)); } catch { /* ignore */ } finally { setMcpDeleteTarget(null); } }}>{t('contextManagement.mcp.deleteServer', '删除')}</AlertDialogAction>
+            <AlertDialogAction onClick={async () => { if (!mcpDeleteTarget) return; try { setMcpServers(await deleteMcpServer(mcpDeleteTarget.id)); setMcpDeleteTarget(null); } catch (err) { setMcpError(displayAppError(t, err)); setMcpDeleteTarget(null); } }}>{t('contextManagement.mcp.deleteServer', '删除')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

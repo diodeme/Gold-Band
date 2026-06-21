@@ -78,6 +78,9 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            if let Ok(runtime_app) = state.app() {
+                let _ = runtime_app.recover_interrupted_running_sessions();
+            }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
@@ -109,7 +112,7 @@ fn run() -> anyhow::Result<()> {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<DesktopState>();
                 if let Ok(app) = state.app() {
-                    let _ = app.pause_all_running_sessions();
+                    let _ = app.stop_all_running_sessions();
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
                 // 关键更新：退出前安装已下载的包，成功自动删文件

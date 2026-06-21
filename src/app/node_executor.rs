@@ -32,6 +32,21 @@ fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
         .map(str::to_string)
 }
 
+fn attempt_is_still_current_running(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    let run: crate::runtime::RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+    Ok(run.status == RunStatus::Running
+        && run.current_round.as_deref() == Some(round_id)
+        && run.current_node.as_deref() == Some(node_id)
+        && run.current_attempt.as_deref() == Some(attempt_id))
+}
+
 fn success_condition_text(condition: &JsonConditionDsl) -> String {
     match condition {
         JsonConditionDsl::Expression { expression } => expression.clone(),
@@ -445,6 +460,14 @@ pub(crate) fn execute_ai_node(
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
         )?;
+
+    if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {
+        return Ok(read_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        )
+        .unwrap_or(node));
+    }
 
     // Fire-and-forget: index this attempt for cross-session search
     let ctx = AttemptIndexContext {

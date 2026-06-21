@@ -28,6 +28,9 @@
 - AI-DYNAMIC 内部节点继续发送已改为 runtime 恢复：后端根据 outer locator + inner locator 校验 paused dynamic graph，只 re-arm 目标 dynamic node，并让它回到 `drive_dynamic_graph` 的 completion 解析、proposal 校验、materialize 和外层 workflow 后续推进链路。
 - `WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 兼容别名已删除，metrics 代码直接使用 `RuntimeLifecycleEvent` 命名；`App.intervention_notifier` 专用回调已删除。
 - 前端 composer 状态映射已改为消费后端 `lifecycle.composer`，只保留发送中、停止命令待确认、乐观消息等短暂本地 overlay；会话态的旧 `onContinue` 分支已删除。
+- `stop_active_session` 已收敛为单一停止语义：先落 `paused + process-interrupted`，再通过 per-attempt provider control 禁止后续 ACP 写入；活跃 ACP runtime 先发送 `session/cancel` 取消底层会话，再退出并清理 adapter 进程。停止仍保持可继续暂停态，不走 terminal killed。
+- `run_pause`、窗口关闭与启动 crash recovery 已统一为 interruption 路径：常规 node、AI-DYNAMIC graph/node、child run 都写 `paused + process-interrupted`，不再复用会把 descendants 写成 killed 的 terminal kill helper。
+- ACP provider 迟到成功结果已增加三层防线：ACP client 在成功 response 前检查 cancel，node executor 在 finalize 前确认当前 attempt 仍 running/current，orchestrator 在推进下一节点前再次确认 run 未被外部 stop/pause 改写。
 - 后端 command 层已抽出 `AttemptLocator`，统一表达顶层 attempt 与 AI-DYNAMIC 内部 attempt，并集中处理 attempt dir、runtime current 匹配、dynamic outer/inner locator 等路径判断。
 - 新旧 UI 的工作流 attempt composer / Round 详情继续发送已统一收敛到 `submit_conversation_prompt`；`send_acp_prompt` 保留为非 runtime 生命周期的窄入口，并在 paused/resumable/current workflow attempt 命中时拒绝直接 ACP prompt，防止绕过 runtime。
 - `stop_active_session` 返回体与 ACP session update event 已附带最新 `lifecycle`，前端收到停止响应或 session update 时可立即更新 composer 和 session tree，不再只等待下一轮完整 run snapshot 收敛。
@@ -62,7 +65,7 @@
 - runtime terminal 时，抑制 stale ACP active。
 - `paused + process-interrupted/error-blocked + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`。
 - `paused + waiting-for-user-input + resumable` 表示继续按钮，不是自由输入。
-- ACP `cancelling/cancel-requested`、cancel marker 或 provider pid 未清理时进入 `stopping`。
+- ACP lifecycle facet 为 `stopping`、本地 stop 命令未返回，或 ACP session metadata 明确为 `cancelling / cancel-requested` 时进入 `stopping`；`provider.pid` 只作为 kill/cleanup/诊断事实，不能反推 composer 停止中。
 - workflow invalid / runtime error 由后端给出 mode，前端不再自行猜测。
 
 ### 2. 生命周期 Hook Bus
@@ -240,6 +243,17 @@ RuntimeLifecycleBus
 
 `send_acp_prompt` 仅保留为非 runtime 生命周期会话的窄入口；若请求命中 paused/resumable/current workflow attempt，后端返回 `acp.runtime-submit-required`，要求调用 `submit_conversation_prompt`，避免再次绕过 runtime。
 
+### 4.1 停止 / 关闭 / 崩溃恢复验收矩阵
+
+本轮新增的回归验收重点：
+
+- 常规 worker run 调用 `run_pause(..., ProcessInterrupted)` 后，run/round/node 必须全部保持 `Paused`，node outcome 为 `None`，不能写 `Killed`。
+- AI-DYNAMIC 外层停止或关闭时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`，显式 `run_kill` 才允许写 `Killed`。
+- provider 已被调用但 stop 已落盘时，即使 provider 迟到返回 success，也不能写 success artifact，不能完成 run，不能进入下一节点。
+- stop / crash recovery 写入的历史 `cancelled` ACP snapshot/session 不能取消后续 runtime continue；继续入口必须只以当前 runtime lifecycle 和 provider control 为准，不能被历史 ACP cancelled metadata 阻断。
+- `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control、禁止后续普通 stdin 写入；活跃 runtime 必须先发送 `session/cancel` notification 取消底层会话，随后退出并清理 adapter。只有没有活跃 runtime 时才按 `provider.pid` 清理残留 adapter。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后一次性刷新到最终快照。
+- 桌面启动 recovery 扫描 running run，并复用 interruption 路径收敛为可继续暂停态；关闭窗口同理。
+
 ### 5. 同会话 ACP prompt helper
 
 从 `send_acp_prompt` 中抽出 app 层 helper，统一普通节点和 dynamic inner 节点的直接 ACP prompt 场景。
@@ -284,7 +298,10 @@ RuntimeLifecycleBus
 
 - `pause_attempt_runtime_state`
 - `pause_dynamic_attempt_runtime_state`
-- `spawn_acp_cancel_shutdown`
+- `client::request_force_stop`
+- ACP runtime 内部 `session/cancel` notification
+- 无活跃 runtime 时的 `kill_provider_pid_file_best_effort`
+- `persist_cancelled_session_snapshot_best_effort`
 
 停止成功后 `stop_active_session` 返回体与 `AcpSessionUpdatedEventVm` 都携带最新 `lifecycle/composer`。前端接收停止响应时直接覆盖当前 composer lifecycle，接收 session update 时同步 patch selected/background leaf 与 activeSessions；完整 run snapshot 仍用于最终校准，但不再是 stop 后状态收敛的唯一通道。
 
@@ -345,7 +362,7 @@ RuntimeLifecycleBus
 - runtime running + ACP completed => composer active + `launching-next-node`。
 - dynamic paused + ACP cancelled + `process-interrupted` + resumable => `submitTarget = runtime-continue`。
 - runtime terminal => 抑制 stale ACP active。
-- ACP cancelling/cancel marker/provider pid => `stopping`。
+- lifecycle stopping / explicit ACP cancelling metadata => `stopping`；provider pid + running metadata 不得显示 stopping。
 - paused dynamic graph 只恢复指定 dynamic node。
 - dynamic resume 使用用户 prompt 作为 visible resume prompt。
 - dynamic resume 会进入 proposal 解析/物化，而不是只写 ACP session metadata。

@@ -26,4 +26,19 @@ describe('desktopApi', () => {
       overrideUrl: 'https://example.com/feed.json',
     });
   });
+
+  it('passes active session locator to Tauri stop command', async () => {
+    await desktopApi.stopActiveSession('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', null, null, null);
+
+    expect(invokeCommand).toHaveBeenCalledWith('stop_active_session', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      outerNodeId: null,
+      outerAttemptId: null,
+    });
+  });
 });

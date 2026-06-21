@@ -4,8 +4,7 @@ use gold_band::acp::events::{
     load_timeline_items, permission_decision_event, write_timeline_items,
 };
 use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests, clear_cancel_request,
-    request_cancel, write_permission_response,
+    PendingPermissionState, cancel_pending_permission_requests, write_permission_response,
 };
 use gold_band::app::{
     App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
@@ -16,16 +15,14 @@ use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use gold_band::storage::{read_json, write_json};
 use std::{
     collections::BTreeSet,
     fs,
     io::{BufRead, BufReader},
     str::FromStr,
     sync::Arc,
-    thread,
-    time::{Duration, Instant},
 };
 
 use camino::Utf8PathBuf;
@@ -63,8 +60,6 @@ use crate::view_models_conversation::{
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
-const ACP_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
-const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
@@ -894,17 +889,11 @@ pub fn stop_active_session(
         outer_node_id,
         outer_attempt_id,
     );
-    let session = cancel_acp_session(
+    let session = stop_acp_session(
         app_handle,
-        state,
+        state.inner(),
         project_id.clone(),
-        locator.task_id.clone(),
-        locator.run_id.clone(),
-        locator.round_id.clone(),
-        locator.node_id.clone(),
-        locator.attempt_id.clone(),
-        locator.outer_node_id.clone(),
-        locator.outer_attempt_id.clone(),
+        locator.clone(),
     )?;
     let lifecycle = lifecycle_for_locator(&app, &locator);
 
@@ -1643,6 +1632,12 @@ pub async fn send_acp_prompt(
                     Vec::new()
                 }),
                 None, // session_update
+                Some(client::RuntimeStopProbe {
+                    run_file: app.paths.run_file(&task_id, &run_id),
+                    round_id: round_id.clone(),
+                    node_id: node_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                }),
             )
             .map_err(command_error)?;
             return dynamic_acp_session_vm(
@@ -1773,6 +1768,12 @@ pub async fn send_acp_prompt(
                 Vec::new()
             }),
             None, // session_update
+            Some(client::RuntimeStopProbe {
+                run_file: app.paths.run_file(&task_id, &run_id),
+                round_id: round_id.clone(),
+                node_id: node_id.clone(),
+                attempt_id: attempt_id.clone(),
+            }),
         )
         .map_err(command_error)?;
         acp_session_vm(
@@ -1935,6 +1936,119 @@ pub fn respond_acp_permission(
     Ok(session)
 }
 
+fn stop_acp_session(
+    app_handle: AppHandle,
+    state: &DesktopState,
+    project_id: Option<String>,
+    locator: AttemptLocator,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state, project_id.as_deref())?;
+    let requested_at = current_timestamp();
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    );
+    cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        app.pause_dynamic_attempt_runtime_state(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+            PauseReason::ProcessInterrupted,
+        )
+        .map_err(command_error)?;
+    } else {
+        app.pause_attempt_runtime_state(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            PauseReason::ProcessInterrupted,
+        )
+        .map_err(command_error)?;
+    }
+
+    force_stop_provider_and_persist_session(&app, &attempt_dir);
+
+    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        dynamic_acp_session_vm(
+            &app,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            None,
+            None,
+        )
+        .map_err(command_error)?
+    } else {
+        acp_session_vm(
+            &app,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            None,
+            None,
+        )
+        .map_err(command_error)?
+    };
+    emit_acp_session_update(
+        &app_handle,
+        &app,
+        project_id,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.clone(),
+        locator.outer_attempt_id.clone(),
+        session.clone(),
+    );
+    spawn_index_attempt(
+        state,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    );
+    Ok(session)
+}
+
+fn force_stop_provider_and_persist_session(
+    app: &gold_band::app::App,
+    attempt_dir: &camino::Utf8Path,
+) {
+    let active_runtime = client::request_force_stop(attempt_dir);
+    if !active_runtime {
+        app.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
+    }
+    app.persist_cancelled_session_snapshot_best_effort(attempt_dir);
+}
+
 fn spawn_index_attempt(
     state: &DesktopState,
     task_id: &str,
@@ -1968,217 +2082,6 @@ fn spawn_index_attempt(
     tauri::async_runtime::spawn_blocking(move || {
         sqlite::index_attempt_with_retry(&attempt_dir, &ctx);
     });
-}
-
-fn spawn_acp_cancel_shutdown(
-    app_handle: AppHandle,
-    app: gold_band::app::App,
-    project_id: Option<String>,
-    task_id: String,
-    run_id: String,
-    round_id: String,
-    node_id: String,
-    attempt_id: String,
-    outer_node_id: Option<String>,
-    outer_attempt_id: Option<String>,
-) {
-    thread::spawn(move || {
-        let attempt_dir = resolve_acp_attempt_dir(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            outer_node_id.as_deref(),
-            outer_attempt_id.as_deref(),
-        );
-        let pid_path = attempt_dir.join("provider.pid");
-        eprintln!(
-            "[gb-acp-stop] shutdown-start task={} run={} round={} node={} attempt={} pid_exists={} cancel_requested={}",
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            pid_path.exists(),
-            gold_band::acp::permission::is_cancel_requested(&attempt_dir)
-        );
-        graceful_stop_provider(&pid_path);
-        let clear_result = clear_cancel_request(&attempt_dir);
-        eprintln!(
-            "[gb-acp-stop] shutdown-after-provider task={} run={} round={} node={} attempt={} pid_exists={} cancel_requested={} clear_cancel_ok={}",
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            pid_path.exists(),
-            gold_band::acp::permission::is_cancel_requested(&attempt_dir),
-            clear_result.is_ok()
-        );
-
-        // Provider has fully stopped — now write the cancelled snapshot and
-        // emit a live update so the UI transitions from "cancelling" → "cancelled".
-        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-        {
-            let _ = persist_cancelled_dynamic_session_snapshot(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-            );
-            dynamic_acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            let _ = persist_cancelled_session_snapshot(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-            );
-            acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        };
-        eprintln!(
-            "[gb-acp-stop] shutdown-emit task={} run={} round={} node={} attempt={} session_status={} session_id={} has_session={}",
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            session
-                .as_ref()
-                .map(|session| session.status.as_str())
-                .unwrap_or("<none>"),
-            session
-                .as_ref()
-                .and_then(|session| session.session_id.as_deref())
-                .unwrap_or("<none>"),
-            session.is_some()
-        );
-        emit_acp_session_update(
-            &app_handle,
-            &app,
-            project_id,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            outer_node_id,
-            outer_attempt_id,
-            session,
-        );
-    });
-}
-
-fn graceful_stop_provider(pid_path: &camino::Utf8Path) {
-    let started_at = Instant::now();
-    while pid_path.exists() && started_at.elapsed() < ACP_CANCEL_GRACE_PERIOD {
-        thread::sleep(ACP_CANCEL_POLL_INTERVAL);
-    }
-    if !pid_path.exists() {
-        return;
-    }
-    if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
-        if let Ok(pid) = pid_text.trim().parse::<u32>() {
-            let _ = gold_band::process::kill_process_tree(pid);
-        }
-    }
-    let _ = fs::remove_file(pid_path.as_std_path());
-}
-
-fn persist_cancelled_session_snapshot(
-    app: &gold_band::app::App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-) -> anyhow::Result<()> {
-    let snapshot_path = app
-        .paths
-        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
-    if !snapshot_path.exists() {
-        return Ok(());
-    }
-    let mut session = read_json::<serde_json::Value>(&snapshot_path)?;
-    let now = current_timestamp();
-    session["status"] = serde_json::json!("cancelled");
-    session["stopReason"] = serde_json::json!("cancelled");
-    session["updatedAt"] = serde_json::json!(now.clone());
-    if session.get("updated_at").is_some() {
-        session["updated_at"] = serde_json::json!(now);
-    }
-    write_json(&snapshot_path, &session)?;
-    Ok(())
-}
-
-fn persist_cancelled_dynamic_session_snapshot(
-    app: &gold_band::app::App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-) -> anyhow::Result<()> {
-    let snapshot_path = app
-        .paths
-        .dynamic_node_attempt_dir(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            attempt_id,
-        )
-        .join("acp.snapshot.json");
-    if !snapshot_path.exists() {
-        return Ok(());
-    }
-    let mut session = read_json::<serde_json::Value>(&snapshot_path)?;
-    let now = current_timestamp();
-    session["status"] = serde_json::json!("cancelled");
-    session["stopReason"] = serde_json::json!("cancelled");
-    session["updatedAt"] = serde_json::json!(now.clone());
-    if session.get("updated_at").is_some() {
-        session["updated_at"] = serde_json::json!(now);
-    }
-    write_json(&snapshot_path, &session)?;
-    Ok(())
 }
 
 fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
@@ -2272,132 +2175,16 @@ pub fn cancel_acp_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    let requested_at = current_timestamp();
-    let background_app = app.clone_for_background();
-    let task_id_for_shutdown = task_id.clone();
-    let run_id_for_shutdown = run_id.clone();
-    let round_id_for_shutdown = round_id.clone();
-    let node_id_for_shutdown = node_id.clone();
-    let attempt_id_for_shutdown = attempt_id.clone();
-    let outer_node_id_for_shutdown = outer_node_id.clone();
-    let outer_attempt_id_for_shutdown = outer_attempt_id.clone();
-    let pid_for_shutdown = project_id.clone();
-    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
-    {
-        let attempt_dir = app.paths.dynamic_node_attempt_dir(
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-        );
-        request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
-        cancel_pending_permission_requests(&attempt_dir, requested_at.clone())
-            .map_err(command_error)?;
-        background_app
-            .pause_dynamic_attempt_runtime_state(
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                PauseReason::ProcessInterrupted,
-            )
-            .map_err(command_error)?;
-        spawn_acp_cancel_shutdown(
-            app_handle.clone(),
-            background_app,
-            pid_for_shutdown,
-            task_id_for_shutdown,
-            run_id_for_shutdown,
-            round_id_for_shutdown,
-            node_id_for_shutdown,
-            attempt_id_for_shutdown,
-            outer_node_id_for_shutdown,
-            outer_attempt_id_for_shutdown,
-        );
-        dynamic_acp_session_vm(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    } else {
-        let attempt_dir =
-            app.paths
-                .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        request_cancel(&attempt_dir, requested_at.clone()).map_err(command_error)?;
-        cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
-        background_app
-            .pause_attempt_runtime_state(
-                &task_id,
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-                PauseReason::ProcessInterrupted,
-            )
-            .map_err(command_error)?;
-        spawn_acp_cancel_shutdown(
-            app_handle.clone(),
-            background_app,
-            pid_for_shutdown,
-            task_id_for_shutdown,
-            run_id_for_shutdown,
-            round_id_for_shutdown,
-            node_id_for_shutdown,
-            attempt_id_for_shutdown,
-            outer_node_id_for_shutdown,
-            outer_attempt_id_for_shutdown,
-        );
-        acp_session_vm(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    };
-    emit_acp_session_update(
-        &app_handle,
-        &app,
-        project_id,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.clone(),
-        outer_attempt_id.clone(),
-        session.clone(),
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
     );
-    spawn_index_attempt(
-        state.inner(),
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
-    Ok(session)
+    stop_acp_session(app_handle, state.inner(), project_id, locator)
 }
 
 #[tauri::command]

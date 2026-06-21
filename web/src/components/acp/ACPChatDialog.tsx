@@ -541,6 +541,7 @@ export const ACPChatDialog = forwardRef<
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
+  const [stopOverlayPending, setStopOverlayPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
@@ -647,6 +648,7 @@ export const ACPChatDialog = forwardRef<
     setCancelError(null);
     setCancelling(false);
     setStopCommandPending(false);
+    setStopOverlayPending(false);
     setRuntimeStopAccepted(false);
     setAwaitingResponse(Boolean(storedPromptEvent));
     setActiveTurnPrompt(storedPromptEvent?.content?.trim() || null);
@@ -1787,10 +1789,11 @@ export const ACPChatDialog = forwardRef<
   };
 
   const stopSession = async () => {
-    if (stopInProgress || !canStopSession) return;
+    if (!canStopSession || stopInProgress) return;
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
+    setStopOverlayPending(true);
     setCancelError(null);
     setAwaitingResponse(true);
     try {
@@ -1812,6 +1815,23 @@ export const ACPChatDialog = forwardRef<
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       applySessionUpdate(result.session ?? null);
+      flushPendingLiveEvents("sync");
+      const finalSession = await getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        {
+          pageSize: effectiveEventPageSize,
+          eventLimit: effectiveEventPageSize,
+        },
+        result.session ?? effective ?? null,
+        outerNodeId,
+        outerAttemptId,
+      );
+      applySessionUpdate(finalSession);
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -1822,6 +1842,8 @@ export const ACPChatDialog = forwardRef<
       setCancelling(false);
       setStopCommandPending(false);
       cancelRequestedRef.current = false;
+    } finally {
+      setStopOverlayPending(false);
     }
   };
 
@@ -2026,7 +2048,7 @@ export const ACPChatDialog = forwardRef<
         onClose={() => setMessageImagePreview(null)}
       />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
-      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+      <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
           <div className="h-full overflow-y-auto p-5">
             <RawFrameViewer
@@ -2112,6 +2134,7 @@ export const ACPChatDialog = forwardRef<
             </div>
           </div>
         )}
+        {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
@@ -2247,7 +2270,7 @@ export const ACPChatDialog = forwardRef<
                                 size="sm"
                                 variant="secondary"
                                 disabled={stopInProgress}
-                                onClick={stopSession}
+                                onClick={() => { void stopSession(); }}
                               >
                                 {stopInProgress ? (
                                   <Loader2
@@ -2568,6 +2591,18 @@ function AcpChatSkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AcpStopOverlay() {
+  const { t } = useTranslation();
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+      <div className="flex items-center gap-2 rounded-full border bg-card/90 px-4 py-2 text-sm font-medium text-foreground shadow-lg shadow-background/30">
+        <Loader2 className="size-4 animate-spin text-primary" />
+        {t("acp.stopping")}
+      </div>
     </div>
   );
 }

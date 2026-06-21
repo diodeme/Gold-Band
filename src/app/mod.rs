@@ -14,7 +14,7 @@ pub use self::notification::{
 };
 
 use crate::acp::client as acp_client;
-use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
+use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
@@ -40,7 +40,7 @@ use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
-use crate::storage::{GoldBandPaths, read_json, write_json};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
@@ -2115,23 +2115,65 @@ impl App {
         self.pause_all_running_sessions()
     }
 
+    pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
+        self.pause_all_running_sessions()
+    }
+
     fn kill_run_descendants_best_effort(&self, task_id: &str, run_id: &str, run: &RunState) {
         let (Some(round_id), Some(node_id), Some(attempt_id)) =
             (&run.current_round, &run.current_node, &run.current_attempt)
         else {
             return;
         };
-        self.cancel_attempt_dir_best_effort(
-            &self
-                .paths
-                .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        self.interrupt_attempt_artifacts_best_effort(
+            task_id, run_id, round_id, node_id, attempt_id,
         );
+        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
+    }
+
+    fn interrupt_run_descendants_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        run: &RunState,
+        reason: PauseReason,
+    ) {
+        let (Some(round_id), Some(node_id), Some(attempt_id)) =
+            (&run.current_round, &run.current_node, &run.current_attempt)
+        else {
+            return;
+        };
+        self.interrupt_attempt_artifacts_best_effort(
+            task_id, run_id, round_id, node_id, attempt_id,
+        );
+        self.update_dynamic_descendants_best_effort(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            Some(reason),
+        );
+    }
+
+    fn interrupt_attempt_artifacts_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) {
+        let attempt_dir = self
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        self.cancel_attempt_dir_best_effort(&attempt_dir);
         self.kill_provider_pid_file_best_effort(
             &self
                 .paths
                 .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id),
         );
-        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
+        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
     }
 
     fn update_dynamic_descendants_best_effort(
@@ -2170,6 +2212,7 @@ impl App {
                     };
                     self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
                     self.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
+                    self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                 }
             }
             if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
@@ -2263,7 +2306,7 @@ impl App {
         let current_round = run.current_round.clone();
         let current_node = run.current_node.clone();
         let current_attempt = run.current_attempt.clone();
-        self.kill_run_descendants_best_effort(task_id, run_id, &run);
+        self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
         run.status = RunStatus::Paused;
         run.outcome = None;
         run.pause_reason = Some(reason);
@@ -2275,6 +2318,7 @@ impl App {
             let mut round: RoundState =
                 read_json(&self.paths.round_file(task_id, run_id, round_id))?;
             round.status = RunStatus::Paused;
+            round.outcome = None;
             validate_round_state(&round)?;
             write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
 
@@ -2475,7 +2519,6 @@ impl App {
     }
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = request_cancel(attempt_dir, now_rfc3339_like());
         let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
     }
 
@@ -2488,6 +2531,37 @@ impl App {
         };
         let _ = kill_process_tree(pid);
         let _ = fs::remove_file(pid_path.as_std_path());
+    }
+
+    pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
+        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"));
+        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"));
+    }
+
+    fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {
+        let mut session = if path.exists() {
+            read_json::<serde_json::Value>(path)?
+        } else {
+            let session_id = path
+                .parent()
+                .and_then(|attempt_dir| attempt_dir.file_name())
+                .unwrap_or("session");
+            serde_json::json!({
+                "sessionId": session_id,
+                "status": "cancelled",
+                "restored": false,
+                "createdAt": crate::acp::events::current_timestamp(),
+            })
+        };
+        let now = crate::acp::events::current_timestamp();
+        session["status"] = serde_json::json!("cancelled");
+        session["stopReason"] = serde_json::json!("cancelled");
+        session["updatedAt"] = serde_json::json!(now.clone());
+        if session.get("updated_at").is_some() {
+            session["updated_at"] = serde_json::json!(now);
+        }
+        ensure_parent_dir(path)?;
+        write_json(path, &session)
     }
 
     pub fn run_open_session(

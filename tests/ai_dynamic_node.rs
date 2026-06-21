@@ -1766,6 +1766,7 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         .find(|node| node.id == "child-flow-node")
         .unwrap();
     assert_eq!(invocation_node.status, DynamicNodeStatus::Paused);
+    assert_eq!(invocation_node.outcome, None);
     assert_eq!(invocation_node.child_run_id.as_deref(), Some("run-002"));
 
     let child_run: gold_band::runtime::RunState =

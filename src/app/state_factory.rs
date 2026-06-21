@@ -116,12 +116,11 @@ pub(crate) fn resolved_config_for_node(
             // for metrics (node_name / agent_type fallback).
             let provider = match &dynamic.agent_strategy {
                 crate::dsl::AiDynamicAgentStrategy::Fixed { provider, .. } => provider.clone(),
-                crate::dsl::AiDynamicAgentStrategy::Dynamic { bootstrap_provider, .. } => bootstrap_provider.clone(),
+                crate::dsl::AiDynamicAgentStrategy::Dynamic {
+                    bootstrap_provider, ..
+                } => bootstrap_provider.clone(),
             };
-            config.insert(
-                "provider".to_string(),
-                serde_json::Value::String(provider),
-            );
+            config.insert("provider".to_string(), serde_json::Value::String(provider));
             config.insert(
                 "agentStrategy".to_string(),
                 serde_json::to_value(&dynamic.agent_strategy)

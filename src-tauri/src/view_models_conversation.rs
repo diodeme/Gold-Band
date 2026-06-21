@@ -1113,14 +1113,7 @@ pub fn conversation_attempt_lifecycle_vm(
     }
 
     let session_vm = acp_session_vm(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        None,
-        None,
+        app, task_id, run_id, round_id, node_id, attempt_id, None, None,
     )?;
     let node_path = app
         .paths

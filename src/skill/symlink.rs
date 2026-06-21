@@ -142,7 +142,9 @@ fn create_link(src: &Path, dst: &Path) {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 warn!(
                     "failed to create link {:?} → {:?}: {}. Try enabling Developer Mode or run as Administrator.",
-                    dst, src, stderr.trim()
+                    dst,
+                    src,
+                    stderr.trim()
                 );
             }
             Err(e) => {
@@ -166,7 +168,11 @@ mod tests {
 
         let src_dir = tmp.join(".agents").join("skills").join("test-skill");
         fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("SKILL.md"), "---\nname: test-skill\ndescription: test\n---\nhello").unwrap();
+        fs::write(
+            src_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: test\n---\nhello",
+        )
+        .unwrap();
 
         let meta = SkillMeta {
             name: "test-skill".into(),
@@ -180,7 +186,11 @@ mod tests {
         sync_all(&tmp, &[], &[meta]);
 
         let link = tmp.join(".claude").join("skills").join("test-skill");
-        println!("link exists: {}, is_symlink: {}", link.exists(), link.is_symlink());
+        println!(
+            "link exists: {}, is_symlink: {}",
+            link.exists(),
+            link.is_symlink()
+        );
         if let Ok(t) = link.read_link() {
             println!("link target: {:?}", t);
         }

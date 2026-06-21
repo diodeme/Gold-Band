@@ -5,7 +5,7 @@ vi.mock('../src/api/client', () => ({
 }));
 
 import { getRuntimeApi } from '../src/api/client';
-import { deleteProfile, materializeConversationAttachments } from '../src/api';
+import { deleteProfile, materializeConversationAttachments, stopActiveSession } from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {
@@ -41,5 +41,15 @@ describe('api facade', () => {
 
     expect(materializeImpl).toHaveBeenCalledWith(files);
     expect(result).toEqual([{ path: 'C:/tmp/shot.png', name: 'shot.png', size: 4 }]);
+  });
+
+  it('passes active session fallback and locator to the runtime API', async () => {
+    const stopImpl = vi.fn().mockResolvedValue({ kind: 'session-cancelled', run: null, session: null });
+    const fallback = { status: 'running' };
+    vi.mocked(getRuntimeApi).mockReturnValue({ stopActiveSession: stopImpl } as never);
+
+    await stopActiveSession('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback as never, null, null);
+
+    expect(stopImpl).toHaveBeenCalledWith('project-1', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1', fallback, null, null);
   });
 });

@@ -1089,6 +1089,21 @@ fn run_is_killed(app: &App, task_id: &str, run_id: &str) -> Result<bool> {
     Ok(run.status == RunStatus::Completed && run.outcome == Some(RunOutcome::Killed))
 }
 
+fn attempt_is_still_current_running(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    let run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+    Ok(run.status == RunStatus::Running
+        && run.current_round.as_deref() == Some(round_id)
+        && run.current_node.as_deref() == Some(node_id)
+        && run.current_attempt.as_deref() == Some(attempt_id))
+}
+
 fn setup_node_environment(
     app: &App,
     task_id: &str,
@@ -1257,7 +1272,10 @@ fn emit_run_completed_lifecycle_event(
 ) {
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
         event_id: super::notification::make_completion_dedup_key(
-            &run.id, &round.id, &node.node_id, &node.attempt_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
         ),
         occurred_at: now_rfc3339_like(),
         task_id: task_id.to_string(),
@@ -1658,6 +1676,7 @@ fn apply_control_decision(
             run.pause_reason = Some(reason);
             run.updated_at = now_rfc3339_like();
             round.status = RunStatus::Paused;
+            round.outcome = None;
             let pause_stage = if reason == PauseReason::ErrorBlocked {
                 ProgressStage::Blocked
             } else {
@@ -6867,6 +6886,17 @@ fn drive_from_node_with_initial_session(
                 dynamic_resume_override.take(),
             ),
         };
+        if !attempt_is_still_current_running(
+            app,
+            task_id,
+            &run.id,
+            &round.id,
+            &current_node_id,
+            &current_attempt_id,
+        )? {
+            return Ok(());
+        }
+
         node = match execution_result {
             Ok(node) => node,
             Err(err) => {
@@ -6946,6 +6976,7 @@ fn drive_from_node_with_initial_session(
             run.pause_reason = Some(pause_reason);
             run.updated_at = now_rfc3339_like();
             round.status = RunStatus::Paused;
+            round.outcome = None;
             let summary = format!(
                 "run {} paused at {}/{}/{}",
                 run.id, round.id, node.node_id, node.attempt_id
@@ -7096,6 +7127,7 @@ fn drive_from_node_with_initial_session(
             run.pause_reason = Some(PauseReason::WaitingForUserInput);
             run.updated_at = now_rfc3339_like();
             round.status = RunStatus::Paused;
+            round.outcome = None;
             let summary = format!(
                 "manual check required at {}/{}/{}",
                 round.id, node.node_id, node.attempt_id

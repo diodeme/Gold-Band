@@ -666,6 +666,12 @@ impl ProviderAdapter for AcpProvider {
             live_update,
             &req.mcp_servers,
             session_update,
+            Some(client::RuntimeStopProbe {
+                run_file: req.runtime_context.run_dir.join("run.json"),
+                round_id: req.runtime_context.round_id.clone(),
+                node_id: req.runtime_context.node_id.clone(),
+                attempt_id: req.runtime_context.attempt_id.clone(),
+            }),
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {

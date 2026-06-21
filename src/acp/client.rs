@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{
+    Arc, LazyLock, Mutex,
+    mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,8 +29,7 @@ use crate::acp::events::{
     permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, clear_cancel_request, is_cancel_requested,
-    wait_for_permission_response, write_pending_permission,
+    acp_permission_response_result, wait_for_permission_response, write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -36,8 +38,7 @@ use crate::provider::{PromptBundle, PromptVisibility};
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 
-const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
-const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
@@ -54,26 +55,150 @@ impl std::fmt::Display for AcpCancelled {
 
 impl std::error::Error for AcpCancelled {}
 
-fn session_file_is_cancelled(path: &Utf8Path) -> bool {
-    read_json::<Value>(path)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderControlState {
+    Running,
+    ForceStopping,
+    Stopped,
+}
+
+#[derive(Debug)]
+struct ProviderControl {
+    state: Mutex<ProviderControlState>,
+    cancel_sent: Mutex<bool>,
+}
+
+impl ProviderControl {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ProviderControlState::Running),
+            cancel_sent: Mutex::new(false),
+        }
+    }
+
+    fn state(&self) -> ProviderControlState {
+        self.state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(ProviderControlState::Stopped)
+    }
+
+    fn request_force_stop(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        match *state {
+            ProviderControlState::Running => {
+                *state = ProviderControlState::ForceStopping;
+                true
+            }
+            ProviderControlState::ForceStopping | ProviderControlState::Stopped => false,
+        }
+    }
+
+    fn mark_cancel_sent(&self) -> bool {
+        let Ok(mut sent) = self.cancel_sent.lock() else {
+            return false;
+        };
+        if *sent {
+            false
+        } else {
+            *sent = true;
+            true
+        }
+    }
+
+    fn mark_stopped(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = ProviderControlState::Stopped;
+        }
+    }
+}
+
+static PROVIDER_CONTROLS: LazyLock<Mutex<HashMap<String, Arc<ProviderControl>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn attempt_control_key(attempt_dir: &Utf8Path) -> String {
+    attempt_dir.to_string()
+}
+
+pub fn request_force_stop(attempt_dir: &Utf8Path) -> bool {
+    let key = attempt_control_key(attempt_dir);
+    PROVIDER_CONTROLS
+        .lock()
         .ok()
-        .and_then(|session| {
-            let status = session
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let stop_reason = session
-                .get("stopReason")
-                .or_else(|| session.get("stop_reason"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            (status.eq_ignore_ascii_case("cancelled")
-                || status.eq_ignore_ascii_case("canceled")
-                || stop_reason.eq_ignore_ascii_case("cancelled")
-                || stop_reason.eq_ignore_ascii_case("canceled"))
-            .then_some(())
-        })
-        .is_some()
+        .and_then(|controls| controls.get(&key).cloned())
+        .map(|control| control.request_force_stop())
+        .unwrap_or(false)
+}
+
+fn register_provider_control(attempt_dir: &Utf8Path) -> Arc<ProviderControl> {
+    let key = attempt_control_key(attempt_dir);
+    let control = Arc::new(ProviderControl::new());
+    if let Ok(mut controls) = PROVIDER_CONTROLS.lock() {
+        controls.insert(key, control.clone());
+    }
+    control
+}
+
+fn unregister_provider_control(attempt_dir: &Utf8Path, control: &Arc<ProviderControl>) {
+    control.mark_stopped();
+    let key = attempt_control_key(attempt_dir);
+    if let Ok(mut controls) = PROVIDER_CONTROLS.lock() {
+        if controls
+            .get(&key)
+            .is_some_and(|existing| Arc::ptr_eq(existing, control))
+        {
+            controls.remove(&key);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeStopProbe {
+    pub run_file: Utf8PathBuf,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+}
+
+impl RuntimeStopProbe {
+    fn is_stopped(&self) -> bool {
+        read_json::<serde_json::Value>(&self.run_file)
+            .ok()
+            .is_some_and(|run| {
+                let status = run
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let pause_reason = run
+                    .get("pauseReason")
+                    .or_else(|| run.get("pause_reason"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                status.eq_ignore_ascii_case("paused")
+                    && normalize_stop_code(pause_reason) == "process-interrupted"
+                    && run
+                        .get("currentRound")
+                        .or_else(|| run.get("current_round"))
+                        .and_then(Value::as_str)
+                        == Some(self.round_id.as_str())
+                    && run
+                        .get("currentNode")
+                        .or_else(|| run.get("current_node"))
+                        .and_then(Value::as_str)
+                        == Some(self.node_id.as_str())
+                    && run
+                        .get("currentAttempt")
+                        .or_else(|| run.get("current_attempt"))
+                        .and_then(Value::as_str)
+                        == Some(self.attempt_id.as_str())
+            })
+    }
+}
+
+fn normalize_stop_code(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +260,8 @@ struct AcpRuntime<'a> {
     last_timeline_patch_at: Option<Instant>,
     raw_max_size: u64,
     raw_target_size: u64,
+    control: Arc<ProviderControl>,
+    stop_probe: Option<RuntimeStopProbe>,
 }
 
 pub fn doctor(
@@ -150,6 +277,7 @@ pub fn doctor(
         use_local_claude,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
+        None,
         None,
     )?;
     let result = (|| {
@@ -180,8 +308,8 @@ pub fn run_prompt(
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
+    stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
-    clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(
         config,
         workspace_dir.clone(),
@@ -190,10 +318,19 @@ pub fn run_prompt(
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
         live_update,
+        stop_probe,
     )?;
-    let capabilities = runtime.initialize()?;
+    let capabilities = match runtime.initialize() {
+        Ok(capabilities) => capabilities,
+        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let run = runtime.cancelled_run(false);
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) => return Err(error),
+    };
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
-    let restored = runtime.setup_session(
+    let restored = match runtime.setup_session(
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
@@ -201,7 +338,15 @@ pub fn run_prompt(
         &prompt.system_prompt,
         strict_continue,
         mcp_servers,
-    )?;
+    ) {
+        Ok(restored) => restored,
+        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let run = runtime.cancelled_run(false);
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) => return Err(error),
+    };
     let session_id = runtime
         .session_id
         .clone()
@@ -267,9 +412,6 @@ pub fn run_prompt(
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
-    if status != "running" {
-        let _ = clear_cancel_request(&runtime.paths.attempt_dir);
-    }
     let run = AcpPromptRun {
         session_id,
         adapter_id: runtime.adapter.adapter_id.clone(),
@@ -307,7 +449,12 @@ fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]
     params
 }
 
-fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str, mcp_servers: &[Value]) -> Value {
+fn session_load_params(
+    cwd: &Utf8Path,
+    session_id: &str,
+    system_prompt: &str,
+    mcp_servers: &[Value],
+) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
         "mcpServers": mcp_servers,
@@ -366,6 +513,7 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
@@ -471,6 +619,7 @@ impl<'a> AcpRuntime<'a> {
                 }
             }
         });
+        let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
         let timeline_items = load_timeline_items(&paths.timeline)?
             .into_iter()
@@ -516,11 +665,40 @@ impl<'a> AcpRuntime<'a> {
             last_timeline_patch_at: None,
             raw_max_size,
             raw_target_size,
+            control,
+            stop_probe,
         })
     }
 
     fn initialize(&mut self) -> Result<Value> {
         self.initialize_with_timeout(None)
+    }
+
+    fn cancelled_run(&self, restored: bool) -> AcpPromptRun {
+        AcpPromptRun {
+            session_id: self.session_id.clone().unwrap_or_else(|| {
+                self.paths
+                    .attempt_dir
+                    .file_name()
+                    .unwrap_or("session")
+                    .to_string()
+            }),
+            adapter_id: self.adapter.adapter_id.clone(),
+            adapter_display_name: self.adapter.display_name.clone(),
+            stop_reason: Some("cancelled".to_string()),
+            final_text: self.final_text.clone(),
+            final_outputs: self.final_outputs.clone(),
+            restored,
+            used_tokens: self.used_tokens,
+            context_window_size: self.context_window_size,
+            total_cost_usd: self.total_cost_usd,
+            accumulated_used_tokens: self.accumulated_used_tokens,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cached_read_tokens: self.cached_read_tokens,
+            cached_write_tokens: self.cached_write_tokens,
+            total_tokens: self.total_tokens,
+        }
     }
 
     fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
@@ -594,7 +772,10 @@ impl<'a> AcpRuntime<'a> {
             bail!("ACP continue requires an existing session id");
         }
 
-        let result = self.request("session/new", session_new_params(&cwd, system_prompt, mcp_servers))?;
+        let result = self.request(
+            "session/new",
+            session_new_params(&cwd, system_prompt, mcp_servers),
+        )?;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")
@@ -949,6 +1130,10 @@ impl<'a> AcpRuntime<'a> {
         timeout: Option<Duration>,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
+        if self.is_force_stopping() {
+            self.observe_force_stop()?;
+            return Err(anyhow!(AcpCancelled));
+        }
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({
@@ -959,13 +1144,15 @@ impl<'a> AcpRuntime<'a> {
         });
         self.send_frame(&frame)?;
         let started_at = Instant::now();
-        let mut cancel_started_at = None;
-        let mut cancel_notified = false;
         let mut last_title_refresh_at = Instant::now();
         loop {
+            if self.is_force_stopping() {
+                self.observe_force_stop()?;
+                return Err(anyhow!(AcpCancelled));
+            }
             let wait_for = match timeout {
                 Some(timeout) => match timeout.checked_sub(started_at.elapsed()) {
-                    Some(remaining) => remaining.min(CANCEL_CHECK_INTERVAL),
+                    Some(remaining) => remaining.min(STOP_CHECK_INTERVAL),
                     None => {
                         self.kill_adapter_process();
                         bail!(
@@ -974,7 +1161,7 @@ impl<'a> AcpRuntime<'a> {
                         );
                     }
                 },
-                None => CANCEL_CHECK_INTERVAL,
+                None => STOP_CHECK_INTERVAL,
             };
             match self.rx.recv_timeout(wait_for) {
                 Ok(value) => {
@@ -984,10 +1171,11 @@ impl<'a> AcpRuntime<'a> {
                     }
 
                     if response_matches_request(&value, id) {
+                        if self.is_force_stopping() {
+                            self.observe_force_stop()?;
+                            return Err(anyhow!(AcpCancelled));
+                        }
                         if let Some(error) = value.get("error") {
-                            if self.is_cancellation_observed() {
-                                return Err(anyhow!(AcpCancelled));
-                            }
                             bail!("ACP `{method}` failed: {error}");
                         }
                         return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
@@ -1011,37 +1199,17 @@ impl<'a> AcpRuntime<'a> {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    if self.is_cancellation_observed() {
+                    if self.is_force_stopping() {
+                        self.observe_force_stop()?;
                         return Err(anyhow!(AcpCancelled));
                     }
                     bail!("ACP adapter closed before `{method}` response");
                 }
             }
 
-            if is_cancel_requested(&self.paths.attempt_dir) {
-                if cancel_started_at.is_none() {
-                    cancel_started_at = Some(Instant::now());
-                }
-                if !cancel_notified {
-                    append_diagnostic(
-                        &self.paths.diagnostics,
-                        "info",
-                        "ACP cancellation requested".to_string(),
-                        Some(json!({ "method": method })),
-                    )?;
-                    self.send_cancel_notification()?;
-                    cancel_notified = true;
-                }
-                if cancel_started_at
-                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
-                {
-                    self.kill_adapter_process();
-                    return Err(anyhow!(AcpCancelled));
-                }
-            }
-
             if let Some(status) = self.child.try_wait()? {
-                if self.is_cancellation_observed() {
+                if self.is_force_stopping() {
+                    self.observe_force_stop()?;
                     return Err(anyhow!(AcpCancelled));
                 }
                 bail!("ACP adapter exited before `{method}` response with status {status}");
@@ -1142,11 +1310,52 @@ impl<'a> AcpRuntime<'a> {
         }))
     }
 
-    fn send_cancel_notification(&mut self) -> Result<()> {
+    fn is_force_stopping(&self) -> bool {
+        self.control.state() == ProviderControlState::ForceStopping
+            || self
+                .stop_probe
+                .as_ref()
+                .is_some_and(RuntimeStopProbe::is_stopped)
+    }
+
+    fn observe_force_stop(&mut self) -> Result<()> {
+        if self.control.state() == ProviderControlState::ForceStopping {
+            self.send_cancel_notification_best_effort();
+        }
+        self.drain_available_inbound()
+    }
+
+    fn send_cancel_notification_best_effort(&mut self) {
+        if !self.control.mark_cancel_sent() {
+            return;
+        }
         let Some(session_id) = self.session_id.clone() else {
-            return Ok(());
+            return;
         };
-        self.send_frame(&cancel_notification_frame(&session_id))
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": {
+                "sessionId": session_id,
+            },
+        });
+        if let Err(error) = self.send_frame_unchecked(&frame) {
+            let _ = append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                format!("failed to send ACP session/cancel notification: {error}"),
+                Some(frame),
+            );
+        }
+    }
+
+    fn drain_available_inbound(&mut self) -> Result<()> {
+        loop {
+            match self.rx.try_recv() {
+                Ok(value) => self.handle_inbound(value)?,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
     }
 
     fn kill_adapter_process(&mut self) {
@@ -1157,13 +1366,14 @@ impl<'a> AcpRuntime<'a> {
         let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
     }
 
-    fn is_cancellation_observed(&self) -> bool {
-        is_cancel_requested(&self.paths.attempt_dir)
-            || session_file_is_cancelled(&self.paths.snapshot)
-            || session_file_is_cancelled(&self.paths.session)
+    fn send_frame(&mut self, frame: &Value) -> Result<()> {
+        if self.is_force_stopping() {
+            return Err(anyhow!(AcpCancelled));
+        }
+        self.send_frame_unchecked(frame)
     }
 
-    fn send_frame(&mut self, frame: &Value) -> Result<()> {
+    fn send_frame_unchecked(&mut self, frame: &Value) -> Result<()> {
         append_raw_frame(
             &self.paths.raw,
             "outbound",
@@ -1567,6 +1777,7 @@ impl<'a> AcpRuntime<'a> {
         let _ = self.persist_timeline_items();
         let _ = self.stdin.flush();
         self.kill_adapter_process();
+        unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
 }
 
@@ -1577,6 +1788,7 @@ impl Drop for AcpRuntime<'_> {
         if self.child.try_wait().ok().flatten().is_none() {
             self.kill_adapter_process();
         }
+        unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
 }
 
@@ -1795,16 +2007,6 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
-fn cancel_notification_frame(session_id: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "session/cancel",
-        "params": {
-            "sessionId": session_id,
-        }
-    })
-}
-
 fn response_matches_request(value: &Value, request_id: u64) -> bool {
     value.get("method").is_none()
         && value.get("id").and_then(Value::as_u64) == Some(request_id)
@@ -1816,9 +2018,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        PromptBundle, PromptVisibility, cancel_notification_frame, contributes_to_final_text,
-        resolve_permission_mode, response_matches_request, session_load_params, session_new_params,
-        session_prompt_params, session_prompt_text,
+        PromptBundle, PromptVisibility, contributes_to_final_text, resolve_permission_mode,
+        response_matches_request, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text,
     };
 
     #[test]
@@ -1826,22 +2028,6 @@ mod tests {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
-    }
-
-    #[test]
-    fn cancel_frame_is_notification_without_id() {
-        let frame = cancel_notification_frame("session-123");
-        assert_eq!(frame.get("id"), None);
-        assert_eq!(
-            frame,
-            json!({
-                "jsonrpc": "2.0",
-                "method": "session/cancel",
-                "params": {
-                    "sessionId": "session-123",
-                }
-            })
-        );
     }
 
     #[test]
@@ -1864,7 +2050,8 @@ mod tests {
 
     #[test]
     fn session_setup_params_append_system_prompt() {
-        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "node constraints", &[]);
+        let new_params =
+            session_new_params(camino::Utf8Path::new("/repo"), "node constraints", &[]);
         assert_eq!(
             new_params["_meta"]["systemPrompt"]["append"],
             "node constraints"

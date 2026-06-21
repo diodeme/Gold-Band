@@ -95,6 +95,57 @@ impl ProviderAdapter for BlockingSuccessProvider {
     }
 }
 
+fn write_dev_only_workflow(app: &App, task_id: &str) {
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let dev_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Implement feature",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "dev-only",
+          "entry": "dev",
+          "control": {{
+            "max_attempts": 1,
+            "max_rounds": 1
+          }},
+          "nodes": [
+            {{
+              "id": "dev",
+              "type": "worker",
+              "provider": "claude-acp",
+              "profile": "{}",
+              "goal": "Create an implementation result",
+              "output": {{ "kind": "json", "artifact": "implementation-result" }}
+            }}
+          ],
+          "edges": [
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            dev_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        format!(r#"{{"version":"0.1","id":"{}"}}"#, task_id),
+    )
+    .unwrap();
+}
+
 fn success_result() -> ProviderRunResult {
     ProviderRunResult {
         status: ProviderRunStatus::Success,
@@ -165,6 +216,57 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             worker_ref_seed: None,
             stream_path: None,
         })
+    }
+
+    fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(
+        &self,
+        _worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(Some("claude -c session-123".to_string()))
+    }
+}
+
+#[derive(Clone, Default)]
+struct InterruptedThenContinueProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+impl ProviderAdapter for InterruptedThenContinueProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let mut invocations = self.invocations.lock().unwrap();
+        let first = invocations.is_empty();
+        let session_mode = req.session_mode;
+        invocations.push(req);
+        if first {
+            return Ok(ProviderRunResult {
+                status: ProviderRunStatus::Interrupted,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: Some(SessionRef {
+                    provider: "claude-acp".to_string(),
+                    mode: SessionMode::New,
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    continue_ref: Some(serde_json::json!({"sessionId":"session-123"})),
+                    open_command: Some("claude -c session-123".to_string()),
+                }),
+                stream_path: None,
+            });
+        }
+        assert_eq!(session_mode, SessionMode::Continue);
+        Ok(success_result())
     }
 
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
@@ -463,6 +565,121 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
         app.paths
             .worker_ref_file(task_id, "run-001", "round-001", "dev", "attempt-001");
     assert!(worker_ref_path.exists());
+}
+
+#[test]
+fn run_pause_keeps_current_worker_paused_not_killed() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-pause-worker";
+    let app = App::with_provider(repo_root, Box::new(RecordingProvider::default()));
+    write_dev_only_workflow(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let mut running_run: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
+    running_run.status = RunStatus::Running;
+    running_run.outcome = None;
+    gold_band::storage::write_json(&app.paths.run_file(task_id, "run-001"), &running_run).unwrap();
+    let node_path = app
+        .paths
+        .node_file(task_id, "run-001", "round-001", "dev", "attempt-001");
+    let mut node: gold_band::runtime::NodeState =
+        gold_band::storage::read_json(&node_path).unwrap();
+    node.status = RunStatus::Running;
+    node.outcome = None;
+    gold_band::storage::write_json(&node_path, &node).unwrap();
+
+    let paused = app
+        .run_pause(task_id, "run-001", PauseReason::ProcessInterrupted)
+        .unwrap();
+
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+    let node: gold_band::runtime::NodeState = gold_band::storage::read_json(&node_path).unwrap();
+    assert_eq!(node.status, RunStatus::Paused);
+    assert_eq!(node.outcome, None);
+}
+
+#[test]
+fn stopped_attempt_success_does_not_complete_workflow() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-stop-race";
+    let provider = BlockingSuccessProvider::new(2);
+    let app = Arc::new(App::with_provider(repo_root, Box::new(provider.clone())));
+    write_dev_only_workflow(&app, task_id);
+
+    let runner = {
+        let app = app.clone();
+        let task_id = task_id.to_string();
+        std::thread::spawn(move || app.run_start(&task_id, None).unwrap())
+    };
+
+    while provider.invocations.lock().unwrap().is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let paused = app
+        .run_pause(task_id, "run-001", PauseReason::ProcessInterrupted)
+        .unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    provider.release.wait();
+
+    let returned = runner.join().unwrap();
+    assert_eq!(returned.status, RunStatus::Running);
+    let run: RunState =
+        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    assert!(
+        !app.paths
+            .artifact_file(
+                task_id,
+                "run-001",
+                "round-001",
+                "dev",
+                "attempt-001",
+                "implementation-result"
+            )
+            .exists()
+    );
+}
+
+#[test]
+fn run_continue_ignores_cancelled_session_snapshot() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-after-cancel";
+    let provider = InterruptedThenContinueProvider::default();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    write_dev_only_workflow(&app, task_id);
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, "run-001", "round-001", "dev", "attempt-001");
+    gold_band::storage::write_json(
+        &attempt_dir.join("acp.session.json"),
+        &serde_json::json!({
+            "sessionId": "attempt-001",
+            "status": "cancelled",
+            "stopReason": "cancelled",
+        }),
+    )
+    .unwrap();
+
+    let continued = app
+        .run_continue(task_id, "run-001", None, Some("resume".to_string()))
+        .unwrap();
+
+    assert_eq!(continued.status, RunStatus::Completed);
+    assert_eq!(provider.invocations.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -922,7 +1139,8 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
             {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"accept","to":"$new-round","on":"failure"}}
+            {{"from":"accept","to":"$new-round","on":"failure"}},
+            {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
             accept_profile

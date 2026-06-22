@@ -15,10 +15,10 @@ interface RunDetailPageProps {
   onNavigate: (page: TaskPage) => void;
   onContinueRun: (taskId: string, runId: string) => void;
   onRetryRun: (taskId: string, runId: string) => void;
-  onKillRun: (taskId: string, runId: string) => void;
+  onStopRun: (taskId: string, runId: string) => void;
 }
 
-export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinueRun, onRetryRun, onKillRun }: RunDetailPageProps) {
+export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinueRun, onRetryRun, onStopRun }: RunDetailPageProps) {
   if (!vm) return <Page><EmptyState>Loading…</EmptyState></Page>;
   const canStopRun = isRunStoppable(vm.run.status);
 
@@ -32,7 +32,7 @@ export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinue
           <>
             <Button variant="outline" disabled={busy || !vm.run.resumable} onClick={() => onContinueRun(taskId, vm.run.id)}>{labels.continueRun}</Button>
             <Button variant="outline" disabled={busy} onClick={() => onRetryRun(taskId, vm.run.id)}>{labels.retryRun}</Button>
-            <Button variant="destructive" disabled={busy || !canStopRun} onClick={() => onKillRun(taskId, vm.run.id)}>{labels.stopRun}</Button>
+            <Button variant="destructive" disabled={busy || !canStopRun} onClick={() => onStopRun(taskId, vm.run.id)}>{labels.stopRun}</Button>
           </>
         )}
       />

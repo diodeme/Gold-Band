@@ -98,6 +98,7 @@ pub struct WorkerInvocation {
     pub profile_content: Option<String>,
     pub requirement_path: Option<Utf8PathBuf>,
     pub requirement_text: Option<String>,
+    pub adapter_workspace_dir: Utf8PathBuf,
     pub workspace_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub output_contract: Option<PromptOutputContract>,
@@ -139,6 +140,10 @@ pub struct PromptRuntimeContext {
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    #[serde(default)]
+    pub runtime_node_id: Option<String>,
+    #[serde(default)]
+    pub runtime_attempt_id: Option<String>,
     pub language: crate::config::DesktopLanguage,
     pub run_dir: Utf8PathBuf,
     pub round_dir: Utf8PathBuf,
@@ -652,6 +657,7 @@ impl ProviderAdapter for AcpProvider {
         let run = client::run_prompt(
             &self.provider_id,
             &self.adapter_config,
+            req.adapter_workspace_dir.clone(),
             req.workspace_dir.clone(),
             req.attempt_dir.clone(),
             &prompt,
@@ -666,6 +672,20 @@ impl ProviderAdapter for AcpProvider {
             live_update,
             &req.mcp_servers,
             session_update,
+            Some(client::RuntimeStopProbe {
+                run_file: req.runtime_context.run_dir.join("run.json"),
+                round_id: req.runtime_context.round_id.clone(),
+                node_id: req
+                    .runtime_context
+                    .runtime_node_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
+                attempt_id: req
+                    .runtime_context
+                    .runtime_attempt_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
+            }),
         )?;
         let status = match run.stop_reason.as_deref() {
             Some("cancelled" | "interrupted" | "max_turn_requests") => {
@@ -1113,6 +1133,8 @@ mod tests {
             round_id: "round-001".to_string(),
             node_id: "dev".to_string(),
             attempt_id: "attempt-001".to_string(),
+            runtime_node_id: None,
+            runtime_attempt_id: None,
             language: crate::config::DesktopLanguage::ZhCn,
             run_dir: Utf8PathBuf::from("/run"),
             round_dir: Utf8PathBuf::from("/run/rounds/round-001"),
@@ -1129,6 +1151,7 @@ mod tests {
             profile_content: None,
             requirement_path: None,
             requirement_text: Some("Need a structured result".to_string()),
+            adapter_workspace_dir: Utf8PathBuf::from("/repo"),
             workspace_dir: Utf8PathBuf::from("/repo"),
             attempt_dir: runtime_context.attempt_dir.clone(),
             output_contract: None,

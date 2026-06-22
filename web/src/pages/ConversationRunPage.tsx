@@ -4,7 +4,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
@@ -54,8 +54,8 @@ interface ConversationRunPageProps {
   onSaveWorkflow?: (json: string) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onSessionStopped: () => void;
+  onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
-  onContinueRun: (promptId?: string | null, prompt?: string | null) => Promise<void>;
   onTitleChange?: (title: string) => void;
 }
 
@@ -68,8 +68,8 @@ export function ConversationRunPage({
   onSaveWorkflow,
   onSelectSession,
   onSessionStopped,
+  onLifecycleSnapshot,
   onAutoFollowChange,
-  onContinueRun,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
@@ -239,7 +239,6 @@ export function ConversationRunPage({
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
-  const selectedSessionWaitingForUserInput = selectedSessionPauseReason === 'waiting-for-user-input';
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
     ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
@@ -249,16 +248,11 @@ export function ConversationRunPage({
     ? {
         lifecycle: selectedLeaf.lifecycle,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
-        runtimeDisplay: selectedLeaf.runtimeDisplay,
         workflowValid: run.workflowValid,
         workflowError: t('conversation.runtime.workflowInvalid'),
         pauseMessage: translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
-        onContinue: (promptId, prompt) => { void onContinueRun(promptId, prompt); },
         onRepair: handleRepairWorkflow,
-        continueLabel: selectedSessionWaitingForUserInput
-          ? t('conversation.runtime.composerContinue')
-          : undefined,
       }
     : undefined;
 
@@ -315,6 +309,7 @@ export function ConversationRunPage({
                   runtimeDisplay: session.runtimeDisplay,
                   lifecycle: session.lifecycle,
                   current: true,
+                  manualCheckPending: session.manualCheckPending,
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -346,9 +341,11 @@ export function ConversationRunPage({
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
             onSessionStopped={handleSessionStopped}
+            onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}
+            manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
@@ -512,6 +509,7 @@ function activeSessionToLeaf(
     runtimeDisplay: session.runtimeDisplay,
     lifecycle: session.lifecycle,
     current: true,
+    manualCheckPending: session.manualCheckPending,
     startedAt: session.startedAt,
     finishedAt: null,
     sessionId: session.sessionId,
@@ -521,7 +519,7 @@ function activeSessionToLeaf(
 }
 
 function isActiveSessionLeaf(leaf: ConversationSessionLeafVm) {
-  return Boolean(leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
+  return Boolean(leaf.manualCheckPending || leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
     || ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(leaf.status?.toLowerCase() ?? '');
 }
 

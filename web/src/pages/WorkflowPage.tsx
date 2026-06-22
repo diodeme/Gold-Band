@@ -31,7 +31,7 @@ interface WorkflowPageProps {
   onRefresh: () => void;
   onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
   onContinueRun: (taskId: string, runId: string) => void;
-  onKillRun: (taskId: string, runId: string) => void;
+  onStopRun: (taskId: string, runId: string) => void;
   onSaveWorkflow: (taskId: string, workflow: WorkflowDsl) => Promise<WorkflowVm | undefined>;
   onOpenProfileManagement: () => void;
 }
@@ -54,7 +54,7 @@ function historyBodyMinHeightFor(pageSize: number) {
   return Math.max(320, pageSize * collapsedRunRowMinHeight);
 }
 
-export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onKillRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
+export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, onRefresh, onStartRun, onStopRun, onSaveWorkflow, onOpenProfileManagement }: WorkflowPageProps) {
   const { t } = useTranslation();
   const [requirementOpen, setRequirementOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -235,7 +235,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                             expanded={expanded}
                             onToggle={() => toggleRun(group.run.id, expanded)}
                             onOpenRound={(roundId) => onNavigate({ kind: 'round-detail', taskId: vm.task.id, runId: group.run.id, roundId })}
-                            onKillRun={() => onKillRun(vm.task.id, group.run.id)}
+                            onStopRun={() => onStopRun(vm.task.id, group.run.id)}
                             t={t}
                           />
                         );
@@ -349,13 +349,13 @@ function ControlPill({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun, t }: {
+function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onStopRun, t }: {
   group: RunGroupVm;
   graph: GraphVm;
   expanded: boolean;
   onToggle: () => void;
   onOpenRound: (roundId: string) => void;
-  onKillRun: () => void;
+  onStopRun: () => void;
   t: TFunction;
 }) {
   const rounds = useMemo(() => [...group.rounds].sort((left, right) => right.index - left.index), [group.rounds]);
@@ -411,7 +411,7 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onKillRun,
                   <span className="h-4 w-px bg-border" aria-hidden="true" />
                 </>
               ) : null}
-              <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); onKillRun(); }}>{t('common.stopRun')}</Button>
+              <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 text-xs text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive" onClick={(event) => { event.stopPropagation(); onStopRun(); }}>{t('common.stopRun')}</Button>
             </div>
           ) : null}
         </div>

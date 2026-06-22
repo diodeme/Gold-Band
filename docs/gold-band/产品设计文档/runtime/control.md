@@ -58,7 +58,9 @@ edge target 规则：
 - node: `paused`
 - pause reason: `waiting-for-user-input`
 
-用户在会话面板选择成功或失败后，runtime 写回 `NodeOutcome` 并继续按 edge 流转。
+人工 check 暂停不是 runtime continue：当前 ACP 会话的输入区保持可用，用户可以继续发送普通 ACP prompt 追问或补充上下文，这些消息不会触发 workflow edge。会话面板额外展示“成功 / 失败”判定按钮；只有用户点击其中一个按钮后，runtime 才写回 `NodeOutcome` 并继续按 edge 流转。
+
+`manual_check_pending` 必须持久化在当前 attempt 的 `node.json` 中。应用关闭后再次打开，只要 run / round / node 仍处于上述暂停态且 `manual_check_pending=true`，会话面板仍应恢复判定按钮和可用输入区，点击成功或失败后继续推进 runtime。
 
 ## 8. 错误阻塞
 以下情况进入 `paused + error_blocked`：

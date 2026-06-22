@@ -375,7 +375,7 @@ pub enum McpTransportConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerHealthResult {
-    pub status: String,        // "healthy" | "unhealthy" | "auth_required" | "unknown"
+    pub status: String, // "healthy" | "unhealthy" | "auth_required" | "unknown"
     pub message: Option<String>,
     /// 对标 Zed AuthRequired — 需要 OAuth 认证时的授权 URL
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -106,7 +106,9 @@ fn run_start_executes_worker_node() {
               "output": {{ "kind": "json", "artifact": "implementation-result" }}
             }}
           ],
-          "edges": []
+          "edges": [
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
         }}"#,
             dev_profile
         ),

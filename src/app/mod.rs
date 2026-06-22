@@ -1,27 +1,26 @@
 mod ids;
 mod node_executor;
 mod notification;
+pub mod observability;
 mod orchestrator;
 mod profile_resolver;
 mod profiles;
 mod state_access;
 mod state_factory;
 mod transition_context;
-pub mod observability;
 
 pub use self::notification::{
     InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;
-use crate::acp::permission::{cancel_pending_permission_requests, request_cancel};
+use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
     ManagedAgentType, McpServerConfig, McpServerHealthResult, RuntimeConfig, RuntimeLogLevel,
     SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
-use crate::mcp::McpManager;
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
@@ -31,6 +30,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
+use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
@@ -40,7 +40,7 @@ use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
-use crate::storage::{GoldBandPaths, read_json, write_json};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
@@ -430,17 +430,40 @@ pub struct NodeRuntimeSummary {
     pub outgoing_edges: Vec<NodeEdgeSummary>,
 }
 
-/// Workflow lifecycle events emitted by the orchestrator via ObservabilityBus.
-/// Subscribers (metrics, tracing, audit, etc.) observe these events without
-/// the orchestrator knowing who is listening.
-///
-/// Each event is self-contained — it carries all IDs, metadata, and
-/// filesystem paths a subscriber needs.
-///
-/// Token counts (input/output/cache/total) are NOT included. Subscribers read
-/// token data themselves from `attempt_dir/acp.snapshot.json`.
+/// Runtime lifecycle events emitted by the orchestrator via RuntimeLifecycleBus.
+/// Subscribers observe these facts without changing runtime control flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInterventionKind {
+    ManualDecisionRequired,
+    PermissionRequested,
+    ErrorBlocked,
+    ProcessInterrupted,
+}
+
+impl From<PauseReason> for RuntimeInterventionKind {
+    fn from(reason: PauseReason) -> Self {
+        match reason {
+            PauseReason::WaitingForUserInput => Self::ManualDecisionRequired,
+            PauseReason::PermissionRequested => Self::PermissionRequested,
+            PauseReason::ErrorBlocked => Self::ErrorBlocked,
+            PauseReason::ProcessInterrupted => Self::ProcessInterrupted,
+        }
+    }
+}
+
+impl From<RuntimeInterventionKind> for PauseReason {
+    fn from(kind: RuntimeInterventionKind) -> Self {
+        match kind {
+            RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
+            RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
+            RuntimeInterventionKind::ErrorBlocked => Self::ErrorBlocked,
+            RuntimeInterventionKind::ProcessInterrupted => Self::ProcessInterrupted,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub enum WorkflowEvent {
+pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
@@ -494,6 +517,42 @@ pub enum WorkflowEvent {
         /// the single begin/end sentinel pair for the whole workflow.
         suppress_sentinel: bool,
     },
+    RunPaused {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        pause_reason: PauseReason,
+        task_title: Option<String>,
+    },
+    InterventionRequested {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        kind: RuntimeInterventionKind,
+        task_title: Option<String>,
+    },
+    RunCompleted {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        node_label: String,
+        outcome: RunOutcome,
+        task_title: Option<String>,
+    },
 }
 
 pub struct App {
@@ -506,9 +565,7 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
-    pub observability_bus: observability::ObservabilityBus,
-    intervention_notifier:
-    Option<Arc<dyn Fn(InterventionNotification) + Send + Sync>>,
+    pub lifecycle_bus: observability::RuntimeLifecycleBus,
 }
 
 #[derive(Debug, Clone)]
@@ -702,8 +759,7 @@ impl App {
             provider_override: self.provider_override.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            observability_bus: self.observability_bus.clone(),
-                        intervention_notifier: self.intervention_notifier.clone(),
+            lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
 
@@ -725,13 +781,19 @@ impl App {
         self
     }
 
-    /// 注入干预通知回调。编排器在暂停分支调用 [`App::notify_intervention`] 时触发，
-    /// 由桌面端闭包完成「去重 → OS 通知 → emit」流程（方案 §5.1/§6.3）。
-    pub fn with_intervention_notifier(
-        mut self,
-        notifier: Arc<dyn Fn(InterventionNotification) + Send + Sync>,
+    pub fn with_lifecycle_subscriber(
+        self,
+        subscriber: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
     ) -> Self {
-        self.intervention_notifier = Some(notifier);
+        self.lifecycle_bus.subscribe(subscriber);
+        self
+    }
+
+    pub fn with_inline_lifecycle_subscriber(
+        self,
+        subscriber: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+    ) -> Self {
+        self.lifecycle_bus.subscribe_inline(subscriber);
         self
     }
 
@@ -760,12 +822,8 @@ impl App {
         Ok(())
     }
 
-    /// 触发干预通知回调。无回调时静默跳过（如 CLI 模式无桌面端注入）。
-    /// 由编排器暂停分支 helper 调用（路径 A），桌面端闭包完成去重→OS→emit（方案 §6.3）。
-    pub fn notify_intervention(&self, notification: InterventionNotification) {
-        if let Some(notifier) = &self.intervention_notifier {
-            notifier(notification);
-        }
+    pub fn emit_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
+        self.lifecycle_bus.emit(event);
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -952,7 +1010,12 @@ impl App {
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().list()?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .list()?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn add_mcp_server(&self, json_content: &str) -> Result<Vec<McpServerConfig>> {
@@ -966,11 +1029,21 @@ impl App {
     }
 
     pub fn delete_mcp_server(&self, id: &str) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().delete(id)?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .delete(id)?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn toggle_mcp_server(&self, id: &str, enabled: bool) -> Result<Vec<McpServerConfig>> {
-        Ok(self.mcp_manager().toggle(id, enabled)?.into_iter().map(|s| s.config).collect())
+        Ok(self
+            .mcp_manager()
+            .toggle(id, enabled)?
+            .into_iter()
+            .map(|s| s.config)
+            .collect())
     }
 
     pub fn check_mcp_server_health(&self, id: &str) -> Result<McpServerHealthResult> {
@@ -995,7 +1068,11 @@ impl App {
         self.skill_manager().list()
     }
 
-    pub fn read_skill(&self, name: &str, source: SkillSource) -> Result<crate::skill::SkillContent> {
+    pub fn read_skill(
+        &self,
+        name: &str,
+        source: SkillSource,
+    ) -> Result<crate::skill::SkillContent> {
         self.skill_manager().read(name, source)
     }
 
@@ -1010,12 +1087,15 @@ impl App {
     /// 同步 SKILL symlink 到 .claude/skills/（保存/删除时自动调用）
     /// workspace_path 用于指定项目级 SKILL 的实际工作空间目录
     pub fn sync_skill_symlinks(&self, workspace_path: Option<&str>) {
+        use crate::config::{AGENTS_DIR_NAME, SKILLS_DIR_NAME, SkillSource};
         use crate::skill::scan_skills_dir;
-        use crate::config::{SkillSource, AGENTS_DIR_NAME, SKILLS_DIR_NAME};
 
         let global_dir = crate::storage::GoldBandPaths::global_skills_dir();
         let global = scan_skills_dir(&global_dir, SkillSource::Global);
-        let global: Vec<_> = global.into_iter().filter(|s| !s.disable_model_invocation).collect();
+        let global: Vec<_> = global
+            .into_iter()
+            .filter(|s| !s.disable_model_invocation)
+            .collect();
 
         // 全局 SKILL → 始终同步到 ~/.claude/skills/
         // 不需要 workspace 路径：直接用空路径 + 仅 global skills
@@ -1024,11 +1104,14 @@ impl App {
         // 项目 SKILL → 仅在有 workspace_path 时同步到 <workspace>/.claude/skills/
         if let Some(ws) = workspace_path {
             let p = std::path::Path::new(ws);
-            let project_dir = camino::Utf8PathBuf::from_path_buf(
-                p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME)
-            ).unwrap_or_default();
+            let project_dir =
+                camino::Utf8PathBuf::from_path_buf(p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME))
+                    .unwrap_or_default();
             let project = scan_skills_dir(&project_dir, SkillSource::Project);
-            let project: Vec<_> = project.into_iter().filter(|s| !s.disable_model_invocation).collect();
+            let project: Vec<_> = project
+                .into_iter()
+                .filter(|s| !s.disable_model_invocation)
+                .collect();
             crate::skill::symlink::sync_all(p, &global, &project);
         }
     }
@@ -1436,8 +1519,7 @@ impl App {
             provider_override: None,
             acp_live_update: None,
             acp_session_update: None,
-            observability_bus: observability::ObservabilityBus::new(),
-            intervention_notifier: None,
+            lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
 
@@ -1459,8 +1541,7 @@ impl App {
             provider_override: Some(Arc::from(provider)),
             acp_live_update: None,
             acp_session_update: None,
-            observability_bus: observability::ObservabilityBus::new(),
-            intervention_notifier: None,
+            lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
 
@@ -1973,7 +2054,7 @@ impl App {
 
     pub fn run_kill(&self, task_id: &str, run_id: &str) -> Result<RunState> {
         let mut run = self.run_status(task_id, run_id)?;
-        self.kill_run_descendants_best_effort(task_id, run_id, &run);
+        self.close_current_run_attempt(task_id, run_id, &run)?;
         run.status = RunStatus::Completed;
         run.outcome = Some(RunOutcome::Killed);
         run.pause_reason = None;
@@ -2031,26 +2112,82 @@ impl App {
     }
 
     pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
+        let paused = self.pause_all_running_sessions()?;
+        acp_client::close_all_connections_bounded()?;
+        Ok(paused)
+    }
+
+    pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
         self.pause_all_running_sessions()
     }
 
-    fn kill_run_descendants_best_effort(&self, task_id: &str, run_id: &str, run: &RunState) {
+    fn close_current_run_attempt(&self, task_id: &str, run_id: &str, run: &RunState) -> Result<()> {
+        let (Some(round_id), Some(node_id), Some(attempt_id)) =
+            (&run.current_round, &run.current_node, &run.current_attempt)
+        else {
+            return Ok(());
+        };
+        self.close_attempt_artifacts(task_id, run_id, round_id, node_id, attempt_id)?;
+        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
+        Ok(())
+    }
+
+    fn interrupt_run_descendants_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        run: &RunState,
+        reason: PauseReason,
+    ) {
         let (Some(round_id), Some(node_id), Some(attempt_id)) =
             (&run.current_round, &run.current_node, &run.current_attempt)
         else {
             return;
         };
-        self.cancel_attempt_dir_best_effort(
-            &self
-                .paths
-                .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        self.interrupt_attempt_artifacts_best_effort(
+            task_id, run_id, round_id, node_id, attempt_id,
         );
-        self.kill_provider_pid_file_best_effort(
-            &self
-                .paths
-                .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id),
+        self.update_dynamic_descendants_best_effort(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            Some(reason),
         );
-        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
+    }
+
+    fn interrupt_attempt_artifacts_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) {
+        let attempt_dir = self
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        self.cancel_attempt_dir_best_effort(&attempt_dir);
+        self.request_attempt_prompt_cancel_best_effort(&attempt_dir);
+        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
+    }
+
+    fn close_attempt_artifacts(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        let attempt_dir = self
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        self.cancel_attempt_dir_best_effort(&attempt_dir);
+        acp_client::close_attempt_session_bounded(&attempt_dir)?;
+        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
+        Ok(())
     }
 
     fn update_dynamic_descendants_best_effort(
@@ -2088,7 +2225,12 @@ impl App {
                         continue;
                     };
                     self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                    self.kill_provider_pid_file_best_effort(&attempt_dir.join("provider.pid"));
+                    if pause_reason.is_some() {
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                    } else {
+                        let _ = acp_client::close_attempt_session_bounded(attempt_dir.as_path());
+                    }
+                    self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                 }
             }
             if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
@@ -2182,7 +2324,7 @@ impl App {
         let current_round = run.current_round.clone();
         let current_node = run.current_node.clone();
         let current_attempt = run.current_attempt.clone();
-        self.kill_run_descendants_best_effort(task_id, run_id, &run);
+        self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
         run.status = RunStatus::Paused;
         run.outcome = None;
         run.pause_reason = Some(reason);
@@ -2194,6 +2336,7 @@ impl App {
             let mut round: RoundState =
                 read_json(&self.paths.round_file(task_id, run_id, round_id))?;
             round.status = RunStatus::Paused;
+            round.outcome = None;
             validate_round_state(&round)?;
             write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
 
@@ -2394,8 +2537,13 @@ impl App {
     }
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = request_cancel(attempt_dir, now_rfc3339_like());
         let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
+    }
+
+    pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
+        if !acp_client::request_prompt_cancel(attempt_dir) {
+            let _ = acp_client::cancel_attempt_prompt(attempt_dir);
+        }
     }
 
     pub fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
@@ -2407,6 +2555,37 @@ impl App {
         };
         let _ = kill_process_tree(pid);
         let _ = fs::remove_file(pid_path.as_std_path());
+    }
+
+    pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
+        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"));
+        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"));
+    }
+
+    fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {
+        let mut session = if path.exists() {
+            read_json::<serde_json::Value>(path)?
+        } else {
+            let session_id = path
+                .parent()
+                .and_then(|attempt_dir| attempt_dir.file_name())
+                .unwrap_or("session");
+            serde_json::json!({
+                "sessionId": session_id,
+                "status": "cancelled",
+                "restored": false,
+                "createdAt": crate::acp::events::current_timestamp(),
+            })
+        };
+        let now = crate::acp::events::current_timestamp();
+        session["status"] = serde_json::json!("cancelled");
+        session["stopReason"] = serde_json::json!("cancelled");
+        session["updatedAt"] = serde_json::json!(now.clone());
+        if session.get("updated_at").is_some() {
+            session["updated_at"] = serde_json::json!(now);
+        }
+        ensure_parent_dir(path)?;
+        write_json(path, &session)
     }
 
     pub fn run_open_session(
@@ -2527,6 +2706,35 @@ impl App {
         prompt: Option<String>,
     ) -> Result<RunState> {
         orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_continue_dynamic_inner_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        dynamic_node_id: &str,
+        dynamic_attempt_id: &str,
+        prompt_id: Option<String>,
+        prompt: String,
+        attachment_paths: Vec<String>,
+    ) -> Result<RunState> {
+        orchestrator::run_continue_dynamic_inner_background(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            dynamic_node_id,
+            dynamic_attempt_id,
+            prompt_id,
+            prompt,
+            attachment_paths,
+        )
     }
 
     pub fn submit_manual_check(
@@ -2866,8 +3074,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpLiveEventContext, App};
-    use crate::app::InterventionNotification;
+    use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
@@ -2885,21 +3092,23 @@ mod tests {
             .unwrap()
     }
 
-    fn sample_notification() -> InterventionNotification {
-        InterventionNotification::new(
-            "task-1",
-            Some("标题"),
-            "run-1",
-            "round-1",
-            "node-1",
-            "attempt-1",
-            "节点",
-            PauseReason::WaitingForUserInput,
-        )
+    fn sample_run_paused_event() -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunPaused {
+            event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            occurred_at: "2026-01-01T00:00:00".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "节点".to_string(),
+            pause_reason: PauseReason::WaitingForUserInput,
+            task_title: Some("标题".to_string()),
+        }
     }
 
     #[test]
-    fn intervention_notifier_invoked_and_propagated_to_background() {
+    fn lifecycle_subscriber_invoked_and_propagated_to_background() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -2907,31 +3116,29 @@ mod tests {
         unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::new(repo_root)
-            .with_intervention_notifier(Arc::new(move |n| {
-                seen_for_callback.lock().unwrap().push(n.dedup_key.clone());
-            }));
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::RunPaused { event_id, .. } = event {
+                seen_for_callback.lock().unwrap().push(event_id);
+            }
+        }));
 
-        // 注入后能触发回调。
-        app.notify_intervention(sample_notification());
+        app.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 1);
 
-        // clone_for_background 应传播同一回调（Arc 共享）。
         let bg = app.clone_for_background();
-        bg.notify_intervention(sample_notification());
+        bg.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn intervention_notifier_silent_when_absent() {
-        // 未注入回调时静默跳过，不 panic（CLI 模式）。
+    fn lifecycle_bus_silent_when_no_subscribers() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let gold_band_home = repo_root.join("gold-band-home");
         unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let app = App::new(repo_root);
-        app.notify_intervention(sample_notification());
+        app.emit_lifecycle_event(sample_run_paused_event());
     }
 
     #[test]

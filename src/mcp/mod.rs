@@ -116,7 +116,10 @@ impl McpManager {
     ///   1. parse JSON
     ///   2. write settings.json
     ///   3. MCP 协议握手验证（对标 run_server + wait_for_context_server）
-    pub fn add(&self, json_content: &str) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+    pub fn add(
+        &self,
+        json_content: &str,
+    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
         let (id, transport) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: id.clone(),
@@ -143,7 +146,11 @@ impl McpManager {
         ))
     }
 
-    pub fn update(&self, id: &str, json_content: &str) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+    pub fn update(
+        &self,
+        id: &str,
+        json_content: &str,
+    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
         let (new_id, transport) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: new_id.clone(),
@@ -212,7 +219,10 @@ impl McpManager {
             }
         } else {
             McpServerState::Error {
-                message: result.message.clone().unwrap_or_else(|| "unknown error".into()),
+                message: result
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "unknown error".into()),
             }
         };
         cache.insert(id.to_string(), new_state);
@@ -235,9 +245,11 @@ impl McpManager {
             McpTransportConfig::Stdio { command, args, env } => {
                 verify_stdio_server(command, args, env)
             }
-            McpTransportConfig::Http { url, headers, oauth } => {
-                verify_http_server(url, headers, oauth)
-            }
+            McpTransportConfig::Http {
+                url,
+                headers,
+                oauth,
+            } => verify_http_server(url, headers, oauth),
         }
     }
 
@@ -258,9 +270,12 @@ impl McpManager {
                         // 缓存未命中 → 运行健康检查并更新缓存
                         match self.verify_server(s) {
                             Ok(r) if r.status == "healthy" => {
-                                cache.insert(s.id.clone(), McpServerState::Running {
-                                    tools: r.tools.clone(),
-                                });
+                                cache.insert(
+                                    s.id.clone(),
+                                    McpServerState::Running {
+                                        tools: r.tools.clone(),
+                                    },
+                                );
                                 true
                             }
                             Ok(r) => {
@@ -270,7 +285,9 @@ impl McpManager {
                                     }
                                 } else {
                                     McpServerState::Error {
-                                        message: r.message.unwrap_or_else(|| "unknown error".into()),
+                                        message: r
+                                            .message
+                                            .unwrap_or_else(|| "unknown error".into()),
                                     }
                                 };
                                 cache.insert(s.id.clone(), state);
@@ -301,7 +318,11 @@ impl McpManager {
                         "env": env,
                     })
                 }
-                McpTransportConfig::Http { url, headers, oauth } => {
+                McpTransportConfig::Http {
+                    url,
+                    headers,
+                    oauth,
+                } => {
                     let mut json = serde_json::json!({
                         "id": s.id,
                         "name": s.name,
@@ -403,14 +424,8 @@ fn verify_stdio_server(
         .spawn()
         .with_context(|| format!("failed to start command: {command}"))?;
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("failed to capture stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("failed to capture stdout")?;
+    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
+    let stdout = child.stdout.take().context("failed to capture stdout")?;
 
     // 对标 Zed: 发送 MCP initialize 请求
     let request_line = serde_json::to_string(&build_initialize_request())? + "\n";
@@ -521,9 +536,13 @@ fn try_oauth_discovery(
         "{}://{}:{}/.well-known/oauth-authorization-server",
         server_url.scheme(),
         server_url.host_str().unwrap_or("localhost"),
-        server_url.port().unwrap_or(
-            if server_url.scheme() == "https" { 443 } else { 80 }
-        )
+        server_url
+            .port()
+            .unwrap_or(if server_url.scheme() == "https" {
+                443
+            } else {
+                80
+            })
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -552,7 +571,9 @@ fn try_oauth_discovery(
                 let needs_secret = oauth.as_ref().is_some_and(|o| o.client_secret.is_none());
                 Ok(McpServerHealthResult {
                     status: "auth_required".into(),
-                    message: Some("server requires OAuth authentication — click to authenticate".into()),
+                    message: Some(
+                        "server requires OAuth authentication — click to authenticate".into(),
+                    ),
                     auth_url: Some(auth_endpoint.to_string()),
                     needs_client_secret: Some(needs_secret),
                     tools: Vec::new(),
@@ -589,11 +610,13 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig)> {
         .filter(|line| !line.trim().starts_with("///"))
         .collect::<Vec<_>>()
         .join("\n");
-    let value: BTreeMap<String, McpJsonEntry> =
-        serde_json::from_str(&stripped)
-            .or_else(|_| serde_json_lenient::from_str(&stripped))
-            .context("invalid MCP server JSON")?;
-    anyhow::ensure!(value.len() == 1, "Expected exactly one server configuration");
+    let value: BTreeMap<String, McpJsonEntry> = serde_json::from_str(&stripped)
+        .or_else(|_| serde_json_lenient::from_str(&stripped))
+        .context("invalid MCP server JSON")?;
+    anyhow::ensure!(
+        value.len() == 1,
+        "Expected exactly one server configuration"
+    );
     let (id, entry) = value.into_iter().next().unwrap();
     let transport = if let Some(url) = entry.url {
         McpTransportConfig::Http {
@@ -603,7 +626,9 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig)> {
         }
     } else {
         McpTransportConfig::Stdio {
-            command: entry.command.context("command is required for stdio transport")?,
+            command: entry
+                .command
+                .context("command is required for stdio transport")?,
             args: entry.args,
             env: entry.env,
         }

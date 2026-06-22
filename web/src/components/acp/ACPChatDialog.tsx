@@ -115,7 +115,7 @@ import {
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
-  sendAcpPrompt,
+  submitConversationPrompt,
   setAcpSessionModel,
   setAcpSessionPermissionMode,
   showArtifact,
@@ -138,20 +138,28 @@ import type {
   AssetItemVm,
   ContentVm,
   ConversationAttemptLifecycleVm,
-  RuntimeDisplayVm,
 } from "@/types";
+
+export type AcpLifecycleSnapshot = {
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  session?: AcpSessionVm | null;
+  lifecycle: ConversationAttemptLifecycleVm;
+};
 
 export type AcpRuntimeComposerContext = {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   runtimeStatus?: string | null;
-  runtimeDisplay?: RuntimeDisplayVm | null;
   workflowValid: boolean;
   workflowError?: string | null;
   pauseMessage?: string | null;
   runtimeError?: string | null;
-  onContinue?: (promptId?: string | null, prompt?: string | null) => void | Promise<unknown>;
   onRepair?: () => void;
-  continueLabel?: string;
 };
 
 export interface ACPChatDialogHandle {
@@ -178,6 +186,7 @@ interface ACPChatDialogProps {
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
   onManualCheckSubmitted?: () => void;
   onSessionStopped?: () => void;
+  onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
   allowEventOnlySessionShell?: boolean;
   artifacts?: AssetItemVm[];
@@ -195,7 +204,8 @@ type AcpProcessingKind =
   | "thinking"
   | "tool"
   | "responding"
-  | "stopping";
+  | "stopping"
+  | "launching-next-node";
 type AcpTimelineEvent = AcpUiEventVm & {
   startedAt?: string;
   endedAt?: string;
@@ -407,6 +417,7 @@ export const ACPChatDialog = forwardRef<
     onOptimisticEventsChange,
     onManualCheckSubmitted,
     onSessionStopped,
+    onLifecycleSnapshot,
     onAtBottomChange,
     allowEventOnlySessionShell = true,
     artifacts = [],
@@ -529,7 +540,9 @@ export const ACPChatDialog = forwardRef<
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
+  const [stopOverlayPending, setStopOverlayPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
+  const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
@@ -568,7 +581,12 @@ export const ACPChatDialog = forwardRef<
     setManualCheckResolved(false);
     setManualCheckSubmitting(false);
     setManualCheckError(null);
+    setLocalRuntimeLifecycle(null);
   }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
+
+  useEffect(() => {
+    if (runtimeComposerContext?.lifecycle) setLocalRuntimeLifecycle(null);
+  }, [runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {
     setCurrentSession(session ?? null);
@@ -629,6 +647,7 @@ export const ACPChatDialog = forwardRef<
     setCancelError(null);
     setCancelling(false);
     setStopCommandPending(false);
+    setStopOverlayPending(false);
     setRuntimeStopAccepted(false);
     setAwaitingResponse(Boolean(storedPromptEvent));
     setActiveTurnPrompt(storedPromptEvent?.content?.trim() || null);
@@ -864,37 +883,36 @@ export const ACPChatDialog = forwardRef<
   }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const localLifecycle = runtimeStopAccepted && runtimeComposerContext?.lifecycle
-    ? {
-        ...runtimeComposerContext.lifecycle,
-        runtime: {
-          ...runtimeComposerContext.lifecycle.runtime,
-          status: "paused",
-          pauseReason: "process-interrupted",
-          resumable: true,
-          active: false,
-          continuable: true,
-        },
-        displayStatus: "paused",
-        continueKind: "input",
-      }
-    : runtimeComposerContext?.lifecycle;
+  const localLifecycle = localRuntimeLifecycle
+    ?? (runtimeStopAccepted && runtimeComposerContext?.lifecycle
+      ? {
+          ...runtimeComposerContext.lifecycle,
+          runtime: {
+            ...runtimeComposerContext.lifecycle.runtime,
+            status: "paused",
+            pauseReason: "process-interrupted",
+            resumable: true,
+            active: false,
+            continuable: true,
+            phase: "paused",
+          },
+          displayStatus: "paused",
+          continueKind: "input",
+          composer: {
+            mode: "interrupted-input",
+            submitTarget: "runtime-continue",
+            processingKind: "processing",
+            statusKey: null,
+            canStop: false,
+            lockInput: false,
+          },
+        }
+      : runtimeComposerContext?.lifecycle);
   const composerLatestEvent = timeline.at(-1) ?? null;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const hasTurnResponse = hasResponseAfterActiveTurn;
   const composerState = deriveAcpRuntimeComposerState({
     lifecycle: localLifecycle,
-    legacyRuntimeStatus: runtimeStopAccepted ? "paused" : runtimeComposerContext?.runtimeStatus,
-    legacyRuntimeDisplay: runtimeStopAccepted
-      ? {
-          ...(runtimeComposerContext?.runtimeDisplay ?? {}),
-          code: "paused",
-          tone: "warning",
-          terminal: false,
-          resumable: true,
-          reasonCode: "process-interrupted",
-        }
-      : runtimeComposerContext?.runtimeDisplay,
     workflowValid: runtimeComposerContext?.workflowValid ?? true,
     workflowInvalidMessage: runtimeComposerContext?.workflowError,
     pauseMessage: runtimeComposerContext?.pauseMessage,
@@ -984,6 +1002,31 @@ export const ACPChatDialog = forwardRef<
       return limited;
     });
   }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate]);
+
+  const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
+    if (!lifecycle) return;
+    onLifecycleSnapshot?.({
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId,
+      outerAttemptId,
+      session: normalizeSessionUpdate(sessionSnapshot ?? latestSessionRef.current),
+      lifecycle,
+    });
+  }, [
+    attemptId,
+    nodeId,
+    normalizeSessionUpdate,
+    onLifecycleSnapshot,
+    outerAttemptId,
+    outerNodeId,
+    roundId,
+    runId,
+    taskId,
+  ]);
 
   const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
     const base = latestSessionRef.current;
@@ -1636,7 +1679,7 @@ export const ACPChatDialog = forwardRef<
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     try {
-      const updated = await sendAcpPrompt(
+      const result = await submitConversationPrompt(
         projectId,
         taskId,
         runId,
@@ -1650,7 +1693,13 @@ export const ACPChatDialog = forwardRef<
         outerAttemptId,
         attPaths.length > 0 ? attPaths : undefined,
       );
-      applySessionUpdate(updated);
+      const updated = result.session ?? null;
+      if (updated) applySessionUpdate(updated);
+      if (result.lifecycle) {
+        setLocalRuntimeLifecycle(result.lifecycle);
+        emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
+      }
+      if (result.kind === "runtime-continue-started") onSessionStopped?.();
       if (updated) {
         updateOptimisticEvents((current) =>
           current.filter(
@@ -1699,49 +1748,17 @@ export const ACPChatDialog = forwardRef<
       );
       return;
     }
-    if (composerState.submitTarget === "runtime-continue") {
-      const promptId = createAcpPromptId();
-      const optimisticEvent = optimisticUserEvent(trimmed, promptId);
-      setPrompt("");
-      clearAttachments();
-      setSendError(null);
-      pinToBottomRef.current = true;
-      setActiveTurnPrompt(trimmed);
-      setActiveTurnPromptId(promptId);
-      setActiveTurnStartedAt(null);
-      setAwaitingResponse(true);
-      updateOptimisticEvents((current) => [...current, optimisticEvent]);
-      setSending(true);
-      try {
-        await runtimeComposerContext?.onContinue?.(promptId, trimmed);
-      } catch (error) {
-        setSendError(displayAppError(t, error));
-        setAwaitingResponse(false);
-        setActiveTurnPrompt(null);
-        setActiveTurnPromptId(null);
-        setActiveTurnStartedAt(null);
-        updateOptimisticEvents((current) =>
-          current.map((event) =>
-            event.id === optimisticEvent.id
-              ? { ...event, status: "failed" }
-              : event,
-          ),
-        );
-      } finally {
-        setSending(false);
-      }
-      return;
-    }
-    if (composerState.submitTarget === "acp-prompt") {
+    if (composerState.submitTarget !== "none") {
       await submitPrompt(trimmed);
     }
   };
 
   const stopSession = async () => {
-    if (stopInProgress || !canStopSession) return;
+    if (!canStopSession || stopInProgress) return;
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
+    setStopOverlayPending(true);
     setCancelError(null);
     setAwaitingResponse(true);
     try {
@@ -1758,7 +1775,28 @@ export const ACPChatDialog = forwardRef<
       );
       awaitTerminalStopRef.current = Boolean(result.session?.sessionId);
       setRuntimeStopAccepted(Boolean(result.run));
+      if (result.lifecycle) {
+        setLocalRuntimeLifecycle(result.lifecycle);
+        emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
+      }
       applySessionUpdate(result.session ?? null);
+      flushPendingLiveEvents("sync");
+      const finalSession = await getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        {
+          pageSize: effectiveEventPageSize,
+          eventLimit: effectiveEventPageSize,
+        },
+        result.session ?? effective ?? null,
+        outerNodeId,
+        outerAttemptId,
+      );
+      applySessionUpdate(finalSession);
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -1769,6 +1807,8 @@ export const ACPChatDialog = forwardRef<
       setCancelling(false);
       setStopCommandPending(false);
       cancelRequestedRef.current = false;
+    } finally {
+      setStopOverlayPending(false);
     }
   };
 
@@ -1973,7 +2013,7 @@ export const ACPChatDialog = forwardRef<
         onClose={() => setMessageImagePreview(null)}
       />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
-      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+      <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
           <div className="h-full overflow-y-auto p-5">
             <RawFrameViewer
@@ -2059,6 +2099,7 @@ export const ACPChatDialog = forwardRef<
             </div>
           </div>
         )}
+        {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
@@ -2070,7 +2111,7 @@ export const ACPChatDialog = forwardRef<
           <div className="border-t px-4 pt-1.5 pb-1.5">
             <AcpUsagePanel
               usage={effective?.usage}
-              isRunning={sessionActive}
+              isRunning={sessionActive || composerStatusActive}
               compact={usageCompact}
               processingLabel={
                 usageCompact && composerStatusActive ? composerStatusLabel : null
@@ -2085,6 +2126,13 @@ export const ACPChatDialog = forwardRef<
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
+            {showManualCheckActions ? (
+              <AcpManualCheckPanel
+                submitting={manualCheckSubmitting}
+                onSuccess={() => void submitManualDecision("success")}
+                onFailure={() => void submitManualDecision("failure")}
+              />
+            ) : null}
             {composerState.externalKind ? (
               <AcpExternalComposerState
                 kind={composerState.externalKind}
@@ -2092,25 +2140,11 @@ export const ACPChatDialog = forwardRef<
                 onAction={
                   composerState.externalKind === "invalid-workflow"
                     ? runtimeComposerContext?.onRepair
-                    : composerState.externalKind === "paused"
-                      ? () => { void runtimeComposerContext?.onContinue?.(); }
-                      : undefined
-                }
-                actionLabel={
-                  composerState.externalKind === "paused"
-                    ? runtimeComposerContext?.continueLabel
                     : undefined
                 }
               />
             ) : (
               <>
-                {showManualCheckActions ? (
-                  <AcpManualCheckPanel
-                    submitting={manualCheckSubmitting}
-                    onSuccess={() => void submitManualDecision("success")}
-                    onFailure={() => void submitManualDecision("failure")}
-                  />
-                ) : null}
                 {composerLocked ? (
                   <AcpPermissionComposerLock />
                 ) : (
@@ -2195,7 +2229,7 @@ export const ACPChatDialog = forwardRef<
                                 size="sm"
                                 variant="secondary"
                                 disabled={stopInProgress}
-                                onClick={stopSession}
+                                onClick={() => { void stopSession(); }}
                               >
                                 {stopInProgress ? (
                                   <Loader2
@@ -2332,25 +2366,20 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
-  actionLabel,
 }: {
-  kind: "invalid-workflow" | "runtime-error" | "paused";
+  kind: "invalid-workflow" | "runtime-error";
   message: string;
   onAction?: () => void;
-  actionLabel?: string;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
-  const isPaused = kind === "paused";
   return (
     <div
       className={cn(
         "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-sm shadow-background/20",
         isError
           ? "border-destructive/20 bg-destructive/5"
-          : isPaused
-            ? "border-primary/20 bg-primary/5"
-            : "border-amber-500/20 bg-amber-500/5",
+          : "border-amber-500/20 bg-amber-500/5",
       )}
     >
       <span
@@ -2358,15 +2387,11 @@ function AcpExternalComposerState({
           "flex size-9 shrink-0 items-center justify-center rounded-lg",
           isError
             ? "bg-destructive/10 text-destructive"
-            : isPaused
-              ? "bg-primary/10 text-primary"
-              : "bg-amber-500/10 text-amber-500",
+            : "bg-amber-500/10 text-amber-500",
         )}
       >
         {isError ? (
           <CircleStop className="size-4" />
-        ) : isPaused ? (
-          <Clock className="size-4" />
         ) : (
           <ShieldQuestion className="size-4" />
         )}
@@ -2380,11 +2405,9 @@ function AcpExternalComposerState({
           className="h-9 shrink-0 rounded-full px-4 text-sm"
           onClick={onAction}
         >
-          {actionLabel ?? (isPaused
-            ? t("conversation.runtime.composerContinue")
-            : isError
-              ? t("conversation.runtime.repairAction")
-              : t("conversation.runtime.repairWorkflow"))}
+          {isError
+            ? t("conversation.runtime.repairAction")
+            : t("conversation.runtime.repairWorkflow")}
         </Button>
       ) : null}
     </div>
@@ -2516,6 +2539,18 @@ function AcpChatSkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AcpStopOverlay() {
+  const { t } = useTranslation();
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+      <div className="flex items-center gap-2 rounded-full border bg-card/90 px-4 py-2 text-sm font-medium text-foreground shadow-lg shadow-background/30">
+        <Loader2 className="size-4 animate-spin text-primary" />
+        {t("acp.stopping")}
+      </div>
     </div>
   );
 }
@@ -4213,6 +4248,7 @@ function processingLabel(
 ) {
   if (kind === "sending") return t("acp.sending");
   if (kind === "stopping") return t("acp.stopping");
+  if (kind === "launching-next-node") return t("conversation.runtime.launchingNextNode");
   if (kind === "launching") return t("acp.launchingClaude");
   if (kind === "thinking") return t("acp.thinkingNow");
   if (kind === "tool") return t("acp.toolRunning");

@@ -23,7 +23,7 @@ import {
   getRoundDetail,
   getTaskList,
   getWorkflow,
-  killRun,
+  pauseRun,
   pinConversation,
   rerunConversationTask,
   saveDesktopPreferences,
@@ -41,6 +41,7 @@ import {
   saveConversationRunMode,
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
+  updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -176,6 +177,24 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
 function workspacePathForProject(sidebar: ConversationSidebarVm, projectId?: string | null) {
   if (!projectId) return undefined;
   return sidebar.workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
+}
+
+function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
+  const selectedKey = tree?.selectedSessionKey;
+  if (!tree || !selectedKey) return null;
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      for (const attempt of node.attempts) {
+        if (conversationSessionKeyFromParts(attempt) === selectedKey) return attempt;
+      }
+      for (const outer of node.outerNodes ?? []) {
+        for (const attempt of outer.attempts) {
+          if (conversationSessionKeyFromParts(attempt) === selectedKey) return attempt;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 export function App() {
@@ -342,6 +361,56 @@ export function App() {
     if (!isTauriRuntime()) return;
     getCurrentWindow().setDecorations(false).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let active = true;
+    const appWindow = getCurrentWindow();
+    const convPage = conversationPage.kind === 'conversation-run' ? conversationPage : null;
+    const sync = async () => {
+      try {
+        const [windowFocused, windowMinimized, windowVisible] = await Promise.all([
+          appWindow.isFocused(),
+          appWindow.isMinimized(),
+          appWindow.isVisible(),
+        ]);
+        if (!active) return;
+        const leaf = convPage
+          ? selectedConversationLeaf(conversationRunRef.current?.sessionTree)
+          : null;
+        await updateNotificationAttention({
+          windowFocused: windowFocused && !document.hidden,
+          windowMinimized,
+          windowVisible,
+          projectId: convPage?.projectId ?? null,
+          taskId: convPage?.taskId ?? null,
+          runId: convPage?.runId ?? null,
+          roundId: leaf?.roundId ?? null,
+          nodeId: leaf?.nodeId ?? null,
+          attemptId: leaf?.attemptId ?? null,
+          outerNodeId: leaf?.outerNodeId ?? null,
+          outerAttemptId: leaf?.outerAttemptId ?? null,
+        });
+      } catch {
+      }
+    };
+    void sync();
+    const onVisibilityChange = () => void sync();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    let unlistenFocus: (() => void) | undefined;
+    void appWindow.onFocusChanged(() => void sync()).then((dispose) => {
+      if (active) {
+        unlistenFocus = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      unlistenFocus?.();
+    };
+  }, [conversationPage, conversationRun]);
 
   useEffect(() => {
     void i18n.changeLanguage(i18nLanguage(preferences.language));
@@ -795,10 +864,8 @@ export function App() {
     saveConversationRunMode(defaultProjectId, mode).catch(() => {});
   };
 
-  const onKillRun = (taskId: string, runId: string) => {
-    if (window.confirm(t('common.confirmKill'))) {
-      void runAction(() => killRun(taskId, runId));
-    }
+  const onStopRun = (taskId: string, runId: string) => {
+    void runAction(() => pauseRun(taskId, runId));
   };
 
   const onCreateTask = async (input: CreateTaskInput) => {
@@ -865,6 +932,7 @@ export function App() {
         updateBadges: defaultUpdateBadges,
         metricsSettings: defaultMetricsSettings,
         clientVersion: '',
+        platform: 'unknown',
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
         needsWorkspace: false,
@@ -1077,6 +1145,7 @@ export function App() {
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
       appName={appInfo.appName}
+      platform={bootstrap?.platform}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -1145,6 +1214,7 @@ export function App() {
         addConversationWorkspace().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
       }}
       onConversationRemoveWorkspace={(projectId) => {
+        setError(null);
         removeConversationWorkspace(projectId).then((sidebar) => {
           if (activeWorkspaceIdRef.current === projectId) {
             activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
@@ -1152,7 +1222,7 @@ export function App() {
           }
           setDraftConversationWorkspaceId((current) => current === projectId ? null : current);
           applyConversationSidebar(sidebar, sidebar.lastActiveWorkspaceId);
-        }).catch(() => {});
+        }).catch((err) => setError(displayAppError(t, err)));
       }}
     >
       {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
@@ -1411,6 +1481,16 @@ export function App() {
               }
             }).catch(() => {});
           }}
+          onLifecycleSnapshot={(snapshot) => {
+            setConversationRun((current) => {
+              const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
+              const patched = selectedPatched === current
+                ? applyConversationBackgroundSessionRuntimeSnapshot(current, snapshot)
+                : selectedPatched;
+              conversationRunRef.current = patched;
+              return patched;
+            });
+          }}
           onSessionStopped={() => {
             const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
             getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
@@ -1425,23 +1505,6 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
-          onContinueRun={async (promptId, prompt) => {
-            try {
-              await continueRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, promptId, prompt);
-              const selectedKey =
-                conversationSelectedSessionKeyRef.current
-                ?? conversationRunRef.current?.sessionTree.selectedSessionKey
-                ?? null;
-              const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey);
-              applyConversationRunSnapshot(refreshed, 'continue', {
-                selectedSessionKey: selectedKey,
-                preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
-              });
-            } catch (err) {
-              setError(displayAppError(t, err));
-              throw err;
-            }
-          }}
           onTitleChange={(title) => {
             setConversationRun((prev) => prev ? { ...prev, title } : prev);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
@@ -1499,12 +1562,12 @@ export function App() {
           onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => runAction(() => startRun(taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
-          onKillRun={onKillRun}
+          onStopRun={onStopRun}
           onSaveWorkflow={onSaveTaskWorkflow}
           onOpenProfileManagement={openProfileManagement}
         />
       );
     }
-    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} onContinueRun={(taskId, runId, promptId) => runAction(() => continueRun(undefined, taskId, runId, promptId))} />;
+    return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;
   }
 }

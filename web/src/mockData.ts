@@ -308,6 +308,7 @@ export const mockBootstrap: AppBootstrapVm = {
   updateBadges: mockUpdateBadges,
   persistedAvailableUpdate: null,
   clientVersion: '',
+  platform: 'windows',
   appInfo: mockAppInfo,
   appConfig: {
     acpSessionTitleRefreshEnabled: false,

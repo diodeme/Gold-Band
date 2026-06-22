@@ -42,8 +42,14 @@ const workflowFailureDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
-function lifecycle(overrides: Partial<ConversationAttemptLifecycleVm> = {}): ConversationAttemptLifecycleVm {
-  return {
+type LifecycleOverrides = Omit<Partial<ConversationAttemptLifecycleVm>, 'runtime' | 'acp' | 'composer'> & {
+  runtime?: Partial<ConversationAttemptLifecycleVm['runtime']>;
+  acp?: Partial<ConversationAttemptLifecycleVm['acp']>;
+  composer?: Partial<ConversationAttemptLifecycleVm['composer']>;
+};
+
+function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifecycleVm {
+  const base: ConversationAttemptLifecycleVm = {
     runtime: {
       status: 'completed',
       outcome: null,
@@ -52,6 +58,7 @@ function lifecycle(overrides: Partial<ConversationAttemptLifecycleVm> = {}): Con
       current: false,
       active: false,
       continuable: false,
+      phase: 'terminal',
     },
     acp: {
       status: 'completed',
@@ -62,15 +69,44 @@ function lifecycle(overrides: Partial<ConversationAttemptLifecycleVm> = {}): Con
     displayStatus: 'completed',
     runtimeDisplay: completedDisplay,
     continueKind: null,
-    ...overrides,
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'processing',
+      statusKey: null,
+      canStop: false,
+      lockInput: false,
+    },
   };
+  const merged = {
+    ...base,
+    ...overrides,
+    runtime: { ...base.runtime, ...overrides.runtime },
+    acp: { ...base.acp, ...overrides.acp },
+    composer: { ...base.composer, ...overrides.composer },
+  };
+  if (!overrides.composer) {
+    if (merged.acp.stopping) {
+      merged.composer = { ...merged.composer, mode: 'stopping', submitTarget: 'none', processingKind: 'stopping', canStop: true, lockInput: true };
+    } else if (merged.runtime.active || merged.acp.active) {
+      merged.composer = {
+        ...merged.composer,
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: merged.runtime.phase === 'launching-next-node' ? 'launching-next-node' : 'processing',
+        canStop: true,
+        lockInput: true,
+      };
+    } else if (merged.continueKind === 'input') {
+      merged.composer = { ...merged.composer, mode: 'interrupted-input', submitTarget: 'runtime-continue', lockInput: false };
+    }
+  }
+  return merged;
 }
 
 function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRuntimeComposerStateInput {
   return {
     lifecycle: lifecycle(),
-    legacyRuntimeStatus: 'completed',
-    legacyRuntimeDisplay: completedDisplay,
     workflowValid: true,
     workflowInvalidMessage: 'Workflow invalid',
     pauseMessage: 'Paused',
@@ -162,8 +198,6 @@ describe('deriveAcpRuntimeComposerState', () => {
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
       }),
-      legacyRuntimeStatus: 'running',
-      legacyRuntimeDisplay: runningDisplay,
       acpStatus: 'cancelled',
     }));
 
@@ -171,7 +205,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.externalKind).toBeNull();
   });
 
-  it('lets terminal ACP snapshots finish stale stopping while preserving runtime continue', () => {
+  it('uses backend lifecycle after terminal ACP snapshots finish stopping', () => {
     for (const acpStatus of ['cancelled', 'canceled', 'failed', 'failure', 'error', 'killed']) {
       const state = deriveAcpRuntimeComposerState(baseInput({
         lifecycle: lifecycle({
@@ -183,14 +217,13 @@ describe('deriveAcpRuntimeComposerState', () => {
             current: true,
             active: false,
             continuable: true,
+            phase: 'paused',
           },
-          acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
-          displayStatus: 'cancelling',
+          acp: { status: acpStatus, active: false, stopping: false, terminal: true },
+          displayStatus: 'paused',
           runtimeDisplay: pausedDisplay,
           continueKind: 'input',
         }),
-        legacyRuntimeStatus: 'paused',
-        legacyRuntimeDisplay: pausedDisplay,
         acpStatus,
         cancelling: true,
         stopCommandPending: true,
@@ -210,7 +243,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     }
   });
 
-  it('blocks waiting-for-user-input with an action instead of free ACP prompt', () => {
+  it('keeps manual-check waiting state available for regular ACP prompts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -220,19 +253,28 @@ describe('deriveAcpRuntimeComposerState', () => {
           resumable: true,
           current: true,
           active: false,
-          continuable: true,
+          continuable: false,
+          phase: 'paused',
         },
         displayStatus: 'paused',
         runtimeDisplay: { ...pausedDisplay, reasonCode: 'waiting-for-user-input' },
-        continueKind: 'action',
+        continueKind: null,
+        composer: {
+          mode: 'normal',
+          submitTarget: 'acp-prompt',
+          processingKind: 'processing',
+          statusKey: null,
+          canStop: false,
+          lockInput: false,
+        },
       }),
-      legacyRuntimeDisplay: { ...pausedDisplay, reasonCode: 'waiting-for-user-input' },
     }));
 
-    expect(state.mode).toBe('paused-action');
-    expect(state.submitTarget).toBe('none');
-    expect(state.inputDisabled).toBe(true);
-    expect(state.showContinueAction).toBe(true);
+    expect(state.mode).toBe('normal');
+    expect(state.submitTarget).toBe('acp-prompt');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.showExternalState).toBe(false);
+    expect(state.canSubmit).toBe(true);
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {
@@ -250,7 +292,6 @@ describe('deriveAcpRuntimeComposerState', () => {
         displayStatus: 'completed',
         runtimeDisplay: workflowFailureDisplay,
       }),
-      legacyRuntimeDisplay: workflowFailureDisplay,
     }));
 
     expect(state.mode).toBe('normal');
@@ -290,7 +331,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.statusActive).toBe(false);
   });
 
-  it('lets completed ACP session override stale runtime-active lifecycle', () => {
+  it('keeps backend launching-next-node active after ACP completes', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -301,24 +342,24 @@ describe('deriveAcpRuntimeComposerState', () => {
           current: true,
           active: true,
           continuable: false,
+          phase: 'launching-next-node',
         },
         acp: { status: 'completed', active: false, stopping: false, terminal: true },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
       }),
-      legacyRuntimeStatus: 'running',
-      legacyRuntimeDisplay: runningDisplay,
       acpStatus: 'completed',
       awaitingResponse: true,
       turnAccepted: true,
       hasResponseAfterTurn: false,
     }));
 
-    expect(state.mode).toBe('normal');
-    expect(state.runtimeActive).toBe(false);
-    expect(state.sessionActive).toBe(false);
-    expect(state.statusActive).toBe(false);
-    expect(state.canStop).toBe(false);
+    expect(state.mode).toBe('runtime-active');
+    expect(state.runtimeActive).toBe(true);
+    expect(state.sessionActive).toBe(true);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('launching-next-node');
+    expect(state.canStop).toBe(true);
   });
 
   it('only blocks invalid workflow on runtime continue paths', () => {
@@ -339,7 +380,6 @@ describe('deriveAcpRuntimeComposerState', () => {
         runtimeDisplay: pausedDisplay,
         continueKind: 'input',
       }),
-      legacyRuntimeDisplay: pausedDisplay,
     }));
 
     expect(completed.mode).toBe('normal');

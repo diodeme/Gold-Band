@@ -7,13 +7,12 @@ use std::{
 };
 
 use anyhow::Result;
-use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
     DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
 };
-use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::provider::{supported_models_from_capabilities, supported_modes_from_capabilities};
@@ -24,11 +23,8 @@ use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
-use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
-
-const ACP_CANCEL_FUSE_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +63,7 @@ pub struct AppBootstrapVm {
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
+    pub platform: String,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
     pub needs_workspace: bool,
@@ -139,7 +136,7 @@ pub struct McpServerVm {
     pub env: Option<Vec<AgentEnvEntryVm>>,
     pub url: Option<String>,
     pub headers: Option<Vec<AgentEnvEntryVm>>,
-    pub health_status: Option<String>,  // "healthy" | "unhealthy" | "unknown"
+    pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
     pub health_message: Option<String>,
 }
 
@@ -909,6 +906,15 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     }
 }
 
+#[cfg(target_os = "macos")]
+const DESKTOP_PLATFORM: &str = "macos";
+#[cfg(target_os = "windows")]
+const DESKTOP_PLATFORM: &str = "windows";
+#[cfg(target_os = "linux")]
+const DESKTOP_PLATFORM: &str = "linux";
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const DESKTOP_PLATFORM: &str = "unknown";
+
 pub fn bootstrap_vm(
     app: &App,
     recent_workspaces: Vec<String>,
@@ -937,6 +943,7 @@ pub fn bootstrap_vm(
             &client_version_string,
         ),
         client_version: client_version_string,
+        platform: DESKTOP_PLATFORM.to_string(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),
@@ -3206,33 +3213,14 @@ pub fn dynamic_acp_session_vm(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_session_completion_fuse_dynamic(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        node_id,
-        attempt_id,
-        &attempt_dir,
-        &node_path,
-        &mut session,
-    )?;
+    apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let provider_pid_path = attempt_dir.join("provider.pid");
-    let cancelling =
-        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
-    let status = if cancelling {
-        "cancelling"
-    } else {
-        metadata_status
-    }
-    .to_string();
+    let stopping = is_acp_session_stopping_status(metadata_status);
+    let status = metadata_status.to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3249,7 +3237,7 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if cancelling {
+    let pending_permissions = if stopping {
         Vec::new()
     } else {
         event_scan
@@ -3444,9 +3432,6 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let attempt_dir = app
-        .paths
-        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     let node_path = app
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3458,16 +3443,6 @@ pub fn acp_session_vm(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_cancel_fuse(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        &attempt_dir,
-        &mut session,
-    )?;
     apply_stale_session_completion_fuse(
         app,
         task_id,
@@ -3475,7 +3450,6 @@ pub fn acp_session_vm(
         round_id,
         node_id,
         attempt_id,
-        &attempt_dir,
         &node_path,
         &mut session,
     )?;
@@ -3484,17 +3458,8 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let provider_pid_path = app
-        .paths
-        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
-    let cancelling =
-        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
-    let status = if cancelling {
-        "cancelling"
-    } else {
-        metadata_status
-    }
-    .to_string();
+    let stopping = is_acp_session_stopping_status(metadata_status);
+    let status = metadata_status.to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3511,7 +3476,7 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if cancelling {
+    let pending_permissions = if stopping {
         Vec::new()
     } else {
         event_scan
@@ -4244,66 +4209,6 @@ fn flush_pending_delta(pending: &mut Option<AcpUiEventVm>, events: &mut Vec<AcpU
     }
 }
 
-fn apply_stale_cancel_fuse(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    attempt_dir: &camino::Utf8Path,
-    session: &mut serde_json::Value,
-) -> Result<()> {
-    if !is_cancel_requested(attempt_dir) || !cancel_request_is_stale(attempt_dir) {
-        return Ok(());
-    }
-
-    let pid_path = app
-        .paths
-        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
-    if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
-        if let Ok(pid) = pid_text.trim().parse::<u32>() {
-            let _ = kill_process_tree(pid);
-        }
-        let _ = fs::remove_file(pid_path.as_std_path());
-    }
-    let _ = clear_cancel_request(attempt_dir);
-
-    session["status"] = serde_json::json!("cancelled");
-    session["stopReason"] = serde_json::json!("cancelled");
-    session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-    write_json(
-        &app.paths
-            .acp_session_file(task_id, run_id, round_id, node_id, attempt_id),
-        session,
-    )?;
-    let snapshot_path = app
-        .paths
-        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
-    let _ = write_json(&snapshot_path, &*session);
-
-    app.pause_attempt_runtime_state(
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        PauseReason::ProcessInterrupted,
-    )?;
-    Ok(())
-}
-
-fn cancel_request_is_stale(attempt_dir: &camino::Utf8Path) -> bool {
-    let path = gold_band::acp::permission::cancel_requested_file(attempt_dir);
-    let Ok(value) = fs::read_to_string(path.as_std_path()) else {
-        return false;
-    };
-    let Some(requested_at) = parse_epoch_timestamp(value.trim()) else {
-        return false;
-    };
-    current_epoch_seconds().saturating_sub(requested_at) >= ACP_CANCEL_FUSE_SECONDS
-}
-
 fn apply_stale_session_completion_fuse(
     app: &App,
     task_id: &str,
@@ -4311,7 +4216,6 @@ fn apply_stale_session_completion_fuse(
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
-    attempt_dir: &camino::Utf8Path,
     node_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
 ) -> Result<()> {
@@ -4327,7 +4231,6 @@ fn apply_stale_session_completion_fuse(
     };
     let fused = apply_stale_session_completion_fuse_common(
         &pid_path,
-        attempt_dir,
         session,
         node_status
             .map(|status| status == RunStatus::Completed)
@@ -4343,14 +4246,6 @@ fn apply_stale_session_completion_fuse(
 }
 
 fn apply_stale_session_completion_fuse_dynamic(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-    node_id: &str,
-    attempt_id: &str,
     attempt_dir: &camino::Utf8Path,
     node_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
@@ -4364,37 +4259,7 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    if is_cancel_requested(attempt_dir) && cancel_request_is_stale(attempt_dir) {
-        if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
-            if let Ok(pid) = pid_text.trim().parse::<u32>() {
-                let _ = kill_process_tree(pid);
-            }
-            let _ = fs::remove_file(pid_path.as_std_path());
-        }
-        let _ = clear_cancel_request(attempt_dir);
-        session["status"] = serde_json::json!("cancelled");
-        session["stopReason"] = serde_json::json!("cancelled");
-        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let _ = write_json(&snapshot_path, &*session);
-        app.pause_dynamic_attempt_runtime_state(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            PauseReason::ProcessInterrupted,
-        )?;
-        return Ok(());
-    }
-    let _ = attempt_id;
-    let fused = apply_stale_session_completion_fuse_common(
-        &pid_path,
-        attempt_dir,
-        session,
-        node_completed,
-    )?;
+    let fused = apply_stale_session_completion_fuse_common(&pid_path, session, node_completed)?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -4404,7 +4269,6 @@ fn apply_stale_session_completion_fuse_dynamic(
 
 fn apply_stale_session_completion_fuse_common(
     pid_path: &camino::Utf8Path,
-    attempt_dir: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
 ) -> Result<bool> {
@@ -4418,7 +4282,7 @@ fn apply_stale_session_completion_fuse_common(
     if pid_path.exists() && !node_completed {
         return Ok(false);
     }
-    if !node_completed && !is_cancel_requested(attempt_dir) {
+    if !node_completed {
         return Ok(false);
     }
     if node_completed && pid_path.exists() {
@@ -4785,32 +4649,15 @@ fn is_acp_session_active_status(status: &str) -> bool {
     )
 }
 
-fn is_acp_session_terminal_status(status: &str) -> bool {
+fn is_acp_session_stopping_status(status: &str) -> bool {
     matches!(
         status
             .trim()
             .to_ascii_lowercase()
             .replace('_', "-")
             .as_str(),
-        "completed"
-            | "complete"
-            | "failed"
-            | "failure"
-            | "error"
-            | "killed"
-            | "cancelled"
-            | "canceled"
+        "cancelling" | "cancel-requested"
     )
-}
-
-fn acp_cancel_request_in_progress(
-    attempt_dir: &camino::Utf8Path,
-    provider_pid_path: &camino::Utf8Path,
-    metadata_status: &str,
-) -> bool {
-    is_cancel_requested(attempt_dir)
-        && !is_acp_session_terminal_status(metadata_status)
-        && (provider_pid_path.exists() || is_acp_session_active_status(metadata_status))
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
@@ -5552,9 +5399,7 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                     None,
                 ),
                 gold_band::config::McpTransportConfig::Http {
-                    url: u,
-                    headers: h,
-                    ..
+                    url: u, headers: h, ..
                 } => (
                     "http".to_string(),
                     None,
@@ -6032,8 +5877,7 @@ mod tests {
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
-                .unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -6055,13 +5899,8 @@ mod tests {
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
-        let fused = apply_stale_session_completion_fuse_common(
-            &pid_path,
-            &attempt_dir,
-            &mut session,
-            false,
-        )
-        .unwrap();
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, false).unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -6085,8 +5924,7 @@ mod tests {
         let mut session = json!({ "status": "failed" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
-                .unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -6098,47 +5936,13 @@ mod tests {
     }
 
     #[test]
-    fn cancel_requested_with_live_provider_stays_cancelling() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-cancel-status-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
-            .unwrap();
-
-        assert!(acp_cancel_request_in_progress(
-            &attempt_dir,
-            &pid_path,
-            "running"
-        ));
-
-        fs::remove_dir_all(dir).unwrap();
+    fn provider_pid_with_running_session_does_not_force_stopping() {
+        assert!(!is_acp_session_stopping_status("running"));
     }
 
     #[test]
-    fn cancel_requested_with_terminal_snapshot_does_not_stay_cancelling() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-terminal-cancel-status-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
-            .unwrap();
-
-        assert!(!acp_cancel_request_in_progress(
-            &attempt_dir,
-            &pid_path,
-            "cancelled"
-        ));
-
-        fs::remove_dir_all(dir).unwrap();
+    fn explicit_cancelling_session_is_stopping() {
+        assert!(is_acp_session_stopping_status("cancelling"));
     }
 
     #[test]

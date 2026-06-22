@@ -84,18 +84,14 @@ fn run_state_with_last_executed_node_serde() {
             status: "SUCCESS".into(),
             started_at: "100Z".into(),
             finished_at: Some("200Z".into()),
-            input_tokens: 39781,
-            output_tokens: 968,
-            cache_read_tokens: 119552,
-            total_tokens: 160301,
+            attempt_dir: Some("attempts/n1".into()),
         }),
     };
     let json = serde_json::to_string(&run).unwrap();
     let parsed: RunState = serde_json::from_str(&json).unwrap();
     let pred = parsed.last_executed_node.unwrap();
     assert_eq!(pred.node_name, "测试2");
-    assert_eq!(pred.input_tokens, 39781);
-    assert_eq!(pred.total_tokens, 160301);
+    assert_eq!(pred.attempt_dir, Some("attempts/n1".into()));
 }
 
 #[test]
@@ -176,26 +172,17 @@ fn last_executed_node_serde_roundtrip() {
         status: "SUCCESS".into(),
         started_at: "100Z".into(),
         finished_at: Some("200Z".into()),
-        input_tokens: 1000,
-        output_tokens: 500,
-        cache_read_tokens: 200,
-        total_tokens: 1700,
+        attempt_dir: Some("attempts/n1".into()),
     };
     let json = serde_json::to_string(&pred).unwrap();
     let parsed: LastExecutedNode = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.node_name, "测试");
-    assert_eq!(parsed.input_tokens, 1000);
-    assert_eq!(parsed.output_tokens, 500);
-    assert_eq!(parsed.cache_read_tokens, 200);
-    assert_eq!(parsed.total_tokens, 1700);
+    assert_eq!(parsed.attempt_dir, Some("attempts/n1".into()));
 }
 
 #[test]
-fn last_executed_node_default_all_zeros() {
+fn last_executed_node_default_has_empty_identity() {
     let pred = LastExecutedNode::default();
-    assert_eq!(pred.input_tokens, 0);
-    assert_eq!(pred.output_tokens, 0);
-    assert_eq!(pred.cache_read_tokens, 0);
-    assert_eq!(pred.total_tokens, 0);
     assert!(pred.node_id.is_empty());
+    assert!(pred.attempt_dir.is_none());
 }

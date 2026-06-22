@@ -13,10 +13,7 @@ use tauri::{AppHandle, State};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::commands::{
-    CommandErrorVm, CommandResult, acp_live_update_emitter, acp_session_update_emitter,
-    command_error,
-};
+use crate::commands::{CommandErrorVm, CommandResult, acp_session_update_emitter, command_error};
 use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
@@ -122,18 +119,20 @@ pub async fn create_conversation_run(
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     let project_id_for_current = input.project_id.clone();
     let project_id_for_emit = input.project_id.clone();
-    let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(
-            app_handle.clone(),
-            Some(project_id_for_emit.clone()),
-        ))
+    let app = workspace_app;
+    let live_update = crate::commands::acp_live_update_emitter_for_app(
+        &app,
+        app_handle.clone(),
+        Some(project_id_for_emit.clone()),
+    );
+    let app = app
+        .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
             Some(project_id_for_emit),
         ));
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -163,18 +162,20 @@ pub fn rerun_conversation_task(
         ));
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    let app = workspace_app
-        .with_acp_live_update(acp_live_update_emitter(
-            app_handle.clone(),
-            Some(project_id.clone()),
-        ))
+    let app = workspace_app;
+    let live_update = crate::commands::acp_live_update_emitter_for_app(
+        &app,
+        app_handle.clone(),
+        Some(project_id.clone()),
+    );
+    let app = app
+        .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
             app_for_workspace(&context, &workspace_path).map_err(command_error)?,
             Some(project_id.clone()),
         ));
-    app.observability_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(app_handle.clone()));
+    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run =
         crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
             .map_err(command_error)?;
@@ -800,6 +801,16 @@ pub fn remove_conversation_workspace(
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut state = app.load_state().map_err(command_error)?;
+    let workspace_path = workspace_entry_for_project(&app, &state, &project_id)
+        .map(|(workspace_path, _)| workspace_path)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "conversation.workspace-not-found",
+                serde_json::json!({ "projectId": project_id }),
+            )
+        })?;
+    gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(workspace_path))
+        .map_err(command_error)?;
 
     state
         .conversation_workspaces

@@ -15,9 +15,8 @@ use anyhow::{Result, bail};
 use camino::Utf8PathBuf;
 
 use crate::config::{
-    SkillMeta, SkillSource,
-    AGENTS_DIR_NAME, SKILLS_DIR_NAME, SKILL_FILE_NAME,
-    MAX_SKILL_DESCRIPTION_LEN,
+    AGENTS_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, SKILL_FILE_NAME, SKILLS_DIR_NAME, SkillMeta,
+    SkillSource,
 };
 use crate::storage::GoldBandPaths;
 
@@ -35,7 +34,8 @@ fn precedence(source: SkillSource) -> u8 {
 
 /// 对标 Zed apply_skill_overrides: 按优先级去重，高优先级遮蔽低优先级
 fn apply_skill_overrides(skills: &[SkillMeta]) -> Vec<SkillMeta> {
-    let mut overrides: std::collections::BTreeMap<&str, &SkillMeta> = std::collections::BTreeMap::new();
+    let mut overrides: std::collections::BTreeMap<&str, &SkillMeta> =
+        std::collections::BTreeMap::new();
     for s in skills {
         let entry = overrides.entry(&s.name).or_insert(s);
         if precedence(s.source) > precedence(entry.source) {
@@ -130,7 +130,12 @@ impl SkillManager {
     }
 
     /// 写入到指定 workspace 的项目 SKILL 目录
-    pub fn write_to_workspace(&self, name: &str, workspace_path: &str, content: &str) -> Result<SkillMeta> {
+    pub fn write_to_workspace(
+        &self,
+        name: &str,
+        workspace_path: &str,
+        content: &str,
+    ) -> Result<SkillMeta> {
         let dir = Self::workspace_skills_dir(workspace_path);
         let skill_dir = dir.join(name);
         fs::create_dir_all(skill_dir.as_std_path())?;
@@ -184,7 +189,10 @@ impl SkillManager {
     }
 
     /// 对标 Zed ProjectState: 仅当前 workspace 的项目 SKILL + 全局 SKILL
-    pub fn catalog_skills_for_agent_workspace(&self, workspace_path: &str) -> Result<Vec<SkillMeta>> {
+    pub fn catalog_skills_for_agent_workspace(
+        &self,
+        workspace_path: &str,
+    ) -> Result<Vec<SkillMeta>> {
         let skills: Vec<SkillMeta> = self
             .catalog_skills_for_workspace(workspace_path)?
             .into_iter()
@@ -228,10 +236,7 @@ impl SkillManager {
 
 // ── Helpers ──
 
-fn skills_dir_for_source(
-    source: SkillSource,
-    paths: &GoldBandPaths,
-) -> Result<Utf8PathBuf> {
+fn skills_dir_for_source(source: SkillSource, paths: &GoldBandPaths) -> Result<Utf8PathBuf> {
     match source {
         SkillSource::Global => Ok(GoldBandPaths::global_skills_dir()),
         SkillSource::Project => Ok(paths.project_skills_dir()),
@@ -277,14 +282,17 @@ pub fn parse_skill_md_public(
     dir_path: &str,
 ) -> (SkillMeta, String) {
     parse_skill_md(raw, default_name, source, dir_path).unwrap_or_else(|_| {
-        (SkillMeta {
-            name: default_name.to_string(),
-            description: String::new(),
-            source,
-            directory_path: dir_path.to_string(),
-            disable_model_invocation: false,
-            load_warnings: vec![],
-        }, raw.to_string())
+        (
+            SkillMeta {
+                name: default_name.to_string(),
+                description: String::new(),
+                source,
+                directory_path: dir_path.to_string(),
+                disable_model_invocation: false,
+                load_warnings: vec![],
+            },
+            raw.to_string(),
+        )
     })
 }
 

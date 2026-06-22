@@ -32,6 +32,21 @@ fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
         .map(str::to_string)
 }
 
+fn attempt_is_still_current_running(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    let run: crate::runtime::RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+    Ok(run.status == RunStatus::Running
+        && run.current_round.as_deref() == Some(round_id)
+        && run.current_node.as_deref() == Some(node_id)
+        && run.current_attempt.as_deref() == Some(attempt_id))
+}
+
 fn success_condition_text(condition: &JsonConditionDsl) -> String {
     match condition {
         JsonConditionDsl::Expression { expression } => expression.clone(),
@@ -69,6 +84,8 @@ fn runtime_prompt_context(
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        runtime_node_id: None,
+        runtime_attempt_id: None,
         language: app.config.desktop_language,
         run_dir: app.paths.run_dir(task_id, run_id),
         round_dir: app.paths.round_dir(task_id, run_id, round_id),
@@ -351,6 +368,7 @@ pub(crate) fn build_worker_invocation(
         profile_content,
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
+        adapter_workspace_dir: app.paths.repo_root.clone(),
         workspace_dir: app.paths.repo_root.clone(),
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
@@ -445,6 +463,14 @@ pub(crate) fn execute_ai_node(
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
         )?;
+
+    if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {
+        return Ok(read_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        )
+        .unwrap_or(node));
+    }
 
     // Fire-and-forget: index this attempt for cross-session search
     let ctx = AttemptIndexContext {

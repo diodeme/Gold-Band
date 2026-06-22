@@ -227,6 +227,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，再只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
    - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
    - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端据此刷新完整 run VM；前端不能靠 ACP terminal snapshot 自行推断 workflow runtime 是否完成或暂停。
+   - 刷新完整 run VM 不等于自动抢焦点：只有 session auto-follow 仍处于 auto/pending 且用户没有手动切到历史 session 时，新 active child session 才能成为选中 session。
 
 4. `run_kill(...)`：
    - 保持唯一 terminal killed 路径。

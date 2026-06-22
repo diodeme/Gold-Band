@@ -64,6 +64,8 @@ import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
   conversationSessionKeyFromParts,
+  findConversationLeafByKey,
+  isConversationActiveStatus,
   mergeConversationRunSnapshot,
   type ConversationRunSnapshotSource,
 } from '@/lib/conversation-run-snapshot';
@@ -539,6 +541,20 @@ export function App() {
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
       const alreadySelected = currentSelectedKey === sessionKey;
+      const currentSelectedLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
+        : null;
+      const currentSelectedActive = Boolean(
+        currentSelectedLeaf && isConversationActiveStatus(currentSelectedLeaf.status),
+      );
+      const incomingActive = event.session
+        ? isConversationActiveStatus(event.session.status)
+        : Boolean(event.event);
+      const followState = conversationSessionFollowRef.current;
+      const followPending = followState.mode === 'auto'
+        && Boolean(currentSelectedKey)
+        && !currentSelectedActive
+        && incomingActive;
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
@@ -546,6 +562,7 @@ export function App() {
         hasLiveEvent: Boolean(event.event),
         sessionStatus: event.session?.status,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
+        followPending,
       });
       if (event.session && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
@@ -564,11 +581,12 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      const followState = conversationSessionFollowRef.current;
       pendingEventSessionKey = resolveConversationEventSelectedSessionKey({
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         followMode: followState.mode,
+        currentSelectedActive,
+        incomingActive,
       });
       if (refreshTimer !== null) return;
       refreshTimer = window.setTimeout(refreshConversationRun, 120);

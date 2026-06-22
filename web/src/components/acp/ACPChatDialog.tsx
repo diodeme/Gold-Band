@@ -1970,6 +1970,9 @@ export const ACPChatDialog = forwardRef<
   }
 
   if (!effective) {
+    if (runtimeActiveFromContext) {
+      return <AcpLoadingState label={t("conversation.runtime.runtimeActive")} />;
+    }
     return <AcpErrorState reason={t("acp.missingSessionReason")} />;
   }
 

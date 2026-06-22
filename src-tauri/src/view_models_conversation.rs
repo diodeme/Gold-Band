@@ -576,6 +576,10 @@ fn asset_item_vm(
     }
 }
 
+fn default_dynamic_attempt_id() -> String {
+    "attempt-001".to_string()
+}
+
 fn list_file_names_from_dir(
     dir: &camino::Utf8Path,
     logical_json_name: bool,
@@ -794,6 +798,7 @@ fn is_active_session_status(status: &str) -> bool {
     matches!(
         normalize_lifecycle_code(status).as_str(),
         "pending"
+            | "ready"
             | "running"
             | "in-progress"
             | "active"
@@ -1351,9 +1356,14 @@ pub fn conversation_run_vm(
                                 })
                                 .unwrap_or_default();
                             dyn_attempt_ids.sort();
+                            let dyn_runtime_status = enum_label(&dyn_node.status);
+                            if dyn_attempt_ids.is_empty()
+                                && is_active_session_status(&dyn_runtime_status)
+                            {
+                                dyn_attempt_ids.push(default_dynamic_attempt_id());
+                            }
 
                             let mut dyn_leafs: Vec<ConversationSessionLeafVm> = Vec::new();
-                            let dyn_runtime_status = enum_label(&dyn_node.status);
                             let dyn_outcome = dyn_node.outcome.as_ref().map(enum_label);
                             let dyn_current = run.current_round.as_deref() == Some(&round.id)
                                 && run.current_node.as_deref() == Some(&node.node_id)
@@ -2676,6 +2686,36 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
         assert_eq!(lifecycle.continue_kind, None);
+    }
+
+    #[test]
+    fn ready_dynamic_child_without_attempt_is_active_launching_leaf() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "running",
+            json!(null),
+            "ready",
+            vec!["good-morning"],
+        );
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let child = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()[0]
+            .clone();
+        assert_eq!(child.attempts.len(), 1);
+        assert_eq!(child.attempts[0].attempt_id, "attempt-001");
+        assert_eq!(child.attempts[0].lifecycle.runtime.status, "ready");
+        assert_eq!(
+            child.attempts[0].lifecycle.runtime.phase,
+            "launching-session"
+        );
+        assert!(vm.active_sessions.iter().any(|session| {
+            session.node_id == "good-morning" && session.attempt_id == "attempt-001"
+        }));
     }
 
     #[test]

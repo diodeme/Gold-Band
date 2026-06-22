@@ -228,7 +228,7 @@ export function isConversationActiveStatus(status?: string | null) {
 }
 
 function isConversationActiveLeaf(leaf: ConversationSessionLeafVm) {
-  return Boolean(leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
+  return Boolean(leaf.manualCheckPending || leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
     || isConversationActiveStatus(leaf.status);
 }
 
@@ -330,6 +330,7 @@ function activeSessionFromLeaf(leaf: ConversationSessionLeafVm): ConversationRun
     status: leaf.status,
     runtimeDisplay: leaf.runtimeDisplay,
     lifecycle: leaf.lifecycle,
+    manualCheckPending: leaf.manualCheckPending,
     sessionId: leaf.sessionId,
     startedAt: leaf.startedAt,
   };
@@ -467,6 +468,7 @@ function sameActiveSession(
     left.status === right.status &&
     (left.sessionId ?? null) === (right.sessionId ?? null) &&
     (left.startedAt ?? null) === (right.startedAt ?? null) &&
+    left.manualCheckPending === right.manualCheckPending &&
     left.runtimeDisplay === right.runtimeDisplay &&
     left.lifecycle === right.lifecycle;
 }

@@ -5537,6 +5537,7 @@ fn build_dynamic_worker_invocation(
         profile_content,
         requirement_path: None,
         requirement_text: Some(dynamic_requirement_text(ctx)?),
+        adapter_workspace_dir: ctx.app.paths.repo_root.clone(),
         workspace_dir,
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
@@ -7388,6 +7389,61 @@ mod tests {
             started_at: None,
             finished_at: None,
         }
+    }
+
+    fn test_dynamic_graph(nodes: Vec<DynamicNodeState>) -> DynamicGraphState {
+        DynamicGraphState {
+            version: VERSION.to_string(),
+            run: DynamicRunState {
+                version: VERSION.to_string(),
+                id: "dynamic-run-001".to_string(),
+                parent_run_id: "run-001".to_string(),
+                parent_round_id: "round-001".to_string(),
+                parent_node_id: "ai-dynamic".to_string(),
+                parent_attempt_id: "attempt-001".to_string(),
+                status: DynamicRunStatus::Running,
+                outcome: None,
+                pause_reason: None,
+                started_at: "2026-06-16T00:00:00Z".to_string(),
+                updated_at: "2026-06-16T00:00:00Z".to_string(),
+                control: DynamicControlDsl::default(),
+                allowed_workflow_snapshots: Vec::new(),
+                current_node_ids: nodes.iter().map(|node| node.id.clone()).collect(),
+            },
+            nodes,
+            groups: Vec::new(),
+            proposals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dynamic_worktree_invocation_uses_repo_adapter_workspace_and_worktree_session_workspace() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("good-night");
+        let worktree_dir = dynamic_worktree_dir(&ctx, &node.id);
+        node.workspace_path = Some(worktree_dir.clone());
+        let graph = test_dynamic_graph(vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(invocation.adapter_workspace_dir, repo_root);
+        assert_eq!(invocation.workspace_dir, worktree_dir);
     }
 
     #[test]

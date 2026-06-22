@@ -160,7 +160,6 @@ export type AcpRuntimeComposerContext = {
   pauseMessage?: string | null;
   runtimeError?: string | null;
   onRepair?: () => void;
-  continueLabel?: string;
 };
 
 export interface ACPChatDialogHandle {
@@ -906,7 +905,6 @@ export const ACPChatDialog = forwardRef<
             statusKey: null,
             canStop: false,
             lockInput: false,
-            showContinueAction: false,
           },
         }
       : runtimeComposerContext?.lifecycle);
@@ -1737,39 +1735,6 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
-  const continuePausedAction = async () => {
-    if (composerState.submitTarget !== "runtime-continue") return;
-    if (sending || awaitingResponse || sessionActive || cancelling) return;
-    setSending(true);
-    setSendError(null);
-    try {
-      const result = await submitConversationPrompt(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        "",
-        null,
-        effective ?? null,
-        outerNodeId,
-        outerAttemptId,
-        undefined,
-      );
-      if (result.session) applySessionUpdate(result.session);
-      if (result.lifecycle) {
-        setLocalRuntimeLifecycle(result.lifecycle);
-        emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
-      }
-      if (result.kind === "runtime-continue-started") onSessionStopped?.();
-    } catch (error) {
-      setSendError(displayAppError(t, error));
-    } finally {
-      setSending(false);
-    }
-  };
-
   const send = async () => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -2167,20 +2132,14 @@ export const ACPChatDialog = forwardRef<
                 onSuccess={() => void submitManualDecision("success")}
                 onFailure={() => void submitManualDecision("failure")}
               />
-            ) : composerState.externalKind ? (
+            ) : null}
+            {composerState.externalKind ? (
               <AcpExternalComposerState
                 kind={composerState.externalKind}
                 message={composerState.externalMessage ?? ""}
                 onAction={
                   composerState.externalKind === "invalid-workflow"
                     ? runtimeComposerContext?.onRepair
-                    : composerState.externalKind === "paused"
-                      ? () => { void continuePausedAction(); }
-                      : undefined
-                }
-                actionLabel={
-                  composerState.externalKind === "paused"
-                    ? runtimeComposerContext?.continueLabel
                     : undefined
                 }
               />
@@ -2407,25 +2366,20 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
-  actionLabel,
 }: {
-  kind: "invalid-workflow" | "runtime-error" | "paused";
+  kind: "invalid-workflow" | "runtime-error";
   message: string;
   onAction?: () => void;
-  actionLabel?: string;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
-  const isPaused = kind === "paused";
   return (
     <div
       className={cn(
         "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-sm shadow-background/20",
         isError
           ? "border-destructive/20 bg-destructive/5"
-          : isPaused
-            ? "border-primary/20 bg-primary/5"
-            : "border-amber-500/20 bg-amber-500/5",
+          : "border-amber-500/20 bg-amber-500/5",
       )}
     >
       <span
@@ -2433,15 +2387,11 @@ function AcpExternalComposerState({
           "flex size-9 shrink-0 items-center justify-center rounded-lg",
           isError
             ? "bg-destructive/10 text-destructive"
-            : isPaused
-              ? "bg-primary/10 text-primary"
-              : "bg-amber-500/10 text-amber-500",
+            : "bg-amber-500/10 text-amber-500",
         )}
       >
         {isError ? (
           <CircleStop className="size-4" />
-        ) : isPaused ? (
-          <Clock className="size-4" />
         ) : (
           <ShieldQuestion className="size-4" />
         )}
@@ -2455,11 +2405,9 @@ function AcpExternalComposerState({
           className="h-9 shrink-0 rounded-full px-4 text-sm"
           onClick={onAction}
         >
-          {actionLabel ?? (isPaused
-            ? t("conversation.runtime.composerContinue")
-            : isError
-              ? t("conversation.runtime.repairAction")
-              : t("conversation.runtime.repairWorkflow"))}
+          {isError
+            ? t("conversation.runtime.repairAction")
+            : t("conversation.runtime.repairWorkflow")}
         </Button>
       ) : null}
     </div>

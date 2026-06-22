@@ -56,18 +56,19 @@
 建议结构：
 
 - `runtime.phase`: `idle | launching-session | provider-running | finalizing-attempt | launching-next-node | paused | terminal`
-- `composer.mode`: `normal | runtime-active | stopping | interrupted-input | paused-action | invalid-workflow | runtime-error | permission-blocked | submitting`
+- `composer.mode`: `normal | runtime-active | stopping | interrupted-input | invalid-workflow | runtime-error | permission-blocked | submitting`
 - `composer.submitTarget`: `acp-prompt | runtime-continue | permission-response | none`
 - `composer.processingKind`: 现有 processing kind 加 `launching-next-node`
 - `composer.statusKey` 或 `statusCode`: 例如 `conversation.runtime.launchingNextNode`
-- `composer.canStop`、`composer.lockInput`、`composer.showContinueAction`
+- `composer.canStop`、`composer.lockInput`
 
 后端派生规则：
 
 - runtime active 优先于已 completed 的 ACP 会话；如果 runtime 仍 active 且 ACP 已 terminal，则 composer 显示 `launching-next-node`。
 - runtime terminal 时，抑制 stale ACP active。
 - `paused + process-interrupted/error-blocked + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`。
-- `paused + waiting-for-user-input + resumable` 表示继续按钮，不是自由输入。
+- `paused + waiting-for-user-input + manual_check_pending` 表示人工 check 判定门，不再使用继续按钮；composer 保持可输入，普通文本提交目标是 `acp-prompt`，只有成功 / 失败按钮触发 `submit_manual_check` 并恢复 edge 流转。
+- 人工 check 判定门从当前 attempt 的 `NodeState.manual_check_pending` 持久化恢复；关闭应用再打开后仍必须恢复判定按钮、输入框和后续 submit_manual_check 能力。
 - ACP lifecycle facet 为 `stopping`、本地 stop 命令未返回，或 ACP session metadata 明确为 `cancelling / cancel-requested` 时进入 `stopping`；`provider.pid` 只作为 kill/cleanup/诊断事实，不能反推 composer 停止中。
 - workflow invalid / runtime error 由后端给出 mode，前端不再自行猜测。
 

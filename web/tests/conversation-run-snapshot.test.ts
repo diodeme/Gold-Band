@@ -54,6 +54,7 @@ function leaf(
     outcome: null,
     runtimeDisplay,
     current: true,
+    manualCheckPending: false,
     startedAt: '2026-06-12T00:00:00Z',
     finishedAt: null,
     sessionId: null,
@@ -104,6 +105,7 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
       pathLabel: selectedAttempt.pathLabel,
       status: selectedAttempt.status,
       runtimeDisplay: selectedAttempt.runtimeDisplay,
+      manualCheckPending: selectedAttempt.manualCheckPending,
       sessionId: null,
       startedAt: selectedAttempt.startedAt,
     }],
@@ -197,7 +199,7 @@ describe('applyConversationSelectedSessionSnapshot', () => {
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
         continueKind: null,
-        composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: true, lockInput: true, showContinueAction: false },
+        composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: true, lockInput: true },
       },
     });
 
@@ -284,6 +286,7 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
         pathLabel: 'test/attempt-001',
         status: 'running',
         runtimeDisplay: runningDisplay,
+        manualCheckPending: false,
         sessionId: 'test-session',
         startedAt: '2026-06-12T00:00:00Z',
       }],

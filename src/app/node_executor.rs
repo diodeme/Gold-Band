@@ -368,6 +368,7 @@ pub(crate) fn build_worker_invocation(
         profile_content,
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
+        adapter_workspace_dir: app.paths.repo_root.clone(),
         workspace_dir: app.paths.repo_root.clone(),
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,

@@ -13,6 +13,8 @@ fn runtime_context() -> PromptRuntimeContext {
         round_id: "round-001".to_string(),
         node_id: "dev".to_string(),
         attempt_id: "attempt-001".to_string(),
+        runtime_node_id: None,
+        runtime_attempt_id: None,
         language: gold_band::config::DesktopLanguage::ZhCn,
         run_dir: Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001",
@@ -40,6 +42,7 @@ fn invocation() -> WorkerInvocation {
         profile_content: Some("你是负责实现当前节点的开发角色。".to_string()),
         requirement_path: None,
         requirement_text: Some("Need an implementation".to_string()),
+        adapter_workspace_dir: Utf8PathBuf::from("/repo"),
         workspace_dir: Utf8PathBuf::from("/repo"),
         attempt_dir: runtime_context().attempt_dir,
         output_contract: Some(PromptOutputContract {

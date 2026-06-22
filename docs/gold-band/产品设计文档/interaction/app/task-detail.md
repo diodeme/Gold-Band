@@ -48,6 +48,8 @@
 - `web/src/pages/WorkflowPage.tsx`
 - `web/src/pages/RoundDetailPage.tsx`
 
+Round 详情和会话态运行页复用同一 ACP 会话 composer 语义：人工 check 等待时，成功 / 失败判定是输入框上方的附加操作区，不替代输入框；普通输入继续发送到当前 ACP 会话，只有判定按钮会恢复 runtime edge 流转。该等待态从持久化 `manual_check_pending` 恢复，重启应用后仍应显示判定按钮。
+
 ---
 
 ## 5. 一句话总结

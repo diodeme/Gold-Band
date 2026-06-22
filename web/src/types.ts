@@ -912,13 +912,12 @@ export interface ConversationAcpFacetVm {
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'paused-action' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
-  showContinueAction: boolean;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -926,7 +925,7 @@ export interface ConversationAttemptLifecycleVm {
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'input' | 'action' | string | null;
+  continueKind?: 'input' | null;
   composer: ConversationComposerVm;
 }
 
@@ -942,6 +941,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
@@ -1014,6 +1014,7 @@ export interface ConversationActiveSessionVm {
   status: string;
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  manualCheckPending: boolean;
   sessionId?: string | null;
   startedAt?: string | null;
 }

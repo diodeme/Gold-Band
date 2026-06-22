@@ -181,6 +181,26 @@ fn lifecycle_for_locator(
     .ok()
 }
 
+fn current_attempt_manual_check_pending(
+    app: &App,
+    locator: &AttemptLocator,
+    run: &RunState,
+) -> CommandResult<bool> {
+    if !locator.matches_run_current(run) || locator.outer_node_id().is_some() {
+        return Ok(false);
+    }
+    let node_path = app.paths.node_file(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    );
+    read_json::<NodeState>(&node_path)
+        .map(|node| node.manual_check_pending)
+        .map_err(command_error)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
@@ -1425,9 +1445,11 @@ pub async fn submit_conversation_prompt(
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
+    let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
     let submit_target = if run.status == RunStatus::Paused
         && gold_band::app::is_run_continuable(&run)
         && locator.matches_run_current(&run)
+        && !manual_check_pending
     {
         "runtime-continue"
     } else {
@@ -1515,9 +1537,11 @@ pub async fn send_acp_prompt(
         outer_attempt_id.clone(),
     );
     if let Ok(run) = app.run_status(&task_id, &run_id) {
+        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
         if run.status == RunStatus::Paused
             && gold_band::app::is_run_continuable(&run)
             && locator.matches_run_current(&run)
+            && !manual_check_pending
         {
             return Err(CommandErrorVm::new(
                 "acp.runtime-submit-required",
@@ -1636,6 +1660,7 @@ pub async fn send_acp_prompt(
             client::run_prompt(
                 provider,
                 &agent_config.adapter,
+                app.paths.repo_root.clone(),
                 app.paths.repo_root.clone(),
                 attempt_dir,
                 &prompt_bundle,
@@ -1772,6 +1797,7 @@ pub async fn send_acp_prompt(
         client::run_prompt(
             provider,
             &agent_config.adapter,
+            app.paths.repo_root.clone(),
             app.paths.repo_root.clone(),
             attempt_dir,
             &prompt_bundle,

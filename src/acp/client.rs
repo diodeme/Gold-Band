@@ -343,6 +343,7 @@ pub fn doctor(
 pub fn run_prompt(
     provider_id: &str,
     config: &AcpAdapterConfig,
+    adapter_workspace_dir: Utf8PathBuf,
     workspace_dir: Utf8PathBuf,
     attempt_dir: Utf8PathBuf,
     prompt: &PromptBundle,
@@ -362,7 +363,7 @@ pub fn run_prompt(
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
-        workspace_dir.clone(),
+        adapter_workspace_dir,
         attempt_dir,
         use_local_claude,
         acp_raw_max_size_bytes,

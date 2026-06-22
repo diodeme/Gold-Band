@@ -5,7 +5,6 @@ export type AcpComposerMode =
   | 'runtime-active'
   | 'stopping'
   | 'interrupted-input'
-  | 'paused-action'
   | 'invalid-workflow'
   | 'runtime-error'
   | 'permission-blocked'
@@ -77,9 +76,8 @@ export interface AcpRuntimeComposerState {
   runtimeActive: boolean;
   composerLocked: boolean;
   showExternalState: boolean;
-  externalKind: 'invalid-workflow' | 'paused' | 'runtime-error' | null;
+  externalKind: 'invalid-workflow' | 'runtime-error' | null;
   externalMessage?: string | null;
-  showContinueAction: boolean;
   processingKind: AcpComposerProcessingKind;
   statusActive: boolean;
   showStatus: boolean;
@@ -122,11 +120,10 @@ export function deriveAcpRuntimeComposerState(
     awaitingResponse ||
     sessionActive ||
     stopInProgress;
-  const showContinueAction = mode === 'paused-action' || Boolean(backend?.showContinueAction);
-  const showExternalState =
-    mode === 'invalid-workflow' || mode === 'paused-action' || mode === 'runtime-error';
+  const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
   const composerLocked = waitingForPermission;
-  const inputDisabled = (composerLocked || backend?.lockInput || activePromptLocked || showContinueAction || mode === 'invalid-workflow' || mode === 'runtime-error') && !input.hasPlanIntervention;
+  const backendInputLocked = mode !== 'normal' && Boolean(backend?.lockInput);
+  const inputDisabled = (composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error') && !input.hasPlanIntervention;
   const canSubmit = Boolean(input.prompt.trim()) && submitTarget !== 'none' && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
   const processingKind = processingKindForInput(
     input,
@@ -161,7 +158,6 @@ export function deriveAcpRuntimeComposerState(
     showExternalState,
     externalKind: externalKindForMode(mode),
     externalMessage,
-    showContinueAction,
     processingKind,
     statusActive,
     showStatus: !input.waitingForPermission && statusActive,
@@ -204,7 +200,6 @@ function normalizeComposerMode(mode?: string | null): AcpComposerMode {
     normalized === 'runtime-active' ||
     normalized === 'stopping' ||
     normalized === 'interrupted-input' ||
-    normalized === 'paused-action' ||
     normalized === 'invalid-workflow' ||
     normalized === 'runtime-error' ||
     normalized === 'permission-blocked' ||
@@ -280,7 +275,7 @@ function placeholderKindForMode(
   if (input.hasPlanIntervention) return 'plan-intervention';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'interrupted-input') return 'stopped';
-  if (mode === 'paused-action' || mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
+  if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
   if (activePromptLocked) return 'runtime-controlled';
   return 'default';
 }
@@ -293,7 +288,7 @@ function hintKindForMode(
 ): AcpComposerHintKind {
   if (input.waitingForPermission) return 'permission-pending';
   if (mode === 'stopping') return 'stopping';
-  if (mode === 'paused-action' || mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
+  if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
   if (turnSubmitting) return 'sending';
   if (statusActive) return 'status';
   return 'default';
@@ -301,7 +296,6 @@ function hintKindForMode(
 
 function externalKindForMode(mode: AcpComposerMode) {
   if (mode === 'invalid-workflow') return 'invalid-workflow' as const;
-  if (mode === 'paused-action') return 'paused' as const;
   if (mode === 'runtime-error') return 'runtime-error' as const;
   return null;
 }
@@ -313,14 +307,11 @@ function externalMessageForMode(
 ) {
   if (mode === 'invalid-workflow') return input.workflowInvalidMessage ?? null;
   if (mode === 'runtime-error') return runtimeErrorMessage;
-  if (mode === 'paused-action') return input.pauseMessage ?? null;
   return null;
 }
 
-function runtimeContinueKindFromInput(input: AcpRuntimeComposerStateInput): 'input' | 'action' | null {
-  const lifecycleKind = input.lifecycle?.continueKind;
-  if (lifecycleKind === 'input' || lifecycleKind === 'action') return lifecycleKind;
-  return null;
+function runtimeContinueKindFromInput(input: AcpRuntimeComposerStateInput): 'input' | null {
+  return input.lifecycle?.continueKind === 'input' ? 'input' : null;
 }
 
 function runtimeErrorMessageFromInput(input: AcpRuntimeComposerStateInput) {

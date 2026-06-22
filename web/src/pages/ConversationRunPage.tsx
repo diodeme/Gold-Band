@@ -239,7 +239,6 @@ export function ConversationRunPage({
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
-  const selectedSessionWaitingForUserInput = selectedSessionPauseReason === 'waiting-for-user-input';
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
     ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
@@ -254,9 +253,6 @@ export function ConversationRunPage({
         pauseMessage: translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
-        continueLabel: selectedSessionWaitingForUserInput
-          ? t('conversation.runtime.composerContinue')
-          : undefined,
       }
     : undefined;
 
@@ -313,6 +309,7 @@ export function ConversationRunPage({
                   runtimeDisplay: session.runtimeDisplay,
                   lifecycle: session.lifecycle,
                   current: true,
+                  manualCheckPending: session.manualCheckPending,
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -348,6 +345,7 @@ export function ConversationRunPage({
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}
+            manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
@@ -511,6 +509,7 @@ function activeSessionToLeaf(
     runtimeDisplay: session.runtimeDisplay,
     lifecycle: session.lifecycle,
     current: true,
+    manualCheckPending: session.manualCheckPending,
     startedAt: session.startedAt,
     finishedAt: null,
     sessionId: session.sessionId,
@@ -520,7 +519,7 @@ function activeSessionToLeaf(
 }
 
 function isActiveSessionLeaf(leaf: ConversationSessionLeafVm) {
-  return Boolean(leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
+  return Boolean(leaf.manualCheckPending || leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
     || ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(leaf.status?.toLowerCase() ?? '');
 }
 

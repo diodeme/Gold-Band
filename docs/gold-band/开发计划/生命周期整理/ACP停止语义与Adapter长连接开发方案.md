@@ -151,6 +151,8 @@ Zed 参考：
 AdapterConnectionKey = provider_id + workspace_root
 ```
 
+`workspace_root` 表示用户打开的逻辑项目根目录，不是每个 ACP session 的执行 cwd。AI-DYNAMIC worktree 属于该逻辑项目的派生执行目录：adapter process 继续按原始 workspace_root 复用，`session/new.cwd` / `session/load.cwd` 指向具体 worktree，确保并行 worktree session 不再各自启动 adapter。
+
 建议结构：
 
 ```text
@@ -242,7 +244,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 规则：
 
-1. `provider_id + workspace_root` 是 adapter connection key。
+1. `provider_id + workspace_root` 是 adapter connection key；AI-DYNAMIC worktree 不生成新 key，而是沿用原始逻辑 workspace root。
 2. provider、adapter、MCP、auth/account、默认模型/权限等影响 adapter 行为的配置保存时，必须重启该 key 下 connection。
 3. 同 key 不允许新旧配置 connection 并存。
 4. 无 active prompt：

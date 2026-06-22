@@ -98,6 +98,7 @@ pub struct WorkerInvocation {
     pub profile_content: Option<String>,
     pub requirement_path: Option<Utf8PathBuf>,
     pub requirement_text: Option<String>,
+    pub adapter_workspace_dir: Utf8PathBuf,
     pub workspace_dir: Utf8PathBuf,
     pub attempt_dir: Utf8PathBuf,
     pub output_contract: Option<PromptOutputContract>,
@@ -656,6 +657,7 @@ impl ProviderAdapter for AcpProvider {
         let run = client::run_prompt(
             &self.provider_id,
             &self.adapter_config,
+            req.adapter_workspace_dir.clone(),
             req.workspace_dir.clone(),
             req.attempt_dir.clone(),
             &prompt,
@@ -1149,6 +1151,7 @@ mod tests {
             profile_content: None,
             requirement_path: None,
             requirement_text: Some("Need a structured result".to_string()),
+            adapter_workspace_dir: Utf8PathBuf::from("/repo"),
             workspace_dir: Utf8PathBuf::from("/repo"),
             attempt_dir: runtime_context.attempt_dir.clone(),
             output_contract: None,

@@ -76,7 +76,6 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
       statusKey: null,
       canStop: false,
       lockInput: false,
-      showContinueAction: false,
     },
   };
   const merged = {
@@ -100,8 +99,6 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
       };
     } else if (merged.continueKind === 'input') {
       merged.composer = { ...merged.composer, mode: 'interrupted-input', submitTarget: 'runtime-continue', lockInput: false };
-    } else if (merged.continueKind === 'action') {
-      merged.composer = { ...merged.composer, mode: 'paused-action', submitTarget: 'runtime-continue', lockInput: true, showContinueAction: true };
     }
   }
   return merged;
@@ -246,7 +243,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     }
   });
 
-  it('blocks waiting-for-user-input with an action instead of free ACP prompt', () => {
+  it('keeps manual-check waiting state available for regular ACP prompts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -256,18 +253,28 @@ describe('deriveAcpRuntimeComposerState', () => {
           resumable: true,
           current: true,
           active: false,
-          continuable: true,
+          continuable: false,
+          phase: 'paused',
         },
         displayStatus: 'paused',
         runtimeDisplay: { ...pausedDisplay, reasonCode: 'waiting-for-user-input' },
-        continueKind: 'action',
+        continueKind: null,
+        composer: {
+          mode: 'normal',
+          submitTarget: 'acp-prompt',
+          processingKind: 'processing',
+          statusKey: null,
+          canStop: false,
+          lockInput: false,
+        },
       }),
     }));
 
-    expect(state.mode).toBe('paused-action');
-    expect(state.submitTarget).toBe('runtime-continue');
-    expect(state.inputDisabled).toBe(true);
-    expect(state.showContinueAction).toBe(true);
+    expect(state.mode).toBe('normal');
+    expect(state.submitTarget).toBe('acp-prompt');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.showExternalState).toBe(false);
+    expect(state.canSubmit).toBe(true);
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {

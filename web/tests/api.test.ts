@@ -57,8 +57,8 @@ describe('api facade', () => {
     const pauseImpl = vi.fn().mockResolvedValue({ id: 'run-1', status: 'paused' });
     vi.mocked(getRuntimeApi).mockReturnValue({ pauseRun: pauseImpl } as never);
 
-    await pauseRun('task-1', 'run-1');
+    await pauseRun('task-1', 'run-1', 'project-1');
 
-    expect(pauseImpl).toHaveBeenCalledWith('task-1', 'run-1');
+    expect(pauseImpl).toHaveBeenCalledWith('task-1', 'run-1', 'project-1');
   });
 });

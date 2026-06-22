@@ -133,8 +133,8 @@ export const desktopApi: RuntimeApi = {
   continueRun(projectId, taskId, runId, promptId, prompt) {
     return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
   },
-  pauseRun(taskId: string, runId: string) {
-    return invokeCommand('pause_run', { taskId, runId });
+  pauseRun(taskId: string, runId: string, projectId?: string | null) {
+    return invokeCommand('pause_run', { taskId, runId, projectId });
   },
   stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });

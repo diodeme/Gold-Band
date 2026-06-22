@@ -210,10 +210,33 @@ pub struct RuntimeStopProbe {
     pub round_id: String,
     pub node_id: String,
     pub attempt_id: String,
+    pub attempt_state_file: Option<Utf8PathBuf>,
 }
 
 impl RuntimeStopProbe {
     fn is_stopped(&self) -> bool {
+        self.attempt_state_file
+            .as_ref()
+            .is_some_and(|path| self.attempt_state_is_stopped(path))
+            || self.run_state_is_stopped()
+    }
+
+    fn attempt_state_is_stopped(&self, path: &Utf8PathBuf) -> bool {
+        read_json::<serde_json::Value>(path)
+            .ok()
+            .is_some_and(|attempt| {
+                let status = attempt
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                status.eq_ignore_ascii_case("paused")
+                    && attempt
+                        .get("outcome")
+                        .is_none_or(|outcome| outcome.is_null())
+            })
+    }
+
+    fn run_state_is_stopped(&self) -> bool {
         read_json::<serde_json::Value>(&self.run_file)
             .ok()
             .is_some_and(|run| {
@@ -2299,12 +2322,14 @@ mod tests {
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic1".to_string(),
             attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
         };
         let inner_probe = RuntimeStopProbe {
             run_file,
             round_id: "round-001".to_string(),
             node_id: "bootstrap".to_string(),
             attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
         };
 
         assert!(outer_probe.is_stopped());

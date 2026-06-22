@@ -13,10 +13,11 @@ use gold_band::app::{
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
+use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
-use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use gold_band::storage::{read_json, write_json};
 use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader},
@@ -199,6 +200,93 @@ fn current_attempt_manual_check_pending(
     read_json::<NodeState>(&node_path)
         .map(|node| node.manual_check_pending)
         .map_err(command_error)
+}
+
+fn acp_attempt_was_cancelled(attempt_dir: &Utf8PathBuf) -> bool {
+    [
+        attempt_dir.join("acp.snapshot.json"),
+        attempt_dir.join("acp.session.json"),
+    ]
+    .iter()
+    .any(|path| {
+        read_json::<serde_json::Value>(path)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("stopReason")
+                    .or_else(|| value.get("stop_reason"))
+                    .and_then(|reason| reason.as_str().map(str::to_string))
+                    .or_else(|| {
+                        value
+                            .get("status")
+                            .and_then(|status| status.as_str().map(str::to_string))
+                    })
+            })
+            .is_some_and(|value| value.eq_ignore_ascii_case("cancelled"))
+    })
+}
+
+fn dynamic_leaf_runtime_continue_required(
+    app: &App,
+    locator: &AttemptLocator,
+    run: &RunState,
+) -> CommandResult<bool> {
+    let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    else {
+        return Ok(false);
+    };
+    let dynamic_graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        outer_node_id,
+        outer_attempt_id,
+    ))
+    .map_err(command_error)?;
+    let dynamic_node = dynamic_graph
+        .nodes
+        .iter()
+        .find(|node| node.id == locator.node_id)
+        .ok_or_else(|| {
+            command_error(anyhow::anyhow!(
+                "dynamic node `{}` not found",
+                locator.node_id
+            ))
+        })?;
+    if dynamic_node.status == DynamicNodeStatus::Paused && dynamic_node.outcome.is_none() {
+        return Ok(true);
+    }
+    let stale_resumable_leaf = run.status == RunStatus::Paused
+        && matches!(
+            dynamic_node.status,
+            DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+        )
+        && dynamic_node.outcome.is_none()
+        && (dynamic_graph.run.status == DynamicRunStatus::Paused
+            || acp_attempt_was_cancelled(&locator.attempt_dir(app)));
+    Ok(stale_resumable_leaf)
+}
+
+fn runtime_continue_required(
+    app: &App,
+    locator: &AttemptLocator,
+    run: &RunState,
+    manual_check_pending: bool,
+) -> CommandResult<bool> {
+    if manual_check_pending {
+        return Ok(false);
+    }
+    if locator.matches_run_current(run) && locator.outer_node_id().is_some() {
+        return dynamic_leaf_runtime_continue_required(app, locator, run);
+    }
+    if run.status == RunStatus::Paused
+        && gold_band::app::is_run_continuable(run)
+        && locator.matches_run_current(run)
+    {
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -922,8 +1010,9 @@ pub fn pause_run(
     state: State<'_, DesktopState>,
     task_id: String,
     run_id: String,
+    project_id: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     app.run_pause(&task_id, &run_id, PauseReason::ProcessInterrupted)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -943,10 +1032,6 @@ pub fn stop_active_session(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ActiveSessionStopVm> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    let was_running = app
-        .run_status(&task_id, &run_id)
-        .map(|run| run.status == RunStatus::Running)
-        .map_err(command_error)?;
 
     let locator = AttemptLocator::new(
         task_id.clone(),
@@ -965,11 +1050,11 @@ pub fn stop_active_session(
     )?;
     let lifecycle = lifecycle_for_locator(&app, &locator);
 
-    if was_running {
-        let paused = app.run_status(&task_id, &run_id).map_err(command_error)?;
+    let current_run = app.run_status(&task_id, &run_id).map_err(command_error)?;
+    if current_run.status == RunStatus::Paused {
         return Ok(ActiveSessionStopVm {
             kind: "run-paused".to_string(),
-            run: Some(run_summary_vm(paused)),
+            run: Some(run_summary_vm(current_run)),
             session,
             lifecycle,
         });
@@ -977,7 +1062,7 @@ pub fn stop_active_session(
 
     Ok(ActiveSessionStopVm {
         kind: "session-cancelled".to_string(),
-        run: None,
+        run: Some(run_summary_vm(current_run)),
         session,
         lifecycle,
     })
@@ -1446,11 +1531,7 @@ pub async fn submit_conversation_prompt(
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
     let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-    let submit_target = if run.status == RunStatus::Paused
-        && gold_band::app::is_run_continuable(&run)
-        && locator.matches_run_current(&run)
-        && !manual_check_pending
-    {
+    let submit_target = if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
         "runtime-continue"
     } else {
         "acp-prompt"
@@ -1538,11 +1619,7 @@ pub async fn send_acp_prompt(
     );
     if let Ok(run) = app.run_status(&task_id, &run_id) {
         let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-        if run.status == RunStatus::Paused
-            && gold_band::app::is_run_continuable(&run)
-            && locator.matches_run_current(&run)
-            && !manual_check_pending
-        {
+        if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
             return Err(CommandErrorVm::new(
                 "acp.runtime-submit-required",
                 serde_json::json!({
@@ -1710,6 +1787,14 @@ pub async fn send_acp_prompt(
                     round_id: round_id.clone(),
                     node_id: node_id.clone(),
                     attempt_id: attempt_id.clone(),
+                    attempt_state_file: Some(app.paths.dynamic_node_file(
+                        &task_id,
+                        &run_id,
+                        &round_id,
+                        outer_node_id,
+                        outer_attempt_id,
+                        &node_id,
+                    )),
                 }),
             )
             .map_err(command_error)?;
@@ -1847,6 +1932,13 @@ pub async fn send_acp_prompt(
                 round_id: round_id.clone(),
                 node_id: node_id.clone(),
                 attempt_id: attempt_id.clone(),
+                attempt_state_file: Some(app.paths.node_file(
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                )),
             }),
         )
         .map_err(command_error)?;
@@ -3347,6 +3439,147 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn stale_cancelled_dynamic_leaf_requires_runtime_continue() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-stale-dynamic-leaf-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let dynamic_node_id = "bootstrap";
+        let dynamic_attempt_id = "attempt-001";
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some(outer_node_id.to_string()),
+            current_attempt: Some(outer_attempt_id.to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+        };
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        let dynamic_node = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": dynamic_node_id,
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Bootstrap",
+            "task": "Bootstrap",
+            "status": "running",
+            "outcome": null,
+            "groupId": null,
+            "chainId": dynamic_node_id,
+            "depth": 0,
+            "dependsOn": [],
+            "workspace": { "mode": "readonly" },
+            "workspacePath": null,
+            "provider": "claude-acp",
+            "profile": null,
+            "permissionMode": null,
+            "model": null,
+            "sessionMode": "new",
+            "continueFromNodeId": null,
+            "workflowId": null,
+            "workflowSnapshotId": null,
+            "childRunId": null,
+            "startedAt": "2026-06-16T00:00:00Z",
+            "finishedAt": null
+        });
+        let dynamic_run = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "dynamic-run-001",
+            "parentRunId": run_id,
+            "parentRoundId": round_id,
+            "parentNodeId": outer_node_id,
+            "parentAttemptId": outer_attempt_id,
+            "status": "paused",
+            "outcome": null,
+            "pauseReason": "process-interrupted",
+            "startedAt": "2026-06-16T00:00:00Z",
+            "updatedAt": "2026-06-16T00:00:01Z",
+            "control": {},
+            "allowedWorkflowSnapshots": [],
+            "currentNodeIds": [dynamic_node_id]
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": dynamic_run,
+                "nodes": [dynamic_node.clone()],
+                "groups": [],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.dynamic_node_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                dynamic_node_id,
+            ),
+            &dynamic_node,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .dynamic_node_attempt_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    dynamic_node_id,
+                    dynamic_attempt_id,
+                )
+                .join("acp.session.json"),
+            &serde_json::json!({
+                "status": "cancelled",
+                "stopReason": "cancelled",
+                "sessionId": "session-bootstrap"
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            dynamic_node_id.to_string(),
+            dynamic_attempt_id.to_string(),
+            Some(outer_node_id.to_string()),
+            Some(outer_attempt_id.to_string()),
+        );
+
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        let _ = std::fs::remove_dir_all(temp);
+    }
 
     #[test]
     fn canonical_permission_request_id_maps_display_id_to_pending_file_id() {

@@ -124,7 +124,7 @@ export interface RuntimeApi {
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;
   continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null): Promise<RunSummaryVm>;
-  pauseRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;

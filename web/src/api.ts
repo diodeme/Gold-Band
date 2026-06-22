@@ -135,8 +135,8 @@ export function continueRun(projectId: string | null | undefined, taskId: string
   return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
 }
 
-export function pauseRun(taskId: string, runId: string) {
-  return getRuntimeApi().pauseRun(taskId, runId);
+export function pauseRun(taskId: string, runId: string, projectId?: string | null) {
+  return getRuntimeApi().pauseRun(taskId, runId, projectId);
 }
 
 export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {

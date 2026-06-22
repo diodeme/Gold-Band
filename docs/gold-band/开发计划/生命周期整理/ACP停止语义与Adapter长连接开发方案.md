@@ -101,9 +101,9 @@ Zed 参考：
 
 | 入口 | Runtime 状态 | ACP 操作 | Adapter process 操作 |
 |---|---|---|---|
-| 新 UI ACP Stop | 立即写 `Paused + ProcessInterrupted` | `session/cancel` | 不 kill；cancel timeout 暴露 stop failed |
-| 旧 UI ACP Stop | 与新 UI 一致 | `session/cancel` | 不 kill |
-| 旧 UI Run Stop | 写 `Paused + ProcessInterrupted` | 对当前 attempt 及 AI-DYNAMIC descendants 的 live sessions 发 `session/cancel` | 不 kill |
+| 新 UI ACP Stop | 停止当前 leaf/session；普通 attempt 立即写 `Paused + ProcessInterrupted`，AI-DYNAMIC 内部 leaf 只暂停目标 dynamic node，父 run 由 active leaf 聚合决定 | 对目标 ACP session 发 `session/cancel` | 不 kill；cancel timeout 暴露 stop failed |
+| 旧 UI ACP Stop | 与新 UI leaf stop 一致 | `session/cancel` | 不 kill |
+| 旧 UI / 新 UI 侧边栏 Run Stop | 整个 run 写 `Paused + ProcessInterrupted`，所有 active leaf 一起暂停，已 completed leaf 不被覆盖 | 对当前 attempt 及 AI-DYNAMIC active descendants 的 live sessions 发 `session/cancel` | 不 kill |
 | terminal run kill | 写 `Completed + Killed` | bounded `session/close` | close 失败返回/记录错误，不用 kill 伪装成功 |
 | app close | running runs 写 `Paused + ProcessInterrupted` | 对所有 live connections 的 sessions 做 bounded `session/close` | 正常退出 adapter 长连接；close 失败记录/返回，不静默吞掉 |
 | crash recovery | running runs 写 `Paused + ProcessInterrupted` | 无 live connection，不补发协议 | `provider.pid` 仅用于 orphan cleanup |
@@ -213,13 +213,21 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - 对 active ACP session 发 `session/cancel`。
    - 不 kill adapter。
 
-2. `pause_run` / 旧 UI Stop Run：
-   - 普通停止应走 `Paused + ProcessInterrupted`。
-   - 对 run 当前 active session 及 AI-DYNAMIC descendants 的 live ACP sessions 发 `session/cancel`。
-   - 与 `stop_active_session` 共享先 runtime control、再 live session registry 兜底的 cancel 逻辑。
+2. `pause_run` / 旧 UI Stop Run / 新 UI 侧边栏 Run Stop：
+   - 普通 run 停止应走 `Paused + ProcessInterrupted`。
+   - 对 run 当前 active session 及 AI-DYNAMIC active descendants 的 live ACP sessions 发 `session/cancel`，不改写已 completed leaf 的 terminal ACP snapshot。
+   - 与 `stop_active_session` 共享先 runtime control、再 live session registry 兜底的 cancel 逻辑；命中 runtime control 时仍要同时尝试 live registry 直发 `session/cancel`，避免 run 级停止只写本地状态但真实 session 继续输出。
    - 不走 terminal `run_kill()`。
 
-3. `run_kill(...)`：
+3. 并行 leaf 聚合生命周期：
+   - `stop_active_session` 的作用域是当前 leaf attempt/session，不是整个 graph；AI-DYNAMIC 内部 leaf stop 只暂停目标 dynamic node。
+   - graph scheduler 继续处理其他 `Ready | Running` leaf；只有没有 active leaf 后，graph / outer node / run 才自动收敛为 `Paused + ProcessInterrupted`。
+   - 该规则按 leaf attempt/session、graph scheduler、run aggregate 三层设计，后续普通固定工作流支持并行节点时复用同一模型。
+   - 详细落地见 `docs/gold-band/开发计划/生命周期整理/并行节点通用停止继续语义与AI-DYNAMIC落地方案.md`。
+   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，再只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
+   - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
+
+4. `run_kill(...)`：
    - 保持唯一 terminal killed 路径。
    - 对相关 active ACP sessions 发 bounded `session/close`。
    - close 失败返回/记录错误，不用 kill adapter 伪装成功。

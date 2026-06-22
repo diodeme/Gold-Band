@@ -82,6 +82,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import type {
   AgentRegistryVm,
@@ -211,6 +212,7 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
@@ -303,7 +305,10 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
-  }, [conversationRun]);
+    if (conversationRunStopping && isConversationRunStopSettled(conversationRun)) {
+      setConversationRunStopping(false);
+    }
+  }, [conversationRun, conversationRunStopping]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
@@ -868,6 +873,35 @@ export function App() {
     void runAction(() => pauseRun(taskId, runId));
   };
 
+  const onConversationPauseRun = async (projectId: string, taskId: string, runId: string) => {
+    setConversationRunStopping(true);
+    let stopSettled = false;
+    let stopAccepted = false;
+    try {
+      const paused = await runAction(() => pauseRun(taskId, runId, projectId));
+      if (!paused) return;
+      stopAccepted = true;
+      const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
+      if (conversationPage.kind === 'conversation-run'
+        && conversationPage.projectId === projectId
+        && conversationPage.taskId === taskId
+        && conversationPage.runId === runId) {
+        const refreshed = await getConversationRun(projectId, taskId, runId, selectedKey);
+        stopSettled = isConversationRunStopSettled(refreshed);
+        applyConversationRunSnapshot(refreshed, 'session-stopped', {
+          selectedSessionKey: selectedKey,
+          preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
+        });
+      } else {
+        stopSettled = true;
+      }
+      const sidebar = await getConversationSidebar();
+      applyConversationSidebar(sidebar);
+    } finally {
+      if (!stopAccepted || stopSettled) setConversationRunStopping(false);
+    }
+  };
+
   const onCreateTask = async (input: CreateTaskInput) => {
     const created = await runAction(() => createTask(input), { surfaceError: false, rethrow: true });
     if (created) setWorkflow(created);
@@ -1180,6 +1214,8 @@ export function App() {
       onConversationSelectRun={(projectId, taskId, runId) => {
         setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
       }}
+      conversationRunStopping={conversationRunStopping}
+      onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
         updateTaskMetadata(projectId, taskId, title)
           .then(() => getConversationSidebar())

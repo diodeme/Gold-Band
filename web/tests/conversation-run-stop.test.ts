@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import i18n from '@/i18n';
 import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import type { ConversationRunVm } from '@/types';
 
@@ -30,7 +31,7 @@ function run(overrides: Partial<ConversationRunVm> = {}): ConversationRunVm {
   };
 }
 
-describe('isConversationRunStopSettled', () => {
+describe('conversation run stop state', () => {
   it('keeps the overlay while the run is still running', () => {
     expect(isConversationRunStopSettled(run({ runStatus: 'running' }))).toBe(false);
   });
@@ -45,5 +46,10 @@ describe('isConversationRunStopSettled', () => {
   it('keeps the overlay until the selected ACP session is terminal', () => {
     expect(isConversationRunStopSettled(run({ runStatus: 'paused', selectedSession: { sessionId: 'session-1', status: 'running', events: [] } as any }))).toBe(false);
     expect(isConversationRunStopSettled(run({ runStatus: 'paused', selectedSession: { sessionId: 'session-1', status: 'cancelled', events: [] } as any }))).toBe(true);
+  });
+
+  it('resolves the run stop overlay copy from the conversation runtime namespace', () => {
+    expect(i18n.t('conversation.runtime.stoppingRunOverlay', { lng: 'zh-CN' })).toBe('正在停止当前运行…');
+    expect(i18n.t('conversation.runtime.stoppingRunOverlay', { lng: 'en' })).toBe('Stopping current run…');
   });
 });

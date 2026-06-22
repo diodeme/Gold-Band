@@ -33,6 +33,7 @@
 - 查看工作流中的 AI-DYNAMIC 内部节点点击后应切换到对应内部 session；匹配顺序为 `outerNodeId/outerAttemptId + nodeId/attemptId`，普通工作流节点仍按顶层 `nodeId/attemptId` 匹配
 - 查看工作流 Sheet 展示的是 `ConversationRunVm.workflowGraph`，它必须跟 session tree 使用同一份后端 lifecycle 事实；`submit_conversation_prompt` / `stop_active_session` 或 ACP session update 返回的 lifecycle 即使没有携带新的 session payload，也必须立即 patch 对应 graph node/attempt 的 `status / runtimeDisplay / current`，避免 composer 已继续运行但抽屉图仍显示暂停。
 - 当当前选中 AI-DYNAMIC 内部 session 时，外层 AI-DYNAMIC 容器的 terminal/live refresh 只触发 run VM 刷新，不得覆盖当前 `selectedSessionKey`；刷新请求必须继续携带内部 session key
+- AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端收到 terminal/interactive 状态后刷新完整 run VM；不能让选中 leaf 长时间停留在旧的 `launching-next-node` runtime-active 派生状态。
 - 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器
 - 修改只影响未来 run，不影响当前 run snapshot
 

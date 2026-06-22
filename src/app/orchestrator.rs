@@ -2009,6 +2009,16 @@ fn dynamic_acp_live_event_context(
     }
 }
 
+fn emit_dynamic_session_update_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+) {
+    let _ = ctx
+        .app
+        .emit_acp_session_update(dynamic_acp_live_event_context(ctx, node_id, attempt_id));
+}
+
 fn dynamic_runtime_context(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
@@ -2949,6 +2959,11 @@ fn apply_dynamic_execution_message(
         if dynamic_graph_has_active_leaf(graph) {
             graph.run.updated_at = now_rfc3339_like();
             persist_dynamic_graph(ctx, graph)?;
+            emit_dynamic_session_update_best_effort(
+                ctx,
+                &graph.nodes[index].id,
+                &dynamic_attempt_id(&graph.nodes[index]),
+            );
             return Ok(());
         }
         pause_dynamic_graph(
@@ -2957,6 +2972,11 @@ fn apply_dynamic_execution_message(
             pause_reason,
             "dynamic node paused and no active dynamic leaf remains",
         )?;
+        emit_dynamic_session_update_best_effort(
+            ctx,
+            &graph.nodes[index].id,
+            &dynamic_attempt_id(&graph.nodes[index]),
+        );
         return Ok(());
     }
     let mut accepted_any = false;
@@ -3004,7 +3024,13 @@ fn apply_dynamic_execution_message(
         }
     }
     graph.run.updated_at = now_rfc3339_like();
-    persist_dynamic_graph(ctx, graph)
+    persist_dynamic_graph(ctx, graph)?;
+    emit_dynamic_session_update_best_effort(
+        ctx,
+        &graph.nodes[index].id,
+        &dynamic_attempt_id(&graph.nodes[index]),
+    );
+    Ok(())
 }
 
 fn outer_attempt_is_still_current_running(ctx: &DynamicExecutionContext<'_>) -> Result<bool> {
@@ -7563,6 +7589,7 @@ mod tests {
     use super::*;
     use crate::config::RuntimeConfig;
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     fn git(cwd: &Utf8Path, args: &[&str]) {
@@ -8161,6 +8188,50 @@ mod tests {
         assert_eq!(graph.run.current_node_ids, vec!["good-night".to_string()]);
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
         assert_eq!(graph.nodes[1].status, DynamicNodeStatus::Running);
+    }
+
+    #[test]
+    fn dynamic_node_completed_result_emits_session_update() {
+        let (_temp, repo_root) = init_repo();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::with_config(repo_root, RuntimeConfig::default()).with_acp_session_update(
+            Arc::new(move |context| {
+                seen_for_callback.lock().unwrap().push(context);
+                Ok(())
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut completed = test_worktree_node("good-morning");
+        completed.status = DynamicNodeStatus::Completed;
+        completed.outcome = Some(NodeOutcome::Success);
+        completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
+        let mut graph = test_dynamic_graph(vec![test_worktree_node("good-morning")]);
+
+        apply_dynamic_execution_message(
+            &ctx,
+            &mut graph,
+            DynamicExecutionMessage {
+                node_id: "good-morning".to_string(),
+                result: Ok(DynamicExecutionResult {
+                    node: completed,
+                    proposals: Vec::new(),
+                }),
+            },
+        )
+        .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].task_id, "task-006");
+        assert_eq!(calls[0].run_id, "run-001");
+        assert_eq!(calls[0].round_id, "round-001");
+        assert_eq!(calls[0].node_id, "good-morning");
+        assert_eq!(calls[0].attempt_id, "attempt-001");
+        assert_eq!(calls[0].outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(calls[0].outer_attempt_id.as_deref(), Some("attempt-001"));
     }
 
     #[test]

@@ -105,7 +105,8 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 2. 父 run running、dynamic leaf paused/process-interrupted 时，该 leaf composer 应为 `runtime-continue` 输入态。
 3. 父 run running、dynamic leaf running、ACP terminal 时，仍可显示合法的 `launching-next-node`。
 4. 父 run 已 paused 时，陈旧的 leaf `running + ACP cancelled` 不得显示为 `launching-next-node`。
-5. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
+5. dynamic leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端收到 terminal/interactive 状态后刷新完整 run VM，避免选中 leaf 继续停留在旧的 `launching-next-node`。
+6. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
 
 ## 9. 侧边栏 run 列表右键停止
 

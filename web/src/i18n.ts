@@ -819,7 +819,6 @@ const resources = {
         stopping: "正在停止",
         stopFailed: "停止失败",
         stopHint: "停止当前 ACP 会话",
-        stoppingRunOverlay: "正在停止当前运行…",
         noEvents: "暂无 ACP 事件",
         launchingClaude: "Agent 调起中",
         processing: "处理中",
@@ -1057,6 +1056,7 @@ const resources = {
           titleEdit: "修改标题",
           noActiveSession: "暂无活跃会话",
           activeSessions: "活跃会话",
+          stoppingRunOverlay: "正在停止当前运行…",
           composerFixWorkflow: "修改工作流",
           composerError: "运行出错",
           assetsBar: {
@@ -1994,7 +1994,6 @@ const resources = {
         stopping: "Stopping",
         stopFailed: "Stop failed",
         stopHint: "Stop the current ACP session",
-        stoppingRunOverlay: "Stopping current run…",
         noEvents: "No ACP events",
         launchingClaude: "Launching agent",
         processing: "Processing",
@@ -2242,6 +2241,7 @@ const resources = {
           titleEdit: "Edit title",
           noActiveSession: "No active session",
           activeSessions: "Active sessions",
+          stoppingRunOverlay: "Stopping current run…",
           composerFixWorkflow: "Fix workflow",
           composerError: "Runtime error",
           assetsBar: {

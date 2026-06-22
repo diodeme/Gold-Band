@@ -10,13 +10,23 @@ export function resolveConversationEventSelectedSessionKey(args: {
   currentSelectedKey?: string | null;
   incomingSessionKey: string;
   followMode: ConversationSessionFollowMode;
+  currentSelectedActive?: boolean;
+  incomingActive?: boolean;
 }) {
-  const { currentSelectedKey, incomingSessionKey, followMode } = args;
+  const {
+    currentSelectedKey,
+    incomingSessionKey,
+    followMode,
+    currentSelectedActive = false,
+    incomingActive = true,
+  } = args;
   if (currentSelectedKey && isNestedConversationSessionKey(currentSelectedKey, incomingSessionKey)) {
     return currentSelectedKey;
   }
-  if (!currentSelectedKey || followMode === 'auto') return incomingSessionKey;
-  return currentSelectedKey;
+  if (!currentSelectedKey) return incomingSessionKey;
+  if (followMode !== 'auto') return currentSelectedKey;
+  if (!incomingActive) return currentSelectedKey;
+  return currentSelectedActive ? currentSelectedKey : incomingSessionKey;
 }
 
 export function resolveConversationRefreshSelectedSessionKey(args: {
@@ -72,13 +82,16 @@ export function planConversationAcpRunUpdate(args: {
   hasLiveEvent: boolean;
   sessionStatus?: string | null;
   pendingPermissionCount?: number;
+  followPending?: boolean;
 }): ConversationAcpRunUpdatePlan {
   const {
     treeHasSession,
     alreadySelected,
     hasSessionSnapshot,
+    hasLiveEvent,
     sessionStatus,
     pendingPermissionCount = 0,
+    followPending = false,
   } = args;
   const terminal = isTerminalConversationSessionStatus(sessionStatus);
   const interactive = needsInteractiveConversationRunRefresh(sessionStatus, pendingPermissionCount);
@@ -100,7 +113,7 @@ export function planConversationAcpRunUpdate(args: {
     return {
       patchSelectedSession: false,
       patchBackgroundSession: false,
-      queueRunRefresh: false,
+      queueRunRefresh: hasLiveEvent && followPending,
     };
   }
   return {

@@ -237,7 +237,7 @@ function isConversationUnknownStatus(status?: string | null) {
   return !normalized || normalized === 'unknown';
 }
 
-function findConversationLeafByKey(tree: ConversationSessionTreeVm, key?: string | null): ConversationSessionLeafVm | null {
+export function findConversationLeafByKey(tree: ConversationSessionTreeVm, key?: string | null): ConversationSessionLeafVm | null {
   if (!key) return null;
   for (const round of tree.rounds) {
     for (const node of round.nodes) {

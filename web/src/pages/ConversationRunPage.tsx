@@ -202,11 +202,21 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    if (!atBottom) {
+      manualAutoFollowDisabledRef.current = true;
+      onAutoFollowChange?.(false);
+      return;
+    }
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     const selectedSessionActive = Boolean(selectedKey && activeSessionKeys.includes(selectedKey));
-    const shouldFollow = atBottom && selectedSessionActive;
-    manualAutoFollowDisabledRef.current = !shouldFollow;
-    onAutoFollowChange?.(shouldFollow);
+    if (selectedSessionActive) {
+      manualAutoFollowDisabledRef.current = false;
+      onAutoFollowChange?.(true);
+      return;
+    }
+    if (!manualAutoFollowDisabledRef.current) {
+      onAutoFollowChange?.(true);
+    }
   }, [activeSessionKeys, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {

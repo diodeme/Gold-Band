@@ -52,9 +52,13 @@ pub fn spawn_adapter(
         command.env(key, value);
     }
     if use_local_claude && !resolved_env.contains_key("CLAUDE_CODE_EXECUTABLE") {
-        if let Some(claude_path) =
-            find_executable_in_paths("claude", resolved_env.get("PATH").map(OsStr::new))
-        {
+        #[cfg(windows)]
+        let claude_exe =
+            find_executable_in_paths("claude.exe", resolved_env.get("PATH").map(OsStr::new));
+        #[cfg(not(windows))]
+        let claude_exe =
+            find_executable_in_paths("claude", resolved_env.get("PATH").map(OsStr::new));
+        if let Some(claude_path) = claude_exe {
             command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
         }
     }

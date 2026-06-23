@@ -4,7 +4,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -87,6 +87,7 @@ const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
     OnceLock::new();
 static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DYNAMIC_EVENT_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 static DYNAMIC_STATE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 static DYNAMIC_RESUME_REGISTRY: OnceLock<
     Mutex<HashMap<String, mpsc::Sender<DynamicResumeOverride>>>,
@@ -1926,6 +1927,190 @@ struct DynamicExecutionMessage {
     result: Result<DynamicExecutionResult>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DynamicNodeStatusCounts {
+    pending: usize,
+    ready: usize,
+    running: usize,
+    paused: usize,
+    completed: usize,
+}
+
+fn dynamic_node_status_counts(graph: &DynamicGraphState) -> DynamicNodeStatusCounts {
+    let mut counts = DynamicNodeStatusCounts {
+        pending: 0,
+        ready: 0,
+        running: 0,
+        paused: 0,
+        completed: 0,
+    };
+    for node in &graph.nodes {
+        match node.status {
+            DynamicNodeStatus::Pending => counts.pending += 1,
+            DynamicNodeStatus::Ready => counts.ready += 1,
+            DynamicNodeStatus::Running => counts.running += 1,
+            DynamicNodeStatus::Paused => counts.paused += 1,
+            DynamicNodeStatus::Completed => counts.completed += 1,
+        }
+    }
+    counts
+}
+
+fn dynamic_timing_data(graph: &DynamicGraphState) -> serde_json::Value {
+    let counts = dynamic_node_status_counts(graph);
+    serde_json::json!({
+        "dynamicRunId": graph.run.id,
+        "pendingCount": counts.pending,
+        "readyCount": counts.ready,
+        "runningCount": counts.running,
+        "pausedCount": counts.paused,
+        "completedCount": counts.completed,
+        "maxParallel": graph.run.control.max_parallel,
+        "currentNodeIds": graph.run.current_node_ids.clone(),
+    })
+}
+
+fn dynamic_event_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    event_type: &str,
+    data: serde_json::Value,
+) {
+    let _ = append_dynamic_event(ctx, event_type, data);
+}
+
+fn append_dynamic_event_for_ids_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    event_type: &str,
+    data: serde_json::Value,
+) {
+    let _ = append_dynamic_event_for_ids(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        event_type,
+        data,
+    );
+}
+
+fn dynamic_event_lock_key(
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> String {
+    format!("{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
+}
+
+fn dynamic_event_lock_for(
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> Result<Arc<Mutex<()>>> {
+    let key = dynamic_event_lock_key(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
+    let mut locks = DYNAMIC_EVENT_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic event lock registry poisoned"))?;
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+fn append_dynamic_event_for_ids(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    event_type: &str,
+    data: serde_json::Value,
+) -> Result<()> {
+    let lock = dynamic_event_lock_for(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("dynamic event lock poisoned"))?;
+    append_jsonl(
+        &app.paths
+            .dynamic_events_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        &serde_json::json!({
+            "timestamp": now_rfc3339_like(),
+            "type": event_type,
+            "data": data,
+        }),
+    )
+}
+
+fn elapsed_ms(started_at: Instant) -> u128 {
+    started_at.elapsed().as_millis()
+}
+
+fn dynamic_invocation_build_step_begin(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    attempt_id: &str,
+    step: &str,
+) -> Instant {
+    let started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_invocation_build_step_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "attemptId": attempt_id,
+            "step": step,
+        }),
+    );
+    started_at
+}
+
+fn dynamic_invocation_build_step_end(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+    attempt_id: &str,
+    step: &str,
+    started_at: Instant,
+    data: serde_json::Value,
+) {
+    let mut payload = serde_json::json!({
+        "nodeId": node.id,
+        "kind": node.kind,
+        "attemptId": attempt_id,
+        "step": step,
+        "elapsedMs": elapsed_ms(started_at),
+    });
+    if let (Some(target), serde_json::Value::Object(extra)) = (payload.as_object_mut(), data) {
+        for (key, value) in extra {
+            target.insert(key, value);
+        }
+    }
+    dynamic_event_best_effort(ctx, "dynamic_worker_invocation_build_step_end", payload);
+}
+
+fn truncate_diagnostic_text(value: &str) -> String {
+    const MAX_LEN: usize = 500;
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= MAX_LEN {
+        return trimmed.to_string();
+    }
+    let mut output = trimmed.chars().take(MAX_LEN).collect::<String>();
+    output.push_str("...");
+    output
+}
+
 struct DynamicResumeRegistration {
     key: String,
 }
@@ -2764,7 +2949,10 @@ fn drive_dynamic_graph(
     let _resume_registration = register_dynamic_resume_channel(ctx, resume_tx)?;
     let mut pending_resume_overrides = Vec::new();
     let mut launch_resume_overrides = ctx.resume_override.clone().into_iter().collect::<Vec<_>>();
+    let mut scheduler_loop_count = 0_u64;
+    let mut last_waiting_workers_event_at: Option<Instant> = None;
     loop {
+        scheduler_loop_count = scheduler_loop_count.saturating_add(1);
         if !outer_attempt_is_still_current_running(ctx)? {
             pause_dynamic_graph(
                 ctx,
@@ -2781,12 +2969,41 @@ fn drive_dynamic_graph(
             graph,
             &mut pending_resume_overrides,
         )?);
+        let ready_refresh_started_at = Instant::now();
         let ready_node_ids = refresh_dynamic_ready_nodes(graph);
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_ready_refreshed",
+            serde_json::json!({
+                "loop": scheduler_loop_count,
+                "elapsedMs": elapsed_ms(ready_refresh_started_at),
+                "readyNodeIds": ready_node_ids,
+                "state": dynamic_timing_data(graph),
+            }),
+        );
         if !ready_node_ids.is_empty() {
             persist_dynamic_graph(ctx, graph)?;
             emit_dynamic_session_updates_best_effort(ctx, graph, &ready_node_ids);
         }
+        let launch_started_at = Instant::now();
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_launch_ready_begin",
+            serde_json::json!({
+                "loop": scheduler_loop_count,
+                "state": dynamic_timing_data(graph),
+            }),
+        );
         launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_launch_ready_end",
+            serde_json::json!({
+                "loop": scheduler_loop_count,
+                "elapsedMs": elapsed_ms(launch_started_at),
+                "state": dynamic_timing_data(graph),
+            }),
+        );
         persist_dynamic_graph(ctx, graph)?;
 
         if advance_dynamic_groups(ctx, graph)?.changed {
@@ -2816,6 +3033,20 @@ fn drive_dynamic_graph(
             .iter()
             .any(|node| node.status == DynamicNodeStatus::Running)
         {
+            if last_waiting_workers_event_at
+                .map(|last| last.elapsed() >= Duration::from_secs(5))
+                .unwrap_or(true)
+            {
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_waiting_workers",
+                    serde_json::json!({
+                        "loop": scheduler_loop_count,
+                        "state": dynamic_timing_data(graph),
+                    }),
+                );
+                last_waiting_workers_event_at = Some(Instant::now());
+            }
             let message = match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(message) => message,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -2866,6 +3097,14 @@ fn launch_ready_dynamic_nodes(
         let Some(index) = graph.nodes.iter().position(|node| node.id == node_id) else {
             continue;
         };
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_launch_candidate",
+            serde_json::json!({
+                "nodeId": node_id,
+                "state": dynamic_timing_data(graph),
+            }),
+        );
         let node = graph
             .nodes
             .get_mut(index)
@@ -2875,6 +3114,19 @@ fn launch_ready_dynamic_nodes(
         let node_clone = node.clone();
         let node_id_for_job = node_clone.id.clone();
         graph.run.updated_at = now_rfc3339_like();
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_node_marked_running",
+            serde_json::json!({
+                "nodeId": node_id_for_job,
+                "kind": node_clone.kind,
+                "sessionMode": node_clone.session_mode,
+                "workspaceMode": node_clone.workspace.mode,
+                "providerId": node_clone.provider.clone(),
+                "model": node_clone.model.clone(),
+                "state": dynamic_timing_data(graph),
+            }),
+        );
         persist_dynamic_graph(ctx, graph)?;
         emit_dynamic_session_update_best_effort(
             ctx,
@@ -2898,6 +3150,7 @@ fn launch_ready_dynamic_nodes(
             .iter()
             .rposition(|resume| resume.node_id == node_id_for_job)
             .map(|index| launch_resume_overrides.remove(index));
+        let spawned_node_id = node_id_for_job.clone();
         thread::spawn(move || {
             let app = background_app;
             let node_id = node_id_for_job;
@@ -2929,6 +3182,14 @@ fn launch_ready_dynamic_nodes(
             let message = DynamicExecutionMessage { node_id, result };
             let _ = tx.send(message);
         });
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_thread_spawned",
+            serde_json::json!({
+                "nodeId": spawned_node_id,
+                "state": dynamic_timing_data(graph),
+            }),
+        );
     }
     Ok(())
 }
@@ -3138,6 +3399,19 @@ fn execute_dynamic_node_job(
     outer_node_uuid: Option<&str>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<DynamicExecutionResult> {
+    append_dynamic_event_for_ids_best_effort(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        "dynamic_job_thread_started",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+        }),
+    );
     let dynamic_run_path =
         app.paths
             .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
@@ -3146,12 +3420,14 @@ fn execute_dynamic_node_job(
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
     let state_lock =
         dynamic_state_lock_for(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
+    let state_load_started_at = Instant::now();
     let (run, mut graph): (DynamicRunState, DynamicGraphState) = {
         let _guard = state_lock
             .lock()
             .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
         (read_json(&dynamic_run_path)?, read_json(&graph_path)?)
     };
+    let state_load_elapsed_ms = elapsed_ms(state_load_started_at);
     let ctx = DynamicExecutionContext {
         app,
         task_id,
@@ -3166,6 +3442,16 @@ fn execute_dynamic_node_job(
         outer_node_uuid,
         resume_override,
     };
+    dynamic_event_best_effort(
+        &ctx,
+        "dynamic_job_state_loaded",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": state_load_elapsed_ms,
+            "state": dynamic_timing_data(&graph),
+        }),
+    );
     let index = graph
         .nodes
         .iter()
@@ -3173,6 +3459,17 @@ fn execute_dynamic_node_job(
         .ok_or_else(|| anyhow!("dynamic node `{}` missing from graph", node.id))?;
     graph.run = run;
     graph.nodes[index] = node.clone();
+    dynamic_event_best_effort(
+        &ctx,
+        "dynamic_job_kind_dispatch",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "workspaceMode": node.workspace.mode,
+            "providerId": node.provider.clone(),
+            "model": node.model.clone(),
+        }),
+    );
 
     let result = match node.kind {
         DynamicNodeKind::Worker => execute_dynamic_worker(&ctx, &graph, node),
@@ -3225,9 +3522,51 @@ fn execute_dynamic_worker(
     graph: &DynamicGraphState,
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
+    let workspace_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_workspace_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "workspaceMode": node.workspace.mode,
+            "workspacePath": node.workspace_path.clone(),
+        }),
+    );
     ensure_dynamic_workspace(ctx, &mut node)?;
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_workspace_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(workspace_started_at),
+            "workspaceMode": node.workspace.mode,
+            "workspacePath": node.workspace_path.clone(),
+        }),
+    );
     let attempt_id = dynamic_attempt_id(&node);
+    let attempt_dirs_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_attempt_dirs_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "attemptId": attempt_id,
+        }),
+    );
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_attempt_dirs_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "attemptId": attempt_id,
+            "elapsedMs": elapsed_ms(attempt_dirs_started_at),
+        }),
+    );
     let provider_id = node
         .provider
         .as_deref()
@@ -3243,6 +3582,17 @@ fn execute_dynamic_worker(
         &attempt_id,
     );
     let mut proposal_repair_prompts = 0;
+    let continue_ref_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_continue_ref_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "configuredSessionMode": node.session_mode,
+            "continueFromNodeId": node.continue_from_node_id,
+        }),
+    );
     let mut continue_ref = match node.session_mode {
         SessionMode::Continue => node
             .continue_from_node_id
@@ -3252,6 +3602,16 @@ fn execute_dynamic_worker(
             }),
         SessionMode::New => dynamic_node_continue_ref(ctx, &node, &attempt_id),
     };
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_continue_ref_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(continue_ref_started_at),
+            "hasContinueRef": continue_ref.is_some(),
+        }),
+    );
     let mut session_mode = if continue_ref.is_some() {
         SessionMode::Continue
     } else {
@@ -3285,12 +3645,45 @@ fn execute_dynamic_worker(
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
         let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
         let session_update = ctx.app.acp_session_update_for(live_update_context);
+        let invocation_build_started_at = Instant::now();
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_worker_invocation_build_begin",
+            serde_json::json!({
+                "nodeId": node.id,
+                "kind": node.kind,
+                "sessionMode": session_mode,
+                "providerId": provider_id,
+                "model": node.model.clone(),
+                "repairPromptCount": proposal_repair_prompts,
+            }),
+        );
+        let output_contract_started_at =
+            dynamic_invocation_build_step_begin(ctx, &node, &attempt_id, "output_contract");
+        let output_contract = dynamic_output_contract(ctx, graph);
+        dynamic_invocation_build_step_end(
+            ctx,
+            &node,
+            &attempt_id,
+            "output_contract",
+            output_contract_started_at,
+            serde_json::json!({
+                "artifact": output_contract.artifact,
+                "kind": output_contract.kind,
+                "hasSchema": output_contract.schema.is_some(),
+                "schemaTextBytes": output_contract
+                    .schema_text
+                    .as_ref()
+                    .map(|value| value.len())
+                    .unwrap_or(0),
+            }),
+        );
         let invocation = build_dynamic_worker_invocation(
             ctx,
             graph,
             &node,
             &attempt_id,
-            Some(dynamic_output_contract(ctx, graph)),
+            Some(output_contract),
             session_mode,
             continue_ref.clone(),
             resume_prompt.take(),
@@ -3304,6 +3697,19 @@ fn execute_dynamic_worker(
                 node.id
             )
         })?;
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_worker_invocation_build_end",
+            serde_json::json!({
+                "nodeId": node.id,
+                "kind": node.kind,
+                "elapsedMs": elapsed_ms(invocation_build_started_at),
+                "sessionMode": session_mode,
+                "providerId": provider_id,
+                "model": node.model.clone(),
+                "repairPromptCount": proposal_repair_prompts,
+            }),
+        );
         append_dynamic_event(
             ctx,
             "dynamic_node_started",
@@ -3319,16 +3725,28 @@ fn execute_dynamic_worker(
                 node.id
             )
         })?;
-        let result = ctx
-            .app
-            .provider_for_id(&provider_id)
-            .map_err(|error| {
-                anyhow!(
-                    "failed to resolve provider `{}` for `{}`: {error}",
-                    provider_id,
-                    node.id
-                )
-            })?
+        let provider_started_at = Instant::now();
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_worker_provider_begin",
+            serde_json::json!({
+                "nodeId": node.id,
+                "kind": node.kind,
+                "sessionMode": session_mode,
+                "providerId": provider_id,
+                "model": node.model.clone(),
+                "repairPromptCount": proposal_repair_prompts,
+            }),
+        );
+        let provider = ctx.app.provider_for_id(&provider_id).map_err(|error| {
+            anyhow!(
+                "failed to resolve provider `{}` for `{}`: {error}",
+                provider_id,
+                node.id
+            )
+        })?;
+        let provider_resolve_elapsed_ms = elapsed_ms(provider_started_at);
+        let result = provider
             .run_worker_with_callbacks(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
@@ -3341,6 +3759,20 @@ fn execute_dynamic_worker(
                     node.id
                 )
             })?;
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_worker_provider_end",
+            serde_json::json!({
+                "nodeId": node.id,
+                "kind": node.kind,
+                "elapsedMs": elapsed_ms(provider_started_at),
+                "providerResolveElapsedMs": provider_resolve_elapsed_ms,
+                "sessionMode": session_mode,
+                "providerId": provider_id,
+                "model": node.model.clone(),
+                "repairPromptCount": proposal_repair_prompts,
+            }),
+        );
         if !outer_attempt_is_still_current_running(ctx)? {
             node.status = DynamicNodeStatus::Paused;
             node.outcome = None;
@@ -3501,10 +3933,62 @@ fn execute_dynamic_agent_stage(
     graph: &DynamicGraphState,
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
+    let workspace_started_at = Instant::now();
     node.workspace_path = Some(ctx.app.paths.repo_root.clone());
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_workspace_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(workspace_started_at),
+            "workspaceMode": node.workspace.mode,
+            "workspacePath": node.workspace_path.clone(),
+        }),
+    );
     let attempt_id = dynamic_attempt_id(&node);
+    let attempt_dirs_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_attempt_dirs_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "attemptId": attempt_id,
+        }),
+    );
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_attempt_dirs_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "attemptId": attempt_id,
+            "elapsedMs": elapsed_ms(attempt_dirs_started_at),
+        }),
+    );
+    let continue_ref_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_continue_ref_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "configuredSessionMode": node.session_mode,
+        }),
+    );
     let continue_ref = dynamic_node_continue_ref(ctx, &node, &attempt_id);
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_continue_ref_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(continue_ref_started_at),
+            "hasContinueRef": continue_ref.is_some(),
+        }),
+    );
     let session_mode = if continue_ref.is_some() {
         SessionMode::Continue
     } else {
@@ -3518,6 +4002,18 @@ fn execute_dynamic_agent_stage(
     let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
     let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
     let session_update = ctx.app.acp_session_update_for(live_update_context);
+    let invocation_build_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_invocation_build_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "sessionMode": session_mode,
+            "providerId": node.provider.clone(),
+            "model": node.model.clone(),
+        }),
+    );
     let invocation = build_dynamic_worker_invocation(
         ctx,
         graph,
@@ -3531,6 +4027,18 @@ fn execute_dynamic_agent_stage(
         PromptVisibility::Visible,
         Vec::new(),
     )?;
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_invocation_build_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(invocation_build_started_at),
+            "sessionMode": session_mode,
+            "providerId": node.provider.clone(),
+            "model": node.model.clone(),
+        }),
+    );
     let provider_id = node
         .provider
         .as_deref()
@@ -3543,14 +4051,38 @@ fn execute_dynamic_agent_stage(
             "kind": node.kind,
         }),
     )?;
-    let result = ctx
-        .app
-        .provider_for_id(provider_id)?
-        .run_worker_with_callbacks(
-            invocation,
-            live_update.as_ref().map(|callback| callback as _),
-            session_update.as_ref().map(|callback| callback as _),
-        )?;
+    let provider_started_at = Instant::now();
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_provider_begin",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "sessionMode": session_mode,
+            "providerId": provider_id,
+            "model": node.model.clone(),
+        }),
+    );
+    let provider = ctx.app.provider_for_id(provider_id)?;
+    let provider_resolve_elapsed_ms = elapsed_ms(provider_started_at);
+    let result = provider.run_worker_with_callbacks(
+        invocation,
+        live_update.as_ref().map(|callback| callback as _),
+        session_update.as_ref().map(|callback| callback as _),
+    )?;
+    dynamic_event_best_effort(
+        ctx,
+        "dynamic_worker_provider_end",
+        serde_json::json!({
+            "nodeId": node.id,
+            "kind": node.kind,
+            "elapsedMs": elapsed_ms(provider_started_at),
+            "providerResolveElapsedMs": provider_resolve_elapsed_ms,
+            "sessionMode": session_mode,
+            "providerId": provider_id,
+            "model": node.model.clone(),
+        }),
+    );
     if !outer_attempt_is_still_current_running(ctx)? {
         node.status = DynamicNodeStatus::Paused;
         node.outcome = None;
@@ -5860,7 +6392,21 @@ fn build_dynamic_worker_invocation(
     resume_prompt_visibility: PromptVisibility,
     resume_input_attachment_paths: Vec<String>,
 ) -> Result<WorkerInvocation> {
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "runtime_context",
+        step_started_at,
+        serde_json::json!({
+            "attemptDir": runtime_context.attempt_dir,
+        }),
+    );
+
+    let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "profile");
     let builtin_profile = dynamic_builtin_profile(ctx.app.config.desktop_language, node);
     let profile = builtin_profile
         .map(|(profile, _)| profile.to_string())
@@ -5874,11 +6420,53 @@ fn build_dynamic_worker_invocation(
                 .map(|entry| entry.content)
         }),
     };
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "profile",
+        step_started_at,
+        serde_json::json!({
+            "profile": profile,
+            "hasBuiltinProfile": builtin_profile.is_some(),
+            "profileContentBytes": profile_content.as_ref().map(|value| value.len()).unwrap_or(0),
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "workspace_dir");
     let workspace_dir = node
         .workspace_path
         .clone()
         .unwrap_or_else(|| ctx.app.paths.repo_root.clone());
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "workspace_dir",
+        step_started_at,
+        serde_json::json!({
+            "workspaceMode": node.workspace.mode,
+            "workspacePath": workspace_dir,
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "system_sections");
     let extra_system_sections = dynamic_system_sections(ctx, graph, node)?;
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "system_sections",
+        step_started_at,
+        serde_json::json!({
+            "sectionCount": extra_system_sections.len(),
+            "sectionBytes": extra_system_sections.iter().map(|value| value.len()).sum::<usize>(),
+        }),
+    );
+
+    let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
     let model = match node.kind {
         DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
             dynamic_acceptance_model(ctx.dynamic)
@@ -5896,33 +6484,140 @@ fn build_dynamic_worker_invocation(
             .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
             .or_else(|| node.model.clone()),
     };
-    Ok(WorkerInvocation {
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "model",
+        step_started_at,
+        serde_json::json!({
+            "providerId": node.provider,
+            "model": model,
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "requirement_text");
+    let requirement_text = dynamic_requirement_text(ctx)?;
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "requirement_text",
+        step_started_at,
+        serde_json::json!({
+            "bytes": requirement_text.len(),
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "predecessors");
+    let predecessors = dynamic_predecessor_contexts(ctx, graph, node);
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "predecessors",
+        step_started_at,
+        serde_json::json!({
+            "count": predecessors.len(),
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "task_instruction");
+    let task_instruction = dynamic_task_instruction(ctx, graph, node);
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "task_instruction",
+        step_started_at,
+        serde_json::json!({
+            "bytes": task_instruction.len(),
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "permission_mode");
+    let permission_mode = {
+        let raw = node
+            .permission_mode
+            .clone()
+            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned));
+        match (raw, node.provider.as_deref()) {
+            (Some(normative), Some(provider)) => {
+                Some(ctx.app.config.resolve_permission_mode(provider, &normative))
+            }
+            (other, _) => other,
+        }
+    };
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "permission_mode",
+        step_started_at,
+        serde_json::json!({
+            "permissionMode": permission_mode,
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "attachments_dir");
+    let attachments_dir = ctx.app.paths.dynamic_node_attachments_dir(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        &node.id,
+        attempt_id,
+    );
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "attachments_dir",
+        step_started_at,
+        serde_json::json!({
+            "attachmentsDir": attachments_dir,
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "input_attachment_paths");
+    let mut input_attachment_paths = super::task_input_attachment_paths(ctx.app, ctx.task_id);
+    input_attachment_paths.extend(resume_input_attachment_paths);
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "input_attachment_paths",
+        step_started_at,
+        serde_json::json!({
+            "count": input_attachment_paths.len(),
+        }),
+    );
+
+    let step_started_at =
+        dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
+    let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         profile,
         profile_content,
         requirement_path: None,
-        requirement_text: Some(dynamic_requirement_text(ctx)?),
+        requirement_text: Some(requirement_text),
         adapter_workspace_dir: ctx.app.paths.repo_root.clone(),
         workspace_dir,
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
         runtime_context,
-        predecessors: dynamic_predecessor_contexts(ctx, graph, node),
+        predecessors,
         extra_system_sections,
-        task_instruction: Some(dynamic_task_instruction(ctx, graph, node)),
+        task_instruction: Some(task_instruction),
         session_mode,
-        permission_mode: {
-            let raw = node
-                .permission_mode
-                .clone()
-                .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned));
-            match (raw, node.provider.as_deref()) {
-                (Some(normative), Some(provider)) => {
-                    Some(ctx.app.config.resolve_permission_mode(provider, &normative))
-                }
-                (other, _) => other,
-            }
-        },
+        permission_mode,
         model,
         continue_ref,
         resume_prompt,
@@ -5931,25 +6626,27 @@ fn build_dynamic_worker_invocation(
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,
         log_provider_command: ctx.app.config.log_provider_command,
-        attachments_dir: Some(ctx.app.paths.dynamic_node_attachments_dir(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-            &node.id,
-            attempt_id,
-        )),
+        attachments_dir: Some(attachments_dir),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
-        input_attachment_paths: {
-            let mut paths = super::task_input_attachment_paths(ctx.app, ctx.task_id);
-            paths.extend(resume_input_attachment_paths);
-            paths
-        },
+        input_attachment_paths,
         mcp_servers: Vec::new(),
         skill_catalog: String::new(),
-    })
+    };
+    dynamic_invocation_build_step_end(
+        ctx,
+        node,
+        attempt_id,
+        "assemble_invocation",
+        step_started_at,
+        serde_json::json!({
+            "hasOutputContract": invocation.output_contract.is_some(),
+            "predecessorCount": invocation.predecessors.len(),
+            "systemSectionCount": invocation.extra_system_sections.len(),
+            "inputAttachmentCount": invocation.input_attachment_paths.len(),
+        }),
+    );
+    Ok(invocation)
 }
 
 fn dynamic_builtin_profile(
@@ -6898,13 +7595,51 @@ fn ensure_dynamic_workspace(
     match node.workspace.mode {
         WorkspaceMode::Readonly | WorkspaceMode::Main => {
             node.workspace_path = Some(ctx.app.paths.repo_root.clone());
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_workspace_ready",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "workspaceMode": node.workspace.mode,
+                    "workspacePath": node.workspace_path.clone(),
+                }),
+            );
             Ok(())
         }
         WorkspaceMode::Worktree => {
             if node.workspace_path.is_some() {
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_ready",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "workspaceMode": node.workspace.mode,
+                        "workspacePath": node.workspace_path.clone(),
+                        "reusedExistingPath": true,
+                    }),
+                );
                 return Ok(());
             }
+            let capability_started_at = Instant::now();
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_worktree_capability_begin",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "workspaceMode": node.workspace.mode,
+                }),
+            );
             let capability = dynamic_workspace_capability(ctx);
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_worktree_capability_end",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "elapsedMs": elapsed_ms(capability_started_at),
+                    "supportsWorktree": capability.supports_worktree,
+                    "reasonCode": capability.reason_code,
+                }),
+            );
             if !capability.supports_worktree {
                 return Err(dynamic_worktree_unavailable_error(
                     ctx,
@@ -6914,6 +7649,17 @@ fn ensure_dynamic_workspace(
             }
             let worktree_dir = dynamic_worktree_dir(ctx, &node.id);
             let branch = dynamic_worktree_branch_name(ctx, &node.id);
+            let existing_check_started_at = Instant::now();
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_worktree_existing_check_begin",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "workspacePath": worktree_dir,
+                    "branch": branch,
+                    "exists": worktree_dir.exists(),
+                }),
+            );
             if worktree_dir.exists() && !dynamic_worktree_is_git_worktree(&worktree_dir) {
                 std::fs::remove_dir_all(worktree_dir.as_std_path()).map_err(|error| {
                     anyhow!(
@@ -6936,6 +7682,17 @@ fn ensure_dynamic_workspace(
                     branch
                 );
             }
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_worktree_existing_check_end",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "elapsedMs": elapsed_ms(existing_check_started_at),
+                    "workspacePath": worktree_dir,
+                    "branch": branch,
+                    "exists": worktree_dir.exists(),
+                }),
+            );
             if !worktree_dir.exists() {
                 std::fs::create_dir_all(
                     worktree_dir
@@ -6943,10 +7700,39 @@ fn ensure_dynamic_workspace(
                         .ok_or_else(|| anyhow!("dynamic worktree path has no parent"))?
                         .as_std_path(),
                 )?;
+                let lock_wait_started_at = Instant::now();
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_git_lock_wait_begin",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "workspacePath": worktree_dir,
+                        "branch": branch,
+                    }),
+                );
                 let _git_guard = DYNAMIC_WORKTREE_GIT_LOCK
                     .get_or_init(|| Mutex::new(()))
                     .lock()
                     .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_git_lock_wait_end",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "elapsedMs": elapsed_ms(lock_wait_started_at),
+                        "workspacePath": worktree_dir,
+                        "branch": branch,
+                    }),
+                );
+                let cleanup_started_at = Instant::now();
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_branch_cleanup_begin",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "branch": branch,
+                    }),
+                );
                 delete_dynamic_worktree_branch(ctx, &branch, true).map_err(|error| {
                     anyhow!(
                         "failed to clear stale dynamic worktree branch `{}` for `{}`: {error}",
@@ -6954,6 +7740,25 @@ fn ensure_dynamic_workspace(
                         node.id
                     )
                 })?;
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_branch_cleanup_end",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "elapsedMs": elapsed_ms(cleanup_started_at),
+                        "branch": branch,
+                    }),
+                );
+                let add_started_at = Instant::now();
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_add_begin",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "workspacePath": worktree_dir,
+                        "branch": branch,
+                    }),
+                );
                 let output = git_output(
                     &ctx.app.paths.repo_root,
                     &[
@@ -6965,6 +7770,19 @@ fn ensure_dynamic_workspace(
                         "HEAD",
                     ],
                 )?;
+                dynamic_event_best_effort(
+                    ctx,
+                    "dynamic_worktree_add_end",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "elapsedMs": elapsed_ms(add_started_at),
+                        "workspacePath": worktree_dir,
+                        "branch": branch,
+                        "success": output.success,
+                        "stdout": truncate_diagnostic_text(&output.stdout),
+                        "stderr": truncate_diagnostic_text(&output.stderr),
+                    }),
+                );
                 if !output.success {
                     let _ = delete_dynamic_worktree_branch(ctx, &branch, true);
                     bail!(
@@ -6976,7 +7794,18 @@ fn ensure_dynamic_workspace(
                     );
                 }
             }
-            node.workspace_path = Some(worktree_dir);
+            node.workspace_path = Some(worktree_dir.clone());
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_worktree_ready",
+                serde_json::json!({
+                    "nodeId": node.id,
+                    "workspaceMode": node.workspace.mode,
+                    "workspacePath": worktree_dir,
+                    "branch": branch,
+                    "reusedExistingPath": false,
+                }),
+            );
             Ok(())
         }
     }
@@ -7095,19 +7924,15 @@ fn append_dynamic_event(
     event_type: &str,
     data: serde_json::Value,
 ) -> Result<()> {
-    append_jsonl(
-        &ctx.app.paths.dynamic_events_file(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-        ),
-        &serde_json::json!({
-            "timestamp": now_rfc3339_like(),
-            "type": event_type,
-            "data": data,
-        }),
+    append_dynamic_event_for_ids(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        event_type,
+        data,
     )
 }
 

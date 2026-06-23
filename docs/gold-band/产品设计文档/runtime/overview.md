@@ -104,6 +104,12 @@ nodes/<outer-node>/attempt-001/dynamic/
 
 外层 `node.json` 只记录 `ai-dynamic` 节点的最终生命周期；内部 graph 不污染外层 round trace。
 
+### AI-DYNAMIC / ACP 诊断事件
+
+当 AI-DYNAMIC 内部节点启动缓慢时，runtime 会在 `dynamic/events.jsonl` 写入结构化诊断事件，用于拆分 Ready→Running 调度、线程启动、状态读取、worktree 创建、prompt 构建和 provider 调用耗时。关键事件包括 `dynamic_ready_refreshed`、`dynamic_launch_ready_begin/end`、`dynamic_launch_candidate`、`dynamic_node_marked_running`、`dynamic_thread_spawned`、`dynamic_job_state_loaded`、`dynamic_worker_workspace_begin/end`、`dynamic_worktree_git_lock_wait_begin/end`、`dynamic_worktree_add_begin/end`、`dynamic_worker_invocation_build_begin/end`、`dynamic_worker_invocation_build_step_begin/end` 和 `dynamic_worker_provider_begin/end`。`dynamic/events.jsonl` 写入按单个 dynamic attempt 的事件文件加锁，避免并行 fanout 节点写入同一 JSONL 时发生行内容交错；锁只覆盖 append 操作，不串行化 worker、worktree、prompt 构建或 provider 执行。
+
+ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和 JSON-RPC timing，例如 `acp_adapter_resolved`、`acp_initialize_cached`、`acp_rpc_begin/end`。这些事件只用于诊断，不改变 canonical state；复跑排查时应先对齐 dynamic events 与 ACP diagnostics，再判断等待发生在调度、worktree、ACP RPC 还是 provider 首响应阶段。
+
 ## 7. runtime 配置
 当前 runtime 相关配置统一由 `RuntimeConfig` 管理，至少包括：
 - `default_provider`

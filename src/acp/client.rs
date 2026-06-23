@@ -617,6 +617,15 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
 }
 
 impl<'a> AcpRuntime<'a> {
+    fn append_timing_diagnostic(&self, event: &str, data: Value) {
+        let _ = append_diagnostic(
+            &self.paths.diagnostics,
+            "info",
+            format!("acp timing: {event}"),
+            Some(data),
+        );
+    }
+
     fn start(
         provider_id: &str,
         config: &AcpAdapterConfig,
@@ -632,8 +641,9 @@ impl<'a> AcpRuntime<'a> {
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
         let key = AdapterConnectionKey::new(provider_id, cwd.clone());
-        let connection = AdapterConnectionManager::shared()
-            .get_or_spawn(provider_id, config, cwd.clone(), use_local_claude)
+        let adapter_started_at = Instant::now();
+        let resolution = AdapterConnectionManager::shared()
+            .get_or_spawn_with_outcome(provider_id, config, cwd.clone(), use_local_claude)
             .map_err(|error| {
                 let _ = append_diagnostic(
                     &paths.diagnostics,
@@ -647,6 +657,20 @@ impl<'a> AcpRuntime<'a> {
                 );
                 error
             })?;
+        let connection = resolution.connection;
+        let _ = append_diagnostic(
+            &paths.diagnostics,
+            "info",
+            "acp timing: adapter connection resolved",
+            Some(json!({
+                "event": "acp_adapter_resolved",
+                "elapsedMs": adapter_started_at.elapsed().as_millis(),
+                "providerId": provider_id,
+                "workspaceRoot": cwd.as_str(),
+                "outcome": resolution.outcome.as_str(),
+                "pid": connection.pid(),
+            })),
+        );
         Self::from_connection(
             provider_id,
             cwd,
@@ -799,6 +823,13 @@ impl<'a> AcpRuntime<'a> {
 
     fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
         if let Some(capabilities) = self.connection.initialized_capabilities() {
+            self.append_timing_diagnostic(
+                "acp_initialize_cached",
+                json!({
+                    "event": "acp_initialize_cached",
+                    "status": "ok",
+                }),
+            );
             return Ok(capabilities);
         }
         let result = self.request_with_timeout(
@@ -1261,6 +1292,15 @@ impl<'a> AcpRuntime<'a> {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
         }
+        let diagnostic_started_at = Instant::now();
+        self.append_timing_diagnostic(
+            "acp_rpc_begin",
+            json!({
+                "event": "acp_rpc_begin",
+                "method": method,
+                "sessionId": self.session_id,
+            }),
+        );
         let request = self.connection.begin_request(method, params)?;
         self.append_outbound_frame(&request.frame)?;
         let started_at = Instant::now();
@@ -1276,6 +1316,18 @@ impl<'a> AcpRuntime<'a> {
                     Some(remaining) => remaining.min(STOP_CHECK_INTERVAL),
                     None => {
                         self.connection.cancel_pending(request.id);
+                        self.append_timing_diagnostic(
+                            "acp_rpc_end",
+                            json!({
+                                "event": "acp_rpc_end",
+                                "method": method,
+                                "requestId": request.id,
+                                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                                "status": "timeout",
+                                "timeoutSeconds": timeout.as_secs(),
+                                "sessionId": self.session_id,
+                            }),
+                        );
                         bail!(
                             "ACP `{method}` timed out after {} seconds",
                             timeout.as_secs()
@@ -1293,8 +1345,31 @@ impl<'a> AcpRuntime<'a> {
                         return Err(anyhow!(AcpCancelled));
                     }
                     if let Some(error) = value.get("error") {
+                        self.append_timing_diagnostic(
+                            "acp_rpc_end",
+                            json!({
+                                "event": "acp_rpc_end",
+                                "method": method,
+                                "requestId": request.id,
+                                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                                "status": "error",
+                                "error": error,
+                                "sessionId": self.session_id,
+                            }),
+                        );
                         bail!("ACP `{method}` failed: {error}");
                     }
+                    self.append_timing_diagnostic(
+                        "acp_rpc_end",
+                        json!({
+                            "event": "acp_rpc_end",
+                            "method": method,
+                            "requestId": request.id,
+                            "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                            "status": "ok",
+                            "sessionId": self.session_id,
+                        }),
+                    );
                     return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -1302,6 +1377,17 @@ impl<'a> AcpRuntime<'a> {
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.connection.cancel_pending(request.id);
+                    self.append_timing_diagnostic(
+                        "acp_rpc_end",
+                        json!({
+                            "event": "acp_rpc_end",
+                            "method": method,
+                            "requestId": request.id,
+                            "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                            "status": "disconnected",
+                            "sessionId": self.session_id,
+                        }),
+                    );
                     return Err(anyhow!(AcpTransportInterrupted));
                 }
             }
@@ -1328,6 +1414,16 @@ impl<'a> AcpRuntime<'a> {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
         }
+        let diagnostic_started_at = Instant::now();
+        self.append_timing_diagnostic(
+            "acp_rpc_begin",
+            json!({
+                "event": "acp_rpc_begin",
+                "method": "session/prompt",
+                "sessionId": session_id,
+                "providerId": provider_id,
+            }),
+        );
         let request = self.connection.begin_request(
             "session/prompt",
             session_prompt_params(provider_id, session_id, prompt),
@@ -1395,6 +1491,26 @@ impl<'a> AcpRuntime<'a> {
             }
         })();
         self.connection.mark_prompt_inactive();
+        let status = if result.is_ok() { "ok" } else { "error" };
+        let stop_reason = result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("stopReason"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.append_timing_diagnostic(
+            "acp_rpc_end",
+            json!({
+                "event": "acp_rpc_end",
+                "method": "session/prompt",
+                "requestId": request.id,
+                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                "status": status,
+                "stopReason": stop_reason,
+                "sessionId": session_id,
+                "providerId": provider_id,
+            }),
+        );
         result
     }
 

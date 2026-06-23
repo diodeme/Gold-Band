@@ -65,6 +65,7 @@ import {
   applyConversationSelectedSessionSnapshot,
   conversationSessionKeyFromParts,
   findConversationLeafByKey,
+  isConversationActiveLifecycle,
   isConversationActiveStatus,
   mergeConversationRunSnapshot,
   type ConversationRunSnapshotSource,
@@ -545,11 +546,14 @@ export function App() {
         ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
         : null;
       const currentSelectedActive = Boolean(
-        currentSelectedLeaf && isConversationActiveStatus(currentSelectedLeaf.status),
+        currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
-      const incomingActive = event.session
-        ? isConversationActiveStatus(event.session.status)
-        : Boolean(event.event);
+      const hasRuntimeSnapshot = Boolean(event.session || event.lifecycle);
+      const incomingActive = event.lifecycle
+        ? isConversationActiveLifecycle(event.lifecycle)
+        : event.session
+          ? isConversationActiveStatus(event.session.status)
+          : Boolean(event.event);
       const followState = conversationSessionFollowRef.current;
       const followPending = followState.mode === 'auto'
         && Boolean(currentSelectedKey)
@@ -558,20 +562,20 @@ export function App() {
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
-        hasSessionSnapshot: Boolean(event.session),
+        hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
-        sessionStatus: event.session?.status,
+        sessionStatus: event.lifecycle?.displayStatus ?? event.session?.status,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
         followPending,
       });
-      if (event.session && updatePlan.patchSelectedSession) {
+      if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
           const patched = applyConversationSelectedSessionSnapshot(current, event);
           conversationRunRef.current = patched;
           return patched;
         });
       }
-      if (event.session && updatePlan.patchBackgroundSession) {
+      if (hasRuntimeSnapshot && updatePlan.patchBackgroundSession) {
         setConversationRun((current) => {
           const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, event);
           conversationRunRef.current = patched;

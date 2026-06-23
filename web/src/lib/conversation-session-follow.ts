@@ -78,7 +78,8 @@ export interface ConversationAcpRunUpdatePlan {
 export function planConversationAcpRunUpdate(args: {
   treeHasSession: boolean;
   alreadySelected: boolean;
-  hasSessionSnapshot: boolean;
+  hasRuntimeSnapshot?: boolean;
+  hasSessionSnapshot?: boolean;
   hasLiveEvent: boolean;
   sessionStatus?: string | null;
   pendingPermissionCount?: number;
@@ -87,12 +88,14 @@ export function planConversationAcpRunUpdate(args: {
   const {
     treeHasSession,
     alreadySelected,
+    hasRuntimeSnapshot,
     hasSessionSnapshot,
     hasLiveEvent,
     sessionStatus,
     pendingPermissionCount = 0,
     followPending = false,
   } = args;
+  const canPatchSnapshot = hasRuntimeSnapshot ?? Boolean(hasSessionSnapshot);
   const terminal = isTerminalConversationSessionStatus(sessionStatus);
   const interactive = needsInteractiveConversationRunRefresh(sessionStatus, pendingPermissionCount);
   if (!treeHasSession) {
@@ -104,12 +107,12 @@ export function planConversationAcpRunUpdate(args: {
   }
   if (alreadySelected) {
     return {
-      patchSelectedSession: hasSessionSnapshot,
+      patchSelectedSession: canPatchSnapshot,
       patchBackgroundSession: false,
       queueRunRefresh: terminal || interactive,
     };
   }
-  if (!hasSessionSnapshot) {
+  if (!canPatchSnapshot) {
     return {
       patchSelectedSession: false,
       patchBackgroundSession: false,
@@ -119,13 +122,14 @@ export function planConversationAcpRunUpdate(args: {
   return {
     patchSelectedSession: false,
     patchBackgroundSession: !terminal && !interactive,
-    queueRunRefresh: terminal || interactive,
+    queueRunRefresh: terminal || interactive || followPending,
   };
 }
 
 export function shouldQueueConversationRunRefreshForAcpUpdate(args: {
   treeHasSession: boolean;
   alreadySelected: boolean;
+  hasRuntimeSnapshot?: boolean;
   hasSessionSnapshot?: boolean;
   hasLiveEvent?: boolean;
   sessionStatus?: string | null;
@@ -134,6 +138,7 @@ export function shouldQueueConversationRunRefreshForAcpUpdate(args: {
   return planConversationAcpRunUpdate({
     treeHasSession: args.treeHasSession,
     alreadySelected: args.alreadySelected,
+    hasRuntimeSnapshot: args.hasRuntimeSnapshot,
     hasSessionSnapshot: args.hasSessionSnapshot ?? Boolean(args.sessionStatus),
     hasLiveEvent: args.hasLiveEvent ?? false,
     sessionStatus: args.sessionStatus,

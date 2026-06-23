@@ -177,6 +177,21 @@ describe('conversation session follow helpers', () => {
     });
   });
 
+  it('queues a refresh for lifecycle-only background snapshots while auto-follow is pending', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasRuntimeSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: 'ready',
+      followPending: true,
+    })).toEqual({
+      patchSelectedSession: false,
+      patchBackgroundSession: true,
+      queueRunRefresh: true,
+    });
+  });
+
   it('queues a full refresh when a background session reaches an interactive or terminal state', () => {
     expect(planConversationAcpRunUpdate({
       treeHasSession: true,

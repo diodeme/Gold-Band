@@ -106,9 +106,10 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 3. 父 run running、dynamic leaf running、ACP terminal 时，仍可显示合法的 `launching-next-node`。
 4. 父 run 已 paused 时，陈旧的 leaf `running + ACP cancelled` 不得显示为 `launching-next-node`。
 5. dynamic leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端收到 terminal/interactive 状态后刷新完整 run VM，避免选中 leaf 继续停留在旧的 `launching-next-node`。
-6. dynamic child 已物化为 `Ready | Running` 但 ACP attempt/session 尚未创建时，VM 必须合成稳定的 pending leaf，显示为 runtime launching session，并进入 activeSessions，避免 session tree 只展示标题但右侧无会话状态。
-7. 前端 auto-follow 必须区分用户手动查看历史 session 与 runtime 自然 terminal：manual 状态下新 active session 不抢焦点；auto 状态下当前选中自然 terminal 且用户仍在底部时，后续 child 首个 active/live event 可以切换过去。
-8. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
+6. dynamic graph 中任意 leaf 从不可见/待依赖状态变为 `Ready | Running`，或 graph 内部创建新的后继 leaf 后，后端必须在 graph 持久化后发出该 leaf 的 session/lifecycle update；这是一条通用 dynamic leaf 可见性规则，不针对 merge / acceptance 等具体节点类型做补丁。
+7. dynamic child 已物化为 `Ready | Running` 但 ACP attempt/session 尚未创建时，VM 必须合成稳定的 pending leaf，显示为 runtime launching session，并进入 activeSessions，避免 session tree 只展示标题但右侧无会话状态。
+8. 前端 auto-follow 必须区分用户手动查看历史 session、用户明确回到最新 active/current session 与 runtime 自然 terminal：manual 状态下新 active session 不抢焦点；auto 状态下当前选中自然 terminal 且用户仍在底部时，后续 child 首个 active/live event 或 lifecycle-only active update 可以切换过去；用户手动查看历史后，只有重新选中最新 active/current leaf 并回到底部才恢复 auto-follow。
+9. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
 
 ## 9. 侧边栏 run 列表右键停止
 

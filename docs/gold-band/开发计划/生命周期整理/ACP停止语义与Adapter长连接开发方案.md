@@ -32,6 +32,7 @@
 - 不能通过 response 确认 adapter 已处理。
 - 适合用户点击“停止当前生成”。
 - 正常情况下不释放 ACP session，也不关闭 adapter process。
+- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled，业务层也按完成优先接受。
 
 Gold Band 使用场景：
 
@@ -223,12 +224,14 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - `stop_active_session` 的作用域是当前 leaf attempt/session，不是整个 graph；AI-DYNAMIC 内部 leaf stop 只暂停目标 dynamic node。
    - graph scheduler 继续处理其他 `Ready | Running` leaf；只有没有 active leaf 后，graph / outer node / run 才自动收敛为 `Paused + ProcessInterrupted`。
    - 该规则按 leaf attempt/session、graph scheduler、run aggregate 三层设计，后续普通固定工作流支持并行节点时复用同一模型。
+   - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
    - 详细落地见 `docs/gold-band/开发计划/生命周期整理/并行节点通用停止继续语义与AI-DYNAMIC落地方案.md`。
    - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，再只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
    - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
    - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端据此刷新完整 run VM；前端不能靠 ACP terminal snapshot 自行推断 workflow runtime 是否完成或暂停。
    - dynamic graph 中任何 leaf 变为 `Ready | Running` 或创建新的 graph 后继 leaf 后，也必须在持久化后发出 lifecycle update；该更新可以没有完整 ACP session payload，前端仍应把它当成 runtime snapshot 处理。
    - 刷新完整 run VM 不等于自动抢焦点：只有 session auto-follow 仍处于 auto/pending 且用户没有手动切到历史 session 时，新 active child session 才能成为选中 session；用户查看历史后必须重新选择最新 active/current leaf 并回到底部才恢复 auto-follow。
+   - run 终态刷新由 runtime lifecycle 驱动：`RuntimeLifecycleEvent::RunCompleted` 在 `RunState/RoundState/NodeState` 已持久化后桥接为前端事件，进入会话页统一 `getConversationRun + getConversationSidebar` 刷新入口；ACP terminal update 继续处理 session/graph 实时状态，但不再作为 run completed 的唯一依据。
 
 4. `run_kill(...)`：
    - 保持唯一 terminal killed 路径。

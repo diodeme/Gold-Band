@@ -41,6 +41,7 @@ import {
   saveConversationRunMode,
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
+  subscribeConversationRunStateUpdates,
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
@@ -493,12 +494,20 @@ export function App() {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
     let active = true;
     let refreshTimer: number | null = null;
+    let refreshInFlight = false;
+    let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
-    let stopListening: (() => void) | null = null;
+    let stopListeningAcp: (() => void) | null = null;
+    let stopListeningRun: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
-    const refreshConversationRun = () => {
+    const refreshConversationRunAndSidebar = () => {
       refreshTimer = null;
+      if (refreshInFlight) {
+        refreshAgain = true;
+        return;
+      }
+      refreshInFlight = true;
       const followStateAtRequest = conversationSessionFollowRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
         ?? conversationRunRef.current?.sessionTree.selectedSessionKey
@@ -509,8 +518,11 @@ export function App() {
         currentSelectedKey,
       });
       pendingEventSessionKey = null;
-      getConversationRun(projectId, taskId, runId, selectedKey)
-        .then((run) => {
+      Promise.all([
+        getConversationRun(projectId, taskId, runId, selectedKey),
+        getConversationSidebar(),
+      ])
+        .then(([run, sidebar]) => {
           if (!active) return;
           const latestFollowState = conversationSessionFollowRef.current;
           const effectiveSelectedKey = latestFollowState.version === followStateAtRequest.version
@@ -520,13 +532,29 @@ export function App() {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
           });
+          applyConversationSidebar(sidebar);
         })
-        .catch(() => {});
-      getConversationSidebar()
-        .then((sidebar) => {
-          if (active) applyConversationSidebar(sidebar);
-        })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          refreshInFlight = false;
+          if (!active || !refreshAgain) return;
+          refreshAgain = false;
+          if (refreshTimer === null) {
+            refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+          }
+        });
+    };
+
+    const queueConversationRunAndSidebarRefresh = (sessionKey?: string | null, delayMs = 120) => {
+      if (sessionKey !== undefined) pendingEventSessionKey = sessionKey;
+      if (refreshTimer !== null) {
+        if (delayMs === 0) {
+          window.clearTimeout(refreshTimer);
+          refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+        }
+        return;
+      }
+      refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, delayMs);
     };
 
     void subscribeAcpSessionUpdates((event) => {
@@ -585,19 +613,32 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      pendingEventSessionKey = resolveConversationEventSelectedSessionKey({
+      queueConversationRunAndSidebarRefresh(resolveConversationEventSelectedSessionKey({
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         followMode: followState.mode,
         currentSelectedActive,
         incomingActive,
-      });
-      if (refreshTimer !== null) return;
-      refreshTimer = window.setTimeout(refreshConversationRun, 120);
+      }));
     })
       .then((dispose) => {
         if (active) {
-          stopListening = dispose;
+          stopListeningAcp = dispose;
+        } else {
+          dispose();
+        }
+      })
+      .catch(() => {});
+
+    void subscribeConversationRunStateUpdates((event) => {
+      if (!active) return;
+      if (event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId && event.projectId !== projectId) return;
+      queueConversationRunAndSidebarRefresh(undefined, 0);
+    })
+      .then((dispose) => {
+        if (active) {
+          stopListeningRun = dispose;
         } else {
           dispose();
         }
@@ -607,7 +648,8 @@ export function App() {
     return () => {
       active = false;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      stopListening?.();
+      stopListeningAcp?.();
+      stopListeningRun?.();
     };
   }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
 
@@ -1548,19 +1590,6 @@ export function App() {
               conversationRunRef.current = patched;
               return patched;
             });
-          }}
-          onSessionStopped={() => {
-            const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
-            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
-              .then((refreshed) => {
-                applyConversationRunSnapshot(refreshed, 'session-stopped', {
-                  selectedSessionKey: selectedKey,
-                  preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
-                });
-                return getConversationSidebar();
-              })
-              .then((sidebar) => applyConversationSidebar(sidebar))
-              .catch((err) => setError(displayAppError(t, err)));
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
           onTitleChange={(title) => {

@@ -216,6 +216,9 @@ export const browserApi: RuntimeApi = {
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
+  subscribeConversationRunStateUpdates() {
+    return Promise.resolve(() => {});
+  },
   subscribeInterventionNavigate() {
     return Promise.resolve(() => {});
   },

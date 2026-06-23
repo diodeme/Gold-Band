@@ -52,7 +52,6 @@ interface ConversationRunPageProps {
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
-  onSessionStopped: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   onTitleChange?: (title: string) => void;
@@ -66,7 +65,6 @@ export function ConversationRunPage({
   onEditWorkflow,
   onSaveWorkflow,
   onSelectSession,
-  onSessionStopped,
   onLifecycleSnapshot,
   onAutoFollowChange,
   onTitleChange,
@@ -256,10 +254,6 @@ export function ConversationRunPage({
     onSelectSession(leaf, false);
   }, [isAutoFollowRestorableLeaf, onAutoFollowChange, onSelectSession]);
 
-  const handleSessionStopped = useCallback(() => {
-    onSessionStopped();
-  }, [onSessionStopped]);
-
   const handleRerun = () => {
     if (isRunning) {
       setRerunConfirmOpen(true);
@@ -376,7 +370,6 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
-            onSessionStopped={handleSessionStopped}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}

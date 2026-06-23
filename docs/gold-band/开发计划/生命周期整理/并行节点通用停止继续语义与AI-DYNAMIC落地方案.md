@@ -81,6 +81,18 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 
 `outer_attempt_is_still_current_running` 仍只表达父 run 是否被整体暂停/关闭/终止。单节点 stop 不再修改父 run running 状态，因此不会误触发该 guard。
 
+### 6.3 停止/完成竞态
+
+如果用户停止发生在 AI-DYNAMIC worker 最终 `dynamic-node-completion` 已经完整输出、但 runtime 尚未来得及接受结果的窗口内，ACP session/snapshot 仍可以被记录为 `cancelled`，但 dynamic worker 业务层需要做一次完成收敛：
+
+1. provider 返回 `Interrupted` 时仍先保存 `worker-ref`；如果 provider payload 中包含 output artifact，也先落盘到该 dynamic attempt 的 artifacts 目录。
+2. 仅对 `Interrupted` 或外层同 attempt 已 `Paused + ProcessInterrupted` 的结果，复用现有 `build_dynamic_completion_from_artifact(...)` 做 JSON、schema 与 DSL validation。
+3. 只有 validation status 为 `Accepted` 时，dynamic node 才改为 `Completed + Success`，proposal 进入 graph，并允许同一个 outer attempt 从 `ProcessInterrupted` 临时恢复为 `Running` 继续调度。
+4. artifact 不存在、半截 JSON、schema 不合法或 proposal rejected 时，不进入 repair prompt，也不误判 success，保持 `Paused + ProcessInterrupted` 等待用户继续。
+5. killed、error-blocked、非当前 attempt 或其他非 `ProcessInterrupted` 暂停不能被该规则恢复。
+
+该规则不是“停止失败”，而是“业务结果已经完成，停止只晚一步到达”；因此完成优先只基于完整合法业务 artifact，不基于 ACP stop reason 文案。
+
 ## 7. 单 leaf continue
 
 `DynamicResumeOverride` 是 AI-DYNAMIC 内部 leaf 精确继续的唯一 re-arm 信号。规则为：
@@ -110,6 +122,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 7. dynamic child 已物化为 `Ready | Running` 但 ACP attempt/session 尚未创建时，VM 必须合成稳定的 pending leaf，显示为 runtime launching session，并进入 activeSessions，避免 session tree 只展示标题但右侧无会话状态。
 8. 前端 auto-follow 必须区分用户手动查看历史 session、用户明确回到最新 active/current session 与 runtime 自然 terminal：manual 状态下新 active session 不抢焦点；auto 状态下当前选中自然 terminal 且用户仍在底部时，后续 child 首个 active/live event 或 lifecycle-only active update 可以切换过去；用户手动查看历史后，只有重新选中最新 active/current leaf 并回到底部才恢复 auto-follow。
 9. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
+10. 会话侧边栏 run 终态刷新按职责分层：ACP session update 继续触发 session/graph 实时 refresh；run 真正完成后由后端 `RuntimeLifecycleEvent::RunCompleted` 桥接到前端事件，进入同一个 `getConversationRun + getConversationSidebar` 刷新入口。`onSessionStopped` 不再作为新 UI run/sidebar 的第三套刷新触发。
 
 ## 9. 侧边栏 run 列表右键停止
 
@@ -147,6 +160,9 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 5. 父 run running、dynamic leaf paused/process-interrupted 时，conversation lifecycle 输出 runtime continue composer。
 6. 父 run running、dynamic leaf running、ACP terminal 时，仍可输出 `launching-next-node`。
 7. 父 run paused 时，不输出 `launching-next-node`。
+8. provider 返回 `Interrupted` 但包含完整合法 `dynamic-node-completion` artifact 时，dynamic node 收敛为 `Completed + Success` 并接受 proposal。
+9. provider 返回 `Interrupted` 且 artifact 缺失/半截/非法时，dynamic node 保持 `Paused + outcome=null`。
+10. outer attempt 已因同一 attempt 的 `ProcessInterrupted` 暂停时，accepted dynamic completion 可以恢复同 attempt running 并进入 graph；killed、error-blocked 或 stale attempt 不允许恢复。
 
 ### 11.2 Frontend
 

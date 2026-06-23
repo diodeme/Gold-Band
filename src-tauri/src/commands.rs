@@ -11,13 +11,13 @@ use gold_band::app::{
     ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
     WorkflowTemplateStore,
 };
-use gold_band::domain::{NodeOutcome, PauseReason, RunStatus, SessionMode};
+use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
 use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use gold_band::storage::{read_json, write_json};
 use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader},
@@ -60,6 +60,7 @@ use crate::view_models_conversation::{
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
+const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
@@ -305,6 +306,18 @@ struct AcpSessionUpdatedEventVm {
     lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationRunStateUpdatedEventVm {
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    status: RunStatus,
+    outcome: RunOutcome,
+}
+
 fn normalize_workspace_project_id(workspace_path: &str) -> String {
     workspace_path
         .to_lowercase()
@@ -361,6 +374,38 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
     app.lifecycle_bus.subscribe(
         crate::notifications::create_intervention_notification_subscriber(app_handle.clone()),
     );
+    app.lifecycle_bus
+        .subscribe(create_conversation_run_state_subscriber(app_handle.clone()));
+}
+
+fn create_conversation_run_state_subscriber(
+    app_handle: AppHandle,
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        if let RuntimeLifecycleEvent::RunCompleted {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outcome,
+            ..
+        } = event
+        {
+            let _ = app_handle.emit(
+                CONVERSATION_RUN_STATE_EVENT,
+                ConversationRunStateUpdatedEventVm {
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    status: RunStatus::Completed,
+                    outcome,
+                },
+            );
+        }
+    })
 }
 
 pub(crate) fn acp_live_update_emitter_for_app(
@@ -3439,6 +3484,7 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::storage::write_json;
 
     #[test]
     fn stale_cancelled_dynamic_leaf_requires_runtime_continue() {

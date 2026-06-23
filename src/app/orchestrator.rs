@@ -2019,6 +2019,23 @@ fn emit_dynamic_session_update_best_effort(
         .emit_acp_session_update(dynamic_acp_live_event_context(ctx, node_id, attempt_id));
 }
 
+fn emit_dynamic_session_updates_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node_ids: &[String],
+) {
+    let mut seen = std::collections::HashSet::new();
+    for node_id in node_ids {
+        if !seen.insert(node_id) {
+            continue;
+        }
+        let Some(node) = graph.nodes.iter().find(|node| node.id == *node_id) else {
+            continue;
+        };
+        emit_dynamic_session_update_best_effort(ctx, &node.id, &dynamic_attempt_id(node));
+    }
+}
+
 fn dynamic_runtime_context(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
@@ -2764,11 +2781,15 @@ fn drive_dynamic_graph(
             graph,
             &mut pending_resume_overrides,
         )?);
-        refresh_dynamic_ready_nodes(graph);
+        let ready_node_ids = refresh_dynamic_ready_nodes(graph);
+        if !ready_node_ids.is_empty() {
+            persist_dynamic_graph(ctx, graph)?;
+            emit_dynamic_session_updates_best_effort(ctx, graph, &ready_node_ids);
+        }
         launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
         persist_dynamic_graph(ctx, graph)?;
 
-        if advance_dynamic_groups(ctx, graph)? {
+        if advance_dynamic_groups(ctx, graph)?.changed {
             continue;
         }
         if dynamic_graph_completed(graph) {
@@ -2855,6 +2876,11 @@ fn launch_ready_dynamic_nodes(
         let node_id_for_job = node_clone.id.clone();
         graph.run.updated_at = now_rfc3339_like();
         persist_dynamic_graph(ctx, graph)?;
+        emit_dynamic_session_update_best_effort(
+            ctx,
+            &node_id_for_job,
+            &dynamic_attempt_id(&node_clone),
+        );
 
         let background_app = ctx.app.clone_for_background();
         let task_id = ctx.task_id.to_string();
@@ -2981,6 +3007,7 @@ fn apply_dynamic_execution_message(
     }
     let mut accepted_any = false;
     let mut rejected_source_node_id = None;
+    let mut visible_node_ids = Vec::new();
     for proposal in result.proposals {
         let source_index = graph
             .nodes
@@ -3000,7 +3027,12 @@ fn apply_dynamic_execution_message(
         let completion: DynamicNodeCompletion = serde_json::from_value(proposal.parsed.clone())?;
         accepted_any = true;
         graph.proposals.push(proposal.clone());
-        materialize_dynamic_next(ctx, graph, source_index, completion.next)?;
+        visible_node_ids.extend(materialize_dynamic_next(
+            ctx,
+            graph,
+            source_index,
+            completion.next,
+        )?);
         append_dynamic_event(
             ctx,
             "dynamic_proposal_accepted",
@@ -3030,6 +3062,7 @@ fn apply_dynamic_execution_message(
         &graph.nodes[index].id,
         &dynamic_attempt_id(&graph.nodes[index]),
     );
+    emit_dynamic_session_updates_best_effort(ctx, graph, &visible_node_ids);
     Ok(())
 }
 
@@ -5079,7 +5112,8 @@ fn materialize_dynamic_next(
     graph: &mut DynamicGraphState,
     source_index: usize,
     next: DynamicNext,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut visible_node_ids = Vec::new();
     match next {
         DynamicNext::End => {
             let source = graph.nodes[source_index].clone();
@@ -5112,7 +5146,9 @@ fn materialize_dynamic_next(
                     "kind": new_node.kind,
                 }),
             )?;
+            let new_node_id = new_node.id.clone();
             graph.nodes.push(new_node);
+            visible_node_ids.push(new_node_id);
         }
         DynamicNext::Fanout {
             group_id,
@@ -5170,7 +5206,9 @@ fn materialize_dynamic_next(
                         "groupId": group_id,
                     }),
                 )?;
+                let new_node_id = new_node.id.clone();
                 graph.nodes.push(new_node);
+                visible_node_ids.push(new_node_id);
             }
             append_dynamic_event(
                 ctx,
@@ -5182,9 +5220,10 @@ fn materialize_dynamic_next(
             )?;
         }
     }
-    refresh_dynamic_ready_nodes(graph);
+    let promoted_node_ids = refresh_dynamic_ready_nodes(graph);
+    visible_node_ids.retain(|node_id| promoted_node_ids.iter().any(|promoted| promoted == node_id));
     graph.run.updated_at = now_rfc3339_like();
-    Ok(())
+    Ok(visible_node_ids)
 }
 
 fn dynamic_node_state_from_spec(
@@ -5258,7 +5297,7 @@ fn dynamic_node_state_from_spec(
     Ok(node)
 }
 
-fn refresh_dynamic_ready_nodes(graph: &mut DynamicGraphState) {
+fn refresh_dynamic_ready_nodes(graph: &mut DynamicGraphState) -> Vec<String> {
     let completed_success = graph
         .nodes
         .iter()
@@ -5275,6 +5314,7 @@ fn refresh_dynamic_ready_nodes(graph: &mut DynamicGraphState) {
         .count();
     let mut available_slots =
         (graph.run.control.max_parallel as usize).saturating_sub(occupied_slots);
+    let mut promoted_node_ids = Vec::new();
     for index in 0..graph.nodes.len() {
         if available_slots == 0 {
             break;
@@ -5288,17 +5328,24 @@ fn refresh_dynamic_ready_nodes(graph: &mut DynamicGraphState) {
             .all(|dependency| completed_success.contains(dependency))
         {
             graph.nodes[index].status = DynamicNodeStatus::Ready;
+            promoted_node_ids.push(graph.nodes[index].id.clone());
             available_slots -= 1;
         }
     }
     refresh_dynamic_current_leaf_ids(graph);
+    promoted_node_ids
+}
+
+struct DynamicGroupAdvanceResult {
+    changed: bool,
 }
 
 fn advance_dynamic_groups(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
-) -> Result<bool> {
+) -> Result<DynamicGroupAdvanceResult> {
     let mut changed = false;
+    let mut visible_node_ids = Vec::new();
     for group_index in 0..graph.groups.len() {
         let status = graph.groups[group_index].status;
         match status {
@@ -5308,6 +5355,7 @@ fn advance_dynamic_groups(
                 graph.groups[group_index].status = DynamicGroupStatus::Merging;
                 graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
                 graph.groups[group_index].updated_at = now_rfc3339_like();
+                visible_node_ids.push(merge_node.id.clone());
                 graph.nodes.push(merge_node);
                 append_dynamic_event(
                     ctx,
@@ -5329,6 +5377,7 @@ fn advance_dynamic_groups(
                 graph.groups[group_index].status = DynamicGroupStatus::Accepting;
                 graph.groups[group_index].acceptance_node_id = Some(acceptance_node.id.clone());
                 graph.groups[group_index].updated_at = now_rfc3339_like();
+                visible_node_ids.push(acceptance_node.id.clone());
                 graph.nodes.push(acceptance_node);
                 append_dynamic_event(
                     ctx,
@@ -5367,11 +5416,13 @@ fn advance_dynamic_groups(
         }
     }
     if changed {
-        refresh_dynamic_ready_nodes(graph);
+        let promoted_node_ids = refresh_dynamic_ready_nodes(graph);
+        visible_node_ids.extend(promoted_node_ids);
         graph.run.updated_at = now_rfc3339_like();
         persist_dynamic_graph(ctx, graph)?;
+        emit_dynamic_session_updates_best_effort(ctx, graph, &visible_node_ids);
     }
-    Ok(changed)
+    Ok(DynamicGroupAdvanceResult { changed })
 }
 
 fn dynamic_group_ready(graph: &DynamicGraphState, group_index: usize) -> bool {
@@ -7733,6 +7784,100 @@ mod tests {
             groups: Vec::new(),
             proposals: Vec::new(),
         }
+    }
+
+    fn test_agent_task(title: &str) -> DynamicAgentTaskSpec {
+        DynamicAgentTaskSpec {
+            title: title.to_string(),
+            provider: "claude-acp".to_string(),
+            model: None,
+            task: title.to_string(),
+        }
+    }
+
+    #[test]
+    fn refresh_dynamic_ready_nodes_returns_promoted_leaf_ids() {
+        let mut completed = test_worktree_node("bootstrap");
+        completed.status = DynamicNodeStatus::Completed;
+        completed.outcome = Some(NodeOutcome::Success);
+        let mut pending = test_worktree_node("next");
+        pending.status = DynamicNodeStatus::Pending;
+        pending.depends_on = vec!["bootstrap".to_string()];
+        let mut graph = test_dynamic_graph(vec![completed, pending]);
+        graph.run.current_node_ids.clear();
+
+        let promoted = refresh_dynamic_ready_nodes(&mut graph);
+
+        assert_eq!(promoted, vec!["next".to_string()]);
+        assert_eq!(graph.nodes[1].status, DynamicNodeStatus::Ready);
+        assert_eq!(graph.run.current_node_ids, vec!["next".to_string()]);
+    }
+
+    #[test]
+    fn dynamic_group_successor_creation_emits_session_update() {
+        let (_temp, repo_root) = init_repo();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = App::with_config(repo_root, RuntimeConfig::default()).with_acp_session_update(
+            Arc::new(move |context| {
+                seen_for_callback.lock().unwrap().push(context);
+                Ok(())
+            }),
+        );
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut source = test_worktree_node("bootstrap");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        source.group_id = Some("python-classes".to_string());
+        source.chain_id = "bootstrap".to_string();
+        let mut graph = test_dynamic_graph(vec![source]);
+        graph.groups.push(DynamicGroupState {
+            version: VERSION.to_string(),
+            id: "python-classes".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            status: DynamicGroupStatus::Open,
+            depth: 1,
+            parent_group_id: None,
+            root_node_ids: vec!["bootstrap".to_string()],
+            terminal_node_ids: vec!["bootstrap".to_string()],
+            merge_node_id: None,
+            acceptance_node_id: None,
+            created_by_node_id: "bootstrap".to_string(),
+            merge: test_agent_task("merge"),
+            acceptance: test_agent_task("accept"),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+        graph.proposals.push(DynamicProposalState {
+            version: VERSION.to_string(),
+            id: "proposal-bootstrap-001".to_string(),
+            dynamic_run_id: graph.run.id.clone(),
+            source_node_id: "bootstrap".to_string(),
+            artifact_path: Utf8PathBuf::from("artifact.json"),
+            raw_output_path: Utf8PathBuf::from("raw.txt"),
+            parsed: serde_json::json!({}),
+            validation_status: DynamicProposalValidationStatus::Accepted,
+            validation_errors: Vec::new(),
+            materialized_event_ids: Vec::new(),
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+        });
+
+        let advanced = advance_dynamic_groups(&ctx, &mut graph).unwrap();
+
+        assert!(advanced.changed);
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "python-classes-merge")
+        );
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].node_id, "python-classes-merge");
+        assert_eq!(calls[0].attempt_id, "attempt-001");
+        assert_eq!(calls[0].outer_node_id.as_deref(), Some("ai-dynamic"));
     }
 
     #[test]

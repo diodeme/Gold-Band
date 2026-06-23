@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
+  isConversationActiveStatus,
   mergeConversationRunSnapshot,
 } from '@/lib/conversation-run-snapshot';
 import type { ConversationRunVm, ConversationSessionLeafVm, RuntimeDisplayVm } from '@/types';
@@ -140,6 +141,15 @@ function withLeaf(base: ConversationRunVm, nextLeaf: ConversationSessionLeafVm):
     },
   };
 }
+
+describe('isConversationActiveStatus', () => {
+  it('treats dynamic ready and normalized active statuses as active', () => {
+    expect(isConversationActiveStatus('ready')).toBe(true);
+    expect(isConversationActiveStatus('in_progress')).toBe(true);
+    expect(isConversationActiveStatus('cancel_requested')).toBe(true);
+    expect(isConversationActiveStatus('completed')).toBe(false);
+  });
+});
 
 describe('applyConversationSelectedSessionSnapshot', () => {
   it('patches selected session when a full snapshot matches the selected identity', () => {

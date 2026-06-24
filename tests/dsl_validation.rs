@@ -55,6 +55,44 @@ fn validates_basic_workflow() {
 }
 
 #[test]
+fn accepts_ai_dynamic_real_provider_permission_mode() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "dynamic-real-permission-mode",
+            "entry": "ai-dynamic",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                {
+                    "id": "ai-dynamic",
+                    "type": "ai-dynamic",
+                    "agentStrategy": {
+                        "mode": "dynamic",
+                        "bootstrapProvider": "claude-acp",
+                        "availableAgents": [
+                            { "provider": "claude-acp", "model": "claude-sonnet-4-6" }
+                        ],
+                        "routingPrompt": "Pick a Claude worker."
+                    },
+                    "permissionMode": "bypassPermissions",
+                    "control": {
+                        "maxDynamicNodes": 4,
+                        "maxFanout": 2,
+                        "maxDepth": 2,
+                        "maxParallel": 1
+                    }
+                }
+            ],
+            "edges": [
+                { "from": "ai-dynamic", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    validate_workflow(workflow).expect("real provider permission mode should validate");
+}
+
+#[test]
 fn rejects_workflow_without_end_node() {
     let workflow = parse_workflow(
         r#"{

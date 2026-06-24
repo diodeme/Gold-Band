@@ -135,6 +135,7 @@
 - 2026-06-12：会话页手动切换后的 auto-follow 判定改为基于 `run.activeSessions` 是否包含当前选中 session，而不是依赖叶子节点自身的 `runtimeDisplay.tone`；这样已完成节点在树状态短暂滞后时，也不会被误判为仍应跟随并再次跳回后台运行节点。
 - 2026-06-12：修复新 UI 默认选错 session 的问题。run VM 无显式 `selectedSessionKey` 时默认按 attempt 开始时间选择最新 session，避免 task-040 这类最新 `开发/attempt-002` 被 workflow 顺序最后的 `测试/attempt-001` 抢占；`process-interrupted` 可继续态仍保留 composer 输入触发 workflow runtime continue 的既有设计。
 - 2026-06-12：补齐会话页运行中停止链路并收敛为统一入口。新 UI composer 不再在前端区分普通 ACP prompt 与 workflow runtime continue，而是统一调用桌面 `stop_active_session`；后端内部判定 run running 时复用既有 `App::run_pause` 完成 run 暂停、当前 attempt cancel、provider pid 清理和 dynamic descendants 暂停，run 已非 running 但 ACP 追问仍活跃时复用 `cancel_acp_session` 停止该 ACP session，避免前端和 Tauri command 层复制第二套停止逻辑。
+- 2026-06-25：runtime 增加 `runtime-abnormal` 可继续异常暂停，用于本地 IO/资源、ACP transport 或 driver 异常，区别于 provider/model/workflow 前提错误导致的 `error-blocked`；JSONL append/roll/timeline overwrite 按同一路径串行化，避免并发写坏一行 JSONL；AI-DYNAMIC continue 前会先接受已完整落盘的 `dynamic-node-completion`，避免 session 已完成但 driver 异常暂停后重复发送；doctor ACP 目录改为临时/有界诊断产物，成功后删除、失败时只保留最近一次 bounded bundle。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 
 ---

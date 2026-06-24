@@ -50,7 +50,7 @@
 - rejected proposal 不再只保存字符串错误，而是保存结构化错误对象：至少包含 `code`、`message`、`params`，并可携带 `path / actual / expected / allowedValues / suggestion`。其中 `code` 用于稳定识别错误类型，`path` 指向 proposal JSON 路径，`params` 提供 nodeId / field / profile / provider / limit / actual 等上下文字段，便于后续 UI、日志和 prompt 复用。
 - 外层 edge 仍然只消费 `ai-dynamic` 的最终 `success / failure / killed` outcome；若内部 dynamic worker、merge/acceptance 节点或 `workflow-invocation` child run 进入暂停，外层 `ai-dynamic` node 也以复合节点形式暂停，并在继续时由 runtime 委托内部 paused node 或 `childRunId` 从自身断点恢复。会话态和 Round 详情对内部节点的继续发送必须走 `submit_conversation_prompt -> run_continue_dynamic_inner_background`，由 runtime 校验 outer locator 与 inner locator，只 re-arm 目标 internal node 并回到 `drive_dynamic_graph`；不得直接对 dynamic inner ACP session 调 `send_acp_prompt` 绕过 completion 解析和 graph materialize。`send_acp_prompt` 若命中 paused/resumable/current dynamic inner attempt，必须拒绝并要求统一 submit 入口。
 - Round 详情运行态主图内联展示 AI-DYNAMIC 内部节点时，外层 workflow 的后续边仍按 `ai-dynamic` 最终 outcome 前进，但可视化连接端点必须落到内部 dynamic graph 的出口节点，而不是复合节点占位。出口节点按内部图真实边语义计算：显式 `dependsOn`、`sessionMode=continue` 和 runtime 由 `chainId/depth` 派生的隐式成功边都会让上游节点不再视为出口；当前 V1 常见为单出口，后续允许多个无下游出口同时连接到外层后继节点。
-- 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 killed；应用关闭则递归把这些活跃资源收敛到 `ProcessInterrupted` paused，供后续 continue 恢复。
+- 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 `ProcessInterrupted` paused；应用关闭或启动恢复同样递归收敛为可继续暂停。可恢复本地 IO/资源、ACP transport 或 driver 异常收敛为 `RuntimeAbnormal` paused，供后续 continue 恢复；新停止链路不再把普通停止写成 killed。
 
 ## 4. 内部控制 artifact
 内部 worker 必须输出 canonical artifact：
@@ -72,4 +72,4 @@ workflow invocation 节点完成 child run 后由 runtime 包装 `dynamic-node-c
 - 不支持 nested `ai-dynamic`，除非后续显式打开 `allowNestedDynamic`。
 - 不引入 direct mode、route-decision、triage-result 或 replan artifact。
 - 内部状态保存在外层节点 attempt 的 `dynamic/` 目录下，不写入外层 round trace。
-- invalid proposal、internal node failure、merge failure 会让外层 run 进入 error-blocked pause。
+- invalid proposal、provider/model/catalog/workspace/workflow/DSL 前提错误、不可恢复 internal node failure 或 merge failure 会让外层 run 进入 `error-blocked` pause；本地 IO/资源、ACP transport、driver interruption 等可恢复运行异常进入 `runtime-abnormal` pause，保留 runtime continue 入口。

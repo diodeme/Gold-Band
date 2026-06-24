@@ -100,6 +100,11 @@ impl InterventionNotification {
             RuntimeInterventionKind::PermissionRequested => {
                 ("权限请求", "需要授权", InterventionType::PermissionRequest)
             }
+            RuntimeInterventionKind::RuntimeAbnormal => (
+                "运行异常",
+                "运行异常，可继续处理",
+                InterventionType::ErrorBlocked,
+            ),
             RuntimeInterventionKind::ErrorBlocked => (
                 "执行错误",
                 "执行出错，需要处理",
@@ -203,6 +208,7 @@ pub fn make_dedup_key(
 pub fn reason_key(reason: PauseReason) -> &'static str {
     match reason {
         PauseReason::ProcessInterrupted => "process-interrupted",
+        PauseReason::RuntimeAbnormal => "runtime-abnormal",
         PauseReason::ErrorBlocked => "error-blocked",
         PauseReason::WaitingForUserInput => "waiting-for-user-input",
         PauseReason::PermissionRequested => "permission-requested",
@@ -330,6 +336,11 @@ mod tests {
         assert_eq!(
             sample(PauseReason::PermissionRequested).intervention_type,
             InterventionType::PermissionRequest
+        );
+        assert_eq!(sample(PauseReason::RuntimeAbnormal).title, "运行异常");
+        assert_eq!(
+            sample(PauseReason::RuntimeAbnormal).intervention_type,
+            InterventionType::ErrorBlocked
         );
         assert_eq!(sample(PauseReason::ErrorBlocked).title, "执行错误");
         assert_eq!(

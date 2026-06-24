@@ -74,6 +74,7 @@ export function ConversationRunPage({
     if (!reason) return t('conversation.runtime.sessionPaused');
     switch (reason) {
       case 'process-interrupted': return t('conversation.runtime.pauseReasonProcessInterrupted');
+      case 'runtime-abnormal': return t('conversation.runtime.pauseReasonRuntimeAbnormal');
       case 'waiting-for-user-input': return t('conversation.runtime.pauseReasonWaitingForUserInput');
       default: return t('conversation.runtime.pauseReasonFallback');
     }

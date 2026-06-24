@@ -32,7 +32,7 @@
 - 不能通过 response 确认 adapter 已处理。
 - 适合用户点击“停止当前生成”。
 - 正常情况下不释放 ACP session，也不关闭 adapter process。
-- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled，业务层也按完成优先接受。
+- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Paused + RuntimeAbnormal`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled 或 driver 已异常暂停，业务层也按完成优先接受。
 
 Gold Band 使用场景：
 
@@ -108,7 +108,8 @@ Zed 参考：
 | 历史 killed run | 只读兼容展示，不再由新入口生成 | 不补发协议 | 不参与新的 adapter 操作 |
 | app close | running runs 写 `Paused + ProcessInterrupted` | 对所有 live connections 的 sessions 做 bounded `session/close` | 正常退出 adapter 长连接；close 失败记录/返回，不静默吞掉 |
 | crash recovery | running runs 写 `Paused + ProcessInterrupted` | 无 live connection，不补发协议 | `provider.pid` 仅用于 orphan cleanup |
-| diagnostic cleanup | 不影响业务 runtime | `session/delete` first，fallback close | 释放诊断 session/connection |
+| recoverable runtime abnormal | active attempt 写 `Paused + RuntimeAbnormal`，允许 runtime continue | 继续复用原 sessionId；若 transport 已断开则下次 continue 重新拉起 connection | 不 kill adapter 作为成功兜底 |
+| diagnostic cleanup | 不影响业务 runtime | doctor 成功后删除临时目录；失败时保留有界 raw/timeline/diagnostics bundle | 移除诊断 `provider.pid`，释放诊断 session/connection |
 | 正常 attempt 完成 | success/failure 按现有 workflow | session idle/reusable 或按策略 close | adapter 留在长连接中复用 |
 
 ## 5. 改动点总览
@@ -224,9 +225,9 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - `stop_active_session` 的作用域是当前 leaf attempt/session，不是整个 graph；AI-DYNAMIC 内部 leaf stop 只暂停目标 dynamic node。
    - graph scheduler 继续处理其他 `Ready | Running` leaf；只有没有 active leaf 后，graph / outer node / run 才自动收敛为 `Paused + ProcessInterrupted`。
    - 该规则按 leaf attempt/session、graph scheduler、run aggregate 三层设计，后续普通固定工作流支持并行节点时复用同一模型。
-   - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
+   - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 或 driver 因可恢复本地/transport 异常暂停，但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
    - 详细落地见 `docs/gold-band/开发计划/生命周期整理/并行节点通用停止继续语义与AI-DYNAMIC落地方案.md`。
-   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，再只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
+   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前先检查目标 leaf 是否已有完整合法 `dynamic-node-completion`，有则先接受完成；再扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，最后只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
    - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
    - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端据此刷新完整 run VM；前端不能靠 ACP terminal snapshot 自行推断 workflow runtime 是否完成或暂停。
    - dynamic graph 中任何 leaf 变为 `Ready | Running` 或创建新的 graph 后继 leaf 后，也必须在持久化后发出 lifecycle update；该更新可以没有完整 ACP session payload，前端仍应把它当成 runtime snapshot 处理。
@@ -354,7 +355,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 目标：一个 provider/workspace adapter process 承载多个 sessions。
 
-已落地：`AdapterConnectionManager` 以 `provider_id + workspace_root` 为 key 缓存 connection；`client::run_prompt(...)` 获取同 key connection 后创建 / load ACP session，同一 adapter process 可承载多个 session route 与 active prompt，普通 prompt 完成只 release attempt-local runtime，不关闭 adapter process。stdout 断开、写入失败、request route 断开或 adapter process exit 都会被映射为 recoverable interruption，runtime 收敛为 `Paused + ProcessInterrupted`，后续 continue 重新拉起 connection 并使用原 ACP `sessionId`。
+已落地：`AdapterConnectionManager` 以 `provider_id + workspace_root` 为 key 缓存 connection；`client::run_prompt(...)` 获取同 key connection 后创建 / load ACP session，同一 adapter process 可承载多个 session route 与 active prompt，普通 prompt 完成只 release attempt-local runtime，不关闭 adapter process。stdout 断开、写入失败、request route 断开、adapter process exit 或本地 IO/资源异常都会被按 typed/source-first 分类为可恢复异常，runtime 收敛为 `Paused + RuntimeAbnormal` 或等价可继续暂停，后续 continue 重新拉起 connection 并使用原 ACP `sessionId`。
 
 改动：
 
@@ -397,7 +398,8 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 2. `close_session_bounded` timeout 后返回明确错误。
 3. app close / run kill / session release 使用 close，不走 cancel。
 4. diagnostic cleanup 先 `session/delete`，delete 失败 fallback `session/close`。
-5. delete 和 close 都失败时，diagnostics 中记录错误。
+5. doctor 成功后删除临时 `doctor/acp` 目录，失败时移除 `provider.pid` 并只保留有界 raw/timeline/diagnostics JSONL bundle。
+6. delete 和 close 都失败时，diagnostics 中记录错误。
 
 ### 7.3 Rust：runtime invariant
 

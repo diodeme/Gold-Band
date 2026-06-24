@@ -32,12 +32,14 @@ use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{PromptBundle, PromptVisibility};
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
-use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
+const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -341,14 +343,16 @@ pub fn doctor(
     use_local_claude: bool,
 ) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
+    let doctor_acp_dir = paths.doctor_acp_dir();
+    cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
         "doctor",
         config,
         cwd.clone(),
-        paths.doctor_acp_dir(),
+        doctor_acp_dir.clone(),
         use_local_claude,
-        5 * 1024 * 1024,
-        4 * 1024 * 1024,
+        DOCTOR_DIAGNOSTIC_MAX_SIZE,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE,
         None,
         None,
     )?;
@@ -360,7 +364,37 @@ pub fn doctor(
         Ok(capabilities)
     })();
     runtime.shutdown();
+    if result.is_ok() {
+        cleanup_doctor_acp_dir_after_success(&doctor_acp_dir);
+    } else {
+        retain_bounded_doctor_acp_failure_bundle(&doctor_acp_dir);
+    }
     result
+}
+
+fn cleanup_doctor_acp_dir_before_run(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn cleanup_doctor_acp_dir_after_success(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn retain_bounded_doctor_acp_failure_bundle(dir: &Utf8Path) {
+    let paths = AcpAttemptPaths::from_attempt_dir(dir.to_path_buf());
+    let _ = std::fs::remove_file(paths.provider_pid.as_std_path());
+    for path in [
+        &paths.events,
+        &paths.timeline,
+        &paths.diagnostics,
+        &paths.raw,
+    ] {
+        let _ = roll_jsonl(
+            path,
+            DOCTOR_DIAGNOSTIC_MAX_SIZE,
+            DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        );
+    }
 }
 
 pub fn run_prompt(
@@ -2331,9 +2365,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        PromptBundle, PromptVisibility, RuntimeStopProbe, contributes_to_final_text,
-        resolve_permission_mode, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
+        session_prompt_params, session_prompt_text,
     };
 
     #[test]
@@ -2414,6 +2449,44 @@ mod tests {
 
         assert!(error.contains("unknown"));
         assert!(error.contains("read-only, auto"));
+    }
+
+    #[test]
+    fn doctor_success_cleanup_removes_acp_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        std::fs::write(acp_dir.join("acp.raw.jsonl").as_std_path(), "{}\n").unwrap();
+
+        cleanup_doctor_acp_dir_after_success(&acp_dir);
+
+        assert!(!acp_dir.exists());
+        drop(temp);
+    }
+
+    #[test]
+    fn doctor_failure_bundle_removes_pid_and_bounds_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        let large = (0..4096)
+            .map(|index| format!(r#"{{"index":{index},"payload":"{}"}}"#, "x".repeat(256)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(acp_dir.join("acp.diagnostics.jsonl").as_std_path(), large).unwrap();
+
+        retain_bounded_doctor_acp_failure_bundle(&acp_dir);
+
+        assert!(!acp_dir.join("provider.pid").exists());
+        let size = std::fs::metadata(acp_dir.join("acp.diagnostics.jsonl").as_std_path())
+            .unwrap()
+            .len();
+        assert!(size <= DOCTOR_DIAGNOSTIC_TARGET_SIZE + 512);
+        drop(temp);
     }
 
     #[test]

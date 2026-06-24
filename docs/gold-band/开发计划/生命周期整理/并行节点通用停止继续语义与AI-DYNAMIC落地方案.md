@@ -12,7 +12,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 
 1. AI-DYNAMIC 内部节点停止只影响目标 leaf attempt 和目标 ACP session。
 2. 兄弟 leaf 仍为 `Ready | Running` 时，dynamic graph 和父 run 保持 `Running`。
-3. 所有 active leaf 都被暂停或不再可自动推进，且剩余未完成 leaf 都是用户暂停的可继续节点时，dynamic graph / 外层 AI-DYNAMIC attempt / run 自动收敛为 `Paused + ProcessInterrupted`，不能显示为 `ErrorBlocked`。
+3. 所有 active leaf 都被暂停或不再可自动推进，且剩余未完成 leaf 都是用户停止或运行异常导致的可继续节点时，dynamic graph / 外层 AI-DYNAMIC attempt / run 自动收敛为 `Paused + ProcessInterrupted` 或 `Paused + RuntimeAbnormal`，不能显示为 `ErrorBlocked`。
 4. 对 paused leaf 在会话中继续时，只恢复该 leaf，不恢复其他 paused sibling。
 5. 侧边栏 run 列表增加右键“停止”，其语义是停止整个 run，等同 `pause_run`，不会写入 `Killed`。
 6. 实现命名和 helper 按通用 leaf/run 聚合语义组织，避免写成 AI-DYNAMIC 私有补丁。
@@ -32,7 +32,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 | 停止单个 leaf | 目标 leaf -> `Paused + ProcessInterrupted`，目标 ACP session 发 `session/cancel` | 继续处理其他 `Ready | Running` leaf | 保持 `Running`，除非没有 active leaf |
 | 继续单个 leaf | 目标 leaf 从 `Paused` 重新进入 `Ready/Running`，使用原 ACP `sessionId` continue | 调度目标 leaf，不影响其他 paused sibling | 可保持 `Running`，或从整体 paused 恢复为 `Running` |
 | 停止整个 run | 所有 active leaf -> `Paused + ProcessInterrupted`，各自发 `session/cancel` | graph 收敛为 paused | `Paused + ProcessInterrupted` |
-| 所有 leaf 都停住 | 无 active leaf，剩余未完成 leaf 为用户暂停态 | graph 自动 `Paused + ProcessInterrupted` | run 自动 `Paused + ProcessInterrupted` |
+| 所有 leaf 都停住 | 无 active leaf，剩余未完成 leaf 为可继续暂停态 | graph 自动 `Paused + ProcessInterrupted` 或 `Paused + RuntimeAbnormal` | run 自动 `Paused + ProcessInterrupted` 或 `Paused + RuntimeAbnormal` |
 | 历史 killed 数据 | 只读兼容展示，不再由新停止链路生成 | 不参与新的 scheduler 推进 | 不新增 `Completed + Killed` |
 
 ## 5. 通用 helper 方向
@@ -77,7 +77,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 2. 先把该 leaf 写为 paused，再检查 graph 是否还有 active leaf。
 3. 有 active leaf：继续 loop，等待兄弟节点结果。
 4. 无 active leaf：再暂停 graph，并让父 run 自动收敛为 paused。
-5. 真实 provider 错误仍可按 `ErrorBlocked` 暂停整个 graph，避免错误上下文下继续推进。
+5. dynamic node job 错误先做 recoverable vs blocked 分类：本地 IO/资源、ACP transport、adapter disconnect、driver interruption 等可恢复异常写 `Paused + RuntimeAbnormal`，仍允许 runtime continue；provider/model/catalog/workspace/workflow/DSL 前提错误才按 `ErrorBlocked` 暂停整个 graph。
 
 `outer_attempt_is_still_current_running` 仍只表达父 run 是否被整体暂停/关闭/终止。单节点 stop 不再修改父 run running 状态，因此不会误触发该 guard。
 
@@ -86,10 +86,10 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 如果用户停止发生在 AI-DYNAMIC worker 最终 `dynamic-node-completion` 已经完整输出、但 runtime 尚未来得及接受结果的窗口内，ACP session/snapshot 仍可以被记录为 `cancelled`，但 dynamic worker 业务层需要做一次完成收敛：
 
 1. provider 返回 `Interrupted` 时仍先保存 `worker-ref`；如果 provider payload 中包含 output artifact，也先落盘到该 dynamic attempt 的 artifacts 目录。
-2. 仅对 `Interrupted` 或外层同 attempt 已 `Paused + ProcessInterrupted` 的结果，复用现有 `build_dynamic_completion_from_artifact(...)` 做 JSON、schema 与 DSL validation。
-3. 只有 validation status 为 `Accepted` 时，dynamic node 才改为 `Completed + Success`，proposal 进入 graph，并允许同一个 outer attempt 从 `ProcessInterrupted` 临时恢复为 `Running` 继续调度。
-4. artifact 不存在、半截 JSON、schema 不合法或 proposal rejected 时，不进入 repair prompt，也不误判 success，保持 `Paused + ProcessInterrupted` 等待用户继续。
-5. killed、error-blocked、非当前 attempt 或其他非 `ProcessInterrupted` 暂停不能被该规则恢复。
+2. 仅对 `Interrupted`、可恢复运行异常，或外层同 attempt 已 `Paused + ProcessInterrupted | RuntimeAbnormal` 的结果，复用现有 `build_dynamic_completion_from_artifact(...)` 做 JSON、schema 与 DSL validation。
+3. 只有 validation status 为 `Accepted` 时，dynamic node 才改为 `Completed + Success`，proposal 进入 graph，并允许同一个 outer attempt 从 `ProcessInterrupted | RuntimeAbnormal` 临时恢复为 `Running` 继续调度。
+4. artifact 不存在、半截 JSON、schema 不合法或 proposal rejected 时，不进入 repair prompt，也不误判 success，保持原可继续暂停原因等待用户继续。
+5. killed、error-blocked、非当前 attempt 或其他不可继续暂停不能被该规则恢复。
 
 该规则不是“停止失败”，而是“业务结果已经完成，停止只晚一步到达”；因此完成优先只基于完整合法业务 artifact，不基于 ACP stop reason 文案。
 
@@ -97,12 +97,12 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 
 `DynamicResumeOverride` 是 AI-DYNAMIC 内部 leaf 精确继续的唯一 re-arm 信号。规则为：
 
-1. `submit_conversation_prompt` 发现选中的是 dynamic inner leaf，且该 leaf 为 `Paused + ProcessInterrupted` 时，即使父 run 仍 `Running`，也把提交目标判定为 `runtime-continue`。
+1. `submit_conversation_prompt` 发现选中的是 dynamic inner leaf，且该 leaf 为 `Paused + ProcessInterrupted | RuntimeAbnormal` 时，即使父 run 仍 `Running`，也把提交目标判定为 `runtime-continue`。
 2. graph paused 时继续复用 `run_continue_dynamic_inner_background`，但必须携带目标 leaf 的 `DynamicResumeOverride`。
 3. graph running 时只把目标 leaf 从 `Paused` 改为 `Ready`，注入 `DynamicResumeOverride`，让 dynamic loop 调度该 leaf。
 4. 如果磁盘显示 graph running 但进程内没有活跃 dynamic loop，应启动外层 AI-DYNAMIC drive，避免只改状态不执行。
 5. continue 必须使用该 leaf 原 ACP `sessionId`，不得创建不相关的新 session。
-6. 继续目标 leaf 前，后端必须扫描同一 dynamic graph 中所有 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，把它们先收敛为 `Paused + ProcessInterrupted`，刷新 `currentNodeIds` 并同步写 `graph.json`、`dynamic_run.json` 与 `dynamic/nodes/<node>/node.json`，再只 re-arm 本次目标 leaf，避免 sibling 停留在 `running + ACP cancelled` 并显示“拉起下一节点中”。
+6. 继续目标 leaf 前，后端必须先检查该 leaf 是否已有完整合法 `dynamic-node-completion`，若已完成则接受 proposal 并继续 graph，不重复发送 prompt；随后扫描同一 dynamic graph 中所有 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，把它们先收敛为 `Paused + ProcessInterrupted`，刷新 `currentNodeIds` 并同步写 `graph.json`、`dynamic_run.json` 与 `dynamic/nodes/<node>/node.json`，再只 re-arm 本次目标 leaf，避免 sibling 停留在 `running + ACP cancelled` 并显示“拉起下一节点中”。
 7. 没有明确 inner leaf override 的父 run continue 不得批量 re-arm 普通 paused worker leaf；唯一例外是 `workflow-invocation` leaf，它代表一个已暂停 child run，父 run continue 可以只把这类 leaf 置回 `Ready` 以继续 child run。
 
 ## 8. ViewModel / Composer
@@ -162,7 +162,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 7. 父 run paused 时，不输出 `launching-next-node`。
 8. provider 返回 `Interrupted` 但包含完整合法 `dynamic-node-completion` artifact 时，dynamic node 收敛为 `Completed + Success` 并接受 proposal。
 9. provider 返回 `Interrupted` 且 artifact 缺失/半截/非法时，dynamic node 保持 `Paused + outcome=null`。
-10. outer attempt 已因同一 attempt 的 `ProcessInterrupted` 暂停时，accepted dynamic completion 可以恢复同 attempt running 并进入 graph；killed、error-blocked 或 stale attempt 不允许恢复。
+10. outer attempt 已因同一 attempt 的 `ProcessInterrupted` 或 `RuntimeAbnormal` 暂停时，accepted dynamic completion 可以恢复同 attempt running 并进入 graph；killed、error-blocked 或 stale attempt 不允许恢复。
 
 ### 11.2 Frontend
 

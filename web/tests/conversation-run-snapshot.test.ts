@@ -37,6 +37,16 @@ const pausedDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
+const runtimeAbnormalDisplay: RuntimeDisplayVm = {
+  code: 'runtime-abnormal',
+  tone: 'danger',
+  icon: 'error',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'runtime-abnormal',
+  blockingError: false,
+};
+
 function leaf(
   status: string,
   runtimeDisplay: RuntimeDisplayVm,
@@ -148,6 +158,36 @@ describe('isConversationActiveStatus', () => {
     expect(isConversationActiveStatus('in_progress')).toBe(true);
     expect(isConversationActiveStatus('cancel_requested')).toBe(true);
     expect(isConversationActiveStatus('completed')).toBe(false);
+  });
+
+  it('does not treat runtime-abnormal as an active running status', () => {
+    expect(isConversationActiveStatus('runtime-abnormal')).toBe(false);
+  });
+});
+
+describe('runtime-abnormal snapshots', () => {
+  it('removes paused abnormal sessions from active sessions while preserving selected leaf state', () => {
+    const current = run();
+    const abnormalLeaf = leaf('paused', runtimeAbnormalDisplay, { current: true });
+
+    const patched = applyConversationSelectedSessionSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'paused', outcome: null, pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+      },
+    });
+
+    expect(patched?.activeSessions).toEqual([]);
+    expect(patched?.sessionTree.rounds[0].nodes[0].attempts[0].runtimeDisplay).toEqual(abnormalLeaf.runtimeDisplay);
   });
 });
 

@@ -1,13 +1,14 @@
 pub mod sqlite;
 
 use crate::domain::VERSION;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ const DEFAULT_STORAGE_PATH_CONFIG: StoragePathConfig = StoragePathConfig {
 };
 
 static STORAGE_PATH_CONFIG: OnceLock<RwLock<StoragePathConfig>> = OnceLock::new();
+static JSONL_FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
 pub fn configure_storage_paths(config: StoragePathConfig) {
     *storage_path_config_lock()
@@ -813,13 +815,62 @@ fn should_retry_json_read(content: &str, error: &serde_json::Error) -> bool {
         )
 }
 
+pub fn with_jsonl_file_lock<T>(
+    path: &Utf8Path,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let lock = jsonl_file_lock_for(path)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("jsonl file lock poisoned"))?;
+    operation()
+}
+
+fn jsonl_file_lock_for(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
+    let key = jsonl_file_lock_key(path);
+    let mut locks = JSONL_FILE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("jsonl file lock registry poisoned"))?;
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+fn jsonl_file_lock_key(path: &Utf8Path) -> String {
+    let normalized = std::fs::canonicalize(path.as_std_path())
+        .ok()
+        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        .unwrap_or_else(|| path.to_path_buf())
+        .to_string()
+        .replace('\\', "/")
+        .trim_start_matches("//?/")
+        .to_string();
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
+}
+
 pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    with_jsonl_file_lock(path, || append_jsonl_line_unlocked(path, &line))
+}
+
+pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    append_jsonl_line_unlocked(path, &line)
+}
+
+fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
     ensure_parent_dir(path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path.as_std_path())?;
-    serde_json::to_writer(&mut file, value)?;
+    file.write_all(line)?;
     file.write_all(b"\n")?;
     Ok(())
 }
@@ -827,6 +878,10 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
 /// Trim a JSONL file from the beginning when it exceeds `max_size`,
 /// keeping the most recent lines that fit within `target_size`.
 pub fn roll_jsonl(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
+    with_jsonl_file_lock(path, || roll_jsonl_unlocked(path, max_size, target_size))
+}
+
+pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> Result<()> {
     let meta = match std::fs::metadata(path.as_std_path()) {
         Ok(m) => m,
         Err(_) => return Ok(()),
@@ -1073,6 +1128,61 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn append_jsonl_serializes_concurrent_same_path_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("concurrent.jsonl")).unwrap();
+        let thread_count = 16;
+        let writes_per_thread = 32;
+        let payload = "x".repeat(16 * 1024);
+        let mut handles = Vec::new();
+
+        for thread_index in 0..thread_count {
+            let path = path.clone();
+            let payload = payload.clone();
+            handles.push(std::thread::spawn(move || {
+                for write_index in 0..writes_per_thread {
+                    append_jsonl(
+                        &path,
+                        &serde_json::json!({
+                            "thread": thread_index,
+                            "write": write_index,
+                            "payload": payload,
+                        }),
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let contents = std::fs::read_to_string(path.as_std_path()).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut line_count = 0;
+        for line in contents.lines() {
+            let value = serde_json::from_str::<serde_json::Value>(line).unwrap();
+            let thread = value
+                .get("thread")
+                .and_then(|value| value.as_u64())
+                .unwrap();
+            let write = value.get("write").and_then(|value| value.as_u64()).unwrap();
+            assert_eq!(
+                value
+                    .get("payload")
+                    .and_then(|value| value.as_str())
+                    .unwrap()
+                    .len(),
+                payload.len()
+            );
+            assert!(seen.insert((thread, write)));
+            line_count += 1;
+        }
+        assert_eq!(line_count, thread_count * writes_per_thread);
     }
 
     #[test]

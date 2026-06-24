@@ -441,6 +441,7 @@ pub struct NodeRuntimeSummary {
 pub enum RuntimeInterventionKind {
     ManualDecisionRequired,
     PermissionRequested,
+    RuntimeAbnormal,
     ErrorBlocked,
     ProcessInterrupted,
 }
@@ -450,6 +451,7 @@ impl From<PauseReason> for RuntimeInterventionKind {
         match reason {
             PauseReason::WaitingForUserInput => Self::ManualDecisionRequired,
             PauseReason::PermissionRequested => Self::PermissionRequested,
+            PauseReason::RuntimeAbnormal => Self::RuntimeAbnormal,
             PauseReason::ErrorBlocked => Self::ErrorBlocked,
             PauseReason::ProcessInterrupted => Self::ProcessInterrupted,
         }
@@ -461,6 +463,7 @@ impl From<RuntimeInterventionKind> for PauseReason {
         match kind {
             RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
             RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
+            RuntimeInterventionKind::RuntimeAbnormal => Self::RuntimeAbnormal,
             RuntimeInterventionKind::ErrorBlocked => Self::ErrorBlocked,
             RuntimeInterventionKind::ProcessInterrupted => Self::ProcessInterrupted,
         }
@@ -591,7 +594,11 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
-            Some(PauseReason::ProcessInterrupted | PauseReason::WaitingForUserInput)
+            Some(
+                PauseReason::ProcessInterrupted
+                    | PauseReason::RuntimeAbnormal
+                    | PauseReason::WaitingForUserInput
+            )
         )
         && run.current_round.is_some()
         && run.current_node.is_some()
@@ -3158,6 +3165,46 @@ mod tests {
             pause_reason: PauseReason::WaitingForUserInput,
             task_title: Some("标题".to_string()),
         }
+    }
+
+    fn resumability_run(reason: PauseReason) -> RunState {
+        RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-001".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(reason),
+            uuid: None,
+            last_executed_node: None,
+        }
+    }
+
+    #[test]
+    fn runtime_abnormal_is_continuable_but_error_blocked_is_not() {
+        assert!(super::is_run_continuable(&resumability_run(
+            PauseReason::RuntimeAbnormal
+        )));
+        assert!(super::is_run_continuable(&resumability_run(
+            PauseReason::ProcessInterrupted
+        )));
+        assert!(super::is_run_continuable(&resumability_run(
+            PauseReason::WaitingForUserInput
+        )));
+        assert!(!super::is_run_continuable(&resumability_run(
+            PauseReason::ErrorBlocked
+        )));
+        assert!(!super::is_run_continuable(&resumability_run(
+            PauseReason::PermissionRequested
+        )));
     }
 
     #[test]

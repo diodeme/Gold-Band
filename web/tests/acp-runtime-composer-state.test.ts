@@ -12,6 +12,16 @@ const pausedDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
+const runtimeAbnormalDisplay: RuntimeDisplayVm = {
+  code: 'runtime-abnormal',
+  tone: 'danger',
+  icon: 'error',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'runtime-abnormal',
+  blockingError: false,
+};
+
 const runningDisplay: RuntimeDisplayVm = {
   code: 'running',
   tone: 'running',
@@ -171,6 +181,32 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+    }));
+
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.submitTarget).toBe('runtime-continue');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
+  it('routes runtime-abnormal stopped input through runtime continue', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'runtime-abnormal',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'runtime-abnormal',
+        runtimeDisplay: runtimeAbnormalDisplay,
         continueKind: 'input',
       }),
       acpStatus: 'cancelled',

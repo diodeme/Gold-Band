@@ -63,6 +63,7 @@ function runtimeDisplay(status?: string | null, outcome?: string | null, current
   if (outcome === 'killed') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: true };
   if (status === 'running') return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
   if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: false, reasonCode: pauseReason, blockingError: true };
+  if (status === 'paused' && current && pauseReason === 'runtime-abnormal') return { code: 'runtime-abnormal', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason, blockingError: false };
   if (status === 'paused') return { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: true, reasonCode: pauseReason ?? null, blockingError: false };
   if (status === 'completed') return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
   return { code: status ?? 'pending', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };

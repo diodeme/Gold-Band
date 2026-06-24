@@ -1107,11 +1107,6 @@ fn is_repair_outcome(outcome: &str) -> bool {
     outcome == "failure"
 }
 
-fn run_is_killed(app: &App, task_id: &str, run_id: &str) -> Result<bool> {
-    let run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
-    Ok(run.status == RunStatus::Completed && run.outcome == Some(RunOutcome::Killed))
-}
-
 fn attempt_is_still_current_running(
     app: &App,
     task_id: &str,
@@ -2857,7 +2852,7 @@ fn execute_ai_dynamic_node(
         }
         (DynamicRunStatus::Completed, Some(RunOutcome::Killed)) => {
             outer_node.status = RunStatus::Completed;
-            outer_node.outcome = Some(NodeOutcome::Killed);
+            outer_node.outcome = Some(NodeOutcome::Failure);
             outer_node.finished_at = Some(now_rfc3339_like());
         }
         (DynamicRunStatus::Paused, _) => {
@@ -4454,7 +4449,6 @@ fn execute_dynamic_workflow_invocation(
             node.status = DynamicNodeStatus::Completed;
             node.outcome = Some(match child_run.outcome {
                 Some(RunOutcome::Success) => NodeOutcome::Success,
-                Some(RunOutcome::Killed) => NodeOutcome::Killed,
                 _ => NodeOutcome::Failure,
             });
         }
@@ -4474,20 +4468,8 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     if node.outcome != Some(NodeOutcome::Success) {
-        match node.outcome {
-            Some(NodeOutcome::Killed) => {
-                node.status = DynamicNodeStatus::Paused;
-                node.outcome = None;
-                return Ok(DynamicExecutionResult {
-                    node,
-                    proposals: Vec::new(),
-                });
-            }
-            _ => {
-                teardown_dynamic_workspace_best_effort(ctx, &node);
-                bail!("child workflow invocation `{}` failed", node.id);
-            }
-        }
+        teardown_dynamic_workspace_best_effort(ctx, &node);
+        bail!("child workflow invocation `{}` failed", node.id);
     }
     teardown_dynamic_workspace_best_effort(ctx, &node);
     let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&node.id));
@@ -8299,9 +8281,6 @@ fn drive_from_node_with_initial_session(
     let mut invalid_output_repair_prompts = 0;
 
     loop {
-        if run_is_killed(app, task_id, &run.id)? {
-            return Ok(());
-        }
         let current_attempt_id = node.attempt_id.clone();
         let current_node_id = node.node_id.clone();
         let ctx = ExecutionContext::for_run(task_id, &run.id)
@@ -8442,9 +8421,6 @@ fn drive_from_node_with_initial_session(
         node = match execution_result {
             Ok(node) => node,
             Err(err) => {
-                if run_is_killed(app, task_id, &run.id)? {
-                    return Ok(());
-                }
                 let error_summary = format!(
                     "run {} blocked at {}/{}/{}: {}",
                     run.id, round.id, current_node_id, current_attempt_id, err

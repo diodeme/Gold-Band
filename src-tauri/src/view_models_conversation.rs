@@ -808,18 +808,67 @@ fn runtime_error_message(
         return None;
     }
     let progress = app.run_progress(task_id, run_id).ok().flatten()?;
-    let summary = progress.get("summary")?.as_str()?.trim();
+    runtime_error_message_from_summary(progress.get("summary")?.as_str()?)
+}
+
+fn runtime_error_message_from_summary(summary: &str) -> Option<String> {
+    let summary = summary.trim();
     if summary.is_empty() {
         return None;
     }
-    Some(
-        summary
-            .rsplit_once(": ")
-            .map(|(_, reason)| reason.trim())
-            .filter(|reason| !reason.is_empty())
-            .unwrap_or(summary)
-            .to_string(),
-    )
+    let reason = summary
+        .split_once(" blocked at ")
+        .and_then(|(_, blocked)| blocked.split_once(": ").map(|(_, reason)| reason.trim()))
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or(summary);
+    Some(format_runtime_error_reason(reason))
+}
+
+fn format_runtime_error_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    let Some((json_start, error_value)) = find_embedded_json_object(reason) else {
+        return reason.to_string();
+    };
+    let formatted = format_json_error_payload(&error_value);
+    if json_start == 0 {
+        return formatted;
+    }
+    let prefix = reason[..json_start].trim_end();
+    if prefix.ends_with(':') {
+        format!("{prefix} {formatted}")
+    } else {
+        format!("{prefix}: {formatted}")
+    }
+}
+
+fn find_embedded_json_object(text: &str) -> Option<(usize, serde_json::Value)> {
+    text.char_indices()
+        .filter(|(_, ch)| *ch == '{')
+        .find_map(|(index, _)| {
+            serde_json::from_str(&text[index..])
+                .ok()
+                .map(|value| (index, value))
+        })
+}
+
+fn format_json_error_payload(value: &serde_json::Value) -> String {
+    let details = value
+        .pointer("/data/details")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("details").and_then(serde_json::Value::as_str));
+    let message = value.get("message").and_then(serde_json::Value::as_str);
+    let code = value.get("code").map(|code| match code {
+        serde_json::Value::String(code) => code.clone(),
+        other => other.to_string(),
+    });
+
+    match (details, message, code.as_deref()) {
+        (Some(details), Some(message), _) if details != message => format!("{details} ({message})"),
+        (Some(details), _, _) => details.to_string(),
+        (None, Some(message), Some(code)) => format!("{message} ({code})"),
+        (None, Some(message), None) => message.to_string(),
+        _ => value.to_string(),
+    }
 }
 
 fn is_active_session_status(status: &str) -> bool {
@@ -2306,12 +2355,16 @@ pub fn rerun_conversation_task_vm(
     project_id: &str,
     task_id: &str,
 ) -> anyhow::Result<ConversationRunVm> {
-    // Kill running run if any
+    // Pause running run if any
     if let Ok(summaries) = app.task_summaries() {
         if let Some(ts) = summaries.iter().find(|s| s.task.id == task_id) {
             if let Some(ref latest) = ts.latest_run {
                 if latest.status == RunStatus::Running {
-                    let _ = app.run_kill(task_id, &latest.id);
+                    let _ = app.run_pause(
+                        task_id,
+                        &latest.id,
+                        gold_band::domain::PauseReason::ProcessInterrupted,
+                    );
                 }
             }
         }
@@ -2587,6 +2640,20 @@ mod tests {
         assert_eq!(lifecycle.continue_kind, None);
         assert_eq!(lifecycle.composer.mode, "runtime-error");
         assert_eq!(lifecycle.composer.submit_target, "none");
+    }
+
+    #[test]
+    fn runtime_error_summary_keeps_json_error_details() {
+        let message = super::runtime_error_message_from_summary(
+            r#"run run-021 blocked at round-001/ai-dynamic/attempt-001: provider `claude-acp` failed to run `good-morning`: ACP `session/set_config_option` failed: {"code":-32603,"data":{"details":"Invalid value for config option model: claude-sonnet-4-6"},"message":"Internal error"}"#,
+        );
+
+        assert_eq!(
+            message.as_deref(),
+            Some(
+                "provider `claude-acp` failed to run `good-morning`: ACP `session/set_config_option` failed: Invalid value for config option model: claude-sonnet-4-6 (Internal error)"
+            )
+        );
     }
 
     #[test]

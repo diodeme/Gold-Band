@@ -28,7 +28,7 @@ pub enum InterventionType {
     ManualCheck,
     /// 权限请求 → `respond_acp_permission`。
     PermissionRequest,
-    /// 执行错误 / 进程中断 → `retry_run` / `kill_run`。
+    /// 执行错误 / 进程中断 → 查看详情或继续处理。
     ErrorBlocked,
     /// 任务完成 → 查看运行结果。
     RunCompleted,

@@ -14,7 +14,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 2. 兄弟 leaf 仍为 `Ready | Running` 时，dynamic graph 和父 run 保持 `Running`。
 3. 所有 active leaf 都被暂停或不再可自动推进，且剩余未完成 leaf 都是用户暂停的可继续节点时，dynamic graph / 外层 AI-DYNAMIC attempt / run 自动收敛为 `Paused + ProcessInterrupted`，不能显示为 `ErrorBlocked`。
 4. 对 paused leaf 在会话中继续时，只恢复该 leaf，不恢复其他 paused sibling。
-5. 侧边栏 run 列表增加右键“停止”，其语义是停止整个 run，等同 `pause_run`，不是 terminal kill。
+5. 侧边栏 run 列表增加右键“停止”，其语义是停止整个 run，等同 `pause_run`，不会写入 `Killed`。
 6. 实现命名和 helper 按通用 leaf/run 聚合语义组织，避免写成 AI-DYNAMIC 私有补丁。
 
 ## 3. 生命周期分层
@@ -33,7 +33,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 | 继续单个 leaf | 目标 leaf 从 `Paused` 重新进入 `Ready/Running`，使用原 ACP `sessionId` continue | 调度目标 leaf，不影响其他 paused sibling | 可保持 `Running`，或从整体 paused 恢复为 `Running` |
 | 停止整个 run | 所有 active leaf -> `Paused + ProcessInterrupted`，各自发 `session/cancel` | graph 收敛为 paused | `Paused + ProcessInterrupted` |
 | 所有 leaf 都停住 | 无 active leaf，剩余未完成 leaf 为用户暂停态 | graph 自动 `Paused + ProcessInterrupted` | run 自动 `Paused + ProcessInterrupted` |
-| terminal kill | active leaf 走 release / close / kill 语义 | graph terminal killed | `Completed + Killed` |
+| 历史 killed 数据 | 只读兼容展示，不再由新停止链路生成 | 不参与新的 scheduler 推进 | 不新增 `Completed + Killed` |
 
 ## 5. 通用 helper 方向
 
@@ -139,7 +139,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 3. 仅 `run.status === "running"` 时可点击；其他状态 disabled。
 4. 点击调用 `pauseRun(taskId, runId)`，语义是暂停整个 run，所有 active leaf 一起收敛为 `Paused + ProcessInterrupted`，已 completed 的 leaf 不被覆盖成 cancelled。
 5. 菜单只挂在具体 run 行，不挂在任务/需求标题行；点击“停止”后立即关闭菜单，并在当前会话页展示停止遮罩，直到当前 run VM 刷新确认 run 非 running、active sessions 清空且选中 ACP session 已 terminal 后再消失。
-6. 不新增 `killRun` 入口；terminal kill 必须与普通停止在 UI 上保持区分。
+6. 不新增 `killRun` 入口；`run_kill / kill_run / killRun` 产生链路废弃，普通停止、关闭与重跑前停止旧 run 都只写 interruption。
 7. 如果 run 因所有内部 session 手动暂停而自动变为 paused，刷新后菜单自然 disabled。
 
 ## 10. 文档同步

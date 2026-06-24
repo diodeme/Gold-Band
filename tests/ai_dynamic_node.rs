@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
-use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
     DynamicCompletionSchemaPolicy, DynamicGraphState, DynamicGroupStatus, DynamicNodeKind,
@@ -1629,75 +1629,6 @@ fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
             .iter()
             .any(|error| error.code == "dynamic.node.session.workflow-invocation-disallowed")
     }));
-}
-
-#[test]
-fn ai_dynamic_run_kill_recursively_marks_child_run_and_dynamic_nodes_killed() {
-    let temp = tempdir().unwrap();
-    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let task_id = "task-ai-dynamic-kill-child";
-    let workflow_id = Arc::new(Mutex::new(String::new()));
-    let provider = DynamicProvider::workflow_invocation(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
-    let profile = first_profile_id(&app);
-
-    let store = app
-        .save_workflow_template(
-            "Child Flow".to_string(),
-            serde_json::from_str(&format!(
-                r#"{{
-                    "version": "0.1",
-                    "id": "child-flow",
-                    "entry": "child",
-                    "nodes": [
-                        {{
-                            "id": "child",
-                            "type": "worker",
-                            "provider": "claude-acp",
-                            "profile": "pf-builtin-dev",
-                            "goal": "Run child work"
-                        }}
-                    ],
-                    "edges": [
-                        {{ "from": "child", "to": "$end", "on": "success" }}
-                    ]
-                }}"#
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-    let child_template = store
-        .templates
-        .iter()
-        .find(|template| template.name == "Child Flow")
-        .unwrap();
-    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
-
-    write_task_file(&app, task_id);
-    write_dynamic_workflow(
-        &app,
-        task_id,
-        &profile,
-        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
-    );
-
-    let run = app.run_start(task_id, None).unwrap();
-    assert_eq!(run.outcome, Some(RunOutcome::Success));
-
-    let killed = app.run_kill(task_id, "run-001").unwrap();
-    assert_eq!(killed.outcome, Some(RunOutcome::Killed));
-
-    let graph = dynamic_graph(&app, task_id);
-    assert_eq!(graph.run.outcome, Some(RunOutcome::Killed));
-    let child_node = graph
-        .nodes
-        .iter()
-        .find(|node| node.id == "child-flow-node")
-        .unwrap();
-    assert_eq!(child_node.outcome, Some(NodeOutcome::Killed));
-    let child_run: gold_band::runtime::RunState =
-        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
-    assert_eq!(child_run.outcome, Some(RunOutcome::Killed));
 }
 
 #[test]

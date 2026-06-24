@@ -30,8 +30,8 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus,
-    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
+    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_graph_has_active_leaf,
+    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
@@ -2100,45 +2100,6 @@ impl App {
         Ok(run)
     }
 
-    pub fn run_kill(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        let mut run = self.run_status(task_id, run_id)?;
-        self.close_current_run_attempt(task_id, run_id, &run)?;
-        run.status = RunStatus::Completed;
-        run.outcome = Some(RunOutcome::Killed);
-        run.pause_reason = None;
-        run.updated_at = now_rfc3339_like();
-        validate_run_state(&run)?;
-        write_json(&self.paths.run_file(task_id, run_id), &run)?;
-
-        if let Some(round_id) = &run.current_round {
-            let mut round: RoundState =
-                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
-            round.status = RunStatus::Completed;
-            round.outcome = Some(RunOutcome::Killed);
-            validate_round_state(&round)?;
-            write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
-
-            if let (Some(node_id), Some(attempt_id)) = (&run.current_node, &run.current_attempt) {
-                let node_path = self
-                    .paths
-                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
-                if node_path.exists() {
-                    let mut node: NodeState = read_json(&node_path)?;
-                    node.status = RunStatus::Completed;
-                    node.outcome = Some(NodeOutcome::Killed);
-                    node.finished_at = Some(now_rfc3339_like());
-                    validate_node_state(&node)?;
-                    write_json(&node_path, &node)?;
-                    self.kill_dynamic_descendants_best_effort(
-                        task_id, run_id, round_id, node_id, attempt_id,
-                    );
-                }
-            }
-        }
-
-        Ok(run)
-    }
-
     pub fn pause_all_running_sessions(&self) -> Result<Vec<RunState>> {
         let mut paused = Vec::new();
         for task in self.task_list()? {
@@ -2169,17 +2130,6 @@ impl App {
         self.pause_all_running_sessions()
     }
 
-    fn close_current_run_attempt(&self, task_id: &str, run_id: &str, run: &RunState) -> Result<()> {
-        let (Some(round_id), Some(node_id), Some(attempt_id)) =
-            (&run.current_round, &run.current_node, &run.current_attempt)
-        else {
-            return Ok(());
-        };
-        self.close_attempt_artifacts(task_id, run_id, round_id, node_id, attempt_id)?;
-        self.kill_dynamic_descendants_best_effort(task_id, run_id, round_id, node_id, attempt_id);
-        Ok(())
-    }
-
     fn interrupt_run_descendants_best_effort(
         &self,
         task_id: &str,
@@ -2196,12 +2146,7 @@ impl App {
             task_id, run_id, round_id, node_id, attempt_id,
         );
         self.update_dynamic_descendants_best_effort(
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            Some(reason),
+            task_id, run_id, round_id, node_id, attempt_id, reason,
         );
     }
 
@@ -2221,23 +2166,6 @@ impl App {
         self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
     }
 
-    fn close_attempt_artifacts(
-        &self,
-        task_id: &str,
-        run_id: &str,
-        round_id: &str,
-        node_id: &str,
-        attempt_id: &str,
-    ) -> Result<()> {
-        let attempt_dir = self
-            .paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-        self.cancel_attempt_dir_best_effort(&attempt_dir);
-        acp_client::close_attempt_session_bounded(&attempt_dir)?;
-        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
-        Ok(())
-    }
-
     fn update_dynamic_descendants_best_effort(
         &self,
         task_id: &str,
@@ -2245,7 +2173,7 @@ impl App {
         round_id: &str,
         node_id: &str,
         attempt_id: &str,
-        pause_reason: Option<PauseReason>,
+        pause_reason: PauseReason,
     ) {
         let graph_path = self
             .paths
@@ -2255,11 +2183,7 @@ impl App {
         };
 
         for dynamic_node in &mut graph.nodes {
-            let should_interrupt_attempts = match pause_reason {
-                Some(_) => dynamic_leaf_is_active(dynamic_node.status),
-                None => dynamic_node.status != DynamicNodeStatus::Completed,
-            };
-            if should_interrupt_attempts {
+            if dynamic_leaf_is_active(dynamic_node.status) {
                 let dynamic_node_dir = self.paths.dynamic_node_dir(
                     task_id,
                     run_id,
@@ -2278,62 +2202,24 @@ impl App {
                             continue;
                         };
                         self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                        if pause_reason.is_some() {
-                            self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                        } else {
-                            let _ =
-                                acp_client::close_attempt_session_bounded(attempt_dir.as_path());
-                        }
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
                         self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                     }
                 }
             }
             if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
-                if let Some(reason) = pause_reason {
-                    let _ = self.run_pause(task_id, &child_run_id, reason);
-                } else {
-                    let _ = self.run_kill(task_id, &child_run_id);
-                }
+                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
             }
-            match pause_reason {
-                Some(_) => {
-                    if dynamic_node.status != DynamicNodeStatus::Completed {
-                        dynamic_node.status = DynamicNodeStatus::Paused;
-                        dynamic_node.outcome = None;
-                        dynamic_node.finished_at = Some(now_rfc3339_like());
-                    }
-                }
-                None => {
-                    dynamic_node.status = DynamicNodeStatus::Completed;
-                    dynamic_node.outcome = Some(NodeOutcome::Killed);
-                    dynamic_node
-                        .finished_at
-                        .get_or_insert_with(now_rfc3339_like);
-                }
+            if dynamic_node.status != DynamicNodeStatus::Completed {
+                dynamic_node.status = DynamicNodeStatus::Paused;
+                dynamic_node.outcome = None;
+                dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
 
-        if pause_reason.is_none() {
-            for group in &mut graph.groups {
-                if group.status != DynamicGroupStatus::Closed {
-                    group.status = DynamicGroupStatus::Failed;
-                    group.updated_at = now_rfc3339_like();
-                }
-            }
-        }
-
-        match pause_reason {
-            Some(reason) => {
-                graph.run.status = DynamicRunStatus::Paused;
-                graph.run.outcome = None;
-                graph.run.pause_reason = Some(reason);
-            }
-            None => {
-                graph.run.status = DynamicRunStatus::Completed;
-                graph.run.outcome = Some(RunOutcome::Killed);
-                graph.run.pause_reason = None;
-            }
-        }
+        graph.run.status = DynamicRunStatus::Paused;
+        graph.run.outcome = None;
+        graph.run.pause_reason = Some(pause_reason);
         refresh_dynamic_current_leaf_ids(&mut graph);
         graph.run.updated_at = now_rfc3339_like();
         let _ = write_json(&graph_path, &graph);
@@ -2356,19 +2242,6 @@ impl App {
                 dynamic_node,
             );
         }
-    }
-
-    fn kill_dynamic_descendants_best_effort(
-        &self,
-        task_id: &str,
-        run_id: &str,
-        round_id: &str,
-        node_id: &str,
-        attempt_id: &str,
-    ) {
-        self.update_dynamic_descendants_best_effort(
-            task_id, run_id, round_id, node_id, attempt_id, None,
-        );
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
@@ -2412,12 +2285,7 @@ impl App {
                         write_json(&node_path, &node)?;
                     }
                     self.update_dynamic_descendants_best_effort(
-                        task_id,
-                        run_id,
-                        round_id,
-                        node_id,
-                        attempt_id,
-                        Some(reason),
+                        task_id, run_id, round_id, node_id, attempt_id, reason,
                     );
                 }
             }

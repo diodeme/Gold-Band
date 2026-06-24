@@ -329,7 +329,7 @@ enum ControlDecision {
 - `start_run()`
 - `continue_run()`
 - `retry_run()`
-- `kill_run()`
+- `pause_run()`
 - `open_session()`
 
 这层是 orchestration，不放太多 schema 细节。

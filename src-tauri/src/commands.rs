@@ -1133,20 +1133,6 @@ pub fn retry_run(
 }
 
 #[tauri::command]
-pub fn kill_run(
-    state: State<'_, DesktopState>,
-    task_id: String,
-    run_id: String,
-) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
-    let summary = app.run_kill(&task_id, &run_id).map_err(command_error)?;
-    // run 终态：清理该 run 的全部干预通知 dedup key，防常驻 EXE 内存泄漏（方案 §8.3）。
-    // 幂等；clear_run 不影响其他 run。
-    state.notification_dedup().clear_run(&summary.id);
-    Ok(run_summary_vm(summary))
-}
-
-#[tauri::command]
 pub fn show_artifact(
     state: State<'_, DesktopState>,
     project_id: Option<String>,

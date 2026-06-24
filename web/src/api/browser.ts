@@ -204,9 +204,6 @@ export const browserApi: RuntimeApi = {
   retryRun(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  killRun(taskId: string, runId: string) {
-    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'completed', outcome: 'killed' });
-  },
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },

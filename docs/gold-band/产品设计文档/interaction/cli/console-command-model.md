@@ -55,7 +55,6 @@ Task Picker 与 Workspace 对 `/log`、`/config`、`/help` 的辅助视图行为
 - `/run status <task-id> <run-id>`
 - `/run continue <task-id> <run-id>`
 - `/run retry <task-id> <run-id>`
-- `/run kill <task-id> <run-id>`
 - `/run open-session <task-id> <run-id> --round <round> --node <node> --attempt <attempt>`
 - `/artifact list <task-id> <run-id> --round <round> --node <node> --attempt <attempt>`
 - `/artifact show <task-id> <run-id> --round <round> --node <node> --attempt <attempt> --name <name>`

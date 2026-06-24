@@ -135,8 +135,8 @@ export function continueRun(projectId: string | null | undefined, taskId: string
   return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
 }
 
-export function pauseRun(taskId: string, runId: string) {
-  return getRuntimeApi().pauseRun(taskId, runId);
+export function pauseRun(taskId: string, runId: string, projectId?: string | null) {
+  return getRuntimeApi().pauseRun(taskId, runId, projectId);
 }
 
 export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -165,6 +165,10 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
 
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeConversationRunStateUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeConversationRunStateUpdates']>>[0]) {
+  return getRuntimeApi().subscribeConversationRunStateUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。

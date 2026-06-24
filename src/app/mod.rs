@@ -29,7 +29,10 @@ use crate::dsl::{
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
     WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
-use crate::dynamic::{DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus};
+use crate::dynamic::{
+    DynamicGraphState, DynamicGroupStatus, DynamicNodeStatus, DynamicRunStatus,
+    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
+};
 use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
 use crate::provider::{
@@ -2207,30 +2210,37 @@ impl App {
         };
 
         for dynamic_node in &mut graph.nodes {
-            let dynamic_node_dir = self.paths.dynamic_node_dir(
-                task_id,
-                run_id,
-                round_id,
-                node_id,
-                attempt_id,
-                &dynamic_node.id,
-            );
-            if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
-                for entry in entries.flatten() {
-                    let attempt_path = entry.path();
-                    if !attempt_path.is_dir() {
-                        continue;
+            let should_interrupt_attempts = match pause_reason {
+                Some(_) => dynamic_leaf_is_active(dynamic_node.status),
+                None => dynamic_node.status != DynamicNodeStatus::Completed,
+            };
+            if should_interrupt_attempts {
+                let dynamic_node_dir = self.paths.dynamic_node_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    &dynamic_node.id,
+                );
+                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
+                    for entry in entries.flatten() {
+                        let attempt_path = entry.path();
+                        if !attempt_path.is_dir() {
+                            continue;
+                        }
+                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
+                            continue;
+                        };
+                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                        if pause_reason.is_some() {
+                            self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                        } else {
+                            let _ =
+                                acp_client::close_attempt_session_bounded(attempt_dir.as_path());
+                        }
+                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                     }
-                    let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
-                        continue;
-                    };
-                    self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                    if pause_reason.is_some() {
-                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                    } else {
-                        let _ = acp_client::close_attempt_session_bounded(attempt_dir.as_path());
-                    }
-                    self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                 }
             }
             if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
@@ -2279,19 +2289,7 @@ impl App {
                 graph.run.pause_reason = None;
             }
         }
-        graph.run.current_node_ids = graph
-            .nodes
-            .iter()
-            .filter(|node| {
-                matches!(
-                    node.status,
-                    DynamicNodeStatus::Ready
-                        | DynamicNodeStatus::Running
-                        | DynamicNodeStatus::Paused
-                )
-            })
-            .map(|node| node.id.clone())
-            .collect();
+        refresh_dynamic_current_leaf_ids(&mut graph);
         graph.run.updated_at = now_rfc3339_like();
         let _ = write_json(&graph_path, &graph);
         let _ = write_json(
@@ -2300,6 +2298,19 @@ impl App {
                 .dynamic_run_file(task_id, run_id, round_id, node_id, attempt_id),
             &graph.run,
         );
+        for dynamic_node in &graph.nodes {
+            let _ = write_json(
+                &self.paths.dynamic_node_file(
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    &dynamic_node.id,
+                ),
+                dynamic_node,
+            );
+        }
     }
 
     fn kill_dynamic_descendants_best_effort(
@@ -2435,6 +2446,67 @@ impl App {
         reason: PauseReason,
     ) -> Result<()> {
         let now = now_rfc3339_like();
+        let graph_path = self.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        if graph_path.exists() {
+            let mut graph: DynamicGraphState = read_json(&graph_path)?;
+            let mut target_updated = false;
+            if let Some(dynamic_node) = graph
+                .nodes
+                .iter_mut()
+                .find(|candidate| candidate.id == node_id)
+            {
+                if dynamic_node.status != DynamicNodeStatus::Completed {
+                    dynamic_node.status = DynamicNodeStatus::Paused;
+                    dynamic_node.outcome = None;
+                    dynamic_node.finished_at = Some(now.clone());
+                    target_updated = true;
+                }
+            }
+            refresh_dynamic_current_leaf_ids(&mut graph);
+            let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
+            if !has_active_leaf && graph.run.status == DynamicRunStatus::Running {
+                graph.run.status = DynamicRunStatus::Paused;
+                graph.run.outcome = None;
+                graph.run.pause_reason = Some(reason);
+            }
+            graph.run.updated_at = now.clone();
+            write_json(&graph_path, &graph)?;
+            write_json(
+                &self.paths.dynamic_run_file(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                ),
+                &graph.run,
+            )?;
+            if target_updated {
+                let dynamic_node_path = self.paths.dynamic_node_file(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    node_id,
+                );
+                if let Some(dynamic_node) =
+                    graph.nodes.iter().find(|candidate| candidate.id == node_id)
+                {
+                    write_json(&dynamic_node_path, dynamic_node)?;
+                }
+            }
+            if has_active_leaf {
+                return Ok(());
+            }
+        }
+
         let run_path = self.paths.run_file(task_id, run_id);
         if run_path.exists() {
             let mut run: RunState = read_json(&run_path)?;
@@ -2470,66 +2542,9 @@ impl App {
             if outer_node.status != RunStatus::Completed {
                 outer_node.status = RunStatus::Paused;
                 outer_node.outcome = None;
-                outer_node.finished_at = Some(now.clone());
+                outer_node.finished_at = Some(now);
                 validate_node_state(&outer_node)?;
                 write_json(&outer_node_path, &outer_node)?;
-            }
-        }
-
-        let graph_path = self.paths.dynamic_graph_file(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-        );
-        if graph_path.exists() {
-            let mut graph: DynamicGraphState = read_json(&graph_path)?;
-            if graph.run.status == DynamicRunStatus::Running {
-                graph.run.status = DynamicRunStatus::Paused;
-                graph.run.outcome = None;
-                graph.run.pause_reason = Some(reason);
-                graph.run.updated_at = now.clone();
-            }
-            if let Some(dynamic_node) = graph
-                .nodes
-                .iter_mut()
-                .find(|candidate| candidate.id == node_id)
-            {
-                if dynamic_node.status != DynamicNodeStatus::Completed {
-                    dynamic_node.status = DynamicNodeStatus::Paused;
-                    dynamic_node.outcome = None;
-                    dynamic_node.finished_at = Some(now.clone());
-                }
-            }
-            write_json(&graph_path, &graph)?;
-            write_json(
-                &self.paths.dynamic_run_file(
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                ),
-                &graph.run,
-            )?;
-        }
-
-        let dynamic_node_path = self.paths.dynamic_node_file(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-        );
-        if dynamic_node_path.exists() {
-            let mut dynamic_node: crate::dynamic::DynamicNodeState = read_json(&dynamic_node_path)?;
-            if dynamic_node.status != DynamicNodeStatus::Completed {
-                dynamic_node.status = DynamicNodeStatus::Paused;
-                dynamic_node.outcome = None;
-                dynamic_node.finished_at = Some(now);
-                write_json(&dynamic_node_path, &dynamic_node)?;
             }
         }
 
@@ -2541,9 +2556,8 @@ impl App {
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
-        if !acp_client::request_prompt_cancel(attempt_dir) {
-            let _ = acp_client::cancel_attempt_prompt(attempt_dir);
-        }
+        let _ = acp_client::request_prompt_cancel(attempt_dir);
+        let _ = acp_client::cancel_attempt_prompt(attempt_dir);
     }
 
     pub fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
@@ -3078,8 +3092,16 @@ mod tests {
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
     };
-    use crate::domain::PauseReason;
+    use crate::domain::{
+        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
+    };
+    use crate::dynamic::{
+        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
+        DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
+    };
     use crate::observability::touch_log_file_best_effort;
+    use crate::runtime::{NodeState, RoundState, RunState};
+    use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
@@ -3208,6 +3230,387 @@ mod tests {
         assert_eq!(calls[0].attempt_id, context.attempt_id);
         assert_eq!(calls[0].outer_node_id, context.outer_node_id);
         assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
+    }
+
+    fn dynamic_pause_test_app(temp: &tempfile::TempDir) -> App {
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let gold_band_home = Utf8PathBuf::from_path_buf(temp.path().join("home")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
+        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
+        App::new(repo_root)
+    }
+
+    fn dynamic_pause_node(id: &str, status: DynamicNodeStatus) -> DynamicNodeState {
+        DynamicNodeState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            dynamic_run_id: "dynamic-run-001".to_string(),
+            kind: DynamicNodeKind::Worker,
+            title: id.to_string(),
+            task: id.to_string(),
+            status,
+            outcome: None,
+            group_id: None,
+            chain_id: id.to_string(),
+            depth: 1,
+            depends_on: Vec::new(),
+            workspace: WorkspacePolicy {
+                mode: WorkspaceMode::Worktree,
+            },
+            workspace_path: None,
+            provider: Some("claude-acp".to_string()),
+            profile: None,
+            permission_mode: None,
+            model: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            workflow_id: None,
+            workflow_snapshot_id: None,
+            child_run_id: None,
+            started_at: Some("2026-06-16T00:00:00Z".to_string()),
+            finished_at: None,
+        }
+    }
+
+    fn write_dynamic_pause_fixture(app: &App, nodes: Vec<DynamicNodeState>) {
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let started_at = "2026-06-16T00:00:00Z".to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                status: RunStatus::Running,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(outer_node_id.to_string()),
+                current_attempt: Some(outer_attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: None,
+                uuid: None,
+                last_executed_node: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: RunStatus::Running,
+                outcome: None,
+                trigger: RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+            &NodeState {
+                version: VERSION.to_string(),
+                node_id: outer_node_id.to_string(),
+                node_type: NodeType::AiDynamic,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: outer_attempt_id.to_string(),
+                status: RunStatus::Running,
+                outcome: None,
+                started_at: started_at.clone(),
+                finished_at: None,
+                manual_check_pending: false,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let graph = DynamicGraphState {
+            version: VERSION.to_string(),
+            run: DynamicRunState {
+                version: VERSION.to_string(),
+                id: "dynamic-run-001".to_string(),
+                parent_run_id: run_id.to_string(),
+                parent_round_id: round_id.to_string(),
+                parent_node_id: outer_node_id.to_string(),
+                parent_attempt_id: outer_attempt_id.to_string(),
+                status: DynamicRunStatus::Running,
+                outcome: None,
+                pause_reason: None,
+                started_at: started_at.clone(),
+                updated_at: started_at,
+                control: Default::default(),
+                allowed_workflow_snapshots: Vec::new(),
+                current_node_ids: nodes.iter().map(|node| node.id.clone()).collect(),
+            },
+            nodes,
+            groups: Vec::new(),
+            proposals: Vec::new(),
+        };
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &graph,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .dynamic_run_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+            &graph.run,
+        )
+        .unwrap();
+        for node in &graph.nodes {
+            write_json(
+                &app.paths.dynamic_node_file(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &node.id,
+                ),
+                node,
+            )
+            .unwrap();
+            let attempt_dir = app.paths.dynamic_node_attempt_dir(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &node.id,
+                "attempt-001",
+            );
+            std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+            if node.status == DynamicNodeStatus::Completed {
+                write_json(
+                    &attempt_dir.join("acp.session.json"),
+                    &serde_json::json!({
+                        "sessionId": format!("{}-session", node.id),
+                        "status": "completed"
+                    }),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn run_pause_marks_dynamic_descendant_attempts_cancelled() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        write_dynamic_pause_fixture(
+            &app,
+            vec![
+                dynamic_pause_node("good-morning", DynamicNodeStatus::Running),
+                dynamic_pause_node("good-night", DynamicNodeStatus::Running),
+            ],
+        );
+
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+
+        for node_id in ["good-morning", "good-night"] {
+            let attempt_dir = app.paths.dynamic_node_attempt_dir(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                node_id,
+                "attempt-001",
+            );
+            let session: serde_json::Value =
+                read_json(&attempt_dir.join("acp.session.json")).unwrap();
+            assert_eq!(
+                session.get("status").and_then(|value| value.as_str()),
+                Some("cancelled")
+            );
+            assert_eq!(
+                session.get("stopReason").and_then(|value| value.as_str()),
+                Some("cancelled")
+            );
+        }
+    }
+
+    #[test]
+    fn run_pause_keeps_completed_dynamic_descendant_session_terminal() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut completed = dynamic_pause_node("good-night", DynamicNodeStatus::Completed);
+        completed.outcome = Some(NodeOutcome::Success);
+        completed.finished_at = Some("2026-06-16T00:00:01Z".to_string());
+        write_dynamic_pause_fixture(
+            &app,
+            vec![
+                dynamic_pause_node("good-morning", DynamicNodeStatus::Running),
+                completed,
+            ],
+        );
+
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+
+        let running_attempt_dir = app.paths.dynamic_node_attempt_dir(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-morning",
+            "attempt-001",
+        );
+        let completed_attempt_dir = app.paths.dynamic_node_attempt_dir(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-night",
+            "attempt-001",
+        );
+        let running_session: serde_json::Value =
+            read_json(&running_attempt_dir.join("acp.session.json")).unwrap();
+        let completed_session: serde_json::Value =
+            read_json(&completed_attempt_dir.join("acp.session.json")).unwrap();
+
+        assert_eq!(
+            running_session
+                .get("status")
+                .and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert_eq!(
+            completed_session
+                .get("status")
+                .and_then(|value| value.as_str()),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn pause_dynamic_attempt_keeps_parent_running_when_sibling_is_active() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        write_dynamic_pause_fixture(
+            &app,
+            vec![
+                dynamic_pause_node("good-morning", DynamicNodeStatus::Running),
+                dynamic_pause_node("good-night", DynamicNodeStatus::Running),
+            ],
+        );
+
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-morning",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        let target: DynamicNodeState = read_json(&app.paths.dynamic_node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-morning",
+        ))
+        .unwrap();
+
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(graph.run.status, DynamicRunStatus::Running);
+        assert_eq!(graph.run.current_node_ids, vec!["good-night".to_string()]);
+        assert_eq!(target.status, DynamicNodeStatus::Paused);
+        assert_eq!(target.outcome, None);
+    }
+
+    #[test]
+    fn pause_dynamic_attempt_pauses_parent_when_no_active_leaf_remains() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        write_dynamic_pause_fixture(
+            &app,
+            vec![dynamic_pause_node("good-night", DynamicNodeStatus::Running)],
+        );
+
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-night",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let outer_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(round.status, RunStatus::Paused);
+        assert_eq!(outer_node.status, RunStatus::Paused);
+        assert_eq!(outer_node.outcome, None);
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(
+            graph.run.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert!(graph.run.current_node_ids.is_empty());
     }
 
     #[test]

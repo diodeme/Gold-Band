@@ -637,6 +637,29 @@ fn dynamic_next_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Va
     })
 }
 
+pub fn dynamic_leaf_is_active(status: DynamicNodeStatus) -> bool {
+    matches!(
+        status,
+        DynamicNodeStatus::Ready | DynamicNodeStatus::Running
+    )
+}
+
+pub fn refresh_dynamic_current_leaf_ids(graph: &mut DynamicGraphState) {
+    graph.run.current_node_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| dynamic_leaf_is_active(node.status))
+        .map(|node| node.id.clone())
+        .collect();
+}
+
+pub fn dynamic_graph_has_active_leaf(graph: &DynamicGraphState) -> bool {
+    graph
+        .nodes
+        .iter()
+        .any(|node| dynamic_leaf_is_active(node.status))
+}
+
 pub fn validate_dynamic_run_state(state: &DynamicRunState) -> Result<()> {
     ensure!(state.version == VERSION, "unsupported dynamic run version");
     ensure!(

@@ -10,13 +10,23 @@ export function resolveConversationEventSelectedSessionKey(args: {
   currentSelectedKey?: string | null;
   incomingSessionKey: string;
   followMode: ConversationSessionFollowMode;
+  currentSelectedActive?: boolean;
+  incomingActive?: boolean;
 }) {
-  const { currentSelectedKey, incomingSessionKey, followMode } = args;
+  const {
+    currentSelectedKey,
+    incomingSessionKey,
+    followMode,
+    currentSelectedActive = false,
+    incomingActive = true,
+  } = args;
   if (currentSelectedKey && isNestedConversationSessionKey(currentSelectedKey, incomingSessionKey)) {
     return currentSelectedKey;
   }
-  if (!currentSelectedKey || followMode === 'auto') return incomingSessionKey;
-  return currentSelectedKey;
+  if (!currentSelectedKey) return incomingSessionKey;
+  if (followMode !== 'auto') return currentSelectedKey;
+  if (!incomingActive) return currentSelectedKey;
+  return currentSelectedActive ? currentSelectedKey : incomingSessionKey;
 }
 
 export function resolveConversationRefreshSelectedSessionKey(args: {
@@ -68,18 +78,24 @@ export interface ConversationAcpRunUpdatePlan {
 export function planConversationAcpRunUpdate(args: {
   treeHasSession: boolean;
   alreadySelected: boolean;
-  hasSessionSnapshot: boolean;
+  hasRuntimeSnapshot?: boolean;
+  hasSessionSnapshot?: boolean;
   hasLiveEvent: boolean;
   sessionStatus?: string | null;
   pendingPermissionCount?: number;
+  followPending?: boolean;
 }): ConversationAcpRunUpdatePlan {
   const {
     treeHasSession,
     alreadySelected,
+    hasRuntimeSnapshot,
     hasSessionSnapshot,
+    hasLiveEvent,
     sessionStatus,
     pendingPermissionCount = 0,
+    followPending = false,
   } = args;
+  const canPatchSnapshot = hasRuntimeSnapshot ?? Boolean(hasSessionSnapshot);
   const terminal = isTerminalConversationSessionStatus(sessionStatus);
   const interactive = needsInteractiveConversationRunRefresh(sessionStatus, pendingPermissionCount);
   if (!treeHasSession) {
@@ -91,28 +107,29 @@ export function planConversationAcpRunUpdate(args: {
   }
   if (alreadySelected) {
     return {
-      patchSelectedSession: hasSessionSnapshot,
+      patchSelectedSession: canPatchSnapshot,
       patchBackgroundSession: false,
       queueRunRefresh: terminal || interactive,
     };
   }
-  if (!hasSessionSnapshot) {
+  if (!canPatchSnapshot) {
     return {
       patchSelectedSession: false,
       patchBackgroundSession: false,
-      queueRunRefresh: false,
+      queueRunRefresh: hasLiveEvent && followPending,
     };
   }
   return {
     patchSelectedSession: false,
     patchBackgroundSession: !terminal && !interactive,
-    queueRunRefresh: terminal || interactive,
+    queueRunRefresh: terminal || interactive || followPending,
   };
 }
 
 export function shouldQueueConversationRunRefreshForAcpUpdate(args: {
   treeHasSession: boolean;
   alreadySelected: boolean;
+  hasRuntimeSnapshot?: boolean;
   hasSessionSnapshot?: boolean;
   hasLiveEvent?: boolean;
   sessionStatus?: string | null;
@@ -121,6 +138,7 @@ export function shouldQueueConversationRunRefreshForAcpUpdate(args: {
   return planConversationAcpRunUpdate({
     treeHasSession: args.treeHasSession,
     alreadySelected: args.alreadySelected,
+    hasRuntimeSnapshot: args.hasRuntimeSnapshot,
     hasSessionSnapshot: args.hasSessionSnapshot ?? Boolean(args.sessionStatus),
     hasLiveEvent: args.hasLiveEvent ?? false,
     sessionStatus: args.sessionStatus,

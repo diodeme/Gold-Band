@@ -43,11 +43,12 @@ describe('desktopApi', () => {
   });
 
   it('routes ordinary run stop to the Tauri pause command', async () => {
-    await desktopApi.pauseRun('task-1', 'run-1');
+    await desktopApi.pauseRun('task-1', 'run-1', 'project-1');
 
     expect(invokeCommand).toHaveBeenCalledWith('pause_run', {
       taskId: 'task-1',
       runId: 'run-1',
+      projectId: 'project-1',
     });
   });
 });

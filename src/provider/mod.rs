@@ -144,6 +144,8 @@ pub struct PromptRuntimeContext {
     pub runtime_node_id: Option<String>,
     #[serde(default)]
     pub runtime_attempt_id: Option<String>,
+    #[serde(default)]
+    pub attempt_state_file: Option<Utf8PathBuf>,
     pub language: crate::config::DesktopLanguage,
     pub run_dir: Utf8PathBuf,
     pub round_dir: Utf8PathBuf,
@@ -685,6 +687,7 @@ impl ProviderAdapter for AcpProvider {
                     .runtime_attempt_id
                     .clone()
                     .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
+                attempt_state_file: req.runtime_context.attempt_state_file.clone(),
             }),
         )?;
         let status = match run.stop_reason.as_deref() {
@@ -1135,6 +1138,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             runtime_node_id: None,
             runtime_attempt_id: None,
+            attempt_state_file: None,
             language: crate::config::DesktopLanguage::ZhCn,
             run_dir: Utf8PathBuf::from("/run"),
             round_dir: Utf8PathBuf::from("/run/rounds/round-001"),

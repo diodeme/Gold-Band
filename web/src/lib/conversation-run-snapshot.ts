@@ -224,11 +224,18 @@ export function mergeConversationRunSnapshot(
 }
 
 export function isConversationActiveStatus(status?: string | null) {
-  return ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(status?.toLowerCase() ?? '');
+  const normalized = status?.trim().toLowerCase().replace(/_/g, '-') ?? '';
+  return ['pending', 'ready', 'running', 'in-progress', 'active', 'sending', 'cancelling', 'cancel-requested'].includes(normalized);
+}
+
+export function isConversationActiveLifecycle(lifecycle?: ConversationAttemptLifecycleVm | null) {
+  return Boolean(lifecycle?.runtime.active || lifecycle?.acp.active || lifecycle?.acp.stopping)
+    || isConversationActiveStatus(lifecycle?.runtime.status)
+    || isConversationActiveStatus(lifecycle?.acp.status);
 }
 
 function isConversationActiveLeaf(leaf: ConversationSessionLeafVm) {
-  return Boolean(leaf.manualCheckPending || leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
+  return Boolean(leaf.manualCheckPending || isConversationActiveLifecycle(leaf.lifecycle))
     || isConversationActiveStatus(leaf.status);
 }
 
@@ -237,7 +244,7 @@ function isConversationUnknownStatus(status?: string | null) {
   return !normalized || normalized === 'unknown';
 }
 
-function findConversationLeafByKey(tree: ConversationSessionTreeVm, key?: string | null): ConversationSessionLeafVm | null {
+export function findConversationLeafByKey(tree: ConversationSessionTreeVm, key?: string | null): ConversationSessionLeafVm | null {
   if (!key) return null;
   for (const round of tree.rounds) {
     for (const node of round.nodes) {

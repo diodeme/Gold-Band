@@ -15,6 +15,7 @@ fn runtime_context() -> PromptRuntimeContext {
         attempt_id: "attempt-001".to_string(),
         runtime_node_id: None,
         runtime_attempt_id: None,
+        attempt_state_file: None,
         language: gold_band::config::DesktopLanguage::ZhCn,
         run_dir: Utf8PathBuf::from(
             "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001",

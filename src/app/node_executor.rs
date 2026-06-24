@@ -86,6 +86,10 @@ fn runtime_prompt_context(
         attempt_id: attempt_id.to_string(),
         runtime_node_id: None,
         runtime_attempt_id: None,
+        attempt_state_file: Some(
+            app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        ),
         language: app.config.desktop_language,
         run_dir: app.paths.run_dir(task_id, run_id),
         round_dir: app.paths.round_dir(task_id, run_id, round_id),

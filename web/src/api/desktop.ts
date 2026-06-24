@@ -1,5 +1,5 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
-import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -20,6 +20,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeConversationRunStateUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ConversationRunStateUpdatedEventVm>('gold-band://conversation-run-state-updated', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -133,8 +140,8 @@ export const desktopApi: RuntimeApi = {
   continueRun(projectId, taskId, runId, promptId, prompt) {
     return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
   },
-  pauseRun(taskId: string, runId: string) {
-    return invokeCommand('pause_run', { taskId, runId });
+  pauseRun(taskId: string, runId: string, projectId?: string | null) {
+    return invokeCommand('pause_run', { taskId, runId, projectId });
   },
   stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });

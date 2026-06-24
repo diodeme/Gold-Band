@@ -28,12 +28,24 @@ describe('conversation session follow helpers', () => {
     })).toBe('round-001/node-b/attempt-001');
   });
 
-  it('selects the incoming session while auto-follow is enabled', () => {
+  it('selects the incoming session while auto-follow is pending after the current session naturally finished', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: 'round-001/node-a/attempt-001',
       incomingSessionKey: 'round-001/node-b/attempt-001',
       followMode: 'auto',
+      currentSelectedActive: false,
+      incomingActive: true,
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('keeps the current active session while auto-follow is enabled', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/node-a/attempt-001',
+      incomingSessionKey: 'round-001/node-b/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: true,
+      incomingActive: true,
+    })).toBe('round-001/node-a/attempt-001');
   });
 
   it('does not let an outer AI-DYNAMIC event steal an internal selection', () => {
@@ -50,6 +62,16 @@ describe('conversation session follow helpers', () => {
       incomingSessionKey: 'round-001/node-b/attempt-001',
       followMode: 'manual',
     })).toBe('round-001/node-a/attempt-001');
+  });
+
+  it('does not steal focus from a manually selected historical session', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/history/attempt-001',
+      incomingSessionKey: 'round-001/node-b/attempt-001',
+      followMode: 'manual',
+      currentSelectedActive: false,
+      incomingActive: true,
+    })).toBe('round-001/history/attempt-001');
   });
 
   it('enables auto-follow only for a running session at the bottom', () => {
@@ -126,6 +148,21 @@ describe('conversation session follow helpers', () => {
     });
   });
 
+  it('queues a refresh for known background live events only while auto-follow is pending', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasSessionSnapshot: false,
+      hasLiveEvent: true,
+      sessionStatus: null,
+      followPending: true,
+    })).toEqual({
+      patchSelectedSession: false,
+      patchBackgroundSession: false,
+      queueRunRefresh: true,
+    });
+  });
+
   it('lightly patches non-terminal background session snapshots without queueing a full refresh', () => {
     expect(planConversationAcpRunUpdate({
       treeHasSession: true,
@@ -137,6 +174,21 @@ describe('conversation session follow helpers', () => {
       patchSelectedSession: false,
       patchBackgroundSession: true,
       queueRunRefresh: false,
+    });
+  });
+
+  it('queues a refresh for lifecycle-only background snapshots while auto-follow is pending', () => {
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: false,
+      hasRuntimeSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: 'ready',
+      followPending: true,
+    })).toEqual({
+      patchSelectedSession: false,
+      patchBackgroundSession: true,
+      queueRunRefresh: true,
     });
   });
 

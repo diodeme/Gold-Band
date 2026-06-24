@@ -12,7 +12,6 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
 import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
-import { shouldEnableConversationAutoFollow } from '@/lib/conversation-session-follow';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
 import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
@@ -53,7 +52,6 @@ interface ConversationRunPageProps {
   onEditWorkflow: () => void;
   onSaveWorkflow?: (json: string) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
-  onSessionStopped: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   onTitleChange?: (title: string) => void;
@@ -67,7 +65,6 @@ export function ConversationRunPage({
   onEditWorkflow,
   onSaveWorkflow,
   onSelectSession,
-  onSessionStopped,
   onLifecycleSnapshot,
   onAutoFollowChange,
   onTitleChange,
@@ -103,6 +100,7 @@ export function ConversationRunPage({
   const effectiveProfiles = workflowProfiles ?? [];
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(false);
+  const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const chatDialogRef = useRef<ACPChatDialogHandle>(null);
@@ -117,6 +115,7 @@ export function ConversationRunPage({
 
   useEffect(() => {
     manualAutoFollowDisabledRef.current = false;
+    pendingAutoFollowRestoreSessionKeyRef.current = null;
     onAutoFollowChangeRef.current?.(true);
   }, [run.runId]);
 
@@ -175,6 +174,7 @@ export function ConversationRunPage({
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
     const leaf = conversationSessionLeafForGraphNode(run.sessionTree, graphNode);
     if (!leaf) return;
+    pendingAutoFollowRestoreSessionKeyRef.current = null;
     manualAutoFollowDisabledRef.current = true;
     onAutoFollowChange?.(false);
     onSelectSession(leaf);
@@ -200,29 +200,59 @@ export function ConversationRunPage({
     );
   }, [run.projectId, run.taskId, run.runId, selectedLeaf]);
 
+  const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
+    if (!leaf) return false;
+    return activeSessionKeys.includes(leafKey(leaf)) || isRestorableRuntimeLeaf(leaf);
+  }, [activeSessionKeys]);
+
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    if (!atBottom) {
+      manualAutoFollowDisabledRef.current = true;
+      onAutoFollowChange?.(false);
+      return;
+    }
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
-    const selectedSessionActive = Boolean(selectedKey && activeSessionKeys.includes(selectedKey));
-    const shouldFollow = atBottom && selectedSessionActive;
-    manualAutoFollowDisabledRef.current = !shouldFollow;
-    onAutoFollowChange?.(shouldFollow);
-  }, [activeSessionKeys, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
+    const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
+    const restorableSelected = isAutoFollowRestorableLeaf(selectedLeaf);
+    if (selectedKey && restoreKey === selectedKey && restorableSelected) {
+      pendingAutoFollowRestoreSessionKeyRef.current = null;
+      manualAutoFollowDisabledRef.current = false;
+      onAutoFollowChange?.(true);
+      return;
+    }
+    if (restorableSelected) {
+      manualAutoFollowDisabledRef.current = false;
+      onAutoFollowChange?.(true);
+      return;
+    }
+    if (!manualAutoFollowDisabledRef.current) {
+      onAutoFollowChange?.(true);
+    }
+  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, run.sessionTree.selectedSessionKey, selectedLeaf]);
 
   const handleSessionSelection = useCallback((leaf: ConversationSessionLeafVm, followActive = false) => {
-    const isActive = activeSessionKeys.includes(leafKey(leaf));
-    const shouldFollow = followActive && shouldEnableConversationAutoFollow(
-      isActive,
-      isAtBottomRef.current,
-    );
-    manualAutoFollowDisabledRef.current = !shouldFollow;
-    onAutoFollowChange?.(shouldFollow);
-    onSelectSession(leaf, shouldFollow);
-  }, [activeSessionKeys, onAutoFollowChange, onSelectSession]);
-
-  const handleSessionStopped = useCallback(() => {
-    onSessionStopped();
-  }, [onSessionStopped]);
+    const key = leafKey(leaf);
+    const canRestoreAutoFollow = followActive && isAutoFollowRestorableLeaf(leaf);
+    if (canRestoreAutoFollow && isAtBottomRef.current) {
+      pendingAutoFollowRestoreSessionKeyRef.current = null;
+      manualAutoFollowDisabledRef.current = false;
+      onAutoFollowChange?.(true);
+      onSelectSession(leaf, true);
+      return;
+    }
+    if (canRestoreAutoFollow) {
+      pendingAutoFollowRestoreSessionKeyRef.current = key;
+      manualAutoFollowDisabledRef.current = true;
+      onAutoFollowChange?.(false);
+      onSelectSession(leaf, false);
+      return;
+    }
+    pendingAutoFollowRestoreSessionKeyRef.current = null;
+    manualAutoFollowDisabledRef.current = true;
+    onAutoFollowChange?.(false);
+    onSelectSession(leaf, false);
+  }, [isAutoFollowRestorableLeaf, onAutoFollowChange, onSelectSession]);
 
   const handleRerun = () => {
     if (isRunning) {
@@ -281,7 +311,7 @@ export function ConversationRunPage({
                 tree={run.sessionTree}
                 selectedKey={run.sessionTree.selectedSessionKey}
                 onSelectSession={(leaf) => {
-                  handleSessionSelection(leaf);
+                  handleSessionSelection(leaf, isAutoFollowRestorableLeaf(leaf));
                   setSessionSwitcherOpen(false);
                 }}
               />
@@ -340,7 +370,6 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
-            onSessionStopped={handleSessionStopped}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
@@ -518,9 +547,28 @@ function activeSessionToLeaf(
   };
 }
 
+function isRestorableRuntimeLeaf(leaf: ConversationSessionLeafVm) {
+  return Boolean(
+    leaf.lifecycle?.runtime.active
+    || leaf.lifecycle?.acp.active
+    || leaf.lifecycle?.acp.stopping,
+  ) || isActiveSessionStatus(leaf.status) || (leaf.current && !isTerminalSessionStatus(leaf.status));
+}
+
 function isActiveSessionLeaf(leaf: ConversationSessionLeafVm) {
-  return Boolean(leaf.manualCheckPending || leaf.lifecycle?.runtime.active || leaf.lifecycle?.acp.active || leaf.lifecycle?.acp.stopping)
-    || ['pending', 'running', 'in_progress', 'sending', 'cancelling', 'cancel_requested'].includes(leaf.status?.toLowerCase() ?? '');
+  return Boolean(leaf.manualCheckPending) || isRestorableRuntimeLeaf(leaf);
+}
+
+function normalizeSessionStatus(status?: string | null) {
+  return status?.trim().toLowerCase().replace(/_/g, '-') ?? '';
+}
+
+function isActiveSessionStatus(status?: string | null) {
+  return ['pending', 'ready', 'running', 'in-progress', 'active', 'sending', 'cancelling', 'cancel-requested'].includes(normalizeSessionStatus(status));
+}
+
+function isTerminalSessionStatus(status?: string | null) {
+  return ['completed', 'complete', 'success', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(normalizeSessionStatus(status));
 }
 
 // ── Workflow sheet (edit / view) ──

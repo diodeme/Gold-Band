@@ -1056,6 +1056,7 @@ const resources = {
           titleEdit: "修改标题",
           noActiveSession: "暂无活跃会话",
           activeSessions: "活跃会话",
+          stoppingRunOverlay: "正在停止当前运行…",
           composerFixWorkflow: "修改工作流",
           composerError: "运行出错",
           assetsBar: {
@@ -2240,6 +2241,7 @@ const resources = {
           titleEdit: "Edit title",
           noActiveSession: "No active session",
           activeSessions: "Active sessions",
+          stoppingRunOverlay: "Stopping current run…",
           composerFixWorkflow: "Fix workflow",
           composerError: "Runtime error",
           assetsBar: {

@@ -28,6 +28,8 @@ interface ShellProps {
   onConversationSearch: () => void;
   onConversationSelectTask: (projectId: string, taskId: string) => void;
   onConversationSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  conversationRunStopping?: boolean;
+  onConversationPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
   onConversationDeleteTask: (projectId: string, taskId: string) => void;
   onConversationPinTask: (projectId: string, taskId: string) => void;
@@ -39,7 +41,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
@@ -55,6 +57,8 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onSearch={onConversationSearch}
         onSelectTask={onConversationSelectTask}
         onSelectRun={onConversationSelectRun}
+        stoppingRun={conversationRunStopping}
+        onPauseRun={onConversationPauseRun}
         onPinTask={onConversationPinTask}
         onUnpinTask={onConversationUnpinTask}
         onRenameTask={onConversationRenameTask}

@@ -60,6 +60,28 @@ pub struct LiveAcpSession {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterConnectionOutcome {
+    Reused,
+    Spawned,
+    ReplacedStale,
+}
+
+impl AdapterConnectionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Spawned => "spawned",
+            Self::ReplacedStale => "replaced-stale",
+        }
+    }
+}
+
+pub struct AdapterConnectionResolution {
+    pub connection: Arc<AdapterConnection>,
+    pub outcome: AdapterConnectionOutcome,
+}
+
 #[derive(Debug)]
 pub struct PendingRequest {
     pub id: u64,
@@ -524,10 +546,25 @@ impl AdapterConnectionManager {
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
     ) -> Result<Arc<AdapterConnection>> {
+        Ok(self
+            .get_or_spawn_with_outcome(provider_id, config, workspace_root, use_local_claude)?
+            .connection)
+    }
+
+    pub fn get_or_spawn_with_outcome(
+        &self,
+        provider_id: &str,
+        config: &AcpAdapterConfig,
+        workspace_root: Utf8PathBuf,
+        use_local_claude: bool,
+    ) -> Result<AdapterConnectionResolution> {
         let key = AdapterConnectionKey::new(provider_id, workspace_root);
         let signature = AdapterConfigSignature::new(config, use_local_claude);
         if let Some(existing) = self.existing_ready_connection(&key, &signature) {
-            return Ok(existing);
+            return Ok(AdapterConnectionResolution {
+                connection: existing,
+                outcome: AdapterConnectionOutcome::Reused,
+            });
         }
 
         let stale = self
@@ -535,9 +572,12 @@ impl AdapterConnectionManager {
             .lock()
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
             .remove(&key);
-        if let Some(stale) = stale {
+        let outcome = if let Some(stale) = stale {
             stale.shutdown();
-        }
+            AdapterConnectionOutcome::ReplacedStale
+        } else {
+            AdapterConnectionOutcome::Spawned
+        };
 
         let connection = AdapterConnection::spawn(
             Some(key.clone()),
@@ -549,7 +589,10 @@ impl AdapterConnectionManager {
             .lock()
             .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
             .insert(key, Arc::clone(&connection));
-        Ok(connection)
+        Ok(AdapterConnectionResolution {
+            connection,
+            outcome,
+        })
     }
 
     fn existing_ready_connection(

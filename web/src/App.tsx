@@ -41,6 +41,7 @@ import {
   saveConversationRunMode,
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
+  subscribeConversationRunStateUpdates,
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
@@ -64,6 +65,9 @@ import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
   conversationSessionKeyFromParts,
+  findConversationLeafByKey,
+  isConversationActiveLifecycle,
+  isConversationActiveStatus,
   mergeConversationRunSnapshot,
   type ConversationRunSnapshotSource,
 } from '@/lib/conversation-run-snapshot';
@@ -82,6 +86,7 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
+import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import type {
   AgentRegistryVm,
@@ -211,6 +216,7 @@ export function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
@@ -303,7 +309,10 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
-  }, [conversationRun]);
+    if (conversationRunStopping && isConversationRunStopSettled(conversationRun)) {
+      setConversationRunStopping(false);
+    }
+  }, [conversationRun, conversationRunStopping]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
@@ -485,12 +494,20 @@ export function App() {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
     let active = true;
     let refreshTimer: number | null = null;
+    let refreshInFlight = false;
+    let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
-    let stopListening: (() => void) | null = null;
+    let stopListeningAcp: (() => void) | null = null;
+    let stopListeningRun: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
-    const refreshConversationRun = () => {
+    const refreshConversationRunAndSidebar = () => {
       refreshTimer = null;
+      if (refreshInFlight) {
+        refreshAgain = true;
+        return;
+      }
+      refreshInFlight = true;
       const followStateAtRequest = conversationSessionFollowRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
         ?? conversationRunRef.current?.sessionTree.selectedSessionKey
@@ -501,8 +518,11 @@ export function App() {
         currentSelectedKey,
       });
       pendingEventSessionKey = null;
-      getConversationRun(projectId, taskId, runId, selectedKey)
-        .then((run) => {
+      Promise.all([
+        getConversationRun(projectId, taskId, runId, selectedKey),
+        getConversationSidebar(),
+      ])
+        .then(([run, sidebar]) => {
           if (!active) return;
           const latestFollowState = conversationSessionFollowRef.current;
           const effectiveSelectedKey = latestFollowState.version === followStateAtRequest.version
@@ -512,13 +532,29 @@ export function App() {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
           });
+          applyConversationSidebar(sidebar);
         })
-        .catch(() => {});
-      getConversationSidebar()
-        .then((sidebar) => {
-          if (active) applyConversationSidebar(sidebar);
-        })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          refreshInFlight = false;
+          if (!active || !refreshAgain) return;
+          refreshAgain = false;
+          if (refreshTimer === null) {
+            refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+          }
+        });
+    };
+
+    const queueConversationRunAndSidebarRefresh = (sessionKey?: string | null, delayMs = 120) => {
+      if (sessionKey !== undefined) pendingEventSessionKey = sessionKey;
+      if (refreshTimer !== null) {
+        if (delayMs === 0) {
+          window.clearTimeout(refreshTimer);
+          refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+        }
+        return;
+      }
+      refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, delayMs);
     };
 
     void subscribeAcpSessionUpdates((event) => {
@@ -534,22 +570,40 @@ export function App() {
         ? conversationTreeHasSessionKey(currentRun.sessionTree, sessionKey)
         : false;
       const alreadySelected = currentSelectedKey === sessionKey;
+      const currentSelectedLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
+        : null;
+      const currentSelectedActive = Boolean(
+        currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
+      );
+      const hasRuntimeSnapshot = Boolean(event.session || event.lifecycle);
+      const incomingActive = event.lifecycle
+        ? isConversationActiveLifecycle(event.lifecycle)
+        : event.session
+          ? isConversationActiveStatus(event.session.status)
+          : Boolean(event.event);
+      const followState = conversationSessionFollowRef.current;
+      const followPending = followState.mode === 'auto'
+        && Boolean(currentSelectedKey)
+        && !currentSelectedActive
+        && incomingActive;
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
-        hasSessionSnapshot: Boolean(event.session),
+        hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
-        sessionStatus: event.session?.status,
+        sessionStatus: event.lifecycle?.displayStatus ?? event.session?.status,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
+        followPending,
       });
-      if (event.session && updatePlan.patchSelectedSession) {
+      if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
           const patched = applyConversationSelectedSessionSnapshot(current, event);
           conversationRunRef.current = patched;
           return patched;
         });
       }
-      if (event.session && updatePlan.patchBackgroundSession) {
+      if (hasRuntimeSnapshot && updatePlan.patchBackgroundSession) {
         setConversationRun((current) => {
           const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, event);
           conversationRunRef.current = patched;
@@ -559,18 +613,32 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      const followState = conversationSessionFollowRef.current;
-      pendingEventSessionKey = resolveConversationEventSelectedSessionKey({
+      queueConversationRunAndSidebarRefresh(resolveConversationEventSelectedSessionKey({
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         followMode: followState.mode,
-      });
-      if (refreshTimer !== null) return;
-      refreshTimer = window.setTimeout(refreshConversationRun, 120);
+        currentSelectedActive,
+        incomingActive,
+      }));
     })
       .then((dispose) => {
         if (active) {
-          stopListening = dispose;
+          stopListeningAcp = dispose;
+        } else {
+          dispose();
+        }
+      })
+      .catch(() => {});
+
+    void subscribeConversationRunStateUpdates((event) => {
+      if (!active) return;
+      if (event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId && event.projectId !== projectId) return;
+      queueConversationRunAndSidebarRefresh(undefined, 0);
+    })
+      .then((dispose) => {
+        if (active) {
+          stopListeningRun = dispose;
         } else {
           dispose();
         }
@@ -580,7 +648,8 @@ export function App() {
     return () => {
       active = false;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      stopListening?.();
+      stopListeningAcp?.();
+      stopListeningRun?.();
     };
   }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
 
@@ -866,6 +935,35 @@ export function App() {
 
   const onStopRun = (taskId: string, runId: string) => {
     void runAction(() => pauseRun(taskId, runId));
+  };
+
+  const onConversationPauseRun = async (projectId: string, taskId: string, runId: string) => {
+    setConversationRunStopping(true);
+    let stopSettled = false;
+    let stopAccepted = false;
+    try {
+      const paused = await runAction(() => pauseRun(taskId, runId, projectId));
+      if (!paused) return;
+      stopAccepted = true;
+      const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
+      if (conversationPage.kind === 'conversation-run'
+        && conversationPage.projectId === projectId
+        && conversationPage.taskId === taskId
+        && conversationPage.runId === runId) {
+        const refreshed = await getConversationRun(projectId, taskId, runId, selectedKey);
+        stopSettled = isConversationRunStopSettled(refreshed);
+        applyConversationRunSnapshot(refreshed, 'session-stopped', {
+          selectedSessionKey: selectedKey,
+          preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
+        });
+      } else {
+        stopSettled = true;
+      }
+      const sidebar = await getConversationSidebar();
+      applyConversationSidebar(sidebar);
+    } finally {
+      if (!stopAccepted || stopSettled) setConversationRunStopping(false);
+    }
   };
 
   const onCreateTask = async (input: CreateTaskInput) => {
@@ -1180,6 +1278,8 @@ export function App() {
       onConversationSelectRun={(projectId, taskId, runId) => {
         setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
       }}
+      conversationRunStopping={conversationRunStopping}
+      onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
         updateTaskMetadata(projectId, taskId, title)
           .then(() => getConversationSidebar())
@@ -1490,19 +1590,6 @@ export function App() {
               conversationRunRef.current = patched;
               return patched;
             });
-          }}
-          onSessionStopped={() => {
-            const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
-            getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId, selectedKey)
-              .then((refreshed) => {
-                applyConversationRunSnapshot(refreshed, 'session-stopped', {
-                  selectedSessionKey: selectedKey,
-                  preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
-                });
-                return getConversationSidebar();
-              })
-              .then((sidebar) => applyConversationSidebar(sidebar))
-              .catch((err) => setError(displayAppError(t, err)));
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
           onTitleChange={(title) => {

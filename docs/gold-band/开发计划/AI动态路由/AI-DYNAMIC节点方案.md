@@ -25,6 +25,7 @@
 - 动态内联节点在主图中的 rank 必须位于其外层 AI-DYNAMIC trace 步骤与后续普通 workflow 节点之间；外层后继节点不能因为原始 trace sequence 更小而排到内部节点前面，否则出口边会被前端布局识别成回退边并走顶部绕线路由。
 - AI-DYNAMIC 内部节点停止后的继续发送已并入统一 workflow/ACP 生命周期：会话态与旧 Round 详情都只调用 `submit_conversation_prompt`，后端通过 `AttemptLocator` 在 outer run paused 且 locator 匹配时调用 `run_continue_dynamic_inner_background`；runtime 加载 paused dynamic graph、校验目标 internal node 和 attempt id、只恢复目标节点，并继续走 `drive_dynamic_graph` 的 proposal 解析、校验、materialize 和外层 workflow 后续推进。raw `send_acp_prompt` 不再允许命中 paused/resumable/current dynamic inner attempt，以避免绕过 runtime。
 - 新增回归测试覆盖 fanout+merge+acceptance、非法 workflow invocation、冻结 allowed workflow snapshot、schema 策略收窄、repair prompt 路径、merge/acceptance profile 禁用、非 git worktree 提示词注入与 proposal 拒绝，以及 dynamic inner resume 只恢复目标 paused node；同时通过 `cargo test`、`npm run web:test`、`npm run web:build` 的相关目标验证。
+- AI-DYNAMIC fanout 启动排查已加入诊断打点：`dynamic/events.jsonl` 会记录 Ready 刷新、launch、线程 spawn、worker 状态读取、workspace/worktree 准备、prompt invocation 构建及其子阶段、provider 调用耗时；高频 scheduler loop 事件不再逐轮写入。dynamic event append 按单个事件文件加锁，避免并行 fanout 写入 JSONL 行交错；各 ACP attempt 的 `acp.diagnostics.jsonl` 会记录 adapter 复用/新建 outcome 与 ACP JSON-RPC begin/end timing。复跑异常场景时，先用这些事件定位等待阶段，再决定是否优化 worktree、invocation 构建、provider 并发或 UI 状态映射。
 
 V1 仍保持以下边界：不做 direct mode、triage-result、route-decision/replan、nested AI-DYNAMIC 和局部失败恢复。
 

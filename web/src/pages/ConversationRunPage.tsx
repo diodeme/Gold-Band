@@ -267,7 +267,7 @@ export function ConversationRunPage({
   const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
   const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
-  const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked

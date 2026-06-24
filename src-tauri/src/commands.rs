@@ -12,9 +12,8 @@ use gold_band::app::{
     WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
-use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
+use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
-use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
@@ -37,9 +36,7 @@ use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::state::{
-    DesktopContext, DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget,
-};
+use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -232,6 +229,9 @@ fn dynamic_leaf_runtime_continue_required(
     locator: &AttemptLocator,
     run: &RunState,
 ) -> CommandResult<bool> {
+    if run.pause_reason == Some(PauseReason::ErrorBlocked) {
+        return Ok(false);
+    }
     let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     else {
@@ -318,35 +318,22 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: RunOutcome,
 }
 
-fn normalize_workspace_project_id(workspace_path: &str) -> String {
-    workspace_path
-        .to_lowercase()
-        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
-}
-
-fn resolve_workspace_app(
-    context: &DesktopContext,
+fn resolve_command_app(
+    state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<(App, String), CommandErrorVm> {
+) -> Result<App, CommandErrorVm> {
     match project_id {
-        None | Some("") => {
-            let pid = normalize_workspace_project_id(context.repo_root.as_str());
-            Ok((context.app(), pid))
-        }
+        None => state.app().map_err(command_error),
         Some(pid) => {
-            let default_pid = normalize_workspace_project_id(context.repo_root.as_str());
-            if pid == default_pid {
-                return Ok((context.app(), default_pid));
-            }
-            let global_app = context.app();
-            let state = global_app.load_state().map_err(command_error)?;
-            for w in &state.conversation_workspaces {
-                if w.project_id == pid {
-                    let app = App::with_config(
-                        Utf8PathBuf::from(&w.workspace_path),
-                        context.config.clone(),
-                    );
-                    return Ok((app, w.project_id.clone()));
+            let global_app = state.app().map_err(command_error)?;
+            let app_state = global_app.load_state().map_err(command_error)?;
+            for workspace in &app_state.conversation_workspaces {
+                if workspace.project_id == pid {
+                    let context = state.context().map_err(command_error)?;
+                    return Ok(global_app.with_repo_root(
+                        Utf8PathBuf::from(&workspace.workspace_path),
+                        context.config,
+                    ));
                 }
             }
             Err(CommandErrorVm::new(
@@ -355,15 +342,6 @@ fn resolve_workspace_app(
             ))
         }
     }
-}
-
-fn resolve_command_app(
-    state: &DesktopState,
-    project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
-    let context = state.context().map_err(command_error)?;
-    let (app, _) = resolve_workspace_app(&context, project_id)?;
-    Ok(app)
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
@@ -419,13 +397,12 @@ pub(crate) fn acp_live_update_emitter_for_app(
 
 fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
-    context: &DesktopContext,
+    state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
-    let (base_app, _) = resolve_workspace_app(context, project_id)?;
+    let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
-    let bg_app = base_app.clone_for_background();
-    let app = base_app;
+    let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), pid.clone());
     let app = app
         .with_acp_live_update(live_update)
@@ -1017,16 +994,12 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
-    let app = app
+    let base_app = state.app().map_err(command_error)?;
+    let bg_app = base_app.clone_for_background();
+    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
+    let app = base_app
         .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            context.app(),
-            None,
-        ));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
@@ -1043,8 +1016,7 @@ pub fn continue_run(
     prompt_id: Option<String>,
     prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1125,8 +1097,7 @@ pub fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -1149,16 +1120,12 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
-    let app = app
+    let base_app = state.app().map_err(command_error)?;
+    let bg_app = base_app.clone_for_background();
+    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
+    let app = base_app
         .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            context.app(),
-            None,
-        ));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
@@ -1561,8 +1528,7 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -1651,8 +1617,7 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -2668,10 +2633,22 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => dynamic
-            .bootstrap_provider()
-            .map(|provider| vec![provider.to_string()])
-            .unwrap_or_default(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                available_agents,
+                ..
+            } => {
+                let mut providers = vec![bootstrap_provider.clone()];
+                for agent_ref in available_agents {
+                    if !providers.contains(&agent_ref.provider) {
+                        providers.push(agent_ref.provider.clone());
+                    }
+                }
+                providers
+            }
+        },
     }
 }
 
@@ -2680,65 +2657,30 @@ fn ensure_workflow_agents_doctor_ready(
     workflow: &WorkflowDsl,
 ) -> CommandResult<()> {
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    let mut providers = BTreeSet::new();
     for node in &workflow.nodes {
         for provider in providers_for_node(node) {
-            providers.insert(provider);
-        }
-    }
-    for provider in providers {
-        let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
-        match diagnostics.get(&agent_type) {
-            Some(diagnostic) if diagnostic.available => {}
-            Some(diagnostic) => {
-                return Err(CommandErrorVm::new(
-                    "workflow.agent-doctor-failed",
-                    serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
-                ));
-            }
-            None => {
-                return Err(CommandErrorVm::new(
-                    "workflow.agent-doctor-required",
-                    serde_json::json!({ "agentType": provider }),
-                ));
+            let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
+            match diagnostics.get(&agent_type) {
+                Some(diagnostic) if diagnostic.available => {}
+                Some(diagnostic) => {
+                    return Err(CommandErrorVm::new(
+                        "workflow.agent-doctor-failed",
+                        serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
+                    ));
+                }
+                None => {
+                    return Err(CommandErrorVm::new(
+                        "workflow.agent-doctor-required",
+                        serde_json::json!({ "agentType": provider }),
+                    ));
+                }
             }
         }
     }
-    for node in &workflow.nodes {
-        let NodeDsl::Worker(worker) = node else {
-            continue;
-        };
-        let Some(provider) = worker.provider.as_deref() else {
-            continue;
-        };
-        let Some(permission_mode) = worker
-            .permission_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let agent_type = ManagedAgentType::from_str(provider).map_err(command_error)?;
-        let diagnostic = diagnostics.get(&agent_type).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workflow.agent-doctor-required",
-                serde_json::json!({ "agentType": provider }),
-            )
-        })?;
-        let supported_modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
-        if !supported_modes.is_empty()
-            && !supported_modes
-                .iter()
-                .any(|mode| mode.id == permission_mode)
-        {
-            return Err(CommandErrorVm::new(
-                "workflow.permission-mode-unsupported",
-                serde_json::json!({ "agentType": provider, "permissionMode": permission_mode }),
-            ));
-        }
-    }
-    Ok(())
+    let app = state.app().map_err(command_error)?;
+    let validated = gold_band::dsl::validate_workflow(workflow.clone()).map_err(command_error)?;
+    app.validate_workflow_agents(&validated)
+        .map_err(command_error)
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
@@ -3625,6 +3567,39 @@ mod tests {
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn providers_for_ai_dynamic_include_available_agent_providers() {
+        let node = NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+            id: "route".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "claude-acp".to_string(),
+                bootstrap_model: None,
+                acceptance_model: None,
+                routing_prompt: "route by task".to_string(),
+                available_agents: vec![
+                    gold_band::dsl::DynamicAgentRef {
+                        provider: "codex-acp".to_string(),
+                        model: None,
+                    },
+                    gold_band::dsl::DynamicAgentRef {
+                        provider: "claude-acp".to_string(),
+                        model: None,
+                    },
+                ],
+            },
+            permission_mode: None,
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: gold_band::dsl::DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        });
+
+        assert_eq!(
+            providers_for_node(&node),
+            vec!["claude-acp".to_string(), "codex-acp".to_string()]
+        );
     }
 
     #[test]

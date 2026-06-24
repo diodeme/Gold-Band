@@ -50,6 +50,7 @@ pub struct GoldBandPaths {
     pub runtime_root: Utf8PathBuf,
     pub project_id: String,
     pub normalized_repo_root: String,
+    path_config: StoragePathConfig,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +84,7 @@ impl GoldBandPaths {
             runtime_root,
             project_id,
             normalized_repo_root,
+            path_config,
         }
     }
 
@@ -123,19 +125,18 @@ impl GoldBandPaths {
     }
 
     pub fn user_state_file(&self) -> Utf8PathBuf {
-        if let Some(home) = std::env::var(active_storage_path_config().home_env_var)
+        if let Some(home) = std::env::var(self.path_config.home_env_var)
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
             return Utf8PathBuf::from(home)
-                .join(active_storage_path_config().config_dir_name)
+                .join(self.path_config.config_dir_name)
                 .join("state.json");
         }
         let dir = dirs::data_local_dir()
             .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
-        dir.join(active_storage_path_config().app_key)
-            .join("state.json")
+        dir.join(self.path_config.app_key).join("state.json")
     }
 
     pub fn user_presets_dir(&self) -> Utf8PathBuf {
@@ -969,19 +970,30 @@ mod tests {
     #[test]
     fn state_file_under_home_env_when_set() {
         let temp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
+        let path_config = StoragePathConfig {
+            app_key: "gold-band-test",
+            config_dir_name: ".gold-band-test",
+            home_env_var: "GOLD_BAND_TEST_HOME",
+        };
+        unsafe { std::env::set_var(path_config.home_env_var, temp.path().to_str().unwrap()) };
         let paths = GoldBandPaths::new_with_path_config(
             Utf8PathBuf::from("D:/Projects/Example App"),
-            DEFAULT_STORAGE_PATH_CONFIG,
+            path_config,
         );
         let state = paths.user_state_file();
+        unsafe { std::env::remove_var(path_config.home_env_var) };
         assert!(
             state
                 .to_string()
                 .replace('\\', "/")
-                .ends_with("/.gold-band/state.json")
+                .ends_with("/.gold-band-test/state.json")
         );
-        assert!(state.to_string().replace('\\', "/").contains("gold-band"));
+        assert!(
+            state
+                .to_string()
+                .replace('\\', "/")
+                .contains("gold-band-test")
+        );
     }
 
     #[test]
@@ -1081,11 +1093,14 @@ mod tests {
     #[test]
     fn root_workspace_uses_stable_non_empty_project_id() {
         let temp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", temp.path().to_str().unwrap()) };
-        let paths = GoldBandPaths::new_with_path_config(
-            Utf8PathBuf::from("/"),
-            DEFAULT_STORAGE_PATH_CONFIG,
-        );
+        let path_config = StoragePathConfig {
+            app_key: "gold-band-test-root",
+            config_dir_name: ".gold-band-test-root",
+            home_env_var: "GOLD_BAND_TEST_ROOT_HOME",
+        };
+        unsafe { std::env::set_var(path_config.home_env_var, temp.path().to_str().unwrap()) };
+        let paths = GoldBandPaths::new_with_path_config(Utf8PathBuf::from("/"), path_config);
+        unsafe { std::env::remove_var(path_config.home_env_var) };
 
         assert_eq!(paths.project_id, "root");
         assert!(
@@ -1093,7 +1108,7 @@ mod tests {
                 .runtime_log_file()
                 .to_string()
                 .replace('\\', "/")
-                .ends_with("/.gold-band/logs/runtime.log")
+                .ends_with("/.gold-band-test-root/logs/runtime.log")
         );
     }
 }

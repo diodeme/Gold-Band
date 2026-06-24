@@ -1202,7 +1202,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
 }
 
 #[test]
-fn error_blocked_run_is_continuable() {
+fn error_blocked_run_is_not_continuable() {
     let run = RunState {
         version: VERSION.to_string(),
         id: "run-001".to_string(),
@@ -1222,5 +1222,5 @@ fn error_blocked_run_is_continuable() {
         last_executed_node: None,
     };
 
-    assert!(is_run_continuable(&run));
+    assert!(!is_run_continuable(&run));
 }

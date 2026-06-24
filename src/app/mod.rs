@@ -18,8 +18,8 @@ use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, McpServerConfig, McpServerHealthResult, RuntimeConfig, RuntimeLogLevel,
-    SettingsConfig, SkillMeta, SkillSource, StateConfig,
+    ManagedAgentType, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
+    RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -38,15 +38,17 @@ use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, provider_capabilities, provider_from_agent, render_prompt_bundle,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
-use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
+use crate::storage::{GoldBandPaths, StoragePathConfig, ensure_parent_dir, read_json, write_json};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
@@ -562,6 +564,8 @@ pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
+    provider_diagnostics:
+        Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
     acp_live_update: Option<
         Arc<
             dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
@@ -587,11 +591,7 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
-            Some(
-                PauseReason::ProcessInterrupted
-                    | PauseReason::WaitingForUserInput
-                    | PauseReason::ErrorBlocked
-            )
+            Some(PauseReason::ProcessInterrupted | PauseReason::WaitingForUserInput)
         )
         && run.current_round.is_some()
         && run.current_node.is_some()
@@ -721,8 +721,7 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-/// Returns (provider, model) pairs for model validation.
-fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+fn worker_models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
     match node {
         NodeDsl::Worker(worker) => worker
             .provider
@@ -730,23 +729,19 @@ fn models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
             .map(|p| (p.clone(), worker.model.clone()))
             .into_iter()
             .collect(),
-        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
-            AiDynamicAgentStrategy::Fixed { provider, model } => {
-                vec![(provider.clone(), model.clone())]
-            }
-            AiDynamicAgentStrategy::Dynamic {
-                bootstrap_provider,
-                bootstrap_model,
-                available_agents,
-                ..
-            } => {
-                let mut pairs = vec![(bootstrap_provider.clone(), bootstrap_model.clone())];
-                for agent_ref in available_agents {
-                    pairs.push((agent_ref.provider.clone(), agent_ref.model.clone()));
-                }
-                pairs
-            }
-        },
+        NodeDsl::AiDynamic(_) => Vec::new(),
+    }
+}
+
+fn worker_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+    match node {
+        NodeDsl::Worker(worker) => worker
+            .provider
+            .as_ref()
+            .map(|provider| (provider.clone(), worker.permission_mode.clone()))
+            .into_iter()
+            .collect(),
+        NodeDsl::AiDynamic(_) => Vec::new(),
     }
 }
 
@@ -760,6 +755,50 @@ impl App {
             paths: self.paths.clone(),
             config: self.config.clone(),
             provider_override: self.provider_override.clone(),
+            provider_diagnostics: self.provider_diagnostics.clone(),
+            acp_live_update: self.acp_live_update.clone(),
+            acp_session_update: self.acp_session_update.clone(),
+            lifecycle_bus: self.lifecycle_bus.clone(),
+        }
+    }
+
+    pub fn with_provider_diagnostics_source(
+        mut self,
+        provider_diagnostics: Arc<
+            dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync,
+        >,
+    ) -> Self {
+        self.provider_diagnostics = Some(provider_diagnostics);
+        self
+    }
+
+    pub fn provider_diagnostics(&self) -> BTreeMap<String, ProviderDiagnosticSnapshot> {
+        if let Some(provider_diagnostics) = self
+            .provider_diagnostics
+            .as_ref()
+            .and_then(|provider_diagnostics| provider_diagnostics().ok())
+            .filter(|diagnostics| !diagnostics.is_empty())
+        {
+            return provider_diagnostics;
+        }
+        if let Ok(provider_diagnostics) = read_json::<BTreeMap<String, ProviderDiagnosticSnapshot>>(
+            &self.paths.agent_diagnostics_file(),
+        ) && !provider_diagnostics.is_empty()
+        {
+            return provider_diagnostics;
+        }
+        self.config.provider_diagnostics.clone()
+    }
+
+    pub fn with_repo_root(&self, repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
+        let paths = GoldBandPaths::new(repo_root);
+        let _ = paths.write_project_manifest();
+        let _ = ensure_default_user_profiles(&paths);
+        Self {
+            paths,
+            config,
+            provider_override: self.provider_override.clone(),
+            provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
@@ -1514,12 +1553,26 @@ impl App {
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
         let paths = GoldBandPaths::new(repo_root);
+        Self::with_config_and_paths(paths, config)
+    }
+
+    pub fn with_config_and_path_config(
+        repo_root: Utf8PathBuf,
+        config: RuntimeConfig,
+        path_config: StoragePathConfig,
+    ) -> Self {
+        let paths = GoldBandPaths::new_with_path_config(repo_root, path_config);
+        Self::with_config_and_paths(paths, config)
+    }
+
+    fn with_config_and_paths(paths: GoldBandPaths, config: RuntimeConfig) -> Self {
         let _ = paths.write_project_manifest();
         let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
             config,
             provider_override: None,
+            provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
@@ -1535,17 +1588,9 @@ impl App {
         config: RuntimeConfig,
         provider: Box<dyn ProviderAdapter>,
     ) -> Self {
-        let paths = GoldBandPaths::new(repo_root);
-        let _ = paths.write_project_manifest();
-        let _ = ensure_default_user_profiles(&paths);
-        Self {
-            paths,
-            config,
-            provider_override: Some(Arc::from(provider)),
-            acp_live_update: None,
-            acp_session_update: None,
-            lifecycle_bus: observability::RuntimeLifecycleBus::new(),
-        }
+        let mut app = Self::with_config(repo_root, config);
+        app.provider_override = Some(Arc::from(provider));
+        app
     }
 
     pub fn task_show(&self, task_id: &str) -> Result<TaskState> {
@@ -2799,6 +2844,59 @@ impl App {
         orchestrator_run_start_background(self, task_id, workflow_override)
     }
 
+    pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
+        let provider_diagnostics = self.provider_diagnostics();
+        for (provider, model) in worker_models_for_node(node) {
+            if let Some(model) = model {
+                if model.trim().is_empty() {
+                    bail!(WorkflowValidationError::AgentModelBlank {
+                        provider: provider.clone(),
+                    });
+                }
+                let supported_models = provider_diagnostics
+                    .get(&provider)
+                    .filter(|diagnostic| diagnostic.available)
+                    .map(|diagnostic| {
+                        supported_models_from_capabilities(diagnostic.capabilities.as_ref())
+                    })
+                    .unwrap_or_default();
+                if !supported_models.is_empty()
+                    && !supported_models.iter().any(|option| {
+                        option.id == model || option.name.as_deref() == Some(model.as_str())
+                    })
+                {
+                    bail!("worker model `{model}` is not supported by provider `{provider}`");
+                }
+            }
+        }
+        for (provider, permission_mode) in worker_permission_modes_for_node(node) {
+            if let Some(permission_mode) = permission_mode {
+                let permission_mode = permission_mode.trim();
+                if permission_mode.is_empty() {
+                    continue;
+                }
+                let resolved = self
+                    .config
+                    .resolve_permission_mode(&provider, permission_mode);
+                let supported_modes = provider_diagnostics
+                    .get(&provider)
+                    .filter(|diagnostic| diagnostic.available)
+                    .map(|diagnostic| {
+                        supported_modes_from_capabilities(diagnostic.capabilities.as_ref())
+                    })
+                    .unwrap_or_default();
+                if !supported_modes.is_empty()
+                    && !supported_modes.iter().any(|option| option.id == resolved)
+                {
+                    bail!(
+                        "worker permissionMode `{permission_mode}` (resolved to `{resolved}`) is not supported by provider `{provider}`"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
@@ -2808,18 +2906,8 @@ impl App {
                 }
             }
         }
-        // Validate model references are not blank (capability-level validation
-        // happens at runtime via provider_capabilities when the node executes).
         for node in workflow.nodes_by_id.values() {
-            for (provider, model) in models_for_node(node) {
-                if let Some(model) = model {
-                    if model.trim().is_empty() {
-                        bail!(WorkflowValidationError::AgentModelBlank {
-                            provider: provider.clone(),
-                        });
-                    }
-                }
-            }
+            self.validate_workflow_node_agent_options(node)?;
         }
         for edge in &workflow.raw.edges {
             if matches!(edge.session, Some(crate::domain::SessionMode::Continue)) {
@@ -3091,9 +3179,14 @@ mod tests {
     use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
+        ProviderDiagnosticSnapshot, RuntimeConfig,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
+    };
+    use crate::dsl::{
+        AiDynamicAgentStrategy, NodeDsl, WorkerNode, WorkflowControl, WorkflowDsl,
+        validate_workflow,
     };
     use crate::dynamic::{
         DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
@@ -3101,7 +3194,7 @@ mod tests {
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState};
-    use crate::storage::{read_json, write_json};
+    use crate::storage::{StoragePathConfig, read_json, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
@@ -3112,6 +3205,76 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    fn test_path_config() -> StoragePathConfig {
+        StoragePathConfig {
+            app_key: "gold-band-app-test",
+            config_dir_name: ".gold-band-app-test",
+            home_env_var: "GOLD_BAND_APP_TEST_HOME",
+        }
+    }
+
+    fn set_test_home(repo_root: &Utf8PathBuf) {
+        unsafe {
+            std::env::set_var(
+                test_path_config().home_env_var,
+                repo_root.join("home").as_str(),
+            )
+        };
+    }
+
+    fn test_app(repo_root: Utf8PathBuf) -> App {
+        set_test_home(&repo_root);
+        App::with_config_and_path_config(repo_root, RuntimeConfig::default(), test_path_config())
+    }
+
+    fn test_app_with_provider_capabilities(
+        repo_root: Utf8PathBuf,
+        capabilities: serde_json::Value,
+    ) -> App {
+        set_test_home(&repo_root);
+        App::with_config_and_path_config(
+            repo_root,
+            RuntimeConfig::default().with_provider_diagnostics(std::collections::BTreeMap::from([
+                (
+                    "claude-acp".to_string(),
+                    ProviderDiagnosticSnapshot {
+                        available: true,
+                        reason: None,
+                        checked_at: "2026-06-24T00:00:00Z".to_string(),
+                        capabilities: Some(capabilities),
+                    },
+                ),
+            ])),
+            test_path_config(),
+        )
+    }
+
+    fn worker_workflow(model: Option<&str>, permission_mode: Option<&str>) -> WorkflowDsl {
+        WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "workflow-test".to_string(),
+            entry: "dev".to_string(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                provider: Some("claude-acp".to_string()),
+                profile: None,
+                permission_mode: permission_mode.map(str::to_string),
+                model: model.map(str::to_string),
+                goal: Some("do work".to_string()),
+                success_condition: None,
+                output: None,
+                manual_check: None,
+            })],
+            edges: vec![crate::dsl::EdgeDsl {
+                from: "dev".to_string(),
+                to: crate::dsl::END_NODE.to_string(),
+                on: crate::dsl::EdgeOutcome::Success,
+                session: None,
+            }],
+            control: WorkflowControl::default(),
+        }
     }
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
@@ -3130,15 +3293,130 @@ mod tests {
     }
 
     #[test]
+    fn provider_diagnostics_fallback_reads_persisted_agent_diagnostics() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root)
+            .with_provider_diagnostics_source(Arc::new(|| Ok(std::collections::BTreeMap::new())));
+        write_json(
+            &app.paths.agent_diagnostics_file(),
+            &std::collections::BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-06-24T00:00:00Z".to_string(),
+                    capabilities: Some(serde_json::json!({
+                        "configOptions": [
+                            {
+                                "category": "model",
+                                "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                            }
+                        ]
+                    })),
+                },
+            )]),
+        )
+        .unwrap();
+
+        let diagnostics = app.provider_diagnostics();
+
+        let models = crate::provider::supported_models_from_capabilities(
+            diagnostics
+                .get("claude-acp")
+                .and_then(|diagnostic| diagnostic.capabilities.as_ref()),
+        );
+        assert_eq!(models[0].id, "sonnet");
+    }
+
+    #[test]
+    fn worker_model_and_permission_mode_validate_against_provider_cache() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [
+                    {
+                        "id": "mode",
+                        "category": "mode",
+                        "options": [{ "value": "acceptEdits", "name": "Ask" }]
+                    },
+                    {
+                        "id": "model",
+                        "category": "model",
+                        "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                    }
+                ]
+            }),
+        );
+
+        let accepted = validate_workflow(worker_workflow(Some("sonnet"), Some("ask"))).unwrap();
+        let rejected_model = validate_workflow(worker_workflow(Some("opus"), Some("ask"))).unwrap();
+        let rejected_mode =
+            validate_workflow(worker_workflow(Some("sonnet"), Some("full_access"))).unwrap();
+
+        assert!(app.validate_workflow_agents(&accepted).is_ok());
+        assert!(app.validate_workflow_agents(&rejected_model).is_err());
+        assert!(app.validate_workflow_agents(&rejected_mode).is_err());
+    }
+
+    #[test]
+    fn ai_dynamic_models_are_not_rejected_during_workflow_agent_validation() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "category": "model",
+                        "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                    }
+                ]
+            }),
+        );
+        let workflow = WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "workflow-dynamic".to_string(),
+            entry: "route".to_string(),
+            nodes: vec![NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+                id: "route".to_string(),
+                agent_strategy: AiDynamicAgentStrategy::Fixed {
+                    provider: "claude-acp".to_string(),
+                    model: Some("future-model".to_string()),
+                },
+                permission_mode: None,
+                allowed_profiles: Vec::new(),
+                global_goal: None,
+                control: crate::dsl::DynamicControlDsl::default(),
+                allowed_workflows: Vec::new(),
+            })],
+            edges: vec![crate::dsl::EdgeDsl {
+                from: "route".to_string(),
+                to: crate::dsl::END_NODE.to_string(),
+                on: crate::dsl::EdgeOutcome::Success,
+                session: None,
+            }],
+            control: WorkflowControl::default(),
+        };
+        let validated = validate_workflow(workflow).unwrap();
+
+        assert!(app.validate_workflow_agents(&validated).is_ok());
+    }
+
+    #[test]
     fn lifecycle_subscriber_invoked_and_propagated_to_background() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+        let app = test_app(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
             if let RuntimeLifecycleEvent::RunPaused { event_id, .. } = event {
                 seen_for_callback.lock().unwrap().push(event_id);
             }
@@ -3157,9 +3435,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-        let app = App::new(repo_root);
+        let app = test_app(repo_root);
         app.emit_lifecycle_event(sample_run_paused_event());
     }
 
@@ -3168,11 +3444,9 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+        let app = test_app(repo_root).with_acp_session_update(Arc::new(move |context| {
             seen_for_callback.lock().unwrap().push(context);
             Ok(())
         }));
@@ -3200,11 +3474,9 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::new(repo_root).with_acp_session_update(Arc::new(move |context| {
+        let app = test_app(repo_root).with_acp_session_update(Arc::new(move |context| {
             seen_for_callback.lock().unwrap().push(context);
             Ok(())
         }));
@@ -3234,11 +3506,8 @@ mod tests {
 
     fn dynamic_pause_test_app(temp: &tempfile::TempDir) -> App {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
-        let gold_band_home = Utf8PathBuf::from_path_buf(temp.path().join("home")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-        App::new(repo_root)
+        test_app(repo_root)
     }
 
     fn dynamic_pause_node(id: &str, status: DynamicNodeStatus) -> DynamicNodeState {
@@ -3618,9 +3887,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-        let app = App::new(repo_root);
+        let app = test_app(repo_root);
         std::fs::create_dir_all(app.paths.logs_dir().as_std_path()).unwrap();
         std::fs::write(
             app.paths.runtime_log_file().as_std_path(),
@@ -3640,11 +3907,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root);
+        let app = test_app(repo_root);
         touch_log_file_best_effort(&app.paths);
 
         assert!(app.paths.runtime_log_file().as_std_path().exists());
@@ -3655,11 +3918,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         app.set_user_console_theme(ConsoleThemeName::Nord).unwrap();
 
         let settings = app.load_settings().unwrap();
@@ -3671,11 +3930,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         app.set_user_desktop_preferences(
             DesktopThemePreference::Dark,
             DesktopLanguage::En,
@@ -3700,11 +3955,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         app.set_user_desktop_updater_last_checked_at(Some("2026-05-27 10:00:00".to_string()))
             .unwrap();
         let badges = DesktopUpdateBadgeState {
@@ -3743,11 +3994,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         app.set_user_desktop_workspace("D:/Projects/MyRepo")
             .unwrap();
 
@@ -3770,11 +4017,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         app.set_user_desktop_workspace("D:/Projects/A").unwrap();
         app.set_user_desktop_workspace("D:/Projects/B").unwrap();
         app.set_user_desktop_workspace("D:/Projects/A").unwrap();
@@ -3791,11 +4034,7 @@ mod tests {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let gold_band_home = repo_root.join("gold-band-home");
-        std::fs::create_dir_all(gold_band_home.as_std_path()).unwrap();
-        unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-
-        let app = App::new(repo_root.clone());
+        let app = test_app(repo_root.clone());
         for i in 0..10 {
             app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}"))
                 .unwrap();

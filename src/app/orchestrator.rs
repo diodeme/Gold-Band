@@ -50,7 +50,7 @@ use crate::prompts::{
 use crate::provider::{
     PromptBundle, PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
     ProviderRunStatus, StreamMode, WorkerInvocation, render_prompt_bundle,
-    supported_models_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
@@ -2333,28 +2333,40 @@ fn provider_model_options_summary(
     ctx: &DynamicExecutionContext<'_>,
     provider: &str,
 ) -> Vec<String> {
-    provider_model_option_values(ctx, provider)
+    supported_provider_model_options(ctx, provider)
         .into_iter()
-        .map(|(name, description)| match description {
-            Some(description) => format!("{name} — {description}"),
-            None => name,
+        .map(|model| match (model.name, model.description) {
+            (Some(name), Some(description)) => format!("{} ({name}) — {description}", model.id),
+            (Some(name), None) => format!("{} ({name})", model.id),
+            (None, Some(description)) => format!("{} — {description}", model.id),
+            (None, None) => model.id,
         })
         .collect()
 }
 
-fn provider_model_option_values(
+fn provider_diagnostic_capabilities(
     ctx: &DynamicExecutionContext<'_>,
     provider: &str,
-) -> Vec<(String, Option<String>)> {
-    let Ok(doctor) = ctx.app.provider_doctor(provider) else {
-        return Vec::new();
-    };
-    supported_models_from_capabilities(doctor.capabilities.as_ref())
+) -> Option<serde_json::Value> {
+    ctx.app
+        .provider_diagnostics()
+        .get(provider)
+        .filter(|diagnostic| diagnostic.available)
+        .and_then(|diagnostic| diagnostic.capabilities.clone())
+}
+
+fn supported_provider_model_options(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> Vec<crate::provider::AcpModeOption> {
+    let capabilities = provider_diagnostic_capabilities(ctx, provider);
+    supported_models_from_capabilities(capabilities.as_ref())
+}
+
+fn provider_model_option_values(ctx: &DynamicExecutionContext<'_>, provider: &str) -> Vec<String> {
+    supported_provider_model_options(ctx, provider)
         .into_iter()
-        .map(|model| {
-            let name = model.name.as_deref().unwrap_or(model.id.as_str());
-            (name.to_string(), model.description)
-        })
+        .map(|model| model.id)
         .collect()
 }
 
@@ -2366,7 +2378,7 @@ fn dynamic_worker_model_required_from_proposal(
         AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
         AiDynamicAgentStrategy::Fixed { .. } => {
             dynamic_model_for_provider(ctx.dynamic, provider).is_none()
-                && !provider_model_options_summary(ctx, provider).is_empty()
+                && !provider_model_option_values(ctx, provider).is_empty()
         }
     }
 }
@@ -2382,9 +2394,112 @@ fn dynamic_agent_task_model_required_from_proposal(
         AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
         AiDynamicAgentStrategy::Fixed { .. } => {
             dynamic_model_for_provider(ctx.dynamic, provider).is_none()
-                && !provider_model_options_summary(ctx, provider).is_empty()
+                && !provider_model_option_values(ctx, provider).is_empty()
         }
     }
+}
+
+fn dynamic_proposed_model_validation_error(
+    code: &str,
+    message: String,
+    provider: &str,
+    field_owner: serde_json::Value,
+    actual: Option<&str>,
+    expected: &str,
+    allowed_values: Vec<String>,
+) -> DynamicProposalValidationError {
+    let mut params = match field_owner {
+        serde_json::Value::Object(map) => serde_json::Value::Object(map),
+        _ => serde_json::json!({}),
+    };
+    if let Some(object) = params.as_object_mut() {
+        object.insert("provider".to_string(), serde_json::json!(provider));
+        object.insert("field".to_string(), serde_json::json!("model"));
+        object.insert("expected".to_string(), serde_json::json!(expected));
+        if let Some(actual) = actual {
+            object.insert("actual".to_string(), serde_json::json!(actual));
+        }
+    }
+    let mut error = dynamic_validation_error(code, message, params);
+    error.allowed_values = allowed_values;
+    error
+}
+
+fn dynamic_provider_requires_proposal_model_catalog(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+) -> bool {
+    dynamic_worker_model_required_from_proposal(ctx, provider)
+        || dynamic_agent_task_model_required_from_proposal(ctx, provider)
+}
+
+fn dynamic_catalog_missing_error(
+    code_prefix: &str,
+    label: &str,
+    provider: &str,
+    field_owner: serde_json::Value,
+    actual: Option<&str>,
+) -> DynamicProposalValidationError {
+    dynamic_proposed_model_validation_error(
+        &format!("{code_prefix}.model.catalog-missing"),
+        format!(
+            "{label} requires a model for provider `{provider}`, but the latest provider diagnostics has no model catalog"
+        ),
+        provider,
+        field_owner,
+        actual,
+        "provider model catalog from agent diagnostics",
+        Vec::new(),
+    )
+}
+
+fn validate_dynamic_proposed_model(
+    ctx: &DynamicExecutionContext<'_>,
+    provider: &str,
+    proposed_model: Option<&str>,
+    required: bool,
+    code_prefix: &str,
+    label: &str,
+    field_owner: serde_json::Value,
+) -> Option<DynamicProposalValidationError> {
+    let allowed_values = provider_model_option_values(ctx, provider);
+    if required && allowed_values.is_empty() {
+        return Some(dynamic_catalog_missing_error(
+            code_prefix,
+            label,
+            provider,
+            field_owner,
+            proposed_model,
+        ));
+    }
+    if required && proposed_model.is_none() {
+        return Some(dynamic_proposed_model_validation_error(
+            &format!("{code_prefix}.model.required"),
+            format!(
+                "{label} must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one"
+            ),
+            provider,
+            field_owner,
+            None,
+            "one model value from the provider catalog",
+            allowed_values,
+        ));
+    }
+    if let Some(model) = proposed_model
+        && !allowed_values.is_empty()
+        && !allowed_values.iter().any(|allowed| allowed == model)
+    {
+        return Some(dynamic_proposed_model_validation_error(
+            &format!("{code_prefix}.model.unsupported"),
+            format!("{label} model `{model}` is not supported by provider `{provider}`"),
+            provider,
+            field_owner,
+            Some(model),
+            "one model value from the provider catalog",
+            allowed_values,
+        ));
+    }
+    None
 }
 
 fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>) -> bool {
@@ -2392,7 +2507,9 @@ fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext
         AiDynamicAgentStrategy::Fixed { provider, .. } => {
             dynamic_worker_model_required_from_proposal(ctx, provider)
         }
-        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_available_provider_ids(ctx)
+            .iter()
+            .any(|provider| dynamic_worker_model_required_from_proposal(ctx, provider)),
     }
 }
 
@@ -2405,7 +2522,7 @@ fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                 );
             }
             if dynamic_worker_model_required_from_proposal(ctx, provider) {
-                "The fixed provider has no configured model and exposes selectable models; output `model` for every worker / merge / acceptance node, using one model name from the provider list.".to_string()
+                "The fixed provider has no configured model and exposes selectable models; output `model` for every worker / merge / acceptance node, using one model value from the provider list.".to_string()
             } else {
                 "The fixed provider has no configured model catalog; do not output `model`, and runtime will use the provider default.".to_string()
             }
@@ -2437,7 +2554,7 @@ fn dynamic_model_policy_summary_zh_cn(ctx: &DynamicExecutionContext<'_>) -> Stri
                 return format!("固定 provider 已配置模型 `{model}`；不要输出 `model`。");
             }
             if dynamic_worker_model_required_from_proposal(ctx, provider) {
-                "固定 provider 未配置模型且提供了可选模型列表；每个 worker / merge / acceptance 节点都必须输出 `model`，并使用 provider 列表中的模型名称。".to_string()
+                "固定 provider 未配置模型且提供了可选模型列表；每个 worker / merge / acceptance 节点都必须输出 `model`，并使用 provider 列表中的模型值。".to_string()
             } else {
                 "固定 provider 没有可用模型列表；不要输出 `model`，runtime 会使用 provider 默认模型。".to_string()
             }
@@ -2488,7 +2605,7 @@ fn dynamic_completion_schema_policy(
     let any_model_visible = node_model_required || agent_task_model_required;
     if any_model_visible {
         for provider in &provider_ids {
-            for (model, _) in provider_model_option_values(ctx, provider) {
+            for model in provider_model_option_values(ctx, provider) {
                 if !model_names.iter().any(|existing| existing == &model) {
                     model_names.push(model);
                 }
@@ -2724,6 +2841,7 @@ fn execute_ai_dynamic_node(
     let mut graph = load_or_create_dynamic_graph(&ctx)?;
     resume_paused_dynamic_graph(&mut graph, ctx.resume_override.as_ref())?;
     persist_dynamic_graph(&ctx, &graph)?;
+    ensure_dynamic_required_model_catalogs(&ctx, &mut graph)?;
     drive_dynamic_graph(&ctx, &mut graph)?;
 
     match (graph.run.status, graph.run.outcome) {
@@ -5242,12 +5360,12 @@ fn validate_dynamic_permission_mode(
     normative_mode: &str,
     make_error: impl FnOnce(&str) -> DynamicProposalValidationError,
 ) -> Option<DynamicProposalValidationError> {
-    let doctor = ctx.app.provider_doctor(provider).ok()?;
     let resolved = ctx
         .app
         .config
         .resolve_permission_mode(provider, normative_mode);
-    let supported = doctor.supported_modes();
+    let capabilities = provider_diagnostic_capabilities(ctx, provider);
+    let supported = supported_modes_from_capabilities(capabilities.as_ref());
     let supported_ids: Vec<_> = supported.into_iter().map(|m| m.id).collect();
     if !supported_ids.is_empty() && !supported_ids.iter().any(|id| id == &resolved) {
         Some(make_error(&resolved))
@@ -5531,23 +5649,21 @@ fn validate_dynamic_node_spec(
                             errors.push(error);
                         }
                     }
-                    if dynamic_worker_model_required_from_proposal(ctx, provider)
-                        && spec
-                            .model
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|model| !model.is_empty())
-                            .is_none()
-                    {
-                        errors.push(dynamic_validation_error(
-                        "dynamic.node.model.required",
-                        format!("dynamic worker `{}` must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one", spec.id),
-                        serde_json::json!({
-                            "nodeId": spec.id,
-                            "provider": provider,
-                            "field": "model",
-                        }),
-                    ));
+                    let proposed_model = spec
+                        .model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty());
+                    if let Some(error) = validate_dynamic_proposed_model(
+                        ctx,
+                        provider,
+                        proposed_model,
+                        dynamic_worker_model_required_from_proposal(ctx, provider),
+                        "dynamic.node",
+                        &format!("dynamic worker `{}`", spec.id),
+                        serde_json::json!({ "nodeId": spec.id }),
+                    ) {
+                        errors.push(error);
                     }
                     if let Some(profile) = spec.profile.as_deref() {
                         let allowed = ctx
@@ -5750,18 +5866,17 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     } else if let Some(provider) = resolved_provider
-        && dynamic_agent_task_model_required_from_proposal(ctx, provider)
-        && proposed_model.is_none()
+        && let Some(error) = validate_dynamic_proposed_model(
+            ctx,
+            provider,
+            proposed_model,
+            dynamic_agent_task_model_required_from_proposal(ctx, provider),
+            &format!("dynamic.{name}"),
+            &format!("dynamic {name}"),
+            serde_json::json!({ "stage": name }),
+        )
     {
-        errors.push(dynamic_validation_error(
-            &format!("dynamic.{name}.model.required"),
-            format!("dynamic {name} must output model for provider `{provider}` because the AI-DYNAMIC config did not lock one"),
-            serde_json::json!({
-                "provider": provider,
-                "stage": name,
-                "field": "model",
-            }),
-        ));
+        errors.push(error);
     }
     if spec.task.trim().is_empty() {
         errors.push(dynamic_validation_error(
@@ -6498,6 +6613,8 @@ pub(crate) fn build_dynamic_prompt_bundle(
             _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
         };
     }
+    let run: RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+    validate_run_state(&run)?;
     let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
     validate_round_state(&round)?;
     let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
@@ -7028,10 +7145,7 @@ fn dynamic_allowed_values_for_error(
             .get("provider")
             .and_then(|value| value.as_str())
         {
-            return provider_model_option_values(ctx, provider)
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect();
+            return provider_model_option_values(ctx, provider);
         }
     }
     if error.code.contains(".workflow-invocation.") || field == "workflowId" {
@@ -7166,7 +7280,7 @@ fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                 format!("- {provider} (model not configured; provider default will be used)")
             } else {
                 format!(
-                    "- {provider} (model required in proposal; choose one model by name)\n  models:\n  - {}",
+                    "- {provider} (model required in proposal; choose one model value)\n  models:\n  - {}",
                     options.join("\n  - ")
                 )
             }
@@ -7200,7 +7314,7 @@ fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                     if options.is_empty() {
                         if requires_model_output {
                             format!(
-                                "- {provider} (model required in proposal; no model catalog is available, use a model supported by this provider)",
+                                "- {provider} (model required in proposal; model catalog is missing, so runtime will fail before starting a provider session)",
                                 provider = agent_ref.provider,
                             )
                         } else {
@@ -7211,7 +7325,7 @@ fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
                         }
                     } else {
                         format!(
-                            "- {provider} (model required in proposal; choose one model by name)\n  models:\n  - {models}",
+                            "- {provider} (model required in proposal; choose one model value)\n  models:\n  - {models}",
                             provider = agent_ref.provider,
                             models = options.join("\n  - "),
                         )
@@ -8073,12 +8187,51 @@ fn dynamic_graph_has_paused_leaf(graph: &DynamicGraphState) -> bool {
         .any(|node| node.status == DynamicNodeStatus::Paused && node.outcome.is_none())
 }
 
+fn ensure_dynamic_required_model_catalogs(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+) -> Result<()> {
+    for provider in dynamic_available_provider_ids(ctx) {
+        if dynamic_provider_requires_proposal_model_catalog(ctx, &provider)
+            && provider_model_option_values(ctx, &provider).is_empty()
+        {
+            let error = dynamic_catalog_missing_error(
+                "dynamic.provider",
+                "AI-DYNAMIC provider",
+                &provider,
+                serde_json::json!({ "provider": provider.clone() }),
+                None,
+            );
+            let reason = error.message.clone();
+            pause_dynamic_graph(ctx, graph, PauseReason::ErrorBlocked, &reason)?;
+            return Err(anyhow!(reason));
+        }
+    }
+    Ok(())
+}
+
+fn pause_active_dynamic_leaves_for_blocked_error(graph: &mut DynamicGraphState) {
+    let now = now_rfc3339_like();
+    for node in &mut graph.nodes {
+        if dynamic_leaf_is_active(node.status) && node.outcome.is_none() {
+            node.status = DynamicNodeStatus::Paused;
+            node.finished_at = Some(now.clone());
+        }
+    }
+    refresh_dynamic_current_leaf_ids(graph);
+}
+
 fn pause_dynamic_graph(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
     pause_reason: PauseReason,
     reason: &str,
 ) -> Result<()> {
+    if pause_reason == PauseReason::ErrorBlocked {
+        pause_active_dynamic_leaves_for_blocked_error(graph);
+    } else {
+        refresh_dynamic_current_leaf_ids(graph);
+    }
     graph.run.status = DynamicRunStatus::Paused;
     graph.run.outcome = None;
     graph.run.pause_reason = Some(pause_reason);
@@ -8246,21 +8399,24 @@ fn drive_from_node_with_initial_session(
             setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
         }
         let execution_result = match current_node_dsl {
-            NodeDsl::Worker(_) => execute_ai_node(
-                app,
-                task_id,
-                &run.id,
-                round,
-                &current_attempt_id,
-                workflow,
-                &current_node_id,
-                node.clone(),
-                session_mode,
-                continue_ref.as_ref().cloned(),
-                resume_prompt.take(),
-                resume_prompt_id.take(),
-                resume_prompt_visibility,
-            ),
+            NodeDsl::Worker(_) => {
+                app.validate_workflow_node_agent_options(current_node_dsl)?;
+                execute_ai_node(
+                    app,
+                    task_id,
+                    &run.id,
+                    round,
+                    &current_attempt_id,
+                    workflow,
+                    &current_node_id,
+                    node.clone(),
+                    session_mode,
+                    continue_ref.as_ref().cloned(),
+                    resume_prompt.take(),
+                    resume_prompt_id.take(),
+                    resume_prompt_visibility,
+                )
+            }
             NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
                 app,
                 task_id,
@@ -8639,9 +8795,10 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RuntimeConfig;
+    use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{OutputArtifactPayload, ProviderResultPayload, SessionRef};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -8687,6 +8844,22 @@ mod tests {
             control: DynamicControlDsl::default(),
             allowed_workflows: Vec::new(),
         }
+    }
+
+    fn test_app_with_provider_capabilities(
+        capabilities: serde_json::Value,
+    ) -> (tempfile::TempDir, App) {
+        let (temp, repo_root) = init_repo();
+        let config = RuntimeConfig::default().with_provider_diagnostics(BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-06-16T00:00:00Z".to_string(),
+                capabilities: Some(capabilities),
+            },
+        )]));
+        (temp, App::with_config(repo_root, config))
     }
 
     fn test_context<'a>(app: &'a App, dynamic: &'a AiDynamicNode) -> DynamicExecutionContext<'a> {
@@ -8841,6 +9014,152 @@ mod tests {
                 "next": {{ "type": "end" }}
             }}"#
         )
+    }
+
+    #[test]
+    fn provider_model_options_read_current_provider_cache() {
+        let capabilities = serde_json::json!({
+            "configOptions": [
+                {
+                    "category": "model",
+                    "options": [
+                        { "value": "sonnet", "name": "Sonnet", "description": "fast" },
+                        { "value": "opus" }
+                    ]
+                }
+            ]
+        });
+        let (_temp, app) = test_app_with_provider_capabilities(capabilities);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let values = provider_model_option_values(&ctx, "claude-acp");
+
+        assert_eq!(values, vec!["sonnet".to_string(), "opus".to_string()]);
+        assert_eq!(
+            provider_model_options_summary(&ctx, "claude-acp"),
+            vec!["sonnet (Sonnet) — fast".to_string(), "opus".to_string()]
+        );
+    }
+
+    #[test]
+    fn dynamic_worker_model_validation_uses_provider_model_values() {
+        let capabilities = serde_json::json!({
+            "configOptions": [
+                {
+                    "category": "model",
+                    "options": [
+                        { "value": "sonnet", "name": "gpt-5.4(xhigh)" },
+                        { "value": "opus", "name": "gpt-5.5(xhigh)[1m]" }
+                    ]
+                }
+            ]
+        });
+        let (_temp, app) = test_app_with_provider_capabilities(capabilities);
+        let dynamic = AiDynamicNode {
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "claude-acp".to_string(),
+                bootstrap_model: None,
+                acceptance_model: None,
+                routing_prompt: "choose provider and model".to_string(),
+                available_agents: vec![crate::dsl::DynamicAgentRef {
+                    provider: "claude-acp".to_string(),
+                    model: None,
+                }],
+            },
+            ..test_dynamic()
+        };
+        let ctx = test_context(&app, &dynamic);
+        let source = test_worktree_node("bootstrap");
+        let graph = test_dynamic_graph(vec![source.clone()]);
+        let valid = DynamicNodeSpec {
+            id: "valid".to_string(),
+            kind: DynamicNodeSpecKind::Worker,
+            title: "Valid".to_string(),
+            task: "work".to_string(),
+            provider: Some("claude-acp".to_string()),
+            profile: None,
+            model: Some("sonnet".to_string()),
+            permission_mode: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            workspace: WorkspacePolicy::default(),
+            depends_on: Vec::new(),
+            workflow_id: None,
+        };
+        let invalid = DynamicNodeSpec {
+            model: Some("gpt-5.4(xhigh)".to_string()),
+            ..valid.clone()
+        };
+
+        assert!(validate_dynamic_node_spec(&ctx, &graph, &source, &valid, 1).is_empty());
+        let errors = validate_dynamic_node_spec(&ctx, &graph, &source, &invalid, 1);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "dynamic.node.model.unsupported");
+        assert_eq!(
+            errors[0].allowed_values,
+            vec!["sonnet".to_string(), "opus".to_string()]
+        );
+    }
+
+    #[test]
+    fn dynamic_model_catalog_missing_blocks_before_provider_session() {
+        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({
+            "configOptions": []
+        }));
+        let dynamic = AiDynamicNode {
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "claude-acp".to_string(),
+                bootstrap_model: None,
+                acceptance_model: None,
+                routing_prompt: "choose provider and model".to_string(),
+                available_agents: vec![crate::dsl::DynamicAgentRef {
+                    provider: "claude-acp".to_string(),
+                    model: None,
+                }],
+            },
+            ..test_dynamic()
+        };
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph(vec![test_worktree_node("bootstrap")]);
+
+        let error = ensure_dynamic_required_model_catalogs(&ctx, &mut graph).unwrap_err();
+
+        assert!(error.to_string().contains("no model catalog"));
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::ErrorBlocked));
+        assert!(graph.run.current_node_ids.is_empty());
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+    }
+
+    #[test]
+    fn dynamic_permission_mode_validation_reads_current_provider_cache() {
+        let capabilities = serde_json::json!({
+            "configOptions": [
+                {
+                    "id": "mode",
+                    "options": [
+                        { "value": "plan", "name": "Plan" },
+                        { "value": "acceptEdits", "name": "Accept Edits" }
+                    ]
+                }
+            ]
+        });
+        let (_temp, app) = test_app_with_provider_capabilities(capabilities);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let allowed = validate_dynamic_permission_mode(&ctx, "claude-acp", "ask", |resolved| {
+            DynamicProposalValidationError::new("invalid", resolved, serde_json::Value::Null)
+        });
+        let rejected =
+            validate_dynamic_permission_mode(&ctx, "claude-acp", "full_access", |resolved| {
+                DynamicProposalValidationError::new("invalid", resolved, serde_json::Value::Null)
+            });
+
+        assert!(allowed.is_none());
+        assert_eq!(rejected.unwrap().message, "bypassPermissions");
     }
 
     #[test]

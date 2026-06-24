@@ -99,6 +99,7 @@ pub struct ConversationRunVm {
     pub workflow_graph: GraphVm,
     pub resumable: bool,
     pub pause_reason: Option<String>,
+    pub runtime_error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -486,18 +487,18 @@ fn display_pause_reason_for_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
-    if run_pause_reason == Some("error-blocked") {
-        let snapshot_path = app
-            .paths
-            .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
-        let session_path = app
-            .paths
-            .acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
-        if acp_session_file_is_cancelled(&snapshot_path)
-            || acp_session_file_is_cancelled(&session_path)
-        {
-            return Some("process-interrupted".to_string());
-        }
+    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+        return run_pause_reason.map(str::to_string);
+    }
+    let snapshot_path = app
+        .paths
+        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
+    let session_path = app
+        .paths
+        .acp_session_file(task_id, run_id, round_id, node_id, attempt_id);
+    if acp_session_file_is_cancelled(&snapshot_path) || acp_session_file_is_cancelled(&session_path)
+    {
+        return Some("process-interrupted".to_string());
     }
     run_pause_reason.map(str::to_string)
 }
@@ -513,6 +514,9 @@ fn display_pause_reason_for_dynamic_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
+    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+        return run_pause_reason.map(str::to_string);
+    }
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
         task_id,
         run_id,
@@ -794,6 +798,30 @@ fn normalize_lifecycle_code(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
+fn runtime_error_message(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    pause_reason: Option<&str>,
+) -> Option<String> {
+    if pause_reason.map(normalize_lifecycle_code).as_deref() != Some("error-blocked") {
+        return None;
+    }
+    let progress = app.run_progress(task_id, run_id).ok().flatten()?;
+    let summary = progress.get("summary")?.as_str()?.trim();
+    if summary.is_empty() {
+        return None;
+    }
+    Some(
+        summary
+            .rsplit_once(": ")
+            .map(|(_, reason)| reason.trim())
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or(summary)
+            .to_string(),
+    )
+}
+
 fn is_active_session_status(status: &str) -> bool {
     matches!(
         normalize_lifecycle_code(status).as_str(),
@@ -849,7 +877,7 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted") | Some("error-blocked") => Some("input".to_string()),
+        Some("process-interrupted") => Some("input".to_string()),
         _ => None,
     }
 }
@@ -974,15 +1002,14 @@ fn derive_conversation_attempt_lifecycle(
     let runtime_paused = normalize_lifecycle_code(runtime_status) == "paused";
     let runtime_pause_overrides_session = runtime_paused
         && (manual_check_pending
-            || (runtime_resumable
-                && (is_runtime_continue_pause_reason(pause_reason)
-                    || matches!(
-                        pause_reason
-                            .as_deref()
-                            .map(normalize_lifecycle_code)
-                            .as_deref(),
-                        Some("error-blocked")
-                    ))));
+            || matches!(
+                pause_reason
+                    .as_deref()
+                    .map(normalize_lifecycle_code)
+                    .as_deref(),
+                Some("error-blocked")
+            )
+            || (runtime_resumable && is_runtime_continue_pause_reason(pause_reason)));
 
     let display_status = if acp_stopping {
         session_status
@@ -1121,11 +1148,16 @@ pub fn conversation_attempt_lifecycle_vm(
         let current = run.current_round.as_deref() == Some(round_id)
             && run.current_node.as_deref() == Some(outer_node_id)
             && run.current_attempt.as_deref() == Some(outer_attempt_id)
-            && dynamic_graph
+            && (dynamic_graph
                 .run
                 .current_node_ids
                 .iter()
-                .any(|id| id == node_id);
+                .any(|id| id == node_id)
+                || (run_pause_reason
+                    .as_deref()
+                    .is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked")
+                    && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
+                    && dynamic_node.outcome.is_none()));
         let leaf_resumable = runtime_status == "paused"
             && outcome.is_none()
             && matches!(
@@ -1133,7 +1165,7 @@ pub fn conversation_attempt_lifecycle_vm(
                     .as_deref()
                     .map(normalize_lifecycle_code)
                     .as_deref(),
-                Some("process-interrupted") | Some("error-blocked")
+                Some("process-interrupted")
             );
         return Ok(derive_conversation_attempt_lifecycle(
             session_vm.as_ref().map(|session| session.status.as_str()),
@@ -1369,11 +1401,16 @@ pub fn conversation_run_vm(
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
                                     == Some(&latest_attempt.attempt_id)
-                                && dynamic_graph
+                                && (dynamic_graph
                                     .run
                                     .current_node_ids
                                     .iter()
-                                    .any(|id| id == &dyn_node.id);
+                                    .any(|id| id == &dyn_node.id)
+                                    || (run_pause_reason.as_deref().is_some_and(|reason| {
+                                        normalize_lifecycle_code(reason) == "error-blocked"
+                                    }) && dyn_node.status
+                                        == gold_band::dynamic::DynamicNodeStatus::Paused
+                                        && dyn_node.outcome.is_none()));
                             let dyn_base_status = if run.status == RunStatus::Paused
                                 && dyn_runtime_status == "running"
                                 && dyn_node.outcome.is_none()
@@ -1425,7 +1462,7 @@ pub fn conversation_run_vm(
                                             .as_deref()
                                             .map(normalize_lifecycle_code)
                                             .as_deref(),
-                                        Some("process-interrupted") | Some("error-blocked")
+                                        Some("process-interrupted")
                                     );
                                 let lifecycle = derive_conversation_attempt_lifecycle(
                                     dyn_session_vm
@@ -1753,6 +1790,8 @@ pub fn conversation_run_vm(
 
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
+    let runtime_error_message =
+        runtime_error_message(app, task_id, run_id, run_pause_reason.as_deref());
     let run_outcome = run.outcome.map(|o| enum_label(&o));
 
     let (workflow_valid, workflow_json) = if let Some(ref dsl) = workflow_snapshot {
@@ -1817,6 +1856,7 @@ pub fn conversation_run_vm(
         workflow_json,
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
+        runtime_error_message,
     })
 }
 
@@ -2256,6 +2296,7 @@ pub fn create_conversation_run_vm(
             },
             resumable: false,
             pause_reason: None,
+            runtime_error_message: None,
         })
     })
 }
@@ -2307,6 +2348,7 @@ pub fn rerun_conversation_task_vm(
             },
             resumable: false,
             pause_reason: None,
+            runtime_error_message: None,
         })
     })
 }
@@ -2530,7 +2572,7 @@ mod tests {
     }
 
     #[test]
-    fn error_blocked_runtime_pause_is_input_continue() {
+    fn error_blocked_runtime_pause_is_runtime_error() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             "paused",
@@ -2542,9 +2584,9 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind, None);
+        assert_eq!(lifecycle.composer.mode, "runtime-error");
+        assert_eq!(lifecycle.composer.submit_target, "none");
     }
 
     #[test]
@@ -2686,6 +2728,58 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
         assert_eq!(lifecycle.continue_kind, None);
+    }
+
+    #[test]
+    fn error_blocked_dynamic_leaf_is_selected_runtime_error() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("error-blocked"),
+            "paused",
+            Vec::new(),
+        );
+        gold_band::storage::write_json(
+            &app.paths.run_progress_file("task-dyn", "run-dyn"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "status": "paused",
+                "currentRoundId": "round-001",
+                "currentNodeId": "ai-dynamic",
+                "currentAttemptId": "attempt-001",
+                "currentStage": "blocked",
+                "summary": "run run-dyn blocked at round-001/ai-dynamic/attempt-001: ACP prompt cancelled",
+                "updatedAt": "2026-06-15T00:00:02Z"
+            }),
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let leaf = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()[0]
+            .attempts[0]
+            .clone();
+
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/ai-dynamic/attempt-001/good-morning/attempt-001")
+        );
+        assert!(leaf.current);
+        assert_eq!(
+            leaf.lifecycle.runtime.pause_reason.as_deref(),
+            Some("error-blocked")
+        );
+        assert_eq!(leaf.runtime_display.code, "error-blocked");
+        assert!(leaf.runtime_display.blocking_error);
+        assert_eq!(leaf.lifecycle.composer.mode, "runtime-error");
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("ACP prompt cancelled")
+        );
     }
 
     #[test]

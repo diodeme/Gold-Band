@@ -462,7 +462,7 @@ pub fn runtime_display_vm(
         tone: tone.to_string(),
         icon: icon.to_string(),
         terminal,
-        resumable: (code == "paused" || code == "error-blocked") && resumable,
+        resumable: code == "paused" && resumable,
         reason_code,
         blocking_error,
     }
@@ -5810,6 +5810,7 @@ mod tests {
         assert_eq!(failure.tone, "danger");
         assert!(!failure.blocking_error);
         assert!(error_blocked.blocking_error);
+        assert!(!error_blocked.resumable);
         assert!(killed.blocking_error);
     }
 

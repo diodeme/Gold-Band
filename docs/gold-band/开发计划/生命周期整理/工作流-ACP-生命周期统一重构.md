@@ -24,7 +24,7 @@
 本轮已按破坏式收敛方向完成第一阶段落地：
 
 - `ConversationAttemptLifecycleVm` 已新增 `runtime.phase` 与 `composer` 决策层，`launching-next-node`、停止中、暂停输入继续、暂停按钮继续等状态都由后端派生。
-- 会话态输入统一走 `submit_conversation_prompt`，前端不再在 `sendAcpPrompt` 与 `continueRun` 之间自行分叉；`process-interrupted/error-blocked` 的文本输入继续与 `waiting-for-user-input` 的按钮继续都指向 `runtime-continue`。
+- 会话态输入统一走 `submit_conversation_prompt`，前端不再在 `sendAcpPrompt` 与 `continueRun` 之间自行分叉；`process-interrupted` 的文本输入继续与 `waiting-for-user-input` 的按钮继续都指向 `runtime-continue`，`error-blocked` 作为不可重试错误进入 `runtime-error`。
 - AI-DYNAMIC 内部节点继续发送已改为 runtime 恢复：后端根据 outer locator + inner locator 校验 paused dynamic graph，只 re-arm 目标 dynamic node，并让它回到 `drive_dynamic_graph` 的 completion 解析、proposal 校验、materialize 和外层 workflow 后续推进链路。
 - `WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 兼容别名已删除，metrics 代码直接使用 `RuntimeLifecycleEvent` 命名；`App.intervention_notifier` 专用回调已删除。
 - 前端 composer 状态映射已改为消费后端 `lifecycle.composer`，只保留发送中、停止命令待确认、乐观消息等短暂本地 overlay；会话态的旧 `onContinue` 分支已删除。
@@ -66,7 +66,7 @@
 
 - runtime active 优先于已 completed 的 ACP 会话；如果 runtime 仍 active 且 ACP 已 terminal，则 composer 显示 `launching-next-node`。
 - runtime terminal 时，抑制 stale ACP active。
-- `paused + process-interrupted/error-blocked + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`。
+- `paused + process-interrupted + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`；`paused + error-blocked` 表示不可重试阻塞，composer 进入 `runtime-error` 且 submit target 为 `none`，错误面板优先展示后端从 run-progress 阻塞摘要提取的 `runtimeErrorMessage`。
 - `paused + waiting-for-user-input + manual_check_pending` 表示人工 check 判定门，不再使用继续按钮；composer 保持可输入，普通文本提交目标是 `acp-prompt`，只有成功 / 失败按钮触发 `submit_manual_check` 并恢复 edge 流转。
 - 人工 check 判定门从当前 attempt 的 `NodeState.manual_check_pending` 持久化恢复；关闭应用再打开后仍必须恢复判定按钮、输入框和后续 submit_manual_check 能力。
 - ACP lifecycle facet 为 `stopping`、本地 stop 命令未返回，或 ACP session metadata 明确为 `cancelling / cancel-requested` 时进入 `stopping`；`provider.pid` 只作为 kill/cleanup/诊断事实，不能反推 composer 停止中。

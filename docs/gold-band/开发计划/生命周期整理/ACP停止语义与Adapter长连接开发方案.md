@@ -227,7 +227,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - 该规则按 leaf attempt/session、graph scheduler、run aggregate 三层设计，后续普通固定工作流支持并行节点时复用同一模型。
    - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 或 driver 因可恢复本地/transport 异常暂停，但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
    - 详细落地见 `docs/gold-band/开发计划/生命周期整理/并行节点通用停止继续语义与AI-DYNAMIC落地方案.md`。
-   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前先检查目标 leaf 是否已有完整合法 `dynamic-node-completion`，有则先接受完成；再扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，最后只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
+   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前先检查目标 leaf 是否已有完整合法 `dynamic-node-completion`，有则先接受完成。ACP snapshot/session 的 `cancelled` 只作为传输历史，live running graph 中不得全图扫描并把 `Ready | Running` sibling 改成 paused；只有父级 run 或 dynamic graph 已 `Paused` 的 legacy 场景，才允许把 `Ready | Running + outcome=null + ACP cancelled` 收敛为 `Paused + ProcessInterrupted`，最后只恢复本次目标 leaf。
    - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
    - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端据此刷新完整 run VM；前端不能靠 ACP terminal snapshot 自行推断 workflow runtime 是否完成或暂停。
    - dynamic graph 中任何 leaf 变为 `Ready | Running` 或创建新的 graph 后继 leaf 后，也必须在持久化后发出 lifecycle update；该更新可以没有完整 ACP session payload，前端仍应把它当成 runtime snapshot 处理。

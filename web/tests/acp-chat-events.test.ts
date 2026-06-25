@@ -129,6 +129,111 @@ describe('ACP chat event handling', () => {
     expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
   });
 
+  it('keeps repeated Gold Band user prompts when prompt ids differ', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'gold-band-user-prompt-71',
+        seq: 71,
+        timestamp: '1782356175Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'acp-prompt-1' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-207',
+        seq: 207,
+        timestamp: '1782356183Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'acp-prompt-2' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-381',
+        seq: 381,
+        timestamp: '1782356193Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'acp-prompt-3' },
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(3);
+    expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual(['继续', '继续', '继续']);
+  });
+
+  it('deduplicates repeated Gold Band user prompt snapshots with the same prompt id', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'gold-band-user-prompt-71',
+        seq: 71,
+        timestamp: '1782356175Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'acp-prompt-1' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-71-copy',
+        seq: 72,
+        timestamp: '1782356176Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'acp-prompt-1' },
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(1);
+  });
+
+  it('keeps historical Gold Band prompts without prompt ids as separate turns', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'gold-band-user-prompt-712',
+        seq: 712,
+        timestamp: '1782359019Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt' },
+      }),
+      event({
+        id: 'assistant-thought-894',
+        seq: 894,
+        timestamp: '1782359024Z',
+        kind: 'thoughtDelta',
+        content: 'first resumed thought',
+      }),
+      event({
+        id: 'gold-band-user-prompt-896',
+        seq: 896,
+        timestamp: '1782359028Z',
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt' },
+      }),
+      event({
+        id: 'assistant-thought-901',
+        seq: 901,
+        timestamp: '1782359029Z',
+        kind: 'thoughtDelta',
+        content: 'second resumed thought',
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(4);
+    expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual([
+      '继续',
+      'first resumed thought',
+      '继续',
+      'second resumed thought',
+    ]);
+  });
+
   it('keeps top-level plan updates out of duplicate timeline rows', () => {
     const timeline = buildAcpTimeline([
       event({

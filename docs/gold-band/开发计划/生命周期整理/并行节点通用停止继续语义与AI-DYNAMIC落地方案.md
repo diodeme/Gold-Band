@@ -100,10 +100,11 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 1. `submit_conversation_prompt` 发现选中的是 dynamic inner leaf，且该 leaf 为 `Paused + ProcessInterrupted | RuntimeAbnormal` 时，即使父 run 仍 `Running`，也把提交目标判定为 `runtime-continue`。
 2. graph paused 时继续复用 `run_continue_dynamic_inner_background`，但必须携带目标 leaf 的 `DynamicResumeOverride`。
 3. graph running 时只把目标 leaf 从 `Paused` 改为 `Ready`，注入 `DynamicResumeOverride`，让 dynamic loop 调度该 leaf。
-4. 如果磁盘显示 graph running 但进程内没有活跃 dynamic loop，应启动外层 AI-DYNAMIC drive，避免只改状态不执行。
-5. continue 必须使用该 leaf 原 ACP `sessionId`，不得创建不相关的新 session。
-6. 继续目标 leaf 前，后端必须先检查该 leaf 是否已有完整合法 `dynamic-node-completion`，若已完成则接受 proposal 并继续 graph，不重复发送 prompt；随后扫描同一 dynamic graph 中所有 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，把它们先收敛为 `Paused + ProcessInterrupted`，刷新 `currentNodeIds` 并同步写 `graph.json`、`dynamic_run.json` 与 `dynamic/nodes/<node>/node.json`，再只 re-arm 本次目标 leaf，避免 sibling 停留在 `running + ACP cancelled` 并显示“拉起下一节点中”。
-7. 没有明确 inner leaf override 的父 run continue 不得批量 re-arm 普通 paused worker leaf；唯一例外是 `workflow-invocation` leaf，它代表一个已暂停 child run，父 run continue 可以只把这类 leaf 置回 `Ready` 以继续 child run。
+4. 如果磁盘显示 graph running 但进程内没有活跃 dynamic loop，应启动外层 AI-DYNAMIC drive，避免只改状态不执行；同一 graph 的 scheduler 启动窗口必须有进程内 pending resume 缓冲，后到的 leaf continue 不得再启动第二个 dynamic drive。
+5. continue 必须使用该 leaf 原 ACP `sessionId`，不得创建不相关的新 session；pending resume 只是缓冲并发继续请求，scheduler 注册完成后仍按 `maxParallel` 并行调度多个 leaf。
+6. 后台 dynamic inner continue 接受命令前必须先通过统一状态转换入口校验并收敛目标 leaf：标准形态是 `Paused + outcome=null`；只有 graph/run 已 paused 的 legacy 场景，才允许目标 leaf 仍写着 `Ready | Running + outcome=null` 且 ACP snapshot/session 已 `cancelled`。若外层 run/round/AI-DYNAMIC attempt 已因 `ProcessInterrupted | RuntimeAbnormal` 暂停，且仍指向同一个 outer attempt，必须在同一转换中把 dynamic graph、外层 run/round/node 恢复为 `Running`，再返回 accepted lifecycle 和启动 scheduler，避免 scheduler 一进入 loop 就因 `outer_attempt_is_still_current_running=false` 再次暂停 graph。
+7. 继续目标 leaf 前，后端必须先检查该 leaf 是否已有完整合法 `dynamic-node-completion`，若已完成则接受 proposal 并继续 graph，不重复发送 prompt；随后只基于 dynamic leaf 工作流状态 re-arm 本次目标 leaf。ACP snapshot/session 的 `cancelled` 只作为传输历史，不得在 live running graph 中全图扫描并把 `Ready | Running` sibling 改成 `Paused`。仅当父级 run 或 dynamic graph 已经 `Paused` 时，才允许把历史遗留的 `Ready | Running + outcome=null + ACP cancelled` 坏状态收敛为 paused legacy recovery。
+8. 没有明确 inner leaf override 的父 run continue 不得批量 re-arm 普通 paused worker leaf；唯一例外是 `workflow-invocation` leaf，它代表一个已暂停 child run，父 run continue 可以只把这类 leaf 置回 `Ready` 以继续 child run。
 
 ## 8. ViewModel / Composer
 
@@ -123,6 +124,8 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 8. 前端 auto-follow 必须区分用户手动查看历史 session、用户明确回到最新 active/current session 与 runtime 自然 terminal：manual 状态下新 active session 不抢焦点；auto 状态下当前选中自然 terminal 且用户仍在底部时，后续 child 首个 active/live event 或 lifecycle-only active update 可以切换过去；用户手动查看历史后，只有重新选中最新 active/current leaf 并回到底部才恢复 auto-follow。
 9. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
 10. 会话侧边栏 run 终态刷新按职责分层：ACP session update 继续触发 session/graph 实时 refresh；run 真正完成后由后端 `RuntimeLifecycleEvent::RunCompleted` 桥接到前端事件，进入同一个 `getConversationRun + getConversationSidebar` 刷新入口。`onSessionStopped` 不再作为新 UI run/sidebar 的第三套刷新触发。
+11. 停止后继续当前 leaf 的生命周期不得派生为 `launching-next-node`；该状态只表示当前节点自然完成后正在启动后继节点。当前 leaf resume 已被接受但新 ACP 输出尚未到达时，应输出普通 processing/provider-running 语义。
+12. dynamic inner runtime-continue 必须把调用方传入的 prompt identity 贯穿到 ACP `PromptBundle` 与 synthetic `goldBandPrompt.raw.promptId`，前端才能把 optimistic 用户气泡与服务端快照匹配，并让多次相同文本继续按独立轮次展示。
 
 ## 9. 侧边栏 run 列表右键停止
 
@@ -157,7 +160,8 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 2. 两个 running worker 依次停止：第二次后父 run / round / outer node / dynamic graph 自动 paused/process-interrupted。
 3. `apply_dynamic_execution_message` 收到某个 leaf paused 结果时，如果还有 sibling running，不暂停 graph。
 4. graph running 状态下 `DynamicResumeOverride` 只 re-arm 目标 paused leaf。
-5. 父 run running、dynamic leaf paused/process-interrupted 时，conversation lifecycle 输出 runtime continue composer。
+5. 两个 paused leaf 几乎同时 continue 时，只启动一个 dynamic scheduler；第二个 resume 在 scheduler 注册前进入 pending resume，注册后由同一个 scheduler 按并行度调度。
+6. 父 run running、dynamic leaf paused/process-interrupted 时，conversation lifecycle 输出 runtime continue composer。
 6. 父 run running、dynamic leaf running、ACP terminal 时，仍可输出 `launching-next-node`。
 7. 父 run paused 时，不输出 `launching-next-node`。
 8. provider 返回 `Interrupted` 但包含完整合法 `dynamic-node-completion` artifact 时，dynamic node 收敛为 `Completed + Success` 并接受 proposal。
@@ -169,6 +173,8 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 1. running run 右键菜单展示“停止”且可点击。
 2. paused run 右键菜单“停止”disabled。
 3. 点击 running run 的“停止”调用 `pauseRun`，不调用 `killRun`。
+4. ACP terminal/cancelled 且 runtime lifecycle 已派生为 `process-interrupted` 可继续时，即使前端仍有未匹配 optimistic prompt，也必须恢复输入框，不再显示“发送中”或 runtime active lock。
+5. 同一会话连续多次输入相同的 `继续/Continue` 时，timeline 按 prompt identity 展示多条独立用户消息，只去重同一 prompt identity 的重复快照。
 
 ### 11.3 手工验证
 

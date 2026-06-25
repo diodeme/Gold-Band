@@ -946,7 +946,12 @@ fn runtime_phase_for_lifecycle(
         return "paused".to_string();
     }
     if runtime_active && acp_terminal {
-        return "launching-next-node".to_string();
+        let session_status = acp_status.map(normalize_lifecycle_code);
+        return if matches!(session_status.as_deref(), Some("completed" | "complete")) {
+            "launching-next-node".to_string()
+        } else {
+            "provider-running".to_string()
+        };
     }
     if runtime_active {
         let session_status = acp_status.map(normalize_lifecycle_code);
@@ -2486,7 +2491,7 @@ mod tests {
     }
 
     #[test]
-    fn running_runtime_overrides_stale_session_terminal_status() {
+    fn running_runtime_overrides_stale_session_cancelled_status_without_launching_next_node() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("cancelled"),
             "running",
@@ -2499,10 +2504,30 @@ mod tests {
 
         assert_eq!(lifecycle.display_status, "running");
         assert!(lifecycle.runtime.active);
-        assert_eq!(lifecycle.runtime.phase, "launching-next-node");
+        assert_eq!(lifecycle.runtime.phase, "provider-running");
         assert!(!lifecycle.acp.active);
         assert!(lifecycle_is_active(&lifecycle, false));
         assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.processing_kind, "processing");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.runtimeActive")
+        );
+    }
+
+    #[test]
+    fn running_runtime_with_completed_session_launches_next_node() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("completed"),
+            "running",
+            None,
+            true,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
         assert_eq!(
             lifecycle.composer.status_key.as_deref(),

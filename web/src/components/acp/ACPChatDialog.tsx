@@ -724,9 +724,12 @@ export const ACPChatDialog = forwardRef<
     [effective?.config],
   );
   const effectiveEvents = effective?.events ?? [];
+  const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
+  const activeAwaitingResponse = !effectiveSessionTerminal && awaitingResponse;
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
+    !effectiveSessionTerminal &&
     !hasResponseAfterActiveTurn;
   const localSubmissionPending = sending || waitingForOptimisticPrompt;
   const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
@@ -924,7 +927,7 @@ export const ACPChatDialog = forwardRef<
     waitingForPermission,
     hasPlanIntervention: Boolean(planInterventionOption),
     sending,
-    awaitingResponse,
+    awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
     cancelling,
     stopCommandPending,
@@ -944,7 +947,7 @@ export const ACPChatDialog = forwardRef<
   const composerStatusStartAt =
     composerState.mode === "submitting" ||
     composerState.mode === "stopping" ||
-    (awaitingResponse && turnAccepted && !hasTurnResponse)
+    (activeAwaitingResponse && turnAccepted && !hasTurnResponse)
       ? activeTurnStartedAt
       : (composerLatestEvent?.startedAt ??
         composerLatestEvent?.timestamp ??
@@ -1533,8 +1536,8 @@ export const ACPChatDialog = forwardRef<
     if (acceptedPrompt && !activeTurnStartedAt)
       setActiveTurnStartedAt(acceptedPrompt.timestamp);
     updateOptimisticEvents((current) => {
-      const next = current.filter(
-        (event) => !hasMatchingUserPrompt(loadedEvents, event),
+      const next = current.filter((event) =>
+        shouldMergeOptimisticEvent(loadedEvents, event),
       );
       return next.length === current.length ? current : next;
     });
@@ -1658,7 +1661,8 @@ export const ACPChatDialog = forwardRef<
   };
 
   const submitPrompt = async (trimmed: string) => {
-    if (sending || awaitingResponse || sessionActive || cancelling) return;
+    const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
+    if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
     setSending(true);
     setSendError(null);
     let attPaths: string[];
@@ -1701,8 +1705,18 @@ export const ACPChatDialog = forwardRef<
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      if (result.kind === "runtime-continue-started") onSessionStopped?.();
-      if (updated) {
+      if (result.kind === "runtime-continue-started") {
+        setAwaitingResponse(false);
+        setActiveTurnStartedAt(optimisticEvent.timestamp);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "completed" }
+              : event,
+          ),
+        );
+        onSessionStopped?.();
+      } else if (updated) {
         updateOptimisticEvents((current) =>
           current.filter(
             (event) => !hasMatchingUserPrompt(updated.events, event),
@@ -1877,7 +1891,7 @@ export const ACPChatDialog = forwardRef<
       sending ||
       pendingPermission ||
       sessionActive ||
-      awaitingResponse ||
+      activeAwaitingResponse ||
       cancelling
     )
       return;
@@ -1885,7 +1899,7 @@ export const ACPChatDialog = forwardRef<
     setQueuedInterventionPrompt(null);
     void submitPrompt(queued);
   }, [
-    awaitingResponse,
+    activeAwaitingResponse,
     cancelling,
     pendingPermission,
     queuedInterventionPrompt,
@@ -4676,8 +4690,11 @@ function userPromptDedupKey(event: AcpUiEventVm) {
   const text = normalizePromptText(event.content);
   if (!text) return null;
   const raw = rawObject(event.raw);
-  const attemptId = stringValue(raw?.attemptId) ?? "current-attempt";
-  return `${attemptId}:${text}`;
+  const attemptId = stringValue(raw?.attemptId) ?? attemptIdFromAcpEvent(event) ?? "current-attempt";
+  const promptId = promptIdFromEvent(event);
+  if (promptId) return `${attemptId}:prompt:${promptId}`;
+  if (isGoldBandManagedPrompt(event)) return `${attemptId}:event:${event.id}`;
+  return `${attemptId}:text:${text}`;
 }
 
 function isMergeableDelta(kind: string) {
@@ -4874,8 +4891,8 @@ function mergeOptimisticSession(
   optimisticEvents: AcpUiEventVm[],
 ): AcpSessionVm | null {
   if (!session || optimisticEvents.length === 0) return session ?? null;
-  const pending = optimisticEvents.filter(
-    (event) => !hasMatchingUserPrompt(session.events, event),
+  const pending = optimisticEvents.filter((event) =>
+    shouldMergeOptimisticEvent(session.events, event),
   );
   if (pending.length === 0) return session;
   return { ...session, events: [...session.events, ...pending] };
@@ -4929,6 +4946,7 @@ export {
   buildAcpTimeline,
   queryBlocksFromTool,
   isTopLevelPlanEvent,
+  hasMatchingUserPrompt,
 };
 
 export function createAcpPromptId() {
@@ -4955,6 +4973,16 @@ function isOptimisticEvent(event: AcpUiEventVm) {
   return rawObject(event.raw)?.optimistic === true;
 }
 
+function shouldMergeOptimisticEvent(
+  events: AcpUiEventVm[],
+  event: AcpUiEventVm,
+) {
+  if (event.kind !== "userTextDelta" || event.status === "failed") return false;
+  if (hasMatchingUserPrompt(events, event)) return false;
+  if (event.status === "sending") return true;
+  return !hasResponseAfterTurn(events, event.timestamp);
+}
+
 function hasMatchingUserPrompt(
   events: AcpUiEventVm[],
   candidate: AcpUiEventVm,
@@ -4965,6 +4993,7 @@ function hasMatchingUserPrompt(
       events,
       candidate.content,
       promptIdFromEvent(candidate),
+      candidate.timestamp,
     ),
   );
 }
@@ -4973,13 +5002,24 @@ function findMatchingGoldBandUserPrompt(
   events: AcpUiEventVm[],
   content?: string | null,
   promptId?: string | null,
+  candidateTimestamp?: string | null,
 ) {
   if (promptId) {
+    const exact = events.find(
+      (event) =>
+        isGoldBandUserPrompt(event) && promptIdFromEvent(event) === promptId,
+    );
+    if (exact) return exact;
+    const candidateAt = parseAcpTimestamp(candidateTimestamp);
+    if (candidateAt == null) return null;
     return (
-      events.find(
-        (event) =>
-          isGoldBandUserPrompt(event) && promptIdFromEvent(event) === promptId,
-      ) ?? null
+      events.find((event) => {
+        if (!isGoldBandUserPrompt(event)) return false;
+        if (promptIdFromEvent(event)) return false;
+        if (!sameText(event.content, content)) return false;
+        const eventAt = parseAcpTimestamp(event.timestamp);
+        return eventAt != null && eventAt >= candidateAt;
+      }) ?? null
     );
   }
   return (

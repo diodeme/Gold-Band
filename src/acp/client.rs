@@ -2524,4 +2524,61 @@ mod tests {
         assert!(outer_probe.is_stopped());
         assert!(!inner_probe.is_stopped());
     }
+
+    #[test]
+    fn runtime_stop_probe_uses_own_dynamic_attempt_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let own_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("own-node.json")).unwrap();
+        let sibling_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("sibling-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "ai-dynamic",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            own_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sibling_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let running_leaf_probe = RuntimeStopProbe {
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(own_state),
+        };
+        let paused_leaf_probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(sibling_state),
+        };
+
+        assert!(!running_leaf_probe.is_stopped());
+        assert!(paused_leaf_probe.is_stopped());
+    }
 }

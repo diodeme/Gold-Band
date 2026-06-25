@@ -19,6 +19,11 @@ struct AcpTimelineStreamState {
 }
 
 use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
+use crate::acp::elicitation::{
+    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState,
+    cancel_pending_elicitation_requests, elicitation_response_result,
+    wait_for_elicitation_response, write_pending_elicitation,
+};
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
     append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
@@ -518,12 +523,20 @@ pub fn run_prompt(
             (status, stop_reason)
         }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let _ = cancel_pending_elicitation_requests(
+                &runtime.paths.attempt_dir,
+                current_timestamp(),
+            );
             ("cancelled", Some("cancelled".to_string()))
         }
         Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
             ("cancelled", Some("interrupted".to_string()))
         }
         Err(error) => {
+            let _ = cancel_pending_elicitation_requests(
+                &runtime.paths.attempt_dir,
+                current_timestamp(),
+            );
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -882,7 +895,11 @@ impl<'a> AcpRuntime<'a> {
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": {
+                    "elicitation": {
+                        "form": {}
+                    }
+                },
                 "clientInfo": {
                     "name": "gold-band",
                     "title": "Gold Band",
@@ -1593,6 +1610,7 @@ impl<'a> AcpRuntime<'a> {
         match value.get("method").and_then(Value::as_str) {
             Some("session/update") => self.handle_session_update(value),
             Some("session/request_permission") => self.handle_permission_request(value),
+            Some("elicitation/create") => self.handle_elicitation_request(value),
             Some(method) => {
                 append_diagnostic(
                     &self.paths.diagnostics,
@@ -1684,6 +1702,7 @@ impl<'a> AcpRuntime<'a> {
         self.connection.send_response(rpc_id, result)
     }
 
+
     fn is_prompt_cancel_requested(&self) -> bool {
         self.control.state() == ProviderControlState::CancelRequested
             || self
@@ -1726,6 +1745,90 @@ impl<'a> AcpRuntime<'a> {
                 Some(frame),
             );
         }
+    }
+
+    fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        let rpc_id = value
+            .get("id")
+            .cloned()
+            .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let schema = params
+            .get("requestedSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+
+        // 1. 持久化请求到 attempt dir
+        write_pending_elicitation(
+            &self.paths.attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.clone(),
+                jsonrpc_id: rpc_id.clone(),
+                message: message.clone(),
+                requested_schema: schema.clone(),
+                created_at: current_timestamp(),
+            },
+        )?;
+
+        // 2. 发送 UI 事件给前端
+        self.seq += 1;
+        let event = crate::acp::events::elicitation_request_event(
+            self.seq,
+            elicitation_id.clone(),
+            message,
+            schema.clone(),
+        );
+        self.persist_event(&event)?;
+
+        // 3. 同步阻塞等待用户响应（含超时保护）
+        let response = wait_for_elicitation_response(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            ELICITATION_DEFAULT_TIMEOUT,
+        )?;
+
+        // 4. 构造 JSON-RPC response 并发送
+        let result = elicitation_response_result(&response);
+        let response_frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": result,
+        });
+        self.append_outbound_frame(&response_frame)?;
+        self.connection.send_response(rpc_id, result)?;
+
+        // 5. 将用户回答格式化为可读文本，作为 userTextDelta 事件写入 timeline
+        //    这样前端无需合成事件，直接走正常消息渲染管道：用户头像 + 右侧气泡
+        self.seq += 1;
+        let answer_text = match &response.action {
+            crate::acp::elicitation::ElicitationAction::Accept => {
+                crate::acp::elicitation::format_elicitation_answer(
+                    &schema,
+                    &response.content.clone().unwrap_or_else(|| json!({})),
+                )
+            }
+            crate::acp::elicitation::ElicitationAction::Decline => {
+                "已跳过".to_string()
+            }
+        };
+        let user_delta = crate::acp::events::user_prompt_event(
+            self.seq,
+            self.session_id.clone().unwrap_or_default(),
+            answer_text,
+            None,        // prompt_id
+            false,       // hidden_from_chat
+            Vec::new(),  // attachments
+        );
+        self.persist_event(&user_delta)?;
+
+        Ok(())
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {
@@ -2119,6 +2222,19 @@ impl<'a> AcpRuntime<'a> {
                     seq,
                     &timestamp,
                 );
+            }
+            "elicitationRequest" => {
+                // 不关闭 text/thought/plan 流 — elicitation 穿插在对话中
+                // 不设 ended_at/ended_seq，保持"进行中"状态，等待用户响应
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+            }
+            "elicitationResponse" => {
+                // 关闭对应的 elicitationRequest
+                item.started_seq = Some(seq);
+                item.ended_seq = Some(seq);
+                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
             }
             _ => {
                 Self::finalize_non_streaming_event(

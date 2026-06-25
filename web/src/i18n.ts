@@ -855,6 +855,15 @@ const resources = {
         subAgentDescription: "任务说明",
         subAgentType: "Agent 类型",
         unknownStatus: "未知状态",
+        elicitation: {
+          submit: "提交",
+          next: "下一步",
+          skip: "跳过",
+          back: "返回",
+          step: "步骤 {{current}}/{{total}}",
+          customPlaceholder: "其他答案...",
+          backToOptions: "返回选项",
+        },
         usagePanel: {
           contextWindow: "上下文窗口",
           tokenUsage: "Token 用量",
@@ -2037,6 +2046,15 @@ const resources = {
         subAgentDescription: "Task description",
         subAgentType: "Agent type",
         unknownStatus: "Unknown status",
+        elicitation: {
+          submit: "Submit",
+          next: "Next",
+          skip: "Skip",
+          back: "Back",
+          step: "Step {{current}}/{{total}}",
+          customPlaceholder: "Other...",
+          backToOptions: "Back to options",
+        },
         usagePanel: {
           contextWindow: "Context Window",
           tokenUsage: "Token Usage",

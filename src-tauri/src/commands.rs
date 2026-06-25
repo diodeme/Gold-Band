@@ -3,6 +3,9 @@ use gold_band::acp::events::{
     AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq,
     load_timeline_items, permission_decision_event, write_timeline_items,
 };
+use gold_band::acp::elicitation::{
+    ElicitationAction, write_elicitation_response,
+};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests, write_permission_response,
 };
@@ -3214,6 +3217,87 @@ pub fn open_in_file_manager(
             serde_json::json!({ "message": e }),
         )
     })
+}
+
+#[tauri::command]
+pub fn respond_elicitation(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    elicitation_id: String,
+    action: String, // "accept" | "decline"
+    content: Option<serde_json::Value>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+
+    let action = match action.as_str() {
+        "accept" => ElicitationAction::Accept,
+        _ => ElicitationAction::Decline,
+    };
+
+    let attempt_dir = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        app.paths.dynamic_node_attempt_dir(
+            &task_id, &run_id, &round_id,
+            outer_node_id, outer_attempt_id,
+            &node_id, &attempt_id,
+        )
+    } else {
+        app.paths.attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+    };
+
+    write_elicitation_response(
+        &attempt_dir,
+        &elicitation_id,
+        action,
+        content,
+        current_timestamp(),
+    )
+    .map_err(command_error)?;
+
+    // Emit session update so the frontend can refresh the timeline
+    // with the elicitation response event written by the runtime.
+    let session = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app, &task_id, &run_id, &round_id,
+            on, oa, &node_id, &attempt_id,
+            None, None,
+        )
+        .ok()
+        .flatten()
+    } else {
+        crate::view_models::acp_session_vm(
+            &app, &task_id, &run_id, &round_id,
+            &node_id, &attempt_id,
+            None, None,
+        )
+        .ok()
+        .flatten()
+    };
+
+    emit_acp_session_update(
+        &app_handle,
+        &app,
+        project_id,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+        session,
+    );
+
+    Ok(())
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {

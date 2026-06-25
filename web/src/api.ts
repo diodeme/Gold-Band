@@ -192,6 +192,10 @@ export function respondAcpPermission(projectId: string | null | undefined, taskI
   return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
 
+export function respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().respondElicitation(projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId);
+}
+
 export function cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }

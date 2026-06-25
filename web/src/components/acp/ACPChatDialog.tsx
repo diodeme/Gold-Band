@@ -99,6 +99,10 @@ import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
 import {
+  ElicitationCard,
+  type ElicitationSchema,
+} from "@/components/acp/ElicitationCard";
+import {
   attemptIdFromAcpEvent,
   isAcpAttemptSeparator,
   normalizeAcpEventForAttempt,
@@ -123,6 +127,7 @@ import {
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
+  respondElicitation,
   submitConversationPrompt,
   setAcpSessionModel,
   setAcpSessionPermissionMode,
@@ -132,6 +137,7 @@ import {
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
+import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import { displayAppError, displayStatus } from "@/i18n";
@@ -517,6 +523,9 @@ export const ACPChatDialog = forwardRef<
     Set<string>
   >(() => new Set());
   const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [answeredElicitations, setAnsweredElicitations] = useState<
+    Map<string, Record<string, unknown>>
+  >(() => new Map());
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<
     string | null
   >(null);
@@ -740,7 +749,59 @@ export const ACPChatDialog = forwardRef<
     () => createAcpSessionConfigViewModel(effective?.config),
     [effective?.config],
   );
-  const effectiveEvents = effective?.events ?? [];
+  // 实时 elicitation 上下文（含路由信息，来源于 live event，不依赖组件 props）
+  const [liveElicitationContexts, setLiveElicitationContexts] = useState<
+    Map<string, {
+      taskId: string;
+      runId: string;
+      roundId: string;
+      nodeId: string;
+      attemptId: string;
+      outerNodeId: string | null;
+      outerAttemptId: string | null;
+    }>
+  >(() => new Map());
+  const [liveElicitationEvents, setLiveElicitationEvents] = useState<AcpUiEventVm[]>([]);
+  useEffect(() => {
+    const acpTaskId = taskId;
+    const acpRunId = runId;
+    let stop: (() => void) | undefined;
+    subscribeAcpSessionUpdates((update) => {
+      if (update.taskId !== acpTaskId || update.runId !== acpRunId) return;
+      if (!update.event || update.event.kind !== "elicitationRequest") return;
+      setLiveElicitationContexts((prev) => {
+        const next = new Map(prev);
+        next.set(update.event!.id, {
+          taskId: update.taskId,
+          runId: update.runId,
+          roundId: update.roundId,
+          nodeId: update.nodeId,
+          attemptId: update.attemptId,
+          outerNodeId: update.outerNodeId ?? null,
+          outerAttemptId: update.outerAttemptId ?? null,
+        });
+        return next;
+      });
+      setLiveElicitationEvents((prev) => {
+        if (prev.some((e) => e.id === update.event!.id)) return prev;
+        return [...prev, update.event!];
+      });
+    })
+      .then((dispose) => { stop = dispose; })
+      .catch(() => {});
+    return () => { stop?.(); };
+  }, [taskId, runId]);
+  const effectiveEvents = useMemo(
+    () => {
+      const base = effective?.events ?? [];
+      if (liveElicitationEvents.length === 0) return base;
+      const existingIds = new Set(base.map((e) => e.id));
+      const newEvents = liveElicitationEvents.filter((e) => !existingIds.has(e.id));
+      if (newEvents.length === 0) return base;
+      return [...base, ...newEvents];
+    },
+    [effective?.events, liveElicitationEvents],
+  );
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const localTurnInFlight = sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
@@ -755,6 +816,10 @@ export const ACPChatDialog = forwardRef<
       (request) => !dismissedPermissionIds.has(request.requestId),
     ) ?? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds);
   const waitingForPermission = Boolean(pendingPermission);
+  const pendingElicitation = pendingElicitationFromEvents(
+    effectiveEvents,
+    answeredElicitations,
+  );
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
     : null;
@@ -1951,6 +2016,50 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
+  const answerElicitation = async (
+    elicitationId: string,
+    content?: Record<string, unknown>,
+  ) => {
+    setAnsweredElicitations((current) => {
+      const next = new Map(current);
+      next.set(elicitationId, content ?? {});
+      return next;
+    });
+    // 优先使用 live event 中的路由信息（确保写入正确的 attempt dir），
+    // 回退到组件 props（静态 session prop 场景）
+    const ctx = liveElicitationContexts.get(elicitationId);
+    const effectiveTaskId = ctx?.taskId ?? taskId;
+    const effectiveRunId = ctx?.runId ?? runId;
+    const effectiveRoundId = ctx?.roundId ?? roundId;
+    const effectiveNodeId = ctx?.nodeId ?? nodeId;
+    const effectiveAttemptId = ctx?.attemptId ?? attemptId;
+    const effectiveOuterNodeId = ctx?.outerNodeId ?? outerNodeId;
+    const effectiveOuterAttemptId = ctx?.outerAttemptId ?? outerAttemptId;
+    try {
+      await respondElicitation(
+        projectId,
+        effectiveTaskId,
+        effectiveRunId,
+        effectiveRoundId,
+        effectiveNodeId,
+        effectiveAttemptId,
+        elicitationId,
+        "accept",
+        content ?? null,
+        effectiveOuterNodeId,
+        effectiveOuterAttemptId,
+      );
+      // 成功后清理 liveElicitationEvents 中的对应条目，避免无限累积
+      setLiveElicitationEvents((prev) => prev.filter((e) => e.id !== elicitationId));
+    } catch {
+      setAnsweredElicitations((current) => {
+        const next = new Map(current);
+        next.delete(elicitationId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
     if (
       !queuedInterventionPrompt ||
@@ -2177,6 +2286,21 @@ export const ACPChatDialog = forwardRef<
                     request={pendingPermission}
                     onSelect={(optionId) =>
                       answerPermission(pendingPermission, optionId)
+                    }
+                  />
+                ) : null}
+                {pendingElicitation ? (
+                  <ElicitationCard
+                    key={pendingElicitation.elicitationId}
+                    elicitationId={pendingElicitation.elicitationId}
+                    message={pendingElicitation.message}
+                    schema={pendingElicitation.requestedSchema}
+                    confirmedContent={pendingElicitation.confirmedContent}
+                    onRespond={(content) =>
+                      answerElicitation(
+                        pendingElicitation.elicitationId,
+                        content,
+                      )
                     }
                   />
                 ) : null}
@@ -4521,6 +4645,39 @@ export function pendingPermissionFromEvents(
         }) ?? [],
       raw,
     } satisfies AcpPermissionRequestVm;
+  }
+  return null;
+}
+
+interface PendingElicitationVm {
+  elicitationId: string;
+  message: string;
+  requestedSchema: ElicitationSchema;
+  confirmedContent?: Record<string, unknown> | null;
+}
+
+function pendingElicitationFromEvents(
+  events: AcpUiEventVm[],
+  answeredElicitations: Map<string, Record<string, unknown>>,
+): PendingElicitationVm | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.kind !== "elicitationRequest") continue;
+    // 已回答的 elicitation：用户选择已作为合成 userTextDelta 气泡显示在时间线中，
+    // 不需要再在底部展示确认卡片。
+    if (answeredElicitations.has(event.id)) return null;
+    if (event.status === "pending") {
+      const raw = rawObject(event.raw) ?? {};
+      const schema: ElicitationSchema =
+        typeof raw === "object" && (raw as Record<string, unknown>).type === "object"
+          ? (raw as unknown as ElicitationSchema)
+          : { type: "object", properties: {} };
+      return {
+        elicitationId: event.id,
+        message: event.content ?? "",
+        requestedSchema: schema,
+      };
+    }
   }
   return null;
 }

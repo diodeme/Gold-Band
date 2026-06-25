@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
+  conversationSessionKeyFromParts,
   isConversationActiveStatus,
   mergeConversationRunSnapshot,
 } from '@/lib/conversation-run-snapshot';
@@ -151,6 +152,16 @@ function withLeaf(base: ConversationRunVm, nextLeaf: ConversationSessionLeafVm):
     },
   };
 }
+
+describe('conversationSessionKeyFromParts', () => {
+  it('builds the selected session key from run-state update identity', () => {
+    expect(conversationSessionKeyFromParts({
+      roundId: 'round-001',
+      nodeId: 'plan',
+      attemptId: 'attempt-001',
+    })).toBe('round-001/plan/attempt-001');
+  });
+});
 
 describe('isConversationActiveStatus', () => {
   it('treats dynamic ready and normalized active statuses as active', () => {

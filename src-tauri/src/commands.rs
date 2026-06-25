@@ -329,7 +329,7 @@ struct ConversationRunStateUpdatedEventVm {
     node_id: String,
     attempt_id: String,
     status: RunStatus,
-    outcome: RunOutcome,
+    outcome: Option<RunOutcome>,
 }
 
 fn resolve_command_app(
@@ -374,7 +374,33 @@ fn create_conversation_run_state_subscriber(
     app_handle: AppHandle,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event| {
-        if let RuntimeLifecycleEvent::RunCompleted {
+        if let Some(payload) = conversation_run_state_update_for_event(event) {
+            let _ = app_handle.emit(CONVERSATION_RUN_STATE_EVENT, payload);
+        }
+    })
+}
+
+fn conversation_run_state_update_for_event(
+    event: RuntimeLifecycleEvent,
+) -> Option<ConversationRunStateUpdatedEventVm> {
+    match event {
+        RuntimeLifecycleEvent::RunPaused {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            ..
+        } => Some(ConversationRunStateUpdatedEventVm {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            status: RunStatus::Paused,
+            outcome: None,
+        }),
+        RuntimeLifecycleEvent::RunCompleted {
             task_id,
             run_id,
             round_id,
@@ -382,22 +408,17 @@ fn create_conversation_run_state_subscriber(
             attempt_id,
             outcome,
             ..
-        } = event
-        {
-            let _ = app_handle.emit(
-                CONVERSATION_RUN_STATE_EVENT,
-                ConversationRunStateUpdatedEventVm {
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    status: RunStatus::Completed,
-                    outcome,
-                },
-            );
-        }
-    })
+        } => Some(ConversationRunStateUpdatedEventVm {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            status: RunStatus::Completed,
+            outcome: Some(outcome),
+        }),
+        _ => None,
+    }
 }
 
 pub(crate) fn acp_live_update_emitter_for_app(
@@ -3427,6 +3448,47 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
+
+    #[test]
+    fn conversation_run_state_update_maps_paused_and_completed_events() {
+        let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
+            event_id: "event-paused".to_string(),
+            occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "plan".to_string(),
+            pause_reason: PauseReason::WaitingForUserInput,
+            task_title: None,
+        })
+        .unwrap();
+        assert_eq!(paused.task_id, "task-001");
+        assert_eq!(paused.run_id, "run-001");
+        assert_eq!(paused.round_id, "round-001");
+        assert_eq!(paused.node_id, "plan");
+        assert_eq!(paused.attempt_id, "attempt-001");
+        assert_eq!(paused.status, RunStatus::Paused);
+        assert_eq!(paused.outcome, None);
+
+        let completed =
+            conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
+                event_id: "event-completed".to_string(),
+                occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                node_label: "plan".to_string(),
+                outcome: RunOutcome::Success,
+                task_title: None,
+            })
+            .unwrap();
+        assert_eq!(completed.status, RunStatus::Completed);
+        assert_eq!(completed.outcome, Some(RunOutcome::Success));
+    }
 
     #[test]
     fn paused_stale_cancelled_dynamic_leaf_requires_runtime_continue() {

@@ -227,6 +227,14 @@ impl RuntimeStopProbe {
         read_json::<serde_json::Value>(path)
             .ok()
             .is_some_and(|attempt| {
+                let manual_check_pending = attempt
+                    .get("manualCheckPending")
+                    .or_else(|| attempt.get("manual_check_pending"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if manual_check_pending {
+                    return false;
+                }
                 let status = attempt
                     .get("status")
                     .and_then(Value::as_str)
@@ -2580,5 +2588,44 @@ mod tests {
 
         assert!(!running_leaf_probe.is_stopped());
         assert!(paused_leaf_probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_keeps_manual_check_attempt_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let manual_check_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("manual-check-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "plan",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            manual_check_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null,
+                "manual_check_pending": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(manual_check_state),
+        };
+
+        assert!(!probe.is_stopped());
     }
 }

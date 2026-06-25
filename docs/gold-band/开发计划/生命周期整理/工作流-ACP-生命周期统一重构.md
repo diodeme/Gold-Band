@@ -46,6 +46,9 @@
 - 任务完成通知：`ControlDecision::CompleteRun(outcome)` 后新增 `emit_run_completed_lifecycle_event`，经 `RuntimeLifecycleEvent::RunCompleted` → 通知 subscriber 触发 `InterventionNotification::run_completed`。
 - 桌面注意力门禁：前端 `App.tsx` 监听窗口聚焦/最小化/可见性及当前选中 session leaf，通过 `update_notification_attention` Tauri 命令同步到后端 `NotificationAttentionState`；通知 subscriber 发送前调用 `should_send_notification`，窗口聚焦且当前页面匹配对应 task/run/session 时抑制通知。
 - `src-tauri/src/state.rs` 新增 `NotificationAttentionInput`、`NotificationAttentionState`、`NotificationAttentionTarget` 及单元测试；前端 `web/src/types.ts` 与 `web/src/api/*` 同步新增对应类型与 API 端点。
+- `RunPaused` 与 `RunCompleted` 现在都会通过 `gold-band://conversation-run-state-updated` 触发前端刷新当前 run 与 sidebar；人工 check 从 `launching-next-node` 中间态收敛到 `manual_check_pending` 等待态依赖后端第二帧权威通知，不在前端按 manual check 写补丁判断。
+- `RuntimeStopProbe` 在 attempt-level paused/outcome=null 判断中排除 `manual_check_pending=true`，避免人工 check 判定门被误认为用户停止，普通 ACP 追问可继续发送给 agent，同时 runtime 仍保持 paused 等待成功/失败判定。
+- ACP completed 后继续追问被定义为通用 same-session 新 turn：旧 terminal snapshot 不能压掉当前本地 turn 的发送中/处理中/计时状态；submit 返回 rejected、空 session 或 terminal 且未接受 prompt 时必须显式收敛 optimistic 状态，不能永久卡在“发送中”。
 
 ## 最终架构
 

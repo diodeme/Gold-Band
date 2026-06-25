@@ -55,6 +55,7 @@ export interface AcpRuntimeComposerStateInput {
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
+  localTurnInFlight?: boolean;
   cancelling: boolean;
   stopCommandPending: boolean;
   turnAccepted: boolean;
@@ -95,12 +96,14 @@ export function deriveAcpRuntimeComposerState(
   const acpTerminal = Boolean(input.lifecycle?.acp.terminal);
   const backendStopping = Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping';
   const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
+  const localTurnInFlight = Boolean(input.localTurnInFlight);
+  const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = !acpTerminal && input.stopCommandPending;
   const stopInProgress = cancelling || stopCommandPending || backendStopping;
-  const waitingForOptimisticPrompt = !acpTerminal && input.waitingForOptimisticPrompt;
+  const waitingForOptimisticPrompt = !staleTerminalSnapshot && input.waitingForOptimisticPrompt;
   const turnSubmitting = (input.sending || waitingForOptimisticPrompt) && !input.turnAccepted;
-  const awaitingResponse = !acpTerminal && input.awaitingResponse;
+  const awaitingResponse = !staleTerminalSnapshot && input.awaitingResponse;
   const runtimeContinueKind = runtimeContinueKindFromInput(input);
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = runtimeContinueKind != null && !input.workflowValid;

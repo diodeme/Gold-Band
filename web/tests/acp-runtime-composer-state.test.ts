@@ -384,6 +384,50 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.statusActive).toBe(false);
     expect(state.processingKind).toBe('responding');
     expect(state.canStop).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
+  it('shows local turn submission over a terminal ACP snapshot', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      sending: true,
+      awaitingResponse: true,
+      waitingForOptimisticPrompt: true,
+      localTurnInFlight: true,
+      turnAccepted: false,
+      hasResponseAfterTurn: false,
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.mode).toBe('submitting');
+    expect(state.sessionActive).toBe(false);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('sending');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(true);
+  });
+
+  it('shows local turn processing after a terminal ACP snapshot accepts the prompt', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      awaitingResponse: true,
+      localTurnInFlight: true,
+      turnAccepted: true,
+      hasResponseAfterTurn: false,
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.mode).toBe('normal');
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('processing');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canStop).toBe(true);
   });
 
   it('ignores stale ACP running when lifecycle is terminal', () => {

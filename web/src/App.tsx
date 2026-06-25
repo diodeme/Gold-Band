@@ -634,7 +634,7 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
-      queueConversationRunAndSidebarRefresh(undefined, 0);
+      queueConversationRunAndSidebarRefresh(conversationSessionKeyFromParts(event), 0);
     })
       .then((dispose) => {
         if (active) {

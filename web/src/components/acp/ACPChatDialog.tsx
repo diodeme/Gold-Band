@@ -725,11 +725,11 @@ export const ACPChatDialog = forwardRef<
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
-  const activeAwaitingResponse = !effectiveSessionTerminal && awaitingResponse;
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+  const localTurnInFlight = sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
+  const activeAwaitingResponse = awaitingResponse && (!effectiveSessionTerminal || localTurnInFlight);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
-    !effectiveSessionTerminal &&
     !hasResponseAfterActiveTurn;
   const localSubmissionPending = sending || waitingForOptimisticPrompt;
   const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
@@ -929,6 +929,7 @@ export const ACPChatDialog = forwardRef<
     sending,
     awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
+    localTurnInFlight,
     cancelling,
     stopCommandPending,
     turnAccepted,
@@ -1716,10 +1717,58 @@ export const ACPChatDialog = forwardRef<
           ),
         );
         onSessionStopped?.();
-      } else if (updated) {
+      } else if (result.kind === "rejected") {
+        setSendError(t("errors.app.unexpected", { message: "" }));
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
         updateOptimisticEvents((current) =>
-          current.filter(
-            (event) => !hasMatchingUserPrompt(updated.events, event),
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
+          ),
+        );
+      } else if (updated) {
+        const acceptedEvents = mergeAcpEvents(loadedEventsRef.current, updated.events);
+        const acceptedPrompt = findMatchingGoldBandUserPrompt(
+          acceptedEvents,
+          effectivePrompt,
+          promptId,
+          optimisticEvent.timestamp,
+        );
+        if (acceptedPrompt) {
+          setActiveTurnStartedAt(acceptedPrompt.timestamp);
+          if (isSessionTerminalStatus(updated.status)) setAwaitingResponse(false);
+          updateOptimisticEvents((current) =>
+            current.filter(
+              (event) => !hasMatchingUserPrompt(acceptedEvents, event),
+            ),
+          );
+        } else {
+          setAwaitingResponse(false);
+          setActiveTurnPrompt(null);
+          setActiveTurnPromptId(null);
+          setActiveTurnStartedAt(null);
+          updateOptimisticEvents((current) =>
+            current.map((event) =>
+              event.id === optimisticEvent.id
+                ? { ...event, status: "failed" }
+                : event,
+            ),
+          );
+        }
+      } else {
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
           ),
         );
       }

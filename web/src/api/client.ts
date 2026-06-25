@@ -78,7 +78,7 @@ export interface ConversationRunStateUpdatedEventVm {
   nodeId: string;
   attemptId: string;
   status: string;
-  outcome: string;
+  outcome?: string | null;
 }
 
 export interface ConversationPromptSubmitVm {

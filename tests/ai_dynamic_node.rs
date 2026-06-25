@@ -1608,6 +1608,42 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
 }
 
 #[test]
+fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-prompt-id";
+    let provider = DynamicProvider::session_continue_prompt();
+    let app = App::with_provider(repo_root, Box::new(provider));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.nodes.iter().any(|node| node.id == "branch-b"));
+    let continue_ref = serde_json::json!({ "sessionId": "branch-b-attempt-001" });
+    let prompt = app
+        .dynamic_acp_prompt_bundle_for_attempt(
+            task_id,
+            "run-001",
+            "round-001",
+            "router",
+            "attempt-001",
+            "branch-b",
+            "attempt-001",
+            "继续".to_string(),
+            Some("acp-prompt-test".to_string()),
+            Some(continue_ref),
+        )
+        .unwrap();
+
+    assert_eq!(prompt.user_prompt, "继续");
+    assert_eq!(prompt.prompt_id.as_deref(), Some("acp-prompt-test"));
+}
+
+#[test]
 fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();

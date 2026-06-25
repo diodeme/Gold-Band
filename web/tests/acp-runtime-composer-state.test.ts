@@ -279,6 +279,39 @@ describe('deriveAcpRuntimeComposerState', () => {
     }
   });
 
+  it('ignores stale optimistic sending state once ACP has reached terminal paused lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'process-interrupted',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+          phase: 'paused',
+        },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: pausedDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+      waitingForOptimisticPrompt: true,
+      awaitingResponse: true,
+      turnAccepted: false,
+      hasResponseAfterTurn: false,
+    }));
+
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.processingKind).toBe('responding');
+    expect(state.statusActive).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
   it('keeps manual-check waiting state available for regular ACP prompts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

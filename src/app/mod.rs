@@ -30,8 +30,8 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_graph_has_active_leaf,
-    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
+    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
+    refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
@@ -56,7 +56,8 @@ use std::sync::Arc;
 
 use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, run_continue as orchestrator_run_continue,
+    build_dynamic_prompt_bundle, pause_dynamic_leaf_runtime_state,
+    run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
@@ -2365,110 +2366,16 @@ impl App {
         node_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
-        let now = now_rfc3339_like();
-        let graph_path = self.paths.dynamic_graph_file(
+        pause_dynamic_leaf_runtime_state(
+            self,
             task_id,
             run_id,
             round_id,
             outer_node_id,
             outer_attempt_id,
-        );
-        if graph_path.exists() {
-            let mut graph: DynamicGraphState = read_json(&graph_path)?;
-            let mut target_updated = false;
-            if let Some(dynamic_node) = graph
-                .nodes
-                .iter_mut()
-                .find(|candidate| candidate.id == node_id)
-            {
-                if dynamic_node.status != DynamicNodeStatus::Completed {
-                    dynamic_node.status = DynamicNodeStatus::Paused;
-                    dynamic_node.outcome = None;
-                    dynamic_node.finished_at = Some(now.clone());
-                    target_updated = true;
-                }
-            }
-            refresh_dynamic_current_leaf_ids(&mut graph);
-            let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
-            if !has_active_leaf && graph.run.status == DynamicRunStatus::Running {
-                graph.run.status = DynamicRunStatus::Paused;
-                graph.run.outcome = None;
-                graph.run.pause_reason = Some(reason);
-            }
-            graph.run.updated_at = now.clone();
-            write_json(&graph_path, &graph)?;
-            write_json(
-                &self.paths.dynamic_run_file(
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                ),
-                &graph.run,
-            )?;
-            if target_updated {
-                let dynamic_node_path = self.paths.dynamic_node_file(
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                    node_id,
-                );
-                if let Some(dynamic_node) =
-                    graph.nodes.iter().find(|candidate| candidate.id == node_id)
-                {
-                    write_json(&dynamic_node_path, dynamic_node)?;
-                }
-            }
-            if has_active_leaf {
-                return Ok(());
-            }
-        }
-
-        let run_path = self.paths.run_file(task_id, run_id);
-        if run_path.exists() {
-            let mut run: RunState = read_json(&run_path)?;
-            if run.status == RunStatus::Running
-                && run.current_round.as_deref() == Some(round_id)
-                && run.current_node.as_deref() == Some(outer_node_id)
-                && run.current_attempt.as_deref() == Some(outer_attempt_id)
-            {
-                run.status = RunStatus::Paused;
-                run.outcome = None;
-                run.pause_reason = Some(reason);
-                run.updated_at = now.clone();
-                validate_run_state(&run)?;
-                write_json(&run_path, &run)?;
-            }
-        }
-
-        let round_path = self.paths.round_file(task_id, run_id, round_id);
-        if round_path.exists() {
-            let mut round: RoundState = read_json(&round_path)?;
-            if round.status == RunStatus::Running {
-                round.status = RunStatus::Paused;
-                validate_round_state(&round)?;
-                write_json(&round_path, &round)?;
-            }
-        }
-
-        let outer_node_path =
-            self.paths
-                .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
-        if outer_node_path.exists() {
-            let mut outer_node: NodeState = read_json(&outer_node_path)?;
-            if outer_node.status != RunStatus::Completed {
-                outer_node.status = RunStatus::Paused;
-                outer_node.outcome = None;
-                outer_node.finished_at = Some(now);
-                validate_node_state(&outer_node)?;
-                write_json(&outer_node_path, &outer_node)?;
-            }
-        }
-
-        Ok(())
+            node_id,
+            reason,
+        )
     }
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {

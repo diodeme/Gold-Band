@@ -150,6 +150,101 @@ describe('ACP chat event handling', () => {
     expect(timeline).toHaveLength(0);
   });
 
+  it('does not let older shorter text stream updates replace complete live content', () => {
+    const merged = mergeAcpEvents(
+      [
+        event({
+          id: 'assistant-message-m1',
+          seq: 10,
+          kind: 'textDelta',
+          content: '我先建立验收清单并读取当前节点可见的报告文件。',
+          endedSeq: 10,
+        }),
+      ],
+      [
+        event({
+          id: 'assistant-message-m1',
+          seq: 9,
+          kind: 'textDelta',
+          content: '我先建立验收清单',
+          endedSeq: 9,
+        }),
+      ],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      seq: 10,
+      content: '我先建立验收清单并读取当前节点可见的报告文件。',
+    });
+  });
+
+  it('does not let older shorter thought stream updates replace complete live content', () => {
+    const merged = mergeAcpEvents(
+      [
+        event({
+          id: 'assistant-thought-m1',
+          seq: 10,
+          kind: 'thoughtDelta',
+          content: 'carefully and avoid vague references.',
+          endedSeq: 10,
+        }),
+      ],
+      [
+        event({
+          id: 'assistant-thought-m1',
+          seq: 9,
+          kind: 'thoughtDelta',
+          content: 'carefully and',
+          endedSeq: 9,
+        }),
+      ],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      seq: 10,
+      content: 'carefully and avoid vague references.',
+    });
+  });
+
+  it('keeps text and thought content when empty stream frames arrive in the timeline builder', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'assistant-message-m1',
+        seq: 1,
+        kind: 'textDelta',
+        content: 'hello world',
+        endedSeq: 1,
+      }),
+      event({
+        id: 'assistant-message-m1',
+        seq: 2,
+        kind: 'textDelta',
+        content: '',
+        endedSeq: 2,
+      }),
+      event({
+        id: 'assistant-thought-m1',
+        seq: 3,
+        kind: 'thoughtDelta',
+        content: 'thinking done',
+        endedSeq: 3,
+      }),
+      event({
+        id: 'assistant-thought-m1',
+        seq: 4,
+        kind: 'thoughtDelta',
+        content: '',
+        endedSeq: 4,
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(2);
+    expect(timeline[0]).toMatchObject({ kind: 'textDelta', content: 'hello world' });
+    expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
+  });
+
   it('replaces existing permission events during live/session merge', () => {
     const merged = mergeAcpEvents(
       [

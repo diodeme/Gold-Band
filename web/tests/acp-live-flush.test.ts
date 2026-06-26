@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decideAcpLiveEventFlush,
   isCoalescableAcpLiveEvent,
+  mergeAcpLiveStreamEvent,
   mergeAcpLiveToolEvent,
   shouldAutoScrollAfterAcpTimelineUpdate,
 } from '@/lib/acp-live-flush';
@@ -72,7 +73,7 @@ describe('ACP live event flush policy', () => {
     });
   });
 
-  it('keeps lifecycle events immediate without flushing cached streaming text during transient interaction', () => {
+  it('keeps lifecycle events immediate and flushes cached streaming text during transient interaction', () => {
     expect(decideAcpLiveEventFlush({
       coalescable: false,
       paused: false,
@@ -81,7 +82,7 @@ describe('ACP live event flush policy', () => {
     })).toEqual({
       buffer: false,
       applyImmediately: true,
-      flushPendingBeforeApply: false,
+      flushPendingBeforeApply: true,
       scheduleFlush: false,
       scheduleDelayMs: null,
     });
@@ -164,5 +165,53 @@ describe('ACP live event flush policy', () => {
       toolCall: { rawInput: { file_path: 'D:/project/file.ts' } },
       output: 'ok',
     });
+  });
+
+  it('keeps newer text stream content when an older shorter frame arrives later', () => {
+    const merged = mergeAcpLiveStreamEvent(
+      {
+        id: 'assistant-message-1',
+        kind: 'textDelta',
+        seq: 10,
+        timestamp: '10Z',
+        content: '我先建立验收清单并读取当前节点可见的报告文件。',
+        endedSeq: 10,
+      },
+      {
+        id: 'assistant-message-1',
+        kind: 'textDelta',
+        seq: 9,
+        timestamp: '9Z',
+        content: '我先建立验收清单',
+        endedSeq: 9,
+      },
+    );
+
+    expect(merged.seq).toBe(10);
+    expect(merged.content).toBe('我先建立验收清单并读取当前节点可见的报告文件。');
+  });
+
+  it('does not let empty thought stream frames clear accumulated content', () => {
+    const merged = mergeAcpLiveStreamEvent(
+      {
+        id: 'assistant-thought-1',
+        kind: 'thoughtDelta',
+        seq: 10,
+        timestamp: '10Z',
+        content: 'carefully and avoid vague references.',
+        endedSeq: 10,
+      },
+      {
+        id: 'assistant-thought-1',
+        kind: 'thoughtDelta',
+        seq: 11,
+        timestamp: '11Z',
+        content: '',
+        endedSeq: 11,
+      },
+    );
+
+    expect(merged.seq).toBe(11);
+    expect(merged.content).toBe('carefully and avoid vague references.');
   });
 });

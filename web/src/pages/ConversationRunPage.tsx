@@ -74,6 +74,7 @@ export function ConversationRunPage({
     if (!reason) return t('conversation.runtime.sessionPaused');
     switch (reason) {
       case 'process-interrupted': return t('conversation.runtime.pauseReasonProcessInterrupted');
+      case 'runtime-abnormal': return t('conversation.runtime.pauseReasonRuntimeAbnormal');
       case 'waiting-for-user-input': return t('conversation.runtime.pauseReasonWaitingForUserInput');
       default: return t('conversation.runtime.pauseReasonFallback');
     }
@@ -267,7 +268,7 @@ export function ConversationRunPage({
   const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
   const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
-  const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked

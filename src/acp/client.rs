@@ -32,12 +32,14 @@ use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{PromptBundle, PromptVisibility};
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
-use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
+const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -225,6 +227,14 @@ impl RuntimeStopProbe {
         read_json::<serde_json::Value>(path)
             .ok()
             .is_some_and(|attempt| {
+                let manual_check_pending = attempt
+                    .get("manualCheckPending")
+                    .or_else(|| attempt.get("manual_check_pending"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if manual_check_pending {
+                    return false;
+                }
                 let status = attempt
                     .get("status")
                     .and_then(Value::as_str)
@@ -341,14 +351,16 @@ pub fn doctor(
     use_local_claude: bool,
 ) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
+    let doctor_acp_dir = paths.doctor_acp_dir();
+    cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
         "doctor",
         config,
         cwd.clone(),
-        paths.doctor_acp_dir(),
+        doctor_acp_dir.clone(),
         use_local_claude,
-        5 * 1024 * 1024,
-        4 * 1024 * 1024,
+        DOCTOR_DIAGNOSTIC_MAX_SIZE,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE,
         None,
         None,
     )?;
@@ -360,7 +372,37 @@ pub fn doctor(
         Ok(capabilities)
     })();
     runtime.shutdown();
+    if result.is_ok() {
+        cleanup_doctor_acp_dir_after_success(&doctor_acp_dir);
+    } else {
+        retain_bounded_doctor_acp_failure_bundle(&doctor_acp_dir);
+    }
     result
+}
+
+fn cleanup_doctor_acp_dir_before_run(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn cleanup_doctor_acp_dir_after_success(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn retain_bounded_doctor_acp_failure_bundle(dir: &Utf8Path) {
+    let paths = AcpAttemptPaths::from_attempt_dir(dir.to_path_buf());
+    let _ = std::fs::remove_file(paths.provider_pid.as_std_path());
+    for path in [
+        &paths.events,
+        &paths.timeline,
+        &paths.diagnostics,
+        &paths.raw,
+    ] {
+        let _ = roll_jsonl(
+            path,
+            DOCTOR_DIAGNOSTIC_MAX_SIZE,
+            DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        );
+    }
 }
 
 pub fn run_prompt(
@@ -2331,9 +2373,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        PromptBundle, PromptVisibility, RuntimeStopProbe, contributes_to_final_text,
-        resolve_permission_mode, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
+        session_prompt_params, session_prompt_text,
     };
 
     #[test]
@@ -2417,6 +2460,44 @@ mod tests {
     }
 
     #[test]
+    fn doctor_success_cleanup_removes_acp_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        std::fs::write(acp_dir.join("acp.raw.jsonl").as_std_path(), "{}\n").unwrap();
+
+        cleanup_doctor_acp_dir_after_success(&acp_dir);
+
+        assert!(!acp_dir.exists());
+        drop(temp);
+    }
+
+    #[test]
+    fn doctor_failure_bundle_removes_pid_and_bounds_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        let large = (0..4096)
+            .map(|index| format!(r#"{{"index":{index},"payload":"{}"}}"#, "x".repeat(256)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(acp_dir.join("acp.diagnostics.jsonl").as_std_path(), large).unwrap();
+
+        retain_bounded_doctor_acp_failure_bundle(&acp_dir);
+
+        assert!(!acp_dir.join("provider.pid").exists());
+        let size = std::fs::metadata(acp_dir.join("acp.diagnostics.jsonl").as_std_path())
+            .unwrap()
+            .len();
+        assert!(size <= DOCTOR_DIAGNOSTIC_TARGET_SIZE + 512);
+        drop(temp);
+    }
+
+    #[test]
     fn runtime_stop_probe_uses_runtime_locator() {
         let dir = tempfile::tempdir().unwrap();
         let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
@@ -2450,5 +2531,101 @@ mod tests {
 
         assert!(outer_probe.is_stopped());
         assert!(!inner_probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_uses_own_dynamic_attempt_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let own_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("own-node.json")).unwrap();
+        let sibling_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("sibling-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "ai-dynamic",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            own_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sibling_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let running_leaf_probe = RuntimeStopProbe {
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(own_state),
+        };
+        let paused_leaf_probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(sibling_state),
+        };
+
+        assert!(!running_leaf_probe.is_stopped());
+        assert!(paused_leaf_probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_keeps_manual_check_attempt_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let manual_check_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("manual-check-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "plan",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            manual_check_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null,
+                "manual_check_pending": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(manual_check_state),
+        };
+
+        assert!(!probe.is_stopped());
     }
 }

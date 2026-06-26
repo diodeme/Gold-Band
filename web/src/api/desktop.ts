@@ -152,9 +152,6 @@ export const desktopApi: RuntimeApi = {
   retryRun(taskId: string, runId: string) {
     return invokeCommand('retry_run', { taskId, runId });
   },
-  killRun(taskId: string, runId: string) {
-    return invokeCommand('kill_run', { taskId, runId });
-  },
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });
   },

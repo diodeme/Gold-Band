@@ -32,10 +32,6 @@ pub enum RunCommand {
         task_id: String,
         run_id: String,
     },
-    Kill {
-        task_id: String,
-        run_id: String,
-    },
     OpenSession {
         task_id: String,
         run_id: String,

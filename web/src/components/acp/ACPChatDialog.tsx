@@ -72,7 +72,9 @@ import { cn } from "@/lib/utils";
 import {
   decideAcpLiveEventFlush,
   isAcpLiveToolEvent,
+  isAcpTextStreamEventKind,
   isCoalescableAcpLiveEvent,
+  mergeAcpLiveStreamEvent,
   mergeAcpLiveToolEvent,
   shouldAutoScrollAfterAcpTimelineUpdate,
 } from "@/lib/acp-live-flush";
@@ -722,7 +724,10 @@ export const ACPChatDialog = forwardRef<
     [effective?.config],
   );
   const effectiveEvents = effective?.events ?? [];
+  const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
+  const localTurnInFlight = sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
+  const activeAwaitingResponse = awaitingResponse && (!effectiveSessionTerminal || localTurnInFlight);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
     !hasResponseAfterActiveTurn;
@@ -922,8 +927,9 @@ export const ACPChatDialog = forwardRef<
     waitingForPermission,
     hasPlanIntervention: Boolean(planInterventionOption),
     sending,
-    awaitingResponse,
+    awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
+    localTurnInFlight,
     cancelling,
     stopCommandPending,
     turnAccepted,
@@ -942,7 +948,7 @@ export const ACPChatDialog = forwardRef<
   const composerStatusStartAt =
     composerState.mode === "submitting" ||
     composerState.mode === "stopping" ||
-    (awaitingResponse && turnAccepted && !hasTurnResponse)
+    (activeAwaitingResponse && turnAccepted && !hasTurnResponse)
       ? activeTurnStartedAt
       : (composerLatestEvent?.startedAt ??
         composerLatestEvent?.timestamp ??
@@ -1203,6 +1209,10 @@ export const ACPChatDialog = forwardRef<
 
   const flushOrSchedulePendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
     if (pendingLiveEventsRef.current.size === 0 || liveUpdatesPausedRef.current) return;
+    if (priority === "sync") {
+      flushPendingLiveEvents("sync");
+      return;
+    }
     const deferRemainingMs = liveFlushDeferRemainingMs();
     if (deferRemainingMs > 0) {
       schedulePendingLiveFlush(deferRemainingMs);
@@ -1256,11 +1266,7 @@ export const ACPChatDialog = forwardRef<
       const bufferKey = liveEventBufferKey(event);
       pendingLiveEventsRef.current.set(
         bufferKey,
-        mergeAcpLiveToolEvent(
-          pendingLiveEventsRef.current.get(bufferKey),
-          event,
-          mergeRaw,
-        ),
+        mergeBufferedLiveEvent(pendingLiveEventsRef.current.get(bufferKey), event),
       );
       if (decision.scheduleDelayMs !== null) {
         schedulePendingLiveFlush(decision.scheduleDelayMs);
@@ -1531,8 +1537,8 @@ export const ACPChatDialog = forwardRef<
     if (acceptedPrompt && !activeTurnStartedAt)
       setActiveTurnStartedAt(acceptedPrompt.timestamp);
     updateOptimisticEvents((current) => {
-      const next = current.filter(
-        (event) => !hasMatchingUserPrompt(loadedEvents, event),
+      const next = current.filter((event) =>
+        shouldMergeOptimisticEvent(loadedEvents, event),
       );
       return next.length === current.length ? current : next;
     });
@@ -1656,7 +1662,8 @@ export const ACPChatDialog = forwardRef<
   };
 
   const submitPrompt = async (trimmed: string) => {
-    if (sending || awaitingResponse || sessionActive || cancelling) return;
+    const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
+    if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
     setSending(true);
     setSendError(null);
     let attPaths: string[];
@@ -1699,11 +1706,69 @@ export const ACPChatDialog = forwardRef<
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      if (result.kind === "runtime-continue-started") onSessionStopped?.();
-      if (updated) {
+      if (result.kind === "runtime-continue-started") {
+        setAwaitingResponse(false);
+        setActiveTurnStartedAt(optimisticEvent.timestamp);
         updateOptimisticEvents((current) =>
-          current.filter(
-            (event) => !hasMatchingUserPrompt(updated.events, event),
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "completed" }
+              : event,
+          ),
+        );
+        onSessionStopped?.();
+      } else if (result.kind === "rejected") {
+        setSendError(t("errors.app.unexpected", { message: "" }));
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
+          ),
+        );
+      } else if (updated) {
+        const acceptedEvents = mergeAcpEvents(loadedEventsRef.current, updated.events);
+        const acceptedPrompt = findMatchingGoldBandUserPrompt(
+          acceptedEvents,
+          effectivePrompt,
+          promptId,
+          optimisticEvent.timestamp,
+        );
+        if (acceptedPrompt) {
+          setActiveTurnStartedAt(acceptedPrompt.timestamp);
+          if (isSessionTerminalStatus(updated.status)) setAwaitingResponse(false);
+          updateOptimisticEvents((current) =>
+            current.filter(
+              (event) => !hasMatchingUserPrompt(acceptedEvents, event),
+            ),
+          );
+        } else {
+          setAwaitingResponse(false);
+          setActiveTurnPrompt(null);
+          setActiveTurnPromptId(null);
+          setActiveTurnStartedAt(null);
+          updateOptimisticEvents((current) =>
+            current.map((event) =>
+              event.id === optimisticEvent.id
+                ? { ...event, status: "failed" }
+                : event,
+            ),
+          );
+        }
+      } else {
+        setAwaitingResponse(false);
+        setActiveTurnPrompt(null);
+        setActiveTurnPromptId(null);
+        setActiveTurnStartedAt(null);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "failed" }
+              : event,
           ),
         );
       }
@@ -1875,7 +1940,7 @@ export const ACPChatDialog = forwardRef<
       sending ||
       pendingPermission ||
       sessionActive ||
-      awaitingResponse ||
+      activeAwaitingResponse ||
       cancelling
     )
       return;
@@ -1883,7 +1948,7 @@ export const ACPChatDialog = forwardRef<
     setQueuedInterventionPrompt(null);
     void submitPrompt(queued);
   }, [
-    awaitingResponse,
+    activeAwaitingResponse,
     cancelling,
     pendingPermission,
     queuedInterventionPrompt,
@@ -4377,6 +4442,19 @@ function liveToolEventBufferKey(event: AcpUiEventVm) {
   return `${attemptId}:tool:${event.toolCallId}`;
 }
 
+function mergeBufferedLiveEvent(
+  previous: AcpUiEventVm | undefined,
+  next: AcpUiEventVm,
+) {
+  if (isAcpLiveToolEvent(next)) {
+    return mergeAcpLiveToolEvent(previous, next, mergeRaw);
+  }
+  if (isAcpTextStreamEventKind(next.kind)) {
+    return mergeAcpLiveStreamEvent(previous, next, mergeRaw);
+  }
+  return next;
+}
+
 function useStableAcpTimeline(timeline: AcpTimelineItem[]) {
   const previousRef = useRef<AcpTimelineItem[]>([]);
   return useMemo(() => {
@@ -4504,12 +4582,13 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       isMergeableDelta(event.kind) &&
       isSameDeltaStream(previous, event)
     ) {
-      previous.content = event.content ?? previous.content;
-      previous.seq = event.seq;
-      previous.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
-      previous.endedAt = event.endedAt ?? event.timestamp;
+      const merged = mergeAcpLiveStreamEvent(previous, event, mergeRaw);
+      previous.content = merged.content;
+      previous.seq = merged.seq ?? event.seq;
+      previous.endedSeq = merged.endedSeq ?? event.endedSeq ?? originalSeqFromAcpEvent(event);
+      previous.endedAt = merged.endedAt ?? event.endedAt ?? event.timestamp;
       previous.status = event.status ?? previous.status;
-      previous.raw = mergeRaw(previous.raw, event.raw);
+      previous.raw = merged.raw;
       previous.optimistic = previous.optimistic || isOptimisticEvent(event);
       continue;
     }
@@ -4660,8 +4739,11 @@ function userPromptDedupKey(event: AcpUiEventVm) {
   const text = normalizePromptText(event.content);
   if (!text) return null;
   const raw = rawObject(event.raw);
-  const attemptId = stringValue(raw?.attemptId) ?? "current-attempt";
-  return `${attemptId}:${text}`;
+  const attemptId = stringValue(raw?.attemptId) ?? attemptIdFromAcpEvent(event) ?? "current-attempt";
+  const promptId = promptIdFromEvent(event);
+  if (promptId) return `${attemptId}:prompt:${promptId}`;
+  if (isGoldBandManagedPrompt(event)) return `${attemptId}:event:${event.id}`;
+  return `${attemptId}:text:${text}`;
 }
 
 function isMergeableDelta(kind: string) {
@@ -4722,7 +4804,11 @@ function mergeRaw(previous: unknown, next: unknown) {
 export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
   if (next.length === 0) return previous;
   const replacementByKey = new Map<string, AcpUiEventVm>();
-  for (const event of next) replacementByKey.set(acpEventKey(event), event);
+  for (const event of next) {
+    const key = acpEventKey(event);
+    const existing = replacementByKey.get(key);
+    replacementByKey.set(key, existing ? mergeAcpEventForKey(existing, event) : event);
+  }
   let allUpdatesReplaceExistingEvents = replacementByKey.size > 0;
   for (const key of replacementByKey.keys()) {
     if (!previous.some((event) => acpEventKey(event) === key)) {
@@ -4736,7 +4822,7 @@ export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
       const replacement = replacementByKey.get(acpEventKey(event));
       if (!replacement) return event;
       changed = true;
-      return { ...replacement, seq: event.seq };
+      return mergeAcpEventForKey(event, replacement);
     });
     return changed ? merged : previous;
   }
@@ -4748,15 +4834,30 @@ export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
     previousByKey.set(key, event);
     byKey.set(key, event);
   }
-  for (const event of next) {
+  for (const event of replacementByKey.values()) {
     const key = acpEventKey(event);
     const existing = previousByKey.get(key);
-    byKey.set(key, {
-      ...event,
-      seq: existing?.seq ?? alignAcpDisplaySeq(event, previous),
-    });
+    byKey.set(
+      key,
+      existing
+        ? mergeAcpEventForKey(existing, event)
+        : { ...event, seq: alignAcpDisplaySeq(event, previous) },
+    );
   }
   return [...byKey.values()].sort((left, right) => left.seq - right.seq);
+}
+
+function mergeAcpEventForKey(existing: AcpUiEventVm, incoming: AcpUiEventVm) {
+  if (
+    isAcpTextStreamEventKind(existing.kind) &&
+    isAcpTextStreamEventKind(incoming.kind) &&
+    existing.kind === incoming.kind &&
+    existing.id === incoming.id
+  ) {
+    const merged = mergeAcpLiveStreamEvent(existing, incoming, mergeRaw);
+    return { ...merged, seq: existing.seq };
+  }
+  return { ...incoming, seq: existing.seq };
 }
 
 function alignAcpDisplaySeq(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
@@ -4839,8 +4940,8 @@ function mergeOptimisticSession(
   optimisticEvents: AcpUiEventVm[],
 ): AcpSessionVm | null {
   if (!session || optimisticEvents.length === 0) return session ?? null;
-  const pending = optimisticEvents.filter(
-    (event) => !hasMatchingUserPrompt(session.events, event),
+  const pending = optimisticEvents.filter((event) =>
+    shouldMergeOptimisticEvent(session.events, event),
   );
   if (pending.length === 0) return session;
   return { ...session, events: [...session.events, ...pending] };
@@ -4894,6 +4995,7 @@ export {
   buildAcpTimeline,
   queryBlocksFromTool,
   isTopLevelPlanEvent,
+  hasMatchingUserPrompt,
 };
 
 export function createAcpPromptId() {
@@ -4920,6 +5022,16 @@ function isOptimisticEvent(event: AcpUiEventVm) {
   return rawObject(event.raw)?.optimistic === true;
 }
 
+function shouldMergeOptimisticEvent(
+  events: AcpUiEventVm[],
+  event: AcpUiEventVm,
+) {
+  if (event.kind !== "userTextDelta" || event.status === "failed") return false;
+  if (hasMatchingUserPrompt(events, event)) return false;
+  if (event.status === "sending") return true;
+  return !hasResponseAfterTurn(events, event.timestamp);
+}
+
 function hasMatchingUserPrompt(
   events: AcpUiEventVm[],
   candidate: AcpUiEventVm,
@@ -4930,6 +5042,7 @@ function hasMatchingUserPrompt(
       events,
       candidate.content,
       promptIdFromEvent(candidate),
+      candidate.timestamp,
     ),
   );
 }
@@ -4938,13 +5051,24 @@ function findMatchingGoldBandUserPrompt(
   events: AcpUiEventVm[],
   content?: string | null,
   promptId?: string | null,
+  candidateTimestamp?: string | null,
 ) {
   if (promptId) {
+    const exact = events.find(
+      (event) =>
+        isGoldBandUserPrompt(event) && promptIdFromEvent(event) === promptId,
+    );
+    if (exact) return exact;
+    const candidateAt = parseAcpTimestamp(candidateTimestamp);
+    if (candidateAt == null) return null;
     return (
-      events.find(
-        (event) =>
-          isGoldBandUserPrompt(event) && promptIdFromEvent(event) === promptId,
-      ) ?? null
+      events.find((event) => {
+        if (!isGoldBandUserPrompt(event)) return false;
+        if (promptIdFromEvent(event)) return false;
+        if (!sameText(event.content, content)) return false;
+        const eventAt = parseAcpTimestamp(event.timestamp);
+        return eventAt != null && eventAt >= candidateAt;
+      }) ?? null
     );
   }
   return (

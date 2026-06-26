@@ -27,6 +27,7 @@ preset -> task -> run -> round/attempt
 - `paused` 只属于 `status`，不属于 `outcome`
 - `ai-dynamic` 内部状态归属外层节点 attempt，外层 round graph 只保留一个复合节点
 - AI-DYNAMIC prompt 分层遵循：runtime 决定的身份、历史、路径、限制、可用资源和输出协议进入 system prompt，并通过 minijinja 模板渲染；requirement 与当前 goal 进入 user prompt
+- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果；普通 worker 启动前用当前缓存校验已配置的 model / permissionMode，AI-DYNAMIC schema、prompt 和 permission 校验也读取当前缓存，不在执行中同步 doctor provider capabilities。AI-DYNAMIC prompt 和 schema 中的模型枚举必须使用 ACP `configOptions[].options[].value`，展示名只作为辅助标签；当动态 proposal 需要输出模型但最新缓存没有该 provider 的模型目录时，runtime 在启动 provider session 前进入 `error-blocked`，不允许让 agent 猜模型值。
 - runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
@@ -106,7 +107,7 @@ nodes/<outer-node>/attempt-001/dynamic/
 
 ### AI-DYNAMIC / ACP 诊断事件
 
-当 AI-DYNAMIC 内部节点启动缓慢时，runtime 会在 `dynamic/events.jsonl` 写入结构化诊断事件，用于拆分 Ready→Running 调度、线程启动、状态读取、worktree 创建、prompt 构建和 provider 调用耗时。关键事件包括 `dynamic_ready_refreshed`、`dynamic_launch_ready_begin/end`、`dynamic_launch_candidate`、`dynamic_node_marked_running`、`dynamic_thread_spawned`、`dynamic_job_state_loaded`、`dynamic_worker_workspace_begin/end`、`dynamic_worktree_git_lock_wait_begin/end`、`dynamic_worktree_add_begin/end`、`dynamic_worker_invocation_build_begin/end`、`dynamic_worker_invocation_build_step_begin/end` 和 `dynamic_worker_provider_begin/end`。`dynamic/events.jsonl` 写入按单个 dynamic attempt 的事件文件加锁，避免并行 fanout 节点写入同一 JSONL 时发生行内容交错；锁只覆盖 append 操作，不串行化 worker、worktree、prompt 构建或 provider 执行。
+当 AI-DYNAMIC 内部节点启动缓慢时，runtime 会在 `dynamic/events.jsonl` 写入结构化诊断事件，用于拆分 Ready→Running 调度、线程启动、状态读取、worktree 创建、prompt 构建和 provider 调用耗时。关键事件包括 `dynamic_ready_refreshed`、`dynamic_launch_ready_begin/end`、`dynamic_launch_candidate`、`dynamic_node_marked_running`、`dynamic_thread_spawned`、`dynamic_job_state_loaded`、`dynamic_worker_workspace_begin/end`、`dynamic_worktree_git_lock_wait_begin/end`、`dynamic_worktree_add_begin/end`、`dynamic_worker_invocation_build_begin/end`、`dynamic_worker_invocation_build_step_begin/end` 和 `dynamic_worker_provider_begin/end`。所有 runtime/ACP JSONL append、roll 和同路径 timeline overwrite 都通过 storage 层按 normalized path 串行化，避免并行 fanout 节点或 ACP patch/compact 写入同一 JSONL 时发生行内容交错；该锁只覆盖同一路径文件 IO，不串行化 worker、worktree、prompt 构建或 provider 执行。
 
 ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和 JSON-RPC timing，例如 `acp_adapter_resolved`、`acp_initialize_cached`、`acp_rpc_begin/end`。这些事件只用于诊断，不改变 canonical state；复跑排查时应先对齐 dynamic events 与 ACP diagnostics，再判断等待发生在调度、worktree、ACP RPC 还是 provider 首响应阶段。
 

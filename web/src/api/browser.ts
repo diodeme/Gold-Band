@@ -1,5 +1,5 @@
 import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
+import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
@@ -204,9 +204,6 @@ export const browserApi: RuntimeApi = {
   retryRun(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  killRun(taskId: string, runId: string) {
-    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'completed', outcome: 'killed' });
-  },
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
@@ -345,6 +342,7 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(sidebar);
   },
   getConversationRun(_projectId, _taskId, runId) {
+    if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     const run: ConversationRunVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -363,10 +361,12 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
+      runtimeErrorMessage: null,
     };
     return Promise.resolve(run);
   },
   switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession, artifacts: [], attachments: [] });
     return Promise.resolve({ selectedSession: null, artifacts: [], attachments: [] });
   },
   validateConversationCreate(_input) {
@@ -391,6 +391,7 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
+      runtimeErrorMessage: null,
     };
     return Promise.resolve(run);
   },

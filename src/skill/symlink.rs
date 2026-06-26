@@ -5,11 +5,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tracing::{debug, warn};
 
 use crate::config::SkillMeta;
+use crate::process::background_command;
 
 /// 增量同步所有 SKILL symlink（保存时 + 启动时调用）
 ///
@@ -128,7 +128,7 @@ fn create_link(src: &Path, dst: &Path) {
         }
 
         // 方式 2: mklink /J junction（不需要特殊权限）
-        let output = Command::new("cmd")
+        let output = background_command("cmd")
             .args(["/c", "mklink", "/J"])
             .arg(dst.as_os_str())
             .arg(src.as_os_str())

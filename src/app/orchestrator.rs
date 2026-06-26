@@ -38,6 +38,7 @@ use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
 };
+use crate::process::background_command;
 use crate::prompts::{
     AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN,
     AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_MERGE_EN, AI_DYNAMIC_MERGE_ZH_CN, AI_DYNAMIC_NODE_TASK_EN,
@@ -8171,7 +8172,7 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> Utf
 }
 
 fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
-    let output = std::process::Command::new("git")
+    let output = background_command("git")
         .arg("-C")
         .arg(cwd.as_str())
         .args(args)
@@ -9322,18 +9323,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn git(cwd: &Utf8Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(cwd.as_str())
-            .args(args)
-            .output()
-            .expect("git command should run");
+        let output = git_output(cwd, args).expect("git command should run");
         assert!(
-            output.status.success(),
+            output.success,
             "git {:?} failed: stdout={} stderr={}",
-            args,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            args, output.stdout, output.stderr
         );
     }
 

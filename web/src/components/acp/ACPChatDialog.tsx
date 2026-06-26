@@ -193,6 +193,8 @@ interface ACPChatDialogProps {
   allowEventOnlySessionShell?: boolean;
   artifacts?: AssetItemVm[];
   attachments?: AssetItemVm[];
+  allArtifacts?: AssetItemVm[];
+  allAttachments?: AssetItemVm[];
   usageCompact?: boolean;
 }
 
@@ -424,6 +426,8 @@ export const ACPChatDialog = forwardRef<
     allowEventOnlySessionShell = true,
     artifacts = [],
     attachments = [],
+    allArtifacts,
+    allAttachments,
     usageCompact,
   },
   ref,
@@ -2169,6 +2173,11 @@ export const ACPChatDialog = forwardRef<
         )}
         {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
+      <AcpProductCards
+        artifacts={allArtifacts ?? artifacts}
+        attachments={allAttachments ?? attachments}
+        onOpenDetail={handleOpenArtifactDetail}
+      />
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
           {todoEntries.length > 0 ? (
@@ -3088,6 +3097,54 @@ function ACPArtifactsDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AcpProductCards({
+  artifacts,
+  attachments,
+  onOpenDetail,
+}: {
+  artifacts: AssetItemVm[];
+  attachments: AssetItemVm[];
+  onOpenDetail: (asset: AssetItemVm) => void;
+}) {
+  const { t } = useTranslation();
+
+  const allItems = [
+    ...artifacts.map((a) => ({ ...a, kind: "artifact" as const })),
+    ...attachments.map((a) => ({ ...a, kind: "attachment" as const })),
+  ];
+
+  if (allItems.length === 0) return null;
+
+  return (
+    <div className="shrink-0 border-t border-border/40 px-4 py-2.5">
+      <h4 className="mb-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        {t("acp.artifactsTitle")}
+      </h4>
+      <div className="space-y-1.5">
+        {allItems.map((item) => {
+          const Icon = item.kind === "artifact" ? FileText : Paperclip;
+          return (
+            <button
+              key={`${item.kind}-${item.name}`}
+              type="button"
+              className="flex w-full items-center gap-3 rounded-lg border border-border/35 bg-card/50 px-3 py-2.5 text-left transition-colors hover:bg-accent/60 hover:border-border/55"
+              onClick={() => onOpenDetail(item)}
+            >
+              <Icon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {item.title || item.name}
+              </span>
+              <span className="shrink-0 text-[11px] text-muted-foreground/70">
+                {item.kind === "artifact" ? t("acp.artifacts") : t("acp.attachments")}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

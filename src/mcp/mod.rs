@@ -55,10 +55,15 @@ struct McpJsonEntry {
     #[serde(default)]
     env: BTreeMap<String, String>,
     url: Option<String>,
+    #[serde(rename = "type", default)]
+    transport_type: Option<String>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
     #[serde(default)]
     oauth: Option<OAuthClientConfig>,
+    /// 可选的展示名称，仅用于内置注入
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl McpManager {
@@ -120,12 +125,45 @@ impl McpManager {
         &self,
         json_content: &str,
     ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
-        let (id, transport) = parse_mcp_json(json_content)?;
+        let (id, transport, display_name) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
-            name: id.clone(),
+            name: display_name.unwrap_or_else(|| id.clone()),
             id,
             enabled: true,
             transport,
+            managed: false,
+        };
+        let mut settings = self.load_settings()?;
+        let mut servers = settings.context_servers.unwrap_or_default();
+        servers.retain(|s| s.id != config.id);
+        servers.push(config.clone());
+        settings.context_servers = Some(servers);
+        self.save_settings(&settings)?;
+
+        let status = self.verify_server(&config);
+        let list = self.list()?;
+        Ok((
+            McpServerWithStatus {
+                config,
+                health_status: status.as_ref().ok().map(|_| "healthy".into()),
+                health_message: status.as_ref().ok().and_then(|r| r.message.clone()),
+            },
+            list,
+        ))
+    }
+
+    /// 对标 add()，但标记为 managed（托管），用户不可删除
+    pub fn add_managed(
+        &self,
+        json_content: &str,
+    ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
+        let (id, transport, display_name) = parse_mcp_json(json_content)?;
+        let config = McpServerConfig {
+            name: display_name.unwrap_or_else(|| id.clone()),
+            id,
+            enabled: true,
+            transport,
+            managed: true,
         };
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
@@ -151,12 +189,24 @@ impl McpManager {
         id: &str,
         json_content: &str,
     ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
-        let (new_id, transport) = parse_mcp_json(json_content)?;
+        let settings = self.load_settings()?;
+        if let Some(s) = settings
+            .context_servers
+            .as_ref()
+            .and_then(|servers| servers.iter().find(|s| s.id == id))
+        {
+            anyhow::ensure!(
+                !s.managed,
+                "MCP server `{id}` is managed and cannot be modified"
+            );
+        }
+        let (new_id, transport, display_name) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
-            name: new_id.clone(),
+            name: display_name.unwrap_or_else(|| new_id.clone()),
             id: new_id,
             enabled: true,
             transport,
+            managed: false,
         };
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
@@ -179,6 +229,13 @@ impl McpManager {
 
     pub fn delete(&self, id: &str) -> Result<Vec<McpServerWithStatus>> {
         let mut settings = self.load_settings()?;
+        // Check managed before mutation — borrow then move
+        if let Some(s) = settings.context_servers.as_ref().and_then(|servers| servers.iter().find(|s| s.id == id)) {
+            anyhow::ensure!(
+                !s.managed,
+                "MCP server `{id}` is managed and cannot be deleted"
+            );
+        }
         let mut servers = settings.context_servers.unwrap_or_default();
         servers.retain(|s| s.id != id);
         settings.context_servers = Some(servers);
@@ -239,7 +296,28 @@ impl McpManager {
         self.state_cache.borrow_mut().remove(id);
     }
 
-    /// 对标 Zed server.start() — Stdio 发送 MCP initialize 请求; HTTP 实际请求
+    /// 拉取 MCP 服务器的工具列表（tools/list）
+    pub fn list_tools(&self, id: &str) -> Result<Vec<crate::config::ToolInfo>> {
+        let settings = self.load_settings()?;
+        let config = settings
+            .context_servers
+            .as_ref()
+            .and_then(|servers| servers.iter().find(|s| s.id == id))
+            .with_context(|| format!("MCP server `{id}` not found"))?;
+        match &config.transport {
+            McpTransportConfig::Stdio { command, args, env } => {
+                fetch_stdio_tools(command, args, env)
+            }
+            McpTransportConfig::Http { url, headers, .. } => {
+                fetch_http_tools(url, headers)
+            }
+            McpTransportConfig::Sse { url, headers } => {
+                fetch_sse_tools(url, headers)
+            }
+        }
+    }
+
+    /// 对标 Zed server.start() — Stdio 发送 MCP initialize 请求; HTTP/SSE 实际请求
     fn verify_server(&self, config: &McpServerConfig) -> Result<McpServerHealthResult> {
         match &config.transport {
             McpTransportConfig::Stdio { command, args, env } => {
@@ -250,6 +328,7 @@ impl McpManager {
                 headers,
                 oauth,
             } => verify_http_server(url, headers, oauth),
+            McpTransportConfig::Sse { url, headers } => verify_sse_server(url, headers),
         }
     }
 
@@ -337,6 +416,15 @@ impl McpManager {
                         });
                     }
                     json
+                }
+                McpTransportConfig::Sse { url, headers } => {
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "transport": "sse",
+                        "url": url,
+                        "headers": headers,
+                    })
                 }
             })
             .collect())
@@ -525,6 +613,297 @@ fn verify_http_server(
     }
 }
 
+fn verify_sse_server(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<McpServerHealthResult> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        bail!("invalid URL: must start with http:// or https://");
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to create HTTP client")?;
+
+    let mut req = client
+        .get(url)
+        .header("Accept", "text/event-stream");
+
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    match req.send() {
+        Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
+            Ok(McpServerHealthResult {
+                status: "healthy".into(),
+                message: Some("SSE server reachable".into()),
+                auth_url: None,
+                needs_client_secret: None,
+                tools: Vec::new(),
+            })
+        }
+        Ok(resp) => {
+            bail!("SSE server returned {}", resp.status())
+        }
+        Err(e) if e.is_connect() => {
+            bail!("cannot connect to SSE server: {e}")
+        }
+        Err(e) if e.is_timeout() => {
+            bail!("SSE connection timed out")
+        }
+        Err(e) => {
+            bail!("SSE request failed: {e}")
+        }
+    }
+}
+
+// ── MCP tools/list ──
+
+fn build_tools_list_request() -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    })
+}
+
+fn parse_tools_list_response(response_text: &str) -> Result<Vec<crate::config::ToolInfo>> {
+    let response: Value =
+        serde_json::from_str(response_text.trim()).context("invalid JSON response for tools/list")?;
+    if let Some(err) = response.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        bail!("server returned error for tools/list: {msg}")
+    }
+    let tools = response
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(Value::as_array)
+        .context("unexpected tools/list response format")?;
+    tools
+        .iter()
+        .map(|t| {
+            Ok(crate::config::ToolInfo {
+                name: t
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("tool missing name")?
+                    .to_string(),
+                description: t.get("description").and_then(Value::as_str).map(String::from),
+                input_schema: t.get("inputSchema").cloned(),
+            })
+        })
+        .collect()
+}
+
+fn fetch_stdio_tools(
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+) -> Result<Vec<crate::config::ToolInfo>> {
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start command: {command}"))?;
+
+    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
+    let stdout = child.stdout.take().context("failed to capture stdout")?;
+
+    // Step 1: initialize
+    let init_line = serde_json::to_string(&build_initialize_request())? + "\n";
+    stdin.write_all(init_line.as_bytes())?;
+    stdin.flush()?;
+
+    let (tx, rx) = mpsc::channel();
+    let stdout_reader = std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(text) => {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        let _ = tx.send(Ok(trimmed));
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            }
+        }
+        let _ = tx.send(Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "server closed stdout",
+        )));
+    });
+
+    let _init_response = rx
+        .recv_timeout(Duration::from_secs(10))
+        .context("initialize timed out")?
+        .context("failed to read initialize response")?;
+
+    // Step 2: tools/list
+    let tools_line = serde_json::to_string(&build_tools_list_request())? + "\n";
+    stdin.write_all(tools_line.as_bytes())?;
+    stdin.flush()?;
+    drop(stdin);
+
+    let tools_response = rx
+        .recv_timeout(Duration::from_secs(10))
+        .context("tools/list timed out")?
+        .context("failed to read tools/list response")?;
+
+    let _ = stdout_reader.join();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    parse_tools_list_response(&tools_response)
+}
+
+fn fetch_http_tools(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<Vec<crate::config::ToolInfo>> {
+    let tools_body = serde_json::to_string(&build_tools_list_request())?;
+    let mut req = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to create HTTP client")?
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(tools_body);
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let resp = req.send().context("tools/list HTTP request failed")?;
+    let body = resp.text().context("failed to read tools/list response")?;
+    parse_tools_list_response(&body)
+}
+
+fn fetch_sse_tools(
+    url: &str,
+    headers: &BTreeMap<String, String>,
+) -> Result<Vec<crate::config::ToolInfo>> {
+    let base_url = url::Url::parse(url).context("invalid SSE URL")?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("failed to create HTTP client")?;
+
+    // Step 1: GET SSE endpoint — read the first chunk for the endpoint URL
+    let mut req = client.get(url).header("Accept", "text/event-stream");
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let mut resp = req.send().context("failed to connect to SSE endpoint")?;
+    if !resp.status().is_success() {
+        bail!("SSE endpoint returned {}", resp.status());
+    }
+
+    use std::io::Read;
+    let mut buf = [0u8; 8192];
+    let n = resp.read(&mut buf).context("failed to read SSE handshake")?;
+    let sse_body = String::from_utf8_lossy(&buf[..n]);
+    let endpoint_url = discover_sse_endpoint(&sse_body, &base_url)
+        .context("SSE handshake did not contain an endpoint event")?;
+
+    // Step 2: Spawn reader thread to keep SSE connection alive and collect
+    // incoming events. The MCP SSE session is tied to this GET connection.
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut leftover = String::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match resp.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    // Emit complete lines; keep incomplete tail in leftover
+                    while let Some(nl) = leftover.find('\n') {
+                        let line = leftover[..nl].trim().to_string();
+                        leftover = leftover[nl + 1..].to_string();
+                        if let Some(data) = line.strip_prefix("data:") {
+                            let payload = data.trim().to_string();
+                            if !payload.is_empty() && tx.send(payload).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => return,
+            }
+        }
+    });
+
+    // Step 3: POST initialize
+    post_sse_json(&client, &endpoint_url, headers, &build_initialize_request())
+        .context("failed to POST initialize to SSE endpoint")?;
+    rx.recv_timeout(Duration::from_secs(10))
+        .context("no initialize response from SSE stream")?;
+
+    // Step 4: POST tools/list
+    post_sse_json(&client, &endpoint_url, headers, &build_tools_list_request())
+        .context("failed to POST tools/list to SSE endpoint")?;
+    let tools_raw = rx
+        .recv_timeout(Duration::from_secs(10))
+        .context("no tools/list response from SSE stream")?;
+
+    parse_tools_list_response(&tools_raw)
+}
+
+/// POST JSON-RPC request to an SSE message endpoint; 202 Accepted is normal
+fn post_sse_json(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    body: &Value,
+) -> Result<()> {
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(body)?);
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let resp = req.send()?;
+    let status = resp.status();
+    if !status.is_success() && status.as_u16() != 202 {
+        bail!("POST returned {}", status);
+    }
+    Ok(())
+}
+
+/// Parse SSE handshake text to find the `event: endpoint` → `data: <path>` pair
+fn discover_sse_endpoint(body: &str, base_url: &url::Url) -> Option<String> {
+    let mut current_event: Option<&str> = None;
+    for line in body.lines() {
+        if let Some(event_type) = line.strip_prefix("event:") {
+            current_event = Some(event_type.trim());
+        } else if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if current_event == Some("endpoint") && !data.is_empty() {
+                return base_url.join(data).ok().map(|u| u.to_string());
+            }
+            current_event = None;
+        }
+    }
+    None
+}
+
 /// 对标 Zed resolve_start_failure → OAuth discovery
 fn try_oauth_discovery(
     url: &str,
@@ -604,7 +983,7 @@ fn try_oauth_discovery(
 
 // ── JSON Parser（对标 Zed parse_input / parse_http_input） ──
 
-fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig)> {
+fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Option<String>)> {
     let stripped: String = json_content
         .lines()
         .filter(|line| !line.trim().starts_with("///"))
@@ -618,11 +997,18 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig)> {
         "Expected exactly one server configuration"
     );
     let (id, entry) = value.into_iter().next().unwrap();
+    let display_name = entry.name.filter(|n| !n.is_empty());
     let transport = if let Some(url) = entry.url {
-        McpTransportConfig::Http {
-            url,
-            headers: entry.headers,
-            oauth: entry.oauth,
+        match entry.transport_type.as_deref() {
+            Some("sse") => McpTransportConfig::Sse {
+                url,
+                headers: entry.headers,
+            },
+            _ => McpTransportConfig::Http {
+                url,
+                headers: entry.headers,
+                oauth: entry.oauth,
+            },
         }
     } else {
         McpTransportConfig::Stdio {
@@ -633,5 +1019,5 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig)> {
             env: entry.env,
         }
     };
-    Ok((id, transport))
+    Ok((id, transport, display_name))
 }

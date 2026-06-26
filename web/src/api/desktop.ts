@@ -332,6 +332,9 @@ export const desktopApi: RuntimeApi = {
   checkMcpServerHealth(id: string) {
     return invokeCommand('check_mcp_server_health', { id });
   },
+  listMcpTools(id: string) {
+    return invokeCommand('list_mcp_tools', { id });
+  },
   listSkills() {
     return invokeCommand('list_skills');
   },

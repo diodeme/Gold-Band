@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Stethoscope, Trash2 } from 'lucide-react';
+import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Stethoscope, Trash2, Wrench } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
   createProfile, deleteProfile, getProfiles, updateProfile,
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
-  toggleMcpServer, checkMcpServerHealth,
+  toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill,
   getConversationSidebar,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
   AppErrorVm, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
-  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm,
+  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, ToolInfo,
 } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
@@ -80,11 +80,16 @@ export function ContextManagementPage() {
   const [mcpSheetOpen, setMcpSheetOpen] = useState(false);
   const [mcpEditTarget, setMcpEditTarget] = useState<McpServerVm | null>(null);
   const [mcpJsonContent, setMcpJsonContent] = useState('');
-  const [mcpTransportTab, setMcpTransportTab] = useState<'stdio' | 'http'>('stdio');
+  const [mcpTransportTab, setMcpTransportTab] = useState<'stdio' | 'http' | 'sse'>('stdio');
   const [mcpSaving, setMcpSaving] = useState(false);
   const [mcpDeleteTarget, setMcpDeleteTarget] = useState<McpServerVm | null>(null);
   const [mcpCheckTarget, setMcpCheckTarget] = useState<string | null>(null);
   const [mcpHealth, setMcpHealth] = useState<Record<string, { status: string; message?: string | null }>>({});
+  const [toolsSheetServer, setToolsSheetServer] = useState<McpServerVm | null>(null);
+  const [toolsList, setToolsList] = useState<ToolInfo[] | null>(null);
+  const [toolsLoading, setToolsLoading] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [toolsFetchingId, setToolsFetchingId] = useState<string | null>(null);
 
   const filteredMcpServers = useMemo(() => {
     const q = mcpQuery.trim().toLowerCase();
@@ -520,7 +525,8 @@ export function ContextManagementPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-semibold">{s.name}</span>
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{s.transport === 'stdio' ? 'Stdio' : 'HTTP'}</Badge>
+                        {s.managed && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">内置</Badge>}
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{s.transport === 'stdio' ? 'Stdio' : s.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
                       </div>
                       <p className="truncate font-mono text-[11px] text-muted-foreground">{s.command ?? s.url ?? ''}</p>
                     </div>
@@ -576,13 +582,41 @@ export function ContextManagementPage() {
                       <TooltipProvider delayDuration={300}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Button size="icon" variant="ghost" className="size-8" onClick={() => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport === 'stdio' ? 'stdio' : 'http'); setMcpSheetOpen(true); }}>
+                            <Button size="icon" variant="ghost" className="size-8" disabled={toolsFetchingId === s.id} onClick={async () => {
+                              if (toolsFetchingId) return;
+                              setToolsFetchingId(s.id);
+                              try {
+                                const tools = await listMcpTools(s.id);
+                                setToolsList(tools);
+                                setToolsError(null);
+                                setToolsSheetServer(s);
+                              } catch (err: unknown) {
+                                setToolsError(displayAppError(t, err));
+                                setToolsList(null);
+                                setToolsSheetServer(s);
+                              } finally {
+                                setToolsFetchingId(null);
+                              }
+                            }}>
+                              {toolsFetchingId === s.id ? <Loader2 className="size-3.5 animate-spin" /> : <Wrench className="size-3.5" />}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">工具列表</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                      {!s.managed && (
+                      <TooltipProvider delayDuration={300}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button size="icon" variant="ghost" className="size-8" onClick={() => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}>
                               <Pencil className="size-3.5" />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="top">{t('contextManagement.mcp.editServer', 'Edit')}</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
+                      )}
+                      {!s.managed && (
                       <TooltipProvider delayDuration={300}>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -593,6 +627,7 @@ export function ContextManagementPage() {
                           <TooltipContent side="top">{t('contextManagement.mcp.deleteServer', 'Delete')}</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
+                      )}
                     </div>
                   </div>
                 </Card>
@@ -719,6 +754,7 @@ export function ContextManagementPage() {
             <div className="flex gap-1 border-b">
               <button type="button" className={cn('px-3 py-2 text-sm font-medium border-b-2 transition-colors', mcpTransportTab === 'stdio' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')} onClick={() => { setMcpTransportTab('stdio'); setMcpJsonContent(MCP_STDIO_TEMPLATE); }}>{t('contextManagement.mcp.localTab', '本地 (Stdio)')}</button>
               <button type="button" className={cn('px-3 py-2 text-sm font-medium border-b-2 transition-colors', mcpTransportTab === 'http' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')} onClick={() => { setMcpTransportTab('http'); setMcpJsonContent(MCP_HTTP_TEMPLATE); }}>{t('contextManagement.mcp.remoteTab', '远程 (HTTP)')}</button>
+              <button type="button" className={cn('px-3 py-2 text-sm font-medium border-b-2 transition-colors', mcpTransportTab === 'sse' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')} onClick={() => { setMcpTransportTab('sse'); setMcpJsonContent(MCP_SSE_TEMPLATE); }}>{t('contextManagement.mcp.sseTab', '远程 (SSE)')}</button>
             </div>
             ) : null}
             <textarea
@@ -757,6 +793,57 @@ export function ContextManagementPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── MCP Tools Sheet ── */}
+      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); } }}>
+        <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/tools-sheet" defaultSize={560} minSize={420} maxSize={800}>
+          <SheetHeader className="border-b px-5 py-4">
+            <SheetTitle className="flex items-center gap-2">
+              <span className="truncate">{toolsSheetServer?.name ?? ''}</span>
+              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
+            </SheetTitle>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+            {toolsLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                正在获取工具列表…
+              </div>
+            ) : toolsError ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{toolsError}</div>
+            ) : toolsList && toolsList.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">该服务器未提供任何工具</div>
+            ) : toolsList ? (
+              <>
+                <p className="text-xs text-muted-foreground">共 {toolsList.length} 个工具</p>
+                <div className="space-y-2">
+                  {toolsList.map((tool) => (
+                    <div key={tool.name} className="rounded-lg border border-border/50 bg-card/40 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{tool.name}</p>
+                          {tool.description && (
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{tool.description}</p>
+                          )}
+                        </div>
+                      </div>
+                      {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">参数 Schema</summary>
+                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
+                        </details>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+          </div>
+          <SheetFooter className="border-t px-5 py-4">
+            <Button variant="outline" onClick={() => { setToolsSheetServer(null); setToolsList(null); setToolsError(null); }}>关闭</Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       {/* ── SKILL Sheet ── */}
       <Sheet open={skillSheetMode !== null} onOpenChange={(open) => { if (!open) setSkillSheetMode(null); }}>
@@ -1321,7 +1408,38 @@ const MCP_HTTP_TEMPLATE = `{
   }
 }`;
 
+const MCP_SSE_TEMPLATE = `{
+  /// Configure an MCP server using Server-Sent Events (SSE) transport
+  ///
+  /// The name of your SSE MCP server
+  "some-sse-server": {
+    /// The transport type — must be "sse"
+    "type": "sse",
+    /// The URL of the SSE MCP server endpoint
+    "url": "https://example.com/mcp/sse",
+    /// Any headers to send along
+    "headers": {
+      // "Authorization": "Bearer <token>"
+    }
+  }
+}`;
+
 function mcpServerToJson(s: McpServerVm): string {
+  if (s.transport === 'sse') {
+    const headers = s.headers?.length
+      ? s.headers.map((h) => `"${h.key}": "${h.value}"`).join(',\n      ')
+      : '// "Authorization": "Bearer <token>"';
+    return `{
+  /// Configure an MCP server using Server-Sent Events (SSE) transport
+  "${s.name}": {
+    "type": "sse",
+    "url": "${s.url ?? ''}",
+    "headers": {
+      ${headers}
+    }
+  }
+}`;
+  }
   if (s.transport === 'http') {
     const headers = s.headers?.length
       ? s.headers.map((h) => `"${h.key}": "${h.value}"`).join(',\n      ')

@@ -136,6 +136,7 @@ pub struct McpServerVm {
     pub env: Option<Vec<AgentEnvEntryVm>>,
     pub url: Option<String>,
     pub headers: Option<Vec<AgentEnvEntryVm>>,
+    pub managed: bool,
     pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
     pub health_message: Option<String>,
 }
@@ -5408,6 +5409,16 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                     Some(u.clone()),
                     Some(env_to_entries(h)),
                 ),
+                gold_band::config::McpTransportConfig::Sse {
+                    url: u, headers: h,
+                } => (
+                    "sse".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
             };
             McpServerVm {
                 id: s.id.clone(),
@@ -5419,6 +5430,7 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                 env,
                 url,
                 headers,
+                managed: s.managed,
                 health_status: None,
                 health_message: None,
             }

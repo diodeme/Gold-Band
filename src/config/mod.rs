@@ -335,6 +335,9 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(flatten)]
     pub transport: McpTransportConfig,
+    /// 托管服务器 — 用户不可编辑/删除，由系统自动管理
+    #[serde(default)]
+    pub managed: bool,
 }
 
 fn default_enabled() -> bool {
@@ -367,6 +370,11 @@ pub enum McpTransportConfig {
         /// 对标 Zed: OAuth 预注册客户端配置
         #[serde(skip_serializing_if = "Option::is_none")]
         oauth: Option<OAuthClientConfig>,
+    },
+    Sse {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
     },
 }
 

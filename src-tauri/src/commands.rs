@@ -3335,6 +3335,15 @@ pub fn check_mcp_server_health(
     app.check_mcp_server_health(&id).map_err(command_error)
 }
 
+#[tauri::command]
+pub fn list_mcp_tools(
+    state: State<'_, DesktopState>,
+    id: String,
+) -> CommandResult<Vec<gold_band::config::ToolInfo>> {
+    let app = state.app().map_err(command_error)?;
+    app.list_mcp_tools(&id).map_err(command_error)
+}
+
 // ── SKILL Commands ──
 
 #[tauri::command]

@@ -9,12 +9,24 @@
   "windowTitle": "maling",
   "identifier": "local.maling.desktop",
   "updaterEndpoint": "http://maling.example.com/api/file/download/latest.json",
-  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjQyQ0JEQUUxMUNFOApSV1RvSE9IYXkwS0NDeS9mS0hhblROeC9yVFNaR01HVUpvTVBQamg4NWVESjI2U3I0OUNzcjRlLwo=",
+  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4Q0UzODdGMjIzN0Y0OTMKUldTVDlEY2lmempPcUsxM0xiR1poRDFPV1lVdVN5MlM5dzNLVURCcXlUK3hGeFlWeXFwL2JwOHcK",
   "allowHttpUpdater": true,
   "bundleTargets": ["nsis"],
   "releaseBaseUrl": "http://maling.example.com/api/file/download",
   "metricsEnabled": true,
   "metricsToggleLocked": true,
   "metricsBaseUrl": "http://maling.example.com",
-  "metricsApiKey": ""
+  "metricsApiKey": "",
+  "builtinMcpServers": [
+    {
+      "id": "maling-code-graph",
+      "name": "码灵代码图谱",
+      "enabled": true,
+      "transport": {
+        "type": "sse",
+        "url": "http://maling.example.com/mcp/sse",
+        "headers": {}
+      }
+    }
+  ]
 }

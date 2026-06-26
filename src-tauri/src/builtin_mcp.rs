@@ -10,6 +10,8 @@ struct BuiltinMcpServerDef {
     #[serde(default = "default_enabled")]
     _enabled: bool,
     transport: BuiltinMcpTransportDef,
+    #[serde(default)]
+    help_message: Option<String>,
 }
 
 fn default_enabled() -> bool { true }
@@ -43,47 +45,38 @@ impl BuiltinMcpServerDef {
     fn to_mcp_json(&self) -> String {
         let id = self.id.as_str();
         let name = self.name.as_str();
-        match &self.transport {
+        let mut inner = match &self.transport {
             BuiltinMcpTransportDef::Stdio { command, args, env } => {
-                let mut map = serde_json::Map::new();
-                map.insert(
-                    id.to_owned(),
-                    serde_json::json!({
-                        "command": command,
-                        "args": args,
-                        "env": env,
-                        "name": name,
-                    }),
-                );
-                serde_json::to_string(&map).unwrap()
+                serde_json::json!({
+                    "command": command,
+                    "args": args,
+                    "env": env,
+                    "name": name,
+                })
             }
             BuiltinMcpTransportDef::Http { url, headers } => {
-                let mut map = serde_json::Map::new();
-                map.insert(
-                    id.to_owned(),
-                    serde_json::json!({
-                        "type": "http",
-                        "url": url,
-                        "headers": headers,
-                        "name": name,
-                    }),
-                );
-                serde_json::to_string(&map).unwrap()
+                serde_json::json!({
+                    "type": "http",
+                    "url": url,
+                    "headers": headers,
+                    "name": name,
+                })
             }
             BuiltinMcpTransportDef::Sse { url, headers } => {
-                let mut map = serde_json::Map::new();
-                map.insert(
-                    id.to_owned(),
-                    serde_json::json!({
-                        "type": "sse",
-                        "url": url,
-                        "headers": headers,
-                        "name": name,
-                    }),
-                );
-                serde_json::to_string(&map).unwrap()
+                serde_json::json!({
+                    "type": "sse",
+                    "url": url,
+                    "headers": headers,
+                    "name": name,
+                })
             }
+        };
+        if let Some(ref msg) = self.help_message {
+            inner["helpMessage"] = serde_json::json!(msg);
         }
+        let mut map = serde_json::Map::new();
+        map.insert(id.to_owned(), inner);
+        serde_json::to_string(&map).unwrap()
     }
 }
 

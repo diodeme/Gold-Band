@@ -1099,6 +1099,7 @@ export interface McpServerVm {
   url?: string | null;
   headers?: AgentEnvEntryVm[] | null;
   managed: boolean;
+  helpMessage?: string | null;
   healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null;
   healthMessage?: string | null;
 }

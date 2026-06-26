@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Stethoscope, Trash2, Wrench } from 'lucide-react';
+import { Check, ChevronsUpDown, Edit, Eye, Info, Loader2, Pencil, Plus, RefreshCw, Search, Stethoscope, Trash2, Wrench } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -527,6 +527,18 @@ export function ContextManagementPage() {
                         <span className="truncate text-sm font-semibold">{s.name}</span>
                         {s.managed && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">内置</Badge>}
                         <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{s.transport === 'stdio' ? 'Stdio' : s.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
+                        {s.helpMessage && (
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <button type="button" className="inline-flex shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="帮助信息">
+                                <Info className="size-3.5" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent side="top" align="start" className="max-w-72 text-xs leading-relaxed whitespace-pre-wrap">
+                              {s.helpMessage}
+                            </PopoverContent>
+                          </Popover>
+                        )}
                       </div>
                       <p className="truncate font-mono text-[11px] text-muted-foreground">{s.command ?? s.url ?? ''}</p>
                     </div>

@@ -137,6 +137,7 @@ pub struct McpServerVm {
     pub url: Option<String>,
     pub headers: Option<Vec<AgentEnvEntryVm>>,
     pub managed: bool,
+    pub help_message: Option<String>,
     pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
     pub health_message: Option<String>,
 }
@@ -5431,6 +5432,7 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                 url,
                 headers,
                 managed: s.managed,
+                help_message: s.help_message.clone(),
                 health_status: None,
                 health_message: None,
             }

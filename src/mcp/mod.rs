@@ -61,9 +61,10 @@ struct McpJsonEntry {
     headers: BTreeMap<String, String>,
     #[serde(default)]
     oauth: Option<OAuthClientConfig>,
-    /// 可选的展示名称，仅用于内置注入
     #[serde(default)]
     name: Option<String>,
+    #[serde(rename = "helpMessage", default)]
+    help_message: Option<String>,
 }
 
 impl McpManager {
@@ -125,13 +126,14 @@ impl McpManager {
         &self,
         json_content: &str,
     ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
-        let (id, transport, display_name) = parse_mcp_json(json_content)?;
+        let (id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: display_name.unwrap_or_else(|| id.clone()),
             id,
             enabled: true,
             transport,
             managed: false,
+            help_message,
         };
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
@@ -157,13 +159,14 @@ impl McpManager {
         &self,
         json_content: &str,
     ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
-        let (id, transport, display_name) = parse_mcp_json(json_content)?;
+        let (id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: display_name.unwrap_or_else(|| id.clone()),
             id,
             enabled: true,
             transport,
             managed: true,
+            help_message,
         };
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
@@ -200,13 +203,14 @@ impl McpManager {
                 "MCP server `{id}` is managed and cannot be modified"
             );
         }
-        let (new_id, transport, display_name) = parse_mcp_json(json_content)?;
+        let (new_id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
         let config = McpServerConfig {
             name: display_name.unwrap_or_else(|| new_id.clone()),
             id: new_id,
             enabled: true,
             transport,
             managed: false,
+            help_message,
         };
         let mut settings = self.load_settings()?;
         let mut servers = settings.context_servers.unwrap_or_default();
@@ -983,7 +987,7 @@ fn try_oauth_discovery(
 
 // ── JSON Parser（对标 Zed parse_input / parse_http_input） ──
 
-fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Option<String>)> {
+fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Option<String>, Option<String>)> {
     let stripped: String = json_content
         .lines()
         .filter(|line| !line.trim().starts_with("///"))
@@ -998,6 +1002,7 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Opt
     );
     let (id, entry) = value.into_iter().next().unwrap();
     let display_name = entry.name.filter(|n| !n.is_empty());
+    let help_message = entry.help_message.filter(|m| !m.is_empty());
     let transport = if let Some(url) = entry.url {
         match entry.transport_type.as_deref() {
             Some("sse") => McpTransportConfig::Sse {
@@ -1019,5 +1024,5 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Opt
             env: entry.env,
         }
     };
-    Ok((id, transport, display_name))
+    Ok((id, transport, display_name, help_message))
 }

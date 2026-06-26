@@ -9,7 +9,7 @@
   "windowTitle": "maling",
   "identifier": "local.maling.desktop",
   "updaterEndpoint": "http://maling.example.com/api/file/download/latest.json",
-  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4Q0UzODdGMjIzN0Y0OTMKUldTVDlEY2lmempPcUsxM0xiR1poRDFPV1lVdVN5MlM5dzNLVURCcXlUK3hGeFlWeXFwL2JwOHcK",
+  "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjQyQ0JEQUUxMUNFOApSV1RvSE9IYXkwS0NDeS9mS0hhblROeC9yVFNaR01HVUpvTVBQamg4NWVESjI2U3I0OUNzcjRlLwo=",
   "allowHttpUpdater": true,
   "bundleTargets": ["nsis"],
   "releaseBaseUrl": "http://maling.example.com/api/file/download",
@@ -21,6 +21,7 @@
     {
       "id": "maling-code-graph",
       "name": "码灵代码图谱",
+      "helpMessage": "码灵代码图谱提供代码搜索、调用链分析、节点详情等能力。\n\n接入方式：\n1. 在码灵代码图谱控制台(地址：http://maling.example.com/)接入项目\n2. 在 Agent 会话中通过工具直接调用",
       "enabled": true,
       "transport": {
         "type": "sse",

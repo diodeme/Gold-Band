@@ -335,9 +335,10 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(flatten)]
     pub transport: McpTransportConfig,
-    /// 托管服务器 — 用户不可编辑/删除，由系统自动管理
     #[serde(default)]
     pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_message: Option<String>,
 }
 
 fn default_enabled() -> bool {

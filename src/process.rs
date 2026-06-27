@@ -36,6 +36,11 @@ pub fn find_executable_in_paths(name: &str, path_var: Option<&OsStr>) -> Option<
     None
 }
 
+/// Creates a command for non-interactive background work.
+///
+/// Desktop runtime callers should use this for helper CLI processes such as Git,
+/// MCP stdio checks, and Windows shell fallbacks so the app does not surface a
+/// transient console window while the command runs.
 pub fn background_command(program: impl AsRef<OsStr>) -> ProcessCommand {
     let mut command = ProcessCommand::new(program);
     apply_background_process_flags(&mut command);

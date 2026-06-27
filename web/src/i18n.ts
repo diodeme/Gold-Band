@@ -808,6 +808,9 @@ const resources = {
         send: "发送",
         sending: "发送中",
         sendFailed: "发送失败",
+        hiddenRuntimeContext: "隐藏运行上下文",
+        hiddenStableSystemPrompt: "隐藏系统提示",
+        hiddenPromptCharacters: "{{count}} 字符",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -1985,6 +1988,9 @@ const resources = {
         send: "Send",
         sending: "Sending",
         sendFailed: "Send failed",
+        hiddenRuntimeContext: "Hidden runtime context",
+        hiddenStableSystemPrompt: "Hidden system prompt",
+        hiddenPromptCharacters: "{{count}} characters",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:

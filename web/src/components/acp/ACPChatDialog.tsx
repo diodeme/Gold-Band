@@ -294,6 +294,8 @@ const hiddenEventKinds = new Set([
   "modeUpdate",
   "configUpdate",
   "permissionRequest",
+  "elicitationRequest",
+  "elicitationResponse",
   "rawDiagnostic",
   "runtimeError",
 ]);
@@ -749,59 +751,7 @@ export const ACPChatDialog = forwardRef<
     () => createAcpSessionConfigViewModel(effective?.config),
     [effective?.config],
   );
-  // 实时 elicitation 上下文（含路由信息，来源于 live event，不依赖组件 props）
-  const [liveElicitationContexts, setLiveElicitationContexts] = useState<
-    Map<string, {
-      taskId: string;
-      runId: string;
-      roundId: string;
-      nodeId: string;
-      attemptId: string;
-      outerNodeId: string | null;
-      outerAttemptId: string | null;
-    }>
-  >(() => new Map());
-  const [liveElicitationEvents, setLiveElicitationEvents] = useState<AcpUiEventVm[]>([]);
-  useEffect(() => {
-    const acpTaskId = taskId;
-    const acpRunId = runId;
-    let stop: (() => void) | undefined;
-    subscribeAcpSessionUpdates((update) => {
-      if (update.taskId !== acpTaskId || update.runId !== acpRunId) return;
-      if (!update.event || update.event.kind !== "elicitationRequest") return;
-      setLiveElicitationContexts((prev) => {
-        const next = new Map(prev);
-        next.set(update.event!.id, {
-          taskId: update.taskId,
-          runId: update.runId,
-          roundId: update.roundId,
-          nodeId: update.nodeId,
-          attemptId: update.attemptId,
-          outerNodeId: update.outerNodeId ?? null,
-          outerAttemptId: update.outerAttemptId ?? null,
-        });
-        return next;
-      });
-      setLiveElicitationEvents((prev) => {
-        if (prev.some((e) => e.id === update.event!.id)) return prev;
-        return [...prev, update.event!];
-      });
-    })
-      .then((dispose) => { stop = dispose; })
-      .catch(() => {});
-    return () => { stop?.(); };
-  }, [taskId, runId]);
-  const effectiveEvents = useMemo(
-    () => {
-      const base = effective?.events ?? [];
-      if (liveElicitationEvents.length === 0) return base;
-      const existingIds = new Set(base.map((e) => e.id));
-      const newEvents = liveElicitationEvents.filter((e) => !existingIds.has(e.id));
-      if (newEvents.length === 0) return base;
-      return [...base, ...newEvents];
-    },
-    [effective?.events, liveElicitationEvents],
-  );
+  const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
   const localTurnInFlight = sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
@@ -1226,7 +1176,12 @@ export const ACPChatDialog = forwardRef<
       .map((event) => normalizeEventUpdate(event))
       .filter((event): event is AcpUiEventVm => {
         if (!event) return false;
-        return isRenderableEvent(event) || event.kind === "permissionRequest";
+        return (
+          isRenderableEvent(event) ||
+          event.kind === "permissionRequest" ||
+          event.kind === "elicitationRequest" ||
+          event.kind === "elicitationResponse"
+        );
       });
     if (normalizedUpdates.length === 0) return;
     setLoadedEvents((events) => {
@@ -2025,32 +1980,20 @@ export const ACPChatDialog = forwardRef<
       next.set(elicitationId, content ?? {});
       return next;
     });
-    // 优先使用 live event 中的路由信息（确保写入正确的 attempt dir），
-    // 回退到组件 props（静态 session prop 场景）
-    const ctx = liveElicitationContexts.get(elicitationId);
-    const effectiveTaskId = ctx?.taskId ?? taskId;
-    const effectiveRunId = ctx?.runId ?? runId;
-    const effectiveRoundId = ctx?.roundId ?? roundId;
-    const effectiveNodeId = ctx?.nodeId ?? nodeId;
-    const effectiveAttemptId = ctx?.attemptId ?? attemptId;
-    const effectiveOuterNodeId = ctx?.outerNodeId ?? outerNodeId;
-    const effectiveOuterAttemptId = ctx?.outerAttemptId ?? outerAttemptId;
     try {
       await respondElicitation(
         projectId,
-        effectiveTaskId,
-        effectiveRunId,
-        effectiveRoundId,
-        effectiveNodeId,
-        effectiveAttemptId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
         elicitationId,
         "accept",
         content ?? null,
-        effectiveOuterNodeId,
-        effectiveOuterAttemptId,
+        outerNodeId,
+        outerAttemptId,
       );
-      // 成功后清理 liveElicitationEvents 中的对应条目，避免无限累积
-      setLiveElicitationEvents((prev) => prev.filter((e) => e.id !== elicitationId));
     } catch {
       setAnsweredElicitations((current) => {
         const next = new Map(current);
@@ -4656,16 +4599,22 @@ interface PendingElicitationVm {
   confirmedContent?: Record<string, unknown> | null;
 }
 
-function pendingElicitationFromEvents(
+export function pendingElicitationFromEvents(
   events: AcpUiEventVm[],
   answeredElicitations: Map<string, Record<string, unknown>>,
 ): PendingElicitationVm | null {
+  const answeredIds = new Set(answeredElicitations.keys());
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
+    if (event.kind === "elicitationResponse") {
+      const elicitationId =
+        stringValue(rawObject(event.raw)?.elicitationId) ??
+        event.id.replace(/-response$/, "");
+      answeredIds.add(elicitationId);
+      continue;
+    }
     if (event.kind !== "elicitationRequest") continue;
-    // 已回答的 elicitation：用户选择已作为合成 userTextDelta 气泡显示在时间线中，
-    // 不需要再在底部展示确认卡片。
-    if (answeredElicitations.has(event.id)) return null;
+    if (answeredIds.has(event.id)) continue;
     if (event.status === "pending") {
       const raw = rawObject(event.raw) ?? {};
       const schema: ElicitationSchema =

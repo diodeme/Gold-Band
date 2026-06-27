@@ -14,6 +14,7 @@ pub use self::notification::{
 };
 
 use crate::acp::client as acp_client;
+use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
@@ -2379,7 +2380,9 @@ impl App {
     }
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
+        let decided_at = now_rfc3339_like();
+        let _ = cancel_pending_permission_requests(attempt_dir, decided_at.clone());
+        let _ = cancel_pending_elicitation_requests(attempt_dir, decided_at);
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {

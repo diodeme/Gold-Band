@@ -4,7 +4,7 @@ use gold_band::acp::events::{
     load_timeline_items, permission_decision_event, write_timeline_items,
 };
 use gold_band::acp::elicitation::{
-    ElicitationAction, write_elicitation_response,
+    ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests, write_permission_response,
@@ -2154,7 +2154,8 @@ fn stop_acp_session(
         locator.outer_node_id(),
         locator.outer_attempt_id(),
     );
-    cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+    cancel_pending_permission_requests(&attempt_dir, requested_at.clone()).map_err(command_error)?;
+    cancel_pending_elicitation_requests(&attempt_dir, requested_at).map_err(command_error)?;
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())

@@ -127,9 +127,12 @@ fn resolve_local_claude_executable_windows(path: Option<&str>) -> Option<PathBuf
             return Some(native);
         }
 
-        let npm_native = dir.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
-        if npm_native.is_file() {
-            return Some(npm_native);
+        let has_claude_shim = dir.join("claude.cmd").is_file() || dir.join("claude").is_file();
+        if has_claude_shim {
+            let npm_native = dir.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+            if npm_native.is_file() {
+                return Some(npm_native);
+            }
         }
     }
     None
@@ -259,6 +262,22 @@ mod tests {
         let resolved = resolve_local_claude_executable(path.to_str());
 
         assert_eq!(resolved, Some(npm_bin.join("claude.exe")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_requires_windows_shim_before_using_npm_binary() {
+        let temp = tempdir().unwrap();
+        let npm_bin = temp
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin");
+        fs::create_dir_all(&npm_bin).unwrap();
+        fs::write(npm_bin.join("claude.exe"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, None);
     }
 
     #[cfg(windows)]

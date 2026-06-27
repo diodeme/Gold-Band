@@ -5793,7 +5793,9 @@ fn validate_dynamic_completion(
     match &completion.next {
         DynamicNext::End => {}
         DynamicNext::Single { node } => {
-            errors.extend(validate_dynamic_node_spec(ctx, graph, source, node, 1));
+            errors.extend(validate_dynamic_node_spec(
+                ctx, graph, source, node, 1, false,
+            ));
         }
         DynamicNext::Fanout {
             group_id,
@@ -5889,6 +5891,7 @@ fn validate_dynamic_completion(
                     source,
                     node,
                     nodes.len(),
+                    true,
                 ));
             }
         }
@@ -5940,6 +5943,7 @@ fn validate_dynamic_node_spec(
     source: &DynamicNodeState,
     spec: &DynamicNodeSpec,
     additional_nodes: usize,
+    allow_worktree: bool,
 ) -> Vec<DynamicProposalValidationError> {
     let mut errors = Vec::new();
     let resumable_nodes = dynamic_resumable_session_nodes(graph, source);
@@ -6004,12 +6008,11 @@ fn validate_dynamic_node_spec(
         ));
     }
     if spec.workspace.mode == WorkspaceMode::Worktree {
-        let capability = dynamic_workspace_capability(ctx);
-        if !capability.supports_worktree {
+        if !allow_worktree {
             let mut error = dynamic_validation_error(
-                "dynamic.node.workspace.worktree-git-required",
+                "dynamic.node.workspace.single-worktree-unsupported",
                 format!(
-                    "dynamic node `{}` cannot use workspace.mode=worktree because the current workspace cannot create git worktrees",
+                    "dynamic single node `{}` cannot use workspace.mode=worktree because no merge/acceptance node will merge it back",
                     spec.id
                 ),
                 serde_json::json!({
@@ -6017,16 +6020,37 @@ fn validate_dynamic_node_spec(
                     "field": "workspace.mode",
                     "actual": "worktree",
                     "expected": "readonly or main",
-                    "workspacePath": ctx.app.paths.repo_root,
-                    "reasonCode": capability.reason_code,
-                    "reason": capability.reason,
                 }),
             );
             error.allowed_values = vec!["readonly".to_string(), "main".to_string()];
             error.suggestion = Some(
-                "replace writable parallel fan-out with serial main workspace work, or ask the user to initialize Git before using worktree fan-out".to_string(),
+                "use next.type=\"fanout\" with merge and acceptance for worktree branches, or keep this single successor on readonly/main".to_string(),
             );
             errors.push(error);
+        } else {
+            let capability = dynamic_workspace_capability(ctx);
+            if !capability.supports_worktree {
+                let suggestion = "replace writable parallel fan-out with serial main workspace work, or ask the user to initialize Git before using worktree fan-out";
+                let mut error = dynamic_validation_error(
+                    "dynamic.node.workspace.worktree-git-required",
+                    format!(
+                        "dynamic node `{}` cannot use workspace.mode=worktree because the current workspace cannot create git worktrees",
+                        spec.id
+                    ),
+                    serde_json::json!({
+                        "nodeId": spec.id,
+                        "field": "workspace.mode",
+                        "actual": "worktree",
+                        "expected": "readonly or main",
+                        "workspacePath": ctx.app.paths.repo_root,
+                        "reasonCode": capability.reason_code,
+                        "reason": capability.reason,
+                    }),
+                );
+                error.allowed_values = vec!["readonly".to_string(), "main".to_string()];
+                error.suggestion = Some(suggestion.to_string());
+                errors.push(error);
+            }
         }
     }
     for dependency in &spec.depends_on {
@@ -9752,8 +9776,8 @@ mod tests {
             ..valid.clone()
         };
 
-        assert!(validate_dynamic_node_spec(&ctx, &graph, &source, &valid, 1).is_empty());
-        let errors = validate_dynamic_node_spec(&ctx, &graph, &source, &invalid, 1);
+        assert!(validate_dynamic_node_spec(&ctx, &graph, &source, &valid, 1, true).is_empty());
+        let errors = validate_dynamic_node_spec(&ctx, &graph, &source, &invalid, 1, true);
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "dynamic.node.model.unsupported");

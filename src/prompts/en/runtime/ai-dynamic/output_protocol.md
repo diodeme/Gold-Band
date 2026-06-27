@@ -21,6 +21,7 @@ Constraint reminders:
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
+- Do not use `workspace.mode="worktree"` on a `next.type="single"` node; only `fanout` branches may use worktrees because runtime only creates merge / acceptance after fanout.
 - When `next.type="fanout"`, you must provide `groupId / nodes / merge / acceptance` together.
 - `profile` is only allowed on worker nodes and is optional. If present, use an ID from the schema enum or the ID after `profileId=...` in this prompt, not the displayName.
 - Do not output `profile` for `merge` / `acceptance`; runtime uses the built-in AI-DYNAMIC merge / acceptance prompts.

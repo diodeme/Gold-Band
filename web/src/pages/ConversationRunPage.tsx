@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
-import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
@@ -379,6 +378,8 @@ export function ConversationRunPage({
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
+            allArtifacts={run.artifacts}
+            allAttachments={run.attachments}
             usageCompact
           />
         ) : (
@@ -388,14 +389,6 @@ export function ConversationRunPage({
           />
         )}
       </div>
-
-      {/* Assets bar — inside flex container so it's visible */}
-      <ConversationAssetsBar
-        artifacts={selectedArtifacts}
-        attachments={selectedAttachments}
-        onOpenArtifact={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
-        onOpenAttachment={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
-      />
 
       {/* Rerun confirmation dialog */}
       <AlertDialog open={rerunConfirmOpen} onOpenChange={setRerunConfirmOpen}>

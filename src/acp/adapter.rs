@@ -52,13 +52,9 @@ pub fn spawn_adapter(
         command.env(key, value);
     }
     if use_local_claude && !resolved_env.contains_key("CLAUDE_CODE_EXECUTABLE") {
-        #[cfg(windows)]
-        let claude_exe =
-            find_executable_in_paths("claude.exe", resolved_env.get("PATH").map(OsStr::new));
-        #[cfg(not(windows))]
-        let claude_exe =
-            find_executable_in_paths("claude", resolved_env.get("PATH").map(OsStr::new));
-        if let Some(claude_path) = claude_exe {
+        if let Some(claude_path) =
+            resolve_local_claude_executable(resolved_env.get("PATH").map(String::as_str))
+        {
             command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
         }
     }
@@ -109,6 +105,34 @@ fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
     find_executable_in_paths(command, path.map(OsStr::new))
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| command.to_string())
+}
+
+fn resolve_local_claude_executable(path: Option<&str>) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        resolve_local_claude_executable_windows(path)
+    }
+    #[cfg(not(windows))]
+    {
+        find_executable_in_paths("claude", path.map(OsStr::new))
+    }
+}
+
+#[cfg(windows)]
+fn resolve_local_claude_executable_windows(path: Option<&str>) -> Option<PathBuf> {
+    let path_var = path?;
+    for dir in std::env::split_paths(OsStr::new(path_var)) {
+        let native = dir.join("claude.exe");
+        if native.is_file() {
+            return Some(native);
+        }
+
+        let npm_native = dir.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        if npm_native.is_file() {
+            return Some(npm_native);
+        }
+    }
+    None
 }
 
 fn augment_path_with_dirs(base_path: Option<&str>, suggested_dirs: &[PathBuf]) -> Option<String> {
@@ -174,8 +198,8 @@ fn command_requires_path_lookup(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        augment_path_with_dirs, resolve_command_with_path, spawn_adapter,
-        suggested_path_dirs_with_home,
+        augment_path_with_dirs, resolve_command_with_path, resolve_local_claude_executable,
+        spawn_adapter, suggested_path_dirs_with_home,
     };
     use crate::config::AcpAdapterConfig;
     use std::fs;
@@ -203,6 +227,63 @@ mod tests {
         let resolved = resolve_command_with_path("npx", Some(path.as_str()));
 
         assert_eq!(resolved, adapter_bin.join("npx").to_string_lossy());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_prefers_native_exe_on_windows() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("claude.exe"), "").unwrap();
+        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        fs::write(temp.path().join("claude"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, Some(temp.path().join("claude.exe")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_resolves_npm_package_binary_on_windows() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        fs::write(temp.path().join("claude"), "").unwrap();
+        let npm_bin = temp
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin");
+        fs::create_dir_all(&npm_bin).unwrap();
+        fs::write(npm_bin.join("claude.exe"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, Some(npm_bin.join("claude.exe")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_skips_windows_shims_without_native_binary() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        fs::write(temp.path().join("claude"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_claude_uses_path_entry_on_unix() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("claude"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, Some(temp.path().join("claude")));
     }
 
     #[test]

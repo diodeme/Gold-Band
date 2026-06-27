@@ -338,7 +338,7 @@ const isElicitationAnswer = rawObject(event.raw)?.elicitationAnswer === true;
 
 #### 问题
 
-`ELICITATION_DEFAULT_TIMEOUT` 硬编码为 `Duration::from_secs(300)`（5分钟）。
+`ELICITATION_DEFAULT_TIMEOUT` 当前为 `Duration::MAX`，ACP runtime 默认持续等待直到用户响应或运行被取消。
 
 #### Claude Code 的做法
 

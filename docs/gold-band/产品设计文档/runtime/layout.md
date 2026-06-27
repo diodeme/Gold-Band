@@ -296,6 +296,8 @@ attempt-001/
   acp.diagnostics.jsonl
   acp.permission-request.<id>.json
   acp.permission-response.<id>.json
+  acp.elicitation-request.<id>.json
+  acp.elicitation-response.<id>.json
   progress.events.jsonl       # legacy 观测文件，仅历史兼容
   raw.stream.jsonl             # legacy 观测文件，仅历史兼容
   artifacts/
@@ -323,6 +325,7 @@ attempt-001/
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
 - `acp.session.json` / `acp.events.jsonl`：仅历史旧会话可能存在，供 legacy reader 兼容读取
 - permission request / response 文件：文件名中的 `<id>` 必须使用 ACP JSON-RPC `session/request_permission` 的原始 request id。UI timeline 为了展示可使用 `permission-<id>` 这类稳定 item id，但响应文件、pending 文件和 VM `requestId` 都不能使用展示 id，否则 agent runtime 无法消费用户决策。
+- elicitation request / response 文件：`acp.elicitation-request.<id>.json` 与 `acp.elicitation-response.<id>.json` 用于 ACP `elicitation/create` 的阻塞式表单交互。后端 runtime 通过轮询响应文件解除等待，并在消费响应后自行持久化 `elicitationResponse` timeline 事件；前端命令侧只负责写响应文件，不直接改 timeline，避免与 runtime 内存态持久化互相覆盖。
 
 #### session identity
 

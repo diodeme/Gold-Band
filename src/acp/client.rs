@@ -1804,6 +1804,18 @@ impl<'a> AcpRuntime<'a> {
         self.append_outbound_frame(&response_frame)?;
         self.connection.send_response(rpc_id, result)?;
 
+        self.seq += 1;
+        let response_event = crate::acp::events::elicitation_response_event(
+            self.seq,
+            elicitation_id.clone(),
+            match response.action {
+                crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
+                crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+            },
+            response.content.clone(),
+        );
+        self.persist_event(&response_event)?;
+
         // 5. 将用户回答格式化为可读文本，作为 userTextDelta 事件写入 timeline
         //    这样前端无需合成事件，直接走正常消息渲染管道：用户头像 + 右侧气泡
         self.seq += 1;

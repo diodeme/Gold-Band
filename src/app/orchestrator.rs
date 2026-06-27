@@ -11,6 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use jsonschema::JSONSchema;
 use jsonschema::error::{ValidationError, ValidationErrorKind};
 
+use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -1497,7 +1498,9 @@ fn teardown_node_environment_best_effort(
     let attempt_dir =
         app.paths
             .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    let _ = cancel_pending_permission_requests(&attempt_dir, now_rfc3339_like());
+    let decided_at = now_rfc3339_like();
+    let _ = cancel_pending_permission_requests(&attempt_dir, decided_at.clone());
+    let _ = cancel_pending_elicitation_requests(&attempt_dir, decided_at);
     let pid_path =
         app.paths
             .provider_pid_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   mergeAcpEvents,
+  pendingElicitationFromEvents,
   pendingPermissionFromEvents,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../src/types';
@@ -64,6 +65,43 @@ describe('ACP chat event handling', () => {
 
     expect(pendingPermissionFromEvents(events, new Set())?.requestId).toBe('0');
     expect(pendingPermissionFromEvents(events, new Set(['0']))).toBeNull();
+  });
+
+  it('does not surface answered elicitation requests after a response event arrives', () => {
+    const events = [
+      event({
+        id: 'elicit-1',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Choose one',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-1-response',
+        seq: 11,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-1', action: 'accept' },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toBeNull();
+  });
+
+  it('keeps unanswered elicitation requests pending until a response event exists', () => {
+    const events = [
+      event({
+        id: 'elicit-2',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Choose one',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
   });
 
   it('keeps tool call updates merged by tool id', () => {

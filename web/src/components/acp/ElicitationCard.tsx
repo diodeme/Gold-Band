@@ -58,23 +58,32 @@ function formatConfirmedChoice(
 }
 
 /** 从 message 中提取当前步骤对应的单条问题文本 */
-function stepMessage(
+export function stepMessage(
   message: string,
   fieldTitle: string | undefined,
-  _index: number,
+  index: number,
+  fallback: string,
 ): string {
+  const title = fieldTitle?.trim();
+  if (title) return title;
+
   // 尝试从 message 中按换行拆分，匹配当前步骤
-  const lines = message.split("\n").filter((l) => l.trim());
+  const trimmedMessage = message.trim();
+  const lines = trimmedMessage.split("\n").map((l) => l.trim()).filter(Boolean);
   if (lines.length > 0) {
-    // 如果 field 有 title，优先匹配包含 title 的行
-    if (fieldTitle) {
-      const match = lines.find((l) => l.includes(fieldTitle));
-      if (match) return match;
-    }
-    // 如果只有一行，直接返回
-    if (lines.length === 1) return lines[0];
+    if (lines[index] && !isGenericElicitationMessage(lines[index])) return lines[index];
+    if (lines.length === 1 && !isGenericElicitationMessage(lines[0])) return lines[0];
   }
-  return message;
+  if (trimmedMessage && !isGenericElicitationMessage(trimmedMessage)) return trimmedMessage;
+  return fallback;
+}
+
+function isGenericElicitationMessage(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "please answer the following questions." ||
+    normalized === "please answer the following questions"
+  );
 }
 
 export function ElicitationCard({
@@ -258,9 +267,14 @@ export function ElicitationCard({
   }
 
   const actionLabel = isLastStep
-    ? t("elicitation.submit", "提交")
-    : t("elicitation.next", "下一步");
-  const questionText = stepMessage(message, currentField.title, currentStep);
+    ? t("acp.elicitation.submit", "提交")
+    : t("acp.elicitation.next", "下一步");
+  const questionText = stepMessage(
+    message,
+    currentField.title ?? currentField.description,
+    currentStep,
+    t("acp.elicitation.questionFallback", "请选择一个答案"),
+  );
 
   // ── 进度指示器 ──
   const ProgressDots = isMultiStep ? (
@@ -279,7 +293,7 @@ export function ElicitationCard({
         />
       ))}
       <span className="text-[10px] text-muted-foreground ml-1">
-        {t("elicitation.step", { current: currentStep + 1, total: fields.length })}
+        {t("acp.elicitation.step", { current: currentStep + 1, total: fields.length })}
       </span>
     </div>
   ) : null;
@@ -295,7 +309,7 @@ export function ElicitationCard({
         )}
       >
         <ChevronLeft className="size-3" />
-        {t("elicitation.back", "返回")}
+        {t("acp.elicitation.back", "返回")}
       </button>
     ) : null;
 
@@ -329,19 +343,19 @@ export function ElicitationCard({
                 <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
                   className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground transition-colors",
                     "hover:border-primary hover:text-foreground")}
-                ><Pencil className="size-4" /><span>{t("elicitation.customPlaceholder", "其他答案...")}</span></button>
+                ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
               )}
             </>) : (
               <div className="space-y-2">
                 <button type="button" onClick={() => { setCustomActive(false); setCustomText(""); }}
                   className={cn("text-xs text-muted-foreground hover:text-foreground transition-colors")}
-                >← {t("elicitation.backToOptions", "返回选项")}</button>
+                >← {t("acp.elicitation.backToOptions", "返回选项")}</button>
                 <div className="flex gap-2">
                   <Input autoFocus value={customText}
                     onChange={(e) => setCustomText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && customText.trim()) {
                       handleStepSubmit(customText.trim(), currentField.customVariantKey); }}}
-                    placeholder={currentField.customVariantDescription || t("elicitation.customPlaceholder", "输入答案后按回车...")}
+                    placeholder={currentField.customVariantDescription || t("acp.elicitation.customPlaceholder", "输入答案后按回车...")}
                     className="flex-1" />
                 </div>
               </div>
@@ -409,7 +423,7 @@ export function ElicitationCard({
                 <Pencil className="size-4" />
                 <span>
                   {currentField.title ||
-                    t("elicitation.customPlaceholder", "其他答案...")}
+                    t("acp.elicitation.customPlaceholder", "其他答案...")}
                 </span>
               </button>
             ) : (
@@ -426,7 +440,7 @@ export function ElicitationCard({
                   placeholder={
                     currentField.description ||
                     t(
-                      "elicitation.customPlaceholder",
+                      "acp.elicitation.customPlaceholder",
                       "输入你的答案后按回车...",
                     )
                   }
@@ -450,7 +464,7 @@ export function ElicitationCard({
                   "text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1",
                 )}
               >
-                {t("elicitation.skip", "跳过")}
+                {t("acp.elicitation.skip", "跳过")}
               </button>
             )}
 

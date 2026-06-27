@@ -30,7 +30,7 @@ Gold Band 核心 runtime 不应直接了解：
 
 Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@latest` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
 
-用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`，其次识别 npm 全局目录下 `node_modules/@anthropic-ai/claude-code/bin/claude.exe`；若只存在 `claude` / `claude.cmd` 且无法定位包内原生 binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找 `claude`。
+用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`；若 PATH 目录暴露了 `claude.cmd` 或 extensionless `claude`，则按标准 npm global prefix 结构查找同 prefix 下的 `node_modules/@anthropic-ai/claude-code/bin/claude.exe`；若无法定位包内原生 binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找 `claude`。
 
 ### 项目级 app config
 项目内需要版本控制的共享运行配置，统一放在仓库根目录 `configs/app-config.json`。

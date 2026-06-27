@@ -92,6 +92,7 @@ import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-servic
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
+import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
 import {
   attemptIdFromAcpEvent,
   isAcpAttemptSeparator,
@@ -3494,20 +3495,23 @@ const MessageBubble = memo(function MessageBubble({
         <AcpAvatarWithTime tone="assistant" timestamp={event.timestamp} />
       ) : null}
       <div
-        className={cn("min-w-0 max-w-[82%] space-y-1", isUser && "items-end")}
+        className={cn(
+          "min-w-0 max-w-[82%] space-y-1",
+          isUser && "flex flex-col items-end",
+        )}
       >
         <MessageContent
           className={cn(
             "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
             isUser
-              ? "whitespace-pre-wrap rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+              ? "w-fit max-w-full rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
               : "rounded-bl-md border-border/70 bg-card text-card-foreground",
             failed &&
               "border border-destructive/40 bg-destructive/10 text-destructive",
           )}
         >
           {isUser ? (
-            event.content
+            <HiddenPromptMessageContent content={event.content ?? ""} />
           ) : streamingDraft ? (
             <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
           ) : (

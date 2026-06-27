@@ -136,7 +136,11 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - 用户通过 prompt-kit `PromptInput` 输入 prompt 或回答 agent 的自由文本问题。
 - 发送后立即清空 composer 并乐观生成右侧用户消息，同时调用下一次 ACP `session/prompt`。
 - 每次 Gold Band 用户输入（包括 round 顶部“继续运行”触发的本地化 `继续/Continue`）都要生成新的 prompt identity，并同时写入乐观用户气泡与后端 synthetic `goldBandPrompt` 事件元数据；同文本历史 prompt 不得复用同一 identity。
-- ACP client 在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，确保初始 prompt 和后续继续输入都作为右侧用户消息出现在会话流中；只展示用户 prompt，不展示 system prompt。
+- ACP client 在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，确保初始 prompt 和后续继续输入都作为右侧用户消息出现在会话流中；稳定 system prompt 只在不支持 system prompt 的 provider 降级场景中作为 Gold Band hidden 段进入 user prompt。
+- Task-level input attachments 是新 ACP session 的初始化上下文，只随 `SessionMode::New` 首次发送；同一个 session 内 resume/continue 不自动重发这些 task inputs，也不在后续用户气泡下重复展示。用户在 composer 中本轮显式选择的附件仍作为本轮 same-session prompt attachments 单独发送和展示。
+- Gold Band 生成的 `<hidden data-gold-band-hidden="true">` 段在用户气泡内默认折叠，hidden 段和可见 requirement/goal 保持在同一个 user bubble 中，不拆成独立消息；展开后展示原文，再次点击收起。hidden 后面的可见片段只在展示层去掉开头换行，避免折叠块和正文间距被 prompt 模板空行放大；真实 prompt 内容和事件记录不变。普通用户手写的 `<hidden>` 文本不折叠。
+- 用户在已停止 / 已完成 ACP session 中手动追问时属于普通 user message，后端直接发送用户原文，不注入 Gold Band hidden runtime context，也不包装成 `# Goal`。
+- 当前 run 因 `process-interrupted` 暂停且用户在 composer 中输入补充内容时，提交仍走 runtime `continue` 主链路而不是普通 ACP prompt；但 `run_continue()` 必须把这类“停止后用户继续”判定为 `UserMessage` 渲染语义，只把用户原文发送给 provider。只有 workflow 自身恢复执行、没有用户显式追问时，才判定为 `WorkflowResume` 并发送 hidden runtime context + `# Goal`。
 - 当 node 处于 `waiting_for_user_input`、permission pending、adapter disconnected 等状态时，composer 应显示明确状态。
 - 当 ACP session 处于 pending/running/cancelling 等 active 状态时，composer 展示 Stop action，普通 Send 禁用；Stop 请求只取消当前 ACP adapter prompt。AI-DYNAMIC 内部 leaf 的运行事实以 dynamic leaf workflow 状态为准，ACP `cancelled` 只代表聊天会话传输事实，不得让前端或命令层把 live running sibling 推成 paused。
 - 若 Stop 发生在本地 optimistic prompt 已创建、但后端真实 `userTextDelta` 尚未写入之前，前端必须立即移除该 optimistic prompt 并释放其发送锁；未被后端接受的取消 prompt 不得永久停留在“发送中”。`runtime-continue-started` 与普通发送不同：该返回值即表示后端已接受继续命令，即使 `session` 为 `null`，前端也要把本次 optimistic prompt 从 `sending` 转为 accepted/completed 并清理 `awaitingResponse`，不能继续等待 ACP echo 才解除发送锁。

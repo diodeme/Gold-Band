@@ -37,8 +37,8 @@ use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, provider_capabilities, provider_from_agent, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    ProviderInfo, UserPromptRenderMode, provider_capabilities, provider_from_agent,
+    render_prompt_bundle, supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -2497,6 +2497,7 @@ impl App {
             Some(prompt),
             prompt_id,
             PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
         )?;
         render_prompt_bundle(&invocation)
     }

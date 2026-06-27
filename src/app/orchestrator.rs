@@ -50,7 +50,7 @@ use crate::prompts::{
 };
 use crate::provider::{
     PromptBundle, PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
-    ProviderRunStatus, StreamMode, WorkerInvocation, render_prompt_bundle,
+    ProviderRunStatus, StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -217,6 +217,21 @@ fn continue_prompt_or_default(language: DesktopLanguage, prompt: Option<String>)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| localized_continue_prompt(language))
+}
+
+fn user_prompt_render_mode_for_continue(prompt: Option<&str>) -> UserPromptRenderMode {
+    if prompt.is_some_and(|value| !value.trim().is_empty()) {
+        UserPromptRenderMode::UserMessage
+    } else {
+        UserPromptRenderMode::WorkflowResume
+    }
+}
+
+fn workflow_user_prompt_render_mode_for_session(session_mode: SessionMode) -> UserPromptRenderMode {
+    match session_mode {
+        SessionMode::New => UserPromptRenderMode::RequirementTask,
+        SessionMode::Continue => UserPromptRenderMode::WorkflowResume,
+    }
 }
 
 fn output_schema_for_node<'a>(
@@ -771,6 +786,9 @@ pub(crate) fn run_continue(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
+        initial_user_prompt_render_mode,
+        initial_parent_continue_prompt,
+        initial_parent_continue_prompt_id,
     ) = match node.status {
         RunStatus::Paused => {
             if !is_run_continuable(&run) {
@@ -779,8 +797,22 @@ pub(crate) fn run_continue(
             if node.manual_check_pending {
                 bail!("current attempt is waiting for manual check");
             }
+            let user_prompt_render_mode = user_prompt_render_mode_for_continue(prompt.as_deref());
             match validated.get_node(&node.node_id) {
-                Some(NodeDsl::AiDynamic(_)) => (SessionMode::Continue, None, None, None),
+                Some(NodeDsl::AiDynamic(_)) => {
+                    let parent_continue_prompt = prompt
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty());
+                    (
+                        SessionMode::Continue,
+                        None,
+                        None,
+                        None,
+                        user_prompt_render_mode,
+                        parent_continue_prompt,
+                        prompt_id,
+                    )
+                }
                 _ => {
                     let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                         task_id,
@@ -793,21 +825,31 @@ pub(crate) fn run_continue(
                     .ok_or_else(|| {
                         anyhow::anyhow!("current attempt has no ACP continue reference")
                     })?;
+                    let resume_prompt =
+                        continue_prompt_or_default(app.config.desktop_language, prompt);
                     (
                         SessionMode::Continue,
                         Some(continue_ref),
-                        Some(continue_prompt_or_default(
-                            app.config.desktop_language,
-                            prompt,
-                        )),
+                        Some(resume_prompt),
                         prompt_id,
+                        user_prompt_render_mode,
+                        None,
+                        None,
                     )
                 }
             }
         }
         RunStatus::Completed if node.outcome == Some(NodeOutcome::Invalid) => {
             node = re_evaluate_attempt(app, task_id, &run.id, &round.id, node)?;
-            (SessionMode::New, None, None, None)
+            (
+                SessionMode::New,
+                None,
+                None,
+                None,
+                UserPromptRenderMode::RequirementTask,
+                None,
+                None,
+            )
         }
         _ => bail!("current attempt is not continuable"),
     };
@@ -824,6 +866,9 @@ pub(crate) fn run_continue(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
+        initial_user_prompt_render_mode,
+        initial_parent_continue_prompt,
+        initial_parent_continue_prompt_id,
         None,
     )?;
     Ok(run)
@@ -874,7 +919,8 @@ pub(crate) fn run_continue_dynamic_inner(
         outer_node_id,
         outer_attempt_id,
     ))?;
-    let resume_prompt = continue_prompt_or_default(app.config.desktop_language, Some(prompt));
+    let user_prompt_render_mode = user_prompt_render_mode_for_continue(Some(prompt.as_str()));
+    let resume_prompt = prompt.trim().to_string();
     let resume_override = DynamicResumeOverride {
         node_id: dynamic_node_id.to_string(),
         attempt_id: dynamic_attempt_id.to_string(),
@@ -940,6 +986,9 @@ pub(crate) fn run_continue_dynamic_inner(
         outer_node,
         SessionMode::Continue,
         None,
+        None,
+        None,
+        user_prompt_render_mode,
         None,
         None,
         Some(resume_override),
@@ -1178,6 +1227,9 @@ pub(crate) fn submit_manual_check(
             next.node,
             next.session_mode,
             next.continue_ref,
+            None,
+            None,
+            workflow_user_prompt_render_mode_for_session(next.session_mode),
             None,
             None,
             None,
@@ -2163,6 +2215,9 @@ pub(crate) fn drive_from_node(
         None,
         None,
         None,
+        UserPromptRenderMode::RequirementTask,
+        None,
+        None,
         None,
     )
 }
@@ -2180,6 +2235,8 @@ struct DynamicExecutionContext<'a> {
     run_uuid: Option<&'a str>,
     round_uuid: Option<&'a str>,
     outer_node_uuid: Option<&'a str>,
+    parent_continue_prompt: Option<String>,
+    parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 }
 
@@ -3139,6 +3196,8 @@ fn execute_ai_dynamic_node(
     attempt_id: &str,
     dynamic: &AiDynamicNode,
     mut outer_node: NodeState,
+    parent_continue_prompt: Option<String>,
+    parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<NodeState> {
     let mut ctx = DynamicExecutionContext {
@@ -3153,6 +3212,8 @@ fn execute_ai_dynamic_node(
         run_uuid: run.uuid.as_deref(),
         round_uuid: round.uuid.as_deref(),
         outer_node_uuid: outer_node.uuid.as_deref(),
+        parent_continue_prompt,
+        parent_continue_prompt_id,
         resume_override,
     };
     let mut graph = load_or_create_dynamic_graph(&ctx)?;
@@ -3661,6 +3722,8 @@ fn launch_ready_dynamic_nodes(
         let run_uuid = ctx.run_uuid.map(|s| s.to_string());
         let round_uuid = ctx.round_uuid.map(|s| s.to_string());
         let outer_node_uuid = ctx.outer_node_uuid.map(|s| s.to_string());
+        let parent_continue_prompt = ctx.parent_continue_prompt.clone();
+        let parent_continue_prompt_id = ctx.parent_continue_prompt_id.clone();
         let resume_override = launch_resume_overrides
             .iter()
             .rposition(|resume| resume.node_id == node_id_for_job)
@@ -3683,6 +3746,8 @@ fn launch_ready_dynamic_nodes(
                     run_uuid.as_deref(),
                     round_uuid.as_deref(),
                     outer_node_uuid.as_deref(),
+                    parent_continue_prompt,
+                    parent_continue_prompt_id,
                     resume_override,
                 )
             }))
@@ -4051,6 +4116,8 @@ fn execute_dynamic_node_job(
     run_uuid: Option<&str>,
     round_uuid: Option<&str>,
     outer_node_uuid: Option<&str>,
+    parent_continue_prompt: Option<String>,
+    parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<DynamicExecutionResult> {
     append_dynamic_event_for_ids_best_effort(
@@ -4094,6 +4161,8 @@ fn execute_dynamic_node_job(
         run_uuid,
         round_uuid,
         outer_node_uuid,
+        parent_continue_prompt,
+        parent_continue_prompt_id,
         resume_override,
     };
     dynamic_event_best_effort(
@@ -4298,6 +4367,11 @@ fn execute_dynamic_worker(
         resume_input_attachment_paths = resume.attachment_paths.clone();
     }
     let mut resume_prompt_visibility = PromptVisibility::Visible;
+    let mut user_prompt_render_mode = if let Some(resume) = ctx.resume_override.as_ref() {
+        user_prompt_render_mode_for_continue(Some(resume.prompt.as_str()))
+    } else {
+        workflow_user_prompt_render_mode_for_session(session_mode)
+    };
     let mut proposals = Vec::new();
 
     loop {
@@ -4348,6 +4422,7 @@ fn execute_dynamic_worker(
             resume_prompt.take(),
             resume_prompt_id.take(),
             resume_prompt_visibility,
+            user_prompt_render_mode,
             resume_input_attachment_paths.clone(),
         )
         .with_context(|| {
@@ -4542,6 +4617,7 @@ fn execute_dynamic_worker(
                     &validation_errors,
                 ));
                 resume_prompt_visibility = PromptVisibility::Hidden;
+                user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
@@ -4595,6 +4671,7 @@ fn execute_dynamic_worker(
                     None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
                 });
                 resume_prompt_visibility = PromptVisibility::Hidden;
+                user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
@@ -4715,6 +4792,7 @@ fn execute_dynamic_agent_stage(
         resume_prompt,
         None,
         PromptVisibility::Visible,
+        workflow_user_prompt_render_mode_for_session(session_mode),
         Vec::new(),
     )?;
     dynamic_event_best_effort(
@@ -4874,9 +4952,30 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     let child_run = match node.child_run_id.as_deref() {
-        Some(child_run_id) => ctx
-            .app
-            .run_continue(ctx.task_id, child_run_id, None, None)?,
+        Some(child_run_id) => {
+            if let Some(resume) = ctx
+                .resume_override
+                .as_ref()
+                .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
+            {
+                ctx.app.run_continue(
+                    ctx.task_id,
+                    child_run_id,
+                    resume.prompt_id.clone(),
+                    Some(resume.prompt.clone()),
+                )?
+            } else if ctx.parent_continue_prompt.is_some() {
+                ctx.app.run_continue(
+                    ctx.task_id,
+                    child_run_id,
+                    ctx.parent_continue_prompt_id.clone(),
+                    ctx.parent_continue_prompt.clone(),
+                )?
+            } else {
+                ctx.app
+                    .run_continue(ctx.task_id, child_run_id, None, None)?
+            }
+        }
         None => ctx
             .app
             .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
@@ -7087,6 +7186,8 @@ pub(crate) fn build_dynamic_prompt_bundle(
         run_uuid: None,
         round_uuid: None,
         outer_node_uuid: None,
+        parent_continue_prompt: None,
+        parent_continue_prompt_id: None,
         resume_override: None,
     };
     let output_contract = match node.kind {
@@ -7110,6 +7211,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         Some(prompt),
         prompt_id,
         PromptVisibility::Visible,
+        UserPromptRenderMode::UserMessage,
         Vec::new(),
     )?;
     render_prompt_bundle(&invocation)
@@ -7126,6 +7228,7 @@ fn build_dynamic_worker_invocation(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
 ) -> Result<WorkerInvocation> {
     let step_started_at =
@@ -7323,7 +7426,11 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "input_attachment_paths");
-    let mut input_attachment_paths = super::task_input_attachment_paths(ctx.app, ctx.task_id);
+    let mut input_attachment_paths = if matches!(session_mode, SessionMode::New) {
+        super::task_input_attachment_paths(ctx.app, ctx.task_id)
+    } else {
+        Vec::new()
+    };
     input_attachment_paths.extend(resume_input_attachment_paths);
     dynamic_invocation_build_step_end(
         ctx,
@@ -7353,6 +7460,7 @@ fn build_dynamic_worker_invocation(
         extra_system_sections,
         task_instruction: Some(task_instruction),
         session_mode,
+        user_prompt_render_mode,
         permission_mode,
         model,
         continue_ref,
@@ -7367,7 +7475,6 @@ fn build_dynamic_worker_invocation(
         cold_attachments: Vec::new(),
         input_attachment_paths,
         mcp_servers: Vec::new(),
-        skill_catalog: String::new(),
     };
     dynamic_invocation_build_step_end(
         ctx,
@@ -8800,6 +8907,9 @@ fn drive_from_node_with_initial_session(
     initial_continue_ref: Option<serde_json::Value>,
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
+    initial_user_prompt_render_mode: UserPromptRenderMode,
+    mut parent_continue_prompt: Option<String>,
+    mut parent_continue_prompt_id: Option<String>,
     mut dynamic_resume_override: Option<DynamicResumeOverride>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
@@ -8807,6 +8917,7 @@ fn drive_from_node_with_initial_session(
     let mut resume_prompt = initial_resume_prompt;
     let mut resume_prompt_id = initial_resume_prompt_id;
     let mut resume_prompt_visibility = PromptVisibility::Visible;
+    let mut user_prompt_render_mode = initial_user_prompt_render_mode;
     let mut invalid_output_repair_prompts = 0;
 
     loop {
@@ -8923,6 +9034,7 @@ fn drive_from_node_with_initial_session(
                     resume_prompt.take(),
                     resume_prompt_id.take(),
                     resume_prompt_visibility,
+                    user_prompt_render_mode,
                 )
             }
             NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
@@ -8933,6 +9045,8 @@ fn drive_from_node_with_initial_session(
                 &current_attempt_id,
                 dynamic,
                 node.clone(),
+                parent_continue_prompt.take(),
+                parent_continue_prompt_id.take(),
                 dynamic_resume_override.take(),
             ),
         };
@@ -9176,6 +9290,7 @@ fn drive_from_node_with_initial_session(
                 resume_prompt = Some(invalid_output_repair_prompt(schema));
                 resume_prompt_id = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
+                user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 continue;
             }
         }
@@ -9282,6 +9397,7 @@ fn drive_from_node_with_initial_session(
             resume_prompt = None;
             resume_prompt_id = None;
             resume_prompt_visibility = PromptVisibility::Visible;
+            user_prompt_render_mode = workflow_user_prompt_render_mode_for_session(session_mode);
             invalid_output_repair_prompts = 0;
             continue;
         }
@@ -9388,6 +9504,8 @@ mod tests {
             run_uuid: None,
             round_uuid: None,
             outer_node_uuid: None,
+            parent_continue_prompt: None,
+            parent_continue_prompt_id: None,
             resume_override: None,
         }
     }
@@ -9811,6 +9929,7 @@ mod tests {
             None,
             None,
             PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
             Vec::new(),
         )
         .unwrap();

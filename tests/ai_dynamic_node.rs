@@ -10,7 +10,7 @@ use gold_band::dynamic::{
 use gold_band::provider::{
     AcpContentBlock, DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
-    WorkerInvocation, render_prompt_bundle,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -103,6 +103,7 @@ impl ProviderAdapter for DynamicProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -1030,6 +1031,14 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         .find(|invocation| invocation.runtime_context.node_id == "group-core-merge")
         .unwrap();
     let merge = render_prompt_bundle(merge_invocation).unwrap();
+    assert_eq!(merge_invocation.session_mode, SessionMode::New);
+    assert_eq!(
+        merge_invocation.user_prompt_render_mode,
+        UserPromptRenderMode::RequirementTask
+    );
+    assert!(merge.user_prompt.contains("# Requirement"));
+    assert!(merge.user_prompt.contains("# Task"));
+    assert!(!merge.user_prompt.contains("# Goal"));
     assert!(merge.system_prompt.contains("branch workspaces"));
     let branch_lines = merge
         .system_prompt
@@ -1042,8 +1051,20 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     assert!(merge.system_prompt.contains("mergeBase="));
     assert!(merge.system_prompt.contains("status=?? branch-a.txt"));
     assert!(merge.system_prompt.contains("status=?? branch-b.txt"));
-    assert!(merge.user_prompt.contains("Main workspace:"));
-    assert!(merge.user_prompt.contains(repo_root.as_str()));
+    assert!(
+        merge_invocation
+            .task_instruction
+            .as_deref()
+            .unwrap()
+            .contains("Main workspace:")
+    );
+    assert!(
+        merge_invocation
+            .task_instruction
+            .as_deref()
+            .unwrap()
+            .contains(repo_root.as_str())
+    );
 }
 
 #[test]
@@ -1759,6 +1780,95 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
             && invocation.runtime_context.node_id == "child"
             && invocation.session_mode == SessionMode::Continue
     }));
+}
+
+#[test]
+fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-child-pause-user-message";
+    let workflow_id = Arc::new(Mutex::new(String::new()));
+    let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+
+    let store = app
+        .save_workflow_template(
+            "Child Flow".to_string(),
+            serde_json::from_str(&format!(
+                r#"{{
+                    "version": "0.1",
+                    "id": "child-flow",
+                    "entry": "child",
+                    "nodes": [
+                        {{
+                            "id": "child",
+                            "type": "worker",
+                            "provider": "claude-acp",
+                            "profile": "pf-builtin-dev",
+                            "goal": "Run child work"
+                        }}
+                    ],
+                    "edges": [
+                        {{ "from": "child", "to": "$end", "on": "success" }}
+                    ]
+                }}"#
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let child_template = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Child Flow")
+        .unwrap();
+    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
+
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(
+        &app,
+        task_id,
+        &profile,
+        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
+    );
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let resumed = app
+        .run_continue(
+            task_id,
+            "run-001",
+            Some("prompt-continue-001".to_string()),
+            Some("请继续检查这个会话".to_string()),
+        )
+        .unwrap();
+
+    assert_eq!(resumed.status, RunStatus::Completed);
+    assert_eq!(resumed.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let child_continue = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.run_id == "run-002"
+                && invocation.runtime_context.node_id == "child"
+                && invocation.session_mode == SessionMode::Continue
+        })
+        .unwrap();
+    assert_eq!(
+        child_continue.user_prompt_render_mode,
+        UserPromptRenderMode::UserMessage
+    );
+    assert_eq!(
+        child_continue.resume_prompt.as_deref(),
+        Some("请继续检查这个会话")
+    );
+    assert_eq!(
+        child_continue.resume_prompt_id.as_deref(),
+        Some("prompt-continue-001")
+    );
 }
 
 #[test]

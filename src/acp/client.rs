@@ -30,7 +30,9 @@ use crate::acp::permission::{
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
-use crate::provider::{PromptBundle, PromptVisibility};
+use crate::provider::{
+    PromptBundle, PromptVisibility, gold_band_hidden_block, supports_system_prompt,
+};
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
@@ -366,7 +368,7 @@ pub fn doctor(
     )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, None, "", false, &[])?;
+        runtime.setup_session("doctor", cwd, None, None, None, "", false, &[])?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
@@ -452,6 +454,7 @@ pub fn run_prompt(
     };
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = match runtime.setup_session(
+        provider_id,
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
@@ -478,7 +481,7 @@ pub fn run_prompt(
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(prompt, session_update.is_none())?;
+    runtime.record_user_prompt_event(provider_id, prompt, session_update.is_none())?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -635,11 +638,12 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
 }
 
 fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
-    if provider_id == "codex-acp" && !prompt.system_prompt.trim().is_empty() {
-        return format!(
-            "# Gold Band System Prompt\n{}\n\n# User Prompt\n{}",
-            prompt.system_prompt, prompt.user_prompt
-        );
+    if !supports_system_prompt(provider_id).unwrap_or(false)
+        && !prompt.system_prompt.trim().is_empty()
+    {
+        let system_prompt =
+            gold_band_hidden_block("Gold Band stable system prompt", &prompt.system_prompt);
+        return format!("{}\n\n{}", system_prompt, prompt.user_prompt);
     }
 
     prompt.user_prompt.clone()
@@ -898,6 +902,7 @@ impl<'a> AcpRuntime<'a> {
 
     fn setup_session(
         &mut self,
+        provider_id: &str,
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
@@ -906,10 +911,15 @@ impl<'a> AcpRuntime<'a> {
         strict_continue: bool,
         mcp_servers: &[Value],
     ) -> Result<bool> {
-        self.system_prompt_append = if system_prompt.trim().is_empty() {
+        let adapter_system_prompt = if supports_system_prompt(provider_id).unwrap_or(false) {
+            system_prompt
+        } else {
+            ""
+        };
+        self.system_prompt_append = if adapter_system_prompt.trim().is_empty() {
             None
         } else {
-            Some(system_prompt.to_string())
+            Some(adapter_system_prompt.to_string())
         };
         if let Some(session_id) = continue_ref
             .as_ref()
@@ -919,7 +929,7 @@ impl<'a> AcpRuntime<'a> {
             self.suppress_session_updates = true;
             let load = self.request(
                 "session/load",
-                session_load_params(&cwd, session_id, system_prompt, mcp_servers),
+                session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
             );
             self.suppress_session_updates = false;
             match load {
@@ -953,7 +963,7 @@ impl<'a> AcpRuntime<'a> {
 
         let result = self.request(
             "session/new",
-            session_new_params(&cwd, system_prompt, mcp_servers),
+            session_new_params(&cwd, adapter_system_prompt, mcp_servers),
         )?;
         self.capture_session_config(&result);
         let session_id = result
@@ -1238,6 +1248,7 @@ impl<'a> AcpRuntime<'a> {
 
     fn record_user_prompt_event(
         &mut self,
+        provider_id: &str,
         prompt: &PromptBundle,
         emit_live_update: bool,
     ) -> Result<()> {
@@ -1249,7 +1260,7 @@ impl<'a> AcpRuntime<'a> {
         let user_event = user_prompt_event(
             self.seq,
             session_id,
-            prompt.user_prompt.clone(),
+            session_prompt_text(provider_id, prompt),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
@@ -2420,8 +2431,11 @@ mod tests {
         };
 
         let text = session_prompt_text("codex-acp", &prompt);
-        assert!(text.contains("# Gold Band System Prompt\nnode constraints"));
-        assert!(text.contains("# User Prompt\ndo the task"));
+        assert!(text.contains(
+            "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
+        ));
+        assert!(text.contains("node constraints"));
+        assert!(text.ends_with("do the task"));
 
         let params = session_prompt_params("codex-acp", "session-123", &prompt);
         assert_eq!(params["sessionId"], "session-123");

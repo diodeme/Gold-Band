@@ -88,6 +88,10 @@ import {
   isImageMessageAttachment,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
+import {
+  createAcpSessionAssetPanelViewModel,
+  type AcpSessionAssetPanelItem,
+} from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -2174,15 +2178,15 @@ export const ACPChatDialog = forwardRef<
         )}
         {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
-      <AcpProductCards
-        artifacts={allArtifacts ?? artifacts}
-        attachments={allAttachments ?? attachments}
-        onOpenDetail={handleOpenArtifactDetail}
-      />
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
+          <AcpSessionAssetsPanel
+            artifacts={allArtifacts ?? artifacts}
+            attachments={allAttachments ?? attachments}
+            onOpenDetail={handleOpenArtifactDetail}
+          />
           {todoEntries.length > 0 ? (
-            <div className="px-4 pt-1.5">
+            <div className="px-4">
               <AcpTodoPanel entries={todoEntries} />
             </div>
           ) : null}
@@ -3101,7 +3105,7 @@ function ACPArtifactsDialog({
   );
 }
 
-function AcpProductCards({
+function AcpSessionAssetsPanel({
   artifacts,
   attachments,
   onOpenDetail,
@@ -3111,41 +3115,87 @@ function AcpProductCards({
   onOpenDetail: (asset: AssetItemVm) => void;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
 
-  const allItems = [
-    ...artifacts.map((a) => ({ ...a, kind: "artifact" as const })),
-    ...attachments.map((a) => ({ ...a, kind: "attachment" as const })),
-  ];
+  const vm = createAcpSessionAssetPanelViewModel(artifacts, attachments);
 
-  if (allItems.length === 0) return null;
+  if (vm.totalCount === 0) return null;
 
   return (
-    <div className="shrink-0 border-t border-border/40 px-4 py-2.5">
-      <h4 className="mb-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-        {t("acp.artifactsTitle")}
-      </h4>
-      <div className="space-y-1.5">
-        {allItems.map((item) => {
-          const Icon = item.kind === "artifact" ? FileText : Paperclip;
-          return (
-            <button
-              key={`${item.kind}-${item.name}`}
-              type="button"
-              className="flex w-full items-center gap-3 rounded-lg border border-border/35 bg-card/50 px-3 py-2.5 text-left transition-colors hover:bg-accent/60 hover:border-border/55"
-              onClick={() => onOpenDetail(item)}
-            >
-              <Icon className="size-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                {item.title || item.name}
+    <div className="px-4 pt-1.5">
+      <Collapsible
+        open={open}
+        onOpenChange={setOpen}
+        className="w-full border border-b-0 border-border/60 bg-card/60"
+      >
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
+          >
+            <span className="flex min-w-0 items-center gap-2 text-xs">
+              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">
+                {t("acp.artifactsTitle")}
               </span>
-              <span className="shrink-0 text-[11px] text-muted-foreground/70">
-                {item.kind === "artifact" ? t("acp.artifacts") : t("acp.attachments")}
+              <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-foreground">
+                {vm.summaryParts.map((part) => (
+                  <span key={part.kind} className="shrink-0">
+                    {part.kind === "artifact"
+                      ? t("acp.assetSummaryArtifact", { count: part.count })
+                      : t("acp.assetSummaryAttachment", { count: part.count })}
+                  </span>
+                ))}
               </span>
-            </button>
-          );
-        })}
-      </div>
+            </span>
+            <ChevronDown
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform",
+                open && "rotate-180",
+              )}
+            />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
+          <div className="space-y-1 border-t border-border/40 px-3 pb-2 pt-2">
+            {vm.items.map((item) => (
+              <AcpSessionAssetPanelRow
+                key={`${item.kind}-${item.name}`}
+                item={item}
+                onOpenDetail={onOpenDetail}
+              />
+            ))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
+  );
+}
+
+function AcpSessionAssetPanelRow({
+  item,
+  onOpenDetail,
+}: {
+  item: AcpSessionAssetPanelItem;
+  onOpenDetail: (asset: AssetItemVm) => void;
+}) {
+  const { t } = useTranslation();
+  const Icon = item.kind === "artifact" ? FileText : Paperclip;
+
+  return (
+    <button
+      type="button"
+      className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/45"
+      onClick={() => onOpenDetail(item)}
+    >
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+        {item.title || item.name}
+      </span>
+      <span className="shrink-0 text-muted-foreground">
+        {item.kind === "artifact" ? t("acp.artifacts") : t("acp.attachments")}
+      </span>
+    </button>
   );
 }
 

@@ -261,21 +261,21 @@ export function ConversationComposer({
               type="button"
               className={cn(
                 'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-                isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              )}
-              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
-            >
-              {t('conversation.home.auto')}
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 !isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
               onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId })}
             >
               {t('conversation.home.workflow')}
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
+                isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+              )}
+              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
+            >
+              {t('conversation.home.auto')}
             </button>
           </div>
 

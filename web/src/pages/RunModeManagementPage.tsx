@@ -466,8 +466,8 @@ export function RunModeManagementPage({
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <Tabs value={mode} onValueChange={(value) => setMode(value as 'auto' | 'workflow')}>
           <TabsList className="grid w-fit grid-cols-2">
-            <TabsTrigger value="auto">{t('runMode.autoSection')}</TabsTrigger>
             <TabsTrigger value="workflow">{t('runMode.workflowSection')}</TabsTrigger>
+            <TabsTrigger value="auto">{t('runMode.autoSection')}</TabsTrigger>
           </TabsList>
         </Tabs>
 

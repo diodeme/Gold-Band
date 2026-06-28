@@ -104,6 +104,36 @@ describe('ACP chat event handling', () => {
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
   });
 
+  it('does not resurface older pending elicitation requests after a newer one was answered', () => {
+    const events = [
+      event({
+        id: 'elicit-old',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Old question',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-new',
+        seq: 20,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'New question',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-new-response',
+        seq: 21,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-new', action: 'accept' },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toBeNull();
+  });
+
   it('keeps tool call updates merged by tool id', () => {
     const timeline = buildAcpTimeline([
       event({

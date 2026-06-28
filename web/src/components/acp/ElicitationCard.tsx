@@ -19,6 +19,9 @@ export interface ElicitationPropertySchema {
   description?: string;
   oneOf?: Array<{ const: string; title: string }>;
   anyOf?: Array<{ const: string; title: string }>;
+  items?: {
+    anyOf?: Array<{ const: string; title: string }>;
+  };
 }
 
 export interface ElicitationCardProps {
@@ -57,15 +60,34 @@ function formatConfirmedChoice(
   return labels.length > 0 ? labels.join("；") : JSON.stringify(content);
 }
 
-/** 从 message 中提取当前步骤对应的单条问题文本 */
-export function stepMessage(
+export function elicitationOptions(
+  prop: ElicitationPropertySchema,
+): Array<{ value: string; label: string }> | undefined {
+  if (prop.oneOf?.length) {
+    return prop.oneOf.map((option) => ({
+      value: option.const,
+      label: option.title,
+    }));
+  }
+  const multiOptions = prop.anyOf ?? prop.items?.anyOf;
+  if (multiOptions?.length) {
+    return multiOptions.map((option) => ({
+      value: option.const,
+      label: option.title,
+    }));
+  }
+  return undefined;
+}
+
+/** 从 schema/message 中提取当前步骤对应的单条问题文本 */
+export function elicitationQuestionText(
   message: string,
-  fieldTitle: string | undefined,
+  fieldDescription: string | undefined,
   index: number,
   fallback: string,
 ): string {
-  const title = fieldTitle?.trim();
-  if (title) return title;
+  const description = fieldDescription?.trim();
+  if (description) return description;
 
   // 尝试从 message 中按换行拆分，匹配当前步骤
   const trimmedMessage = message.trim();
@@ -84,6 +106,15 @@ function isGenericElicitationMessage(value: string): boolean {
     normalized === "please answer the following questions." ||
     normalized === "please answer the following questions"
   );
+}
+
+function shouldShowFieldTitle(
+  title: string | undefined,
+  questionText: string,
+): boolean {
+  const trimmedTitle = title?.trim();
+  if (!trimmedTitle) return false;
+  return trimmedTitle !== questionText.trim();
 }
 
 export function ElicitationCard({
@@ -112,16 +143,18 @@ export function ElicitationCard({
     const unmat: Array<[string, any]> = [];
     const claimed = new Set<string>();
     for (const [k, p] of entries) {
-      if ((p.oneOf && p.oneOf.length > 0) || (p.anyOf && p.anyOf.length > 0)) {
+      const options = elicitationOptions(p);
+      if (options && options.length > 0) {
         const ck = k + "_custom";
         const ce = entries.find(([x]) => x === ck);
         if (ce) claimed.add(ck);
-        selA.push({ key: k, prop: p, isMulti: !!(p.anyOf && p.anyOf.length > 0),
+        selA.push({ key: k, prop: p, isMulti: p.type === "array",
           customKey: ce ? ck : undefined, customSchema: ce ? (ce[1] as any) : undefined });
       }
     }
     for (const [k, p] of entries) {
-      if ((p.oneOf && p.oneOf.length > 0) || (p.anyOf && p.anyOf.length > 0)) continue;
+      const options = elicitationOptions(p);
+      if (options && options.length > 0) continue;
       if (claimed.has(k)) continue;
       unmat.push([k, p]);
     }
@@ -137,12 +170,10 @@ export function ElicitationCard({
       hasCustomVariant: boolean; customVariantKey?: string; customVariantDescription?: string;
     }> = [];
     for (const s of selA) {
-      const ho = !!(s.prop.oneOf && s.prop.oneOf.length > 0);
       result.push({
         key: s.key, isSelect: true, isMulti: s.isMulti, isCustom: false,
         title: s.prop.title, description: s.prop.description,
-        options: ho ? s.prop.oneOf!.map((o: any) => ({ value: o.const, label: o.title }))
-                   : s.prop.anyOf ? s.prop.anyOf.map((o: any) => ({ value: o.const, label: o.title })) : undefined,
+        options: elicitationOptions(s.prop),
         hasCustomVariant: !!s.customKey, customVariantKey: s.customKey,
         customVariantDescription: s.customSchema?.description || s.customSchema?.title,
       });
@@ -269,12 +300,13 @@ export function ElicitationCard({
   const actionLabel = isLastStep
     ? t("acp.elicitation.submit", "提交")
     : t("acp.elicitation.next", "下一步");
-  const questionText = stepMessage(
+  const questionText = elicitationQuestionText(
     message,
-    currentField.description ?? currentField.title,
+    currentField.description,
     currentStep,
     t("acp.elicitation.questionFallback", "请选择一个答案"),
   );
+  const showFieldTitle = shouldShowFieldTitle(currentField.title, questionText);
 
   // ── 进度指示器 ──
   const ProgressDots = isMultiStep ? (
@@ -318,6 +350,13 @@ export function ElicitationCard({
       <CardContent className="space-y-3 pt-4">
         {/* 进度指示器 */}
         {ProgressDots}
+
+        {/* 当前字段标题 */}
+        {showFieldTitle && (
+          <div className="text-sm font-medium text-foreground">
+            {currentField.title}
+          </div>
+        )}
 
         {/* 当前问题文本 */}
         {questionText && (

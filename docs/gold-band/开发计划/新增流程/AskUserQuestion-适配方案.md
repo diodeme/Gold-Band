@@ -209,7 +209,8 @@ ACPChatDialog 挂载
   │   )
   │     ├─ 逆序扫描 events
   │     ├─ 见到 elicitationResponse → 标记对应 request 已回答
-  │     ├─ 见到未回答的 pending elicitationRequest → 渲染可交互卡片
+  │     ├─ 只允许时间线上最新的未回答 pending elicitationRequest 渲染可交互卡片
+  │     ├─ 较旧的 pending request 一旦被后续 elicitation 覆盖，不再重新浮出
   │     └─ answeredElicitations 仅作为本地乐观态补充，不再是唯一事实源
   │
   └─ answerElicitation(id, content)
@@ -354,7 +355,7 @@ ACPChatDialog 挂载
 | 事件送达 | 复用 ACPChatDialog 通用 event merge | 与 permission 保持一致，避免为 elicitation 维护单独实时分支 |
 | 状态管理 | `elicitationResponse` 事件 + `answeredElicitations` 乐观态 | 已回答状态可从 timeline 回放恢复，刷新后不依赖内存态 |
 | Action 类型 | `ElicitationAction` enum | 杜绝字符串硬编码 |
-| Schema 解析 | 前端动态渲染 JSON Schema | 适配 `oneOf`/`anyOf`/free-text 多种格式 |
+| Schema 解析 | 前端动态渲染 JSON Schema | 适配 `oneOf`、`type=array + items.anyOf`、free-text 等格式，并区分 `title/header` 与题干正文 |
 
 ---
 
@@ -464,12 +465,13 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 | Schema 关键字 | Gold Band ElicitationCard | Gold Band format_elicitation_answer | MCP 标准 | Claude Code ACP adapter |
 |--------------|--------------------------|-------------------------------------|---------|------------------------|
 | `oneOf` + `const`/`title` | ✅ | ✅ | ❌ 不支持 | ✅ 使用 |
-| `anyOf` + `const`/`title` | ✅ | ✅ | ❌ 不支持 | ✅ 使用 |
+| `anyOf` + `const`/`title` | ✅ | ✅ | ❌ 不支持 | 部分历史/兼容格式 |
+| `type: "array"` + `items.anyOf` | ✅ | ✅ | ✅ 常见数组枚举表达 | ✅ AskUserQuestion 多选实际使用 |
 | `enum` + `enumNames` | ❌ 不支持 | ❌ 不支持 | ✅ 标准格式 | ❌ 不使用 |
 | `type: "string"` (自由文本) | ✅ | ✅ | ✅ | ✅ |
 | `type: "array"` (多选) | ✅ | ✅ | ✅ | ✅ |
 
-**结论**：当前对齐 Claude Code ACP adapter 的实际格式（`oneOf`/`anyOf`），工作正常。MCP 标准 `enum`/`enumNames` 格式作为保底可后续支持。
+**结论**：当前对齐 Claude Code ACP adapter 的实际格式（单选 `oneOf`，多选 `type=array + items.anyOf`），工作正常。MCP 标准 `enum`/`enumNames` 格式作为保底可后续支持。
 
 ---
 

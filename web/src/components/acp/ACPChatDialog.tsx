@@ -4614,7 +4614,10 @@ export function pendingElicitationFromEvents(
       continue;
     }
     if (event.kind !== "elicitationRequest") continue;
-    if (answeredIds.has(event.id)) continue;
+    // elicitation/create is a blocking interaction in ACP. Once we have
+    // reached the latest elicitationRequest while scanning backward, any
+    // older requests are stale and should not re-surface on reload.
+    if (answeredIds.has(event.id)) return null;
     if (event.status === "pending") {
       const raw = rawObject(event.raw) ?? {};
       const schema: ElicitationSchema =
@@ -4627,6 +4630,7 @@ export function pendingElicitationFromEvents(
         requestedSchema: schema,
       };
     }
+    return null;
   }
   return null;
 }

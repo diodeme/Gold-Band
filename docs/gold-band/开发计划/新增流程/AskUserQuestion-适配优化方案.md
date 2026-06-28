@@ -368,11 +368,13 @@ pub fn elicitation_timeout(config: &AcpConfig) -> Duration {
 
 #### 问题
 
-Gold Band 只支持 Claude Code ACP adapter 的 `oneOf`/`anyOf` 格式。MCP 标准使用 `enum`/`enumNames`。
+Gold Band 当前已支持 Claude Code ACP adapter 的单选 `oneOf` 与多选 `type=array + items.anyOf` 格式。MCP 标准还常见 `enum`/`enumNames`。
 
 #### Claude Code 的做法
 
-Claude Code 的 ACP adapter 使用 `oneOf`/`anyOf` 格式（非 MCP 标准 `enum`/`enumNames`）。但作为 Gold Band 客户端，应考虑 MCP 标准兼容性。
+Claude Code 的 ACP adapter 单选使用 `oneOf`，多选使用 `type=array + items.anyOf`（都不同于 MCP 标准 `enum`/`enumNames`）。但作为 Gold Band 客户端，应考虑 MCP 标准兼容性。
+
+另外，AskUserQuestion 的 `header/title` 与 `question` 语义不同：`header` 适合做短标题，真正题干应优先展示 `question` 对应的 schema `description` 或请求 `message`，不能只显示简短 header。
 
 #### 优化方案
 

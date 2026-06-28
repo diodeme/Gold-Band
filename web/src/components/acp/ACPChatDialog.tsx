@@ -69,6 +69,7 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
   decideAcpLiveEventFlush,
   isAcpLiveToolEvent,
@@ -254,6 +255,13 @@ const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
+
+export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
+  "h-full min-w-0 overflow-y-auto",
+);
+export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
+  "h-full overflow-y-auto p-5",
+);
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -2092,7 +2100,7 @@ export const ACPChatDialog = forwardRef<
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         {canvasMode === "raw" ? (
-          <div className="h-full overflow-y-auto p-5">
+          <div className={ACP_RAW_SCROLL_AREA_CLASS_NAME}>
             <RawFrameViewer
               loading={rawLoading}
               page={rawPage}
@@ -2105,7 +2113,7 @@ export const ACPChatDialog = forwardRef<
           <div className="relative h-full min-w-0 overflow-hidden">
             <div
               ref={scrollerElementRef}
-              className="h-full min-w-0 overflow-y-auto"
+              className={ACP_SESSION_SCROLL_AREA_CLASS_NAME}
               onScroll={handleScroll}
               onWheel={handleLiveStreamUserInteraction}
             >

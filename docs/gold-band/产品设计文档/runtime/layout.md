@@ -325,7 +325,8 @@ attempt-001/
 - `acp.diagnostics.jsonl`：adapter / protocol diagnostics
 - `acp.session.json` / `acp.events.jsonl`：仅历史旧会话可能存在，供 legacy reader 兼容读取
 - permission request / response 文件：文件名中的 `<id>` 必须使用 ACP JSON-RPC `session/request_permission` 的原始 request id。UI timeline 为了展示可使用 `permission-<id>` 这类稳定 item id，但响应文件、pending 文件和 VM `requestId` 都不能使用展示 id，否则 agent runtime 无法消费用户决策。
-- elicitation request / response 文件：`acp.elicitation-request.<id>.json` 与 `acp.elicitation-response.<id>.json` 用于 ACP `elicitation/create` 的阻塞式表单交互。后端 runtime 通过轮询响应文件解除等待，并在消费响应后自行持久化 `elicitationResponse` timeline 事件；前端命令侧只负责写响应文件，不直接改 timeline，避免与 runtime 内存态持久化互相覆盖。
+- elicitation request / response 文件：`acp.elicitation-request.<id>.json` 与 `acp.elicitation-response.<id>.json` 用于 ACP `elicitation/create` 的阻塞式表单交互。优先路径仍是后端 runtime 轮询响应文件解除等待，并在消费响应后持久化 `elicitationResponse` 与对应用户回答消息；但若会话已不再 active（例如应用关闭后重进、live waiter 已不存在），命令侧 `respond_elicitation` 必须补写同等 replay 事实到 `acp.timeline.jsonl`，保证 answered / skipped 状态可回放且不会在重进会话时重新弹出卡片。
+- 应用关闭、启动恢复和显式 stop 不只收敛 workflow 当前 running run，也必须扫描并收敛所有仍标记为 active 的 ACP attempt。该规则同时覆盖 runtime 执行中的阻塞 elicitation、普通 follow-up ACP 会话以及 AI-DYNAMIC 内层 ACP attempt，统一把 pending permission / elicitation 写成可恢复的 cancelled / declined 事实，并更新 session snapshot。
 
 #### session identity
 

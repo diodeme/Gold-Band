@@ -2131,12 +2131,15 @@ impl App {
 
     pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
         let paused = self.pause_all_running_sessions()?;
+        self.cancel_all_active_acp_attempts_best_effort();
         acp_client::close_all_connections_bounded()?;
         Ok(paused)
     }
 
     pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
-        self.pause_all_running_sessions()
+        let paused = self.pause_all_running_sessions()?;
+        self.cancel_all_active_acp_attempts_best_effort();
+        Ok(paused)
     }
 
     fn interrupt_run_descendants_best_effort(
@@ -2430,6 +2433,72 @@ impl App {
         }
         ensure_parent_dir(path)?;
         write_json(path, &session)
+    }
+
+    pub fn cancel_all_active_acp_attempts_best_effort(&self) {
+        let Ok(tasks) = self.task_list() else {
+            return;
+        };
+        for task in tasks {
+            let Ok(runs) = self.run_list(&task.id) else {
+                continue;
+            };
+            for run in runs {
+                let Ok(rounds) = self.round_list(&task.id, &run.id) else {
+                    continue;
+                };
+                for round in rounds {
+                    let Ok(nodes) = self.node_list(&task.id, &run.id, &round.id) else {
+                        continue;
+                    };
+                    for node in nodes {
+                        let Ok(attempts) =
+                            self.attempt_list(&task.id, &run.id, &round.id, &node.node_id)
+                        else {
+                            continue;
+                        };
+                        for attempt in attempts {
+                            let attempt_dir = self.paths.attempt_dir(
+                                &task.id,
+                                &run.id,
+                                &round.id,
+                                &node.node_id,
+                                &attempt.attempt_id,
+                            );
+                            if !attempt_dir.exists()
+                                || !self.attempt_has_active_acp_session(attempt_dir.as_path())
+                            {
+                                continue;
+                            }
+                            self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                            self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                            self.persist_cancelled_session_snapshot_best_effort(
+                                attempt_dir.as_path(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn attempt_has_active_acp_session(&self, attempt_dir: &Utf8Path) -> bool {
+        let snapshot_path = attempt_dir.join("acp.snapshot.json");
+        let session_path = attempt_dir.join("acp.session.json");
+        let metadata = if snapshot_path.exists() {
+            read_json::<serde_json::Value>(&snapshot_path).ok()
+        } else if session_path.exists() {
+            read_json::<serde_json::Value>(&session_path).ok()
+        } else {
+            None
+        };
+        let Some(metadata) = metadata else {
+            return false;
+        };
+        let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
+            return false;
+        };
+        is_acp_session_active_status(status)
     }
 
     pub fn run_open_session(
@@ -2960,9 +3029,21 @@ impl App {
     }
 }
 
+fn is_acp_session_active_status(status: &str) -> bool {
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
+    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
         ProviderDiagnosticSnapshot, RuntimeConfig,
@@ -2979,7 +3060,7 @@ mod tests {
         DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
     };
     use crate::observability::touch_log_file_best_effort;
-    use crate::runtime::{NodeState, RoundState, RunState};
+    use crate::runtime::{NodeState, RoundState, RunState, TaskState};
     use crate::storage::{StoragePathConfig, read_json, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
@@ -3706,6 +3787,116 @@ mod tests {
             Some(PauseReason::ProcessInterrupted)
         );
         assert!(graph.run.current_node_ids.is_empty());
+    }
+
+    #[test]
+    fn cancel_all_active_acp_attempts_also_cancels_follow_up_session_on_completed_run() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let node_id = "plan";
+        let attempt_id = "attempt-001";
+
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                status: RunStatus::Completed,
+                outcome: Some(crate::domain::RunOutcome::Success),
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                updated_at: "2026-06-28T00:00:01Z".to_string(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(node_id.to_string()),
+                current_attempt: Some(attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: None,
+                uuid: None,
+                last_executed_node: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: RunStatus::Completed,
+                outcome: Some(crate::domain::RunOutcome::Success),
+                trigger: RoundTrigger::Initial,
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+            &NodeState {
+                version: VERSION.to_string(),
+                node_id: node_id.to_string(),
+                node_type: NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(NodeOutcome::Success),
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                finished_at: Some("2026-06-28T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let attempt_dir = app
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "sessionId": "session-follow-up",
+                "status": "running"
+            }),
+        )
+        .unwrap();
+        write_json(
+            &pending_elicitation_file(&attempt_dir, "elicit-001"),
+            &PendingElicitationState {
+                elicitation_id: "elicit-001".to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                message: "继续吗".to_string(),
+                requested_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        app.cancel_all_active_acp_attempts_best_effort();
+
+        let session: serde_json::Value = read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert!(
+            attempt_dir
+                .join("acp.elicitation-response.elicit-001.json")
+                .exists()
+        );
     }
 
     #[test]

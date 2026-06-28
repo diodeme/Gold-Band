@@ -20,9 +20,8 @@ struct AcpTimelineStreamState {
 
 use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState,
-    cancel_pending_elicitation_requests, elicitation_response_result,
-    wait_for_elicitation_response, write_pending_elicitation,
+    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
+    elicitation_response_result, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
@@ -1702,7 +1701,6 @@ impl<'a> AcpRuntime<'a> {
         self.connection.send_response(rpc_id, result)
     }
 
-
     fn is_prompt_cancel_requested(&self) -> bool {
         self.control.state() == ProviderControlState::CancelRequested
             || self
@@ -1826,17 +1824,15 @@ impl<'a> AcpRuntime<'a> {
                     &response.content.clone().unwrap_or_else(|| json!({})),
                 )
             }
-            crate::acp::elicitation::ElicitationAction::Decline => {
-                "已跳过".to_string()
-            }
+            crate::acp::elicitation::ElicitationAction::Decline => "已跳过".to_string(),
         };
         let user_delta = crate::acp::events::user_prompt_event(
             self.seq,
             self.session_id.clone().unwrap_or_default(),
             answer_text,
-            None,        // prompt_id
-            false,       // hidden_from_chat
-            Vec::new(),  // attachments
+            None,       // prompt_id
+            false,      // hidden_from_chat
+            Vec::new(), // attachments
         );
         self.persist_event(&user_delta)?;
 
@@ -2239,13 +2235,15 @@ impl<'a> AcpRuntime<'a> {
                 // 不关闭 text/thought/plan 流 — elicitation 穿插在对话中
                 // 不设 ended_at/ended_seq，保持"进行中"状态，等待用户响应
                 item.started_seq = Some(item.started_seq.unwrap_or(seq));
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
             }
             "elicitationResponse" => {
                 // 关闭对应的 elicitationRequest
                 item.started_seq = Some(seq);
                 item.ended_seq = Some(seq);
-                item.started_at = Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
                 item.ended_at = Some(timestamp);
             }
             _ => {

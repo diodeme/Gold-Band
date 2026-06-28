@@ -338,6 +338,53 @@ const isElicitationAnswer = rawObject(event.raw)?.elicitationAnswer === true;
 
 #### 问题
 
+---
+
+### 优化补充：同会话追问与 runtime 中断统一收敛（P0）
+
+#### 问题
+
+当前存在两类表面相似、但生命周期实现不一致的 elicitation：
+
+1. runtime 执行中的阻塞式 `elicitation/create`
+2. 节点成功后，同一 ACP session 内继续追问时触发的 `elicitation/create`
+
+前者在 run pause / stop / app close 时，会由 runtime 中断路径主动写入 declined response，并把 session snapshot 收敛为 cancelled；后者如果用户在卡片出现后直接关闭应用，live waiter 消失，但“已回答 / 已跳过”的 durable replay 事实不一定写进 timeline，导致重进会话后卡片再次弹出。
+
+#### 目标
+
+不要继续把“runtime 执行中提问”和“成功后追问”视为两条不同方案，而是统一到同一个 **ACP attempt 生命周期**：
+
+- 只要 attempt 对应的 ACP session 仍是 active，就属于待收敛对象
+- 无论是 runtime 主链、同会话追问还是 AI-DYNAMIC 内层 attempt，关闭应用 / 启动恢复 / stop 时都走同一套 pending interaction 清理
+- elicitation 的 answered / skipped 必须能可靠回放，不能只依赖前端内存态或 live waiter
+
+#### 优化方案
+
+1. `respond_elicitation` 增加 durable replay fallback
+   当 attempt 对应 session 已经不是 active 状态时，除了写 `acp.elicitation-response.<id>.json`，还要补写：
+   - `elicitationResponse` timeline item
+   - 对应的 synthetic `userTextDelta`
+
+   这样即使 runtime waiter 不在，UI 重新进入会话也能看到“该问题已结束”的事实。
+
+2. 应用关闭 / 启动恢复统一扫描 active ACP attempts
+   现有 `stop_all_running_sessions()` / `recover_interrupted_running_sessions()` 只覆盖 workflow 维度的 running run，不足以覆盖“run 已完成但 follow-up ACP session 仍 active”的场景。需要新增 attempt 级扫描：
+   - 遍历 runtime store 中所有 attempt
+   - 识别 `acp.snapshot.json` / `acp.session.json` 仍为 active 的 ACP session
+   - 统一调用 pending permission / pending elicitation cancel，并把 snapshot 收敛为 cancelled
+
+3. 保持与 permission 机制一致
+   elicitation 的命令侧补写策略与 permission decision artifact 一样，目标都是保证 replay 一致性；区别只在于：
+   - active live session 优先由 runtime 自己落盘
+   - inactive session 才走命令侧 durable fallback，避免与 runtime 内存态重复写入
+
+#### 验收标准
+
+- 用户在会话提问卡片弹出后直接关闭应用，再打开并重进会话，不会再次看到已回答或已跳过的同一张卡片
+- runtime 执行中断与成功后 follow-up 追问，在 pending elicitation 收敛上的最终可观察结果一致
+- `acp.timeline.jsonl` 中始终能找到与最终 UI 状态一致的 `elicitationResponse` / synthetic user message
+
 `ELICITATION_DEFAULT_TIMEOUT` 当前为 `Duration::MAX`，ACP runtime 默认持续等待直到用户响应或运行被取消。
 
 #### Claude Code 的做法

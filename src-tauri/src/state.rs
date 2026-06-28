@@ -179,6 +179,8 @@ pub struct DesktopState {
     notification_attention: Mutex<NotificationAttentionState>,
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
+    /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
+    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
 }
 
 impl DesktopState {
@@ -192,7 +194,30 @@ impl DesktopState {
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
+            mcp_health: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
+    pub fn mcp_health_snapshot(&self) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
+        Ok(self
+            .mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .clone())
+    }
+
+    /// 写入/更新单个 MCP 服务器的健康状态（启动后台线程与诊断命令共用）。
+    pub fn record_mcp_health(
+        &self,
+        id: String,
+        state: gold_band::config::McpServerState,
+    ) -> Result<()> {
+        self.mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .insert(id, state);
+        Ok(())
     }
 
     /// 干预通知去重表（共享实例）。路径 A/B 与 dismiss 命令均经此访问。

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, Edit, Eye, Info, Loader2, Pencil, Plus, RefreshCw, Search, Stethoscope, Trash2, Wrench } from 'lucide-react';
+import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,6 +16,8 @@ import type {
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, ToolInfo,
 } from '../types';
 import { AppCard } from '@/components/AppCard';
+import { EntitySection } from '@/components/EntitySection';
+import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -77,6 +79,7 @@ export function ContextManagementPage() {
     };
   }, [mcpError]);
   const [mcpQuery, setMcpQuery] = useState('');
+  const [mcpListTab, setMcpListTab] = useState<'custom' | 'built-in'>('custom');
   const [mcpSheetOpen, setMcpSheetOpen] = useState(false);
   const [mcpEditTarget, setMcpEditTarget] = useState<McpServerVm | null>(null);
   const [mcpJsonContent, setMcpJsonContent] = useState('');
@@ -91,11 +94,16 @@ export function ContextManagementPage() {
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolsFetchingId, setToolsFetchingId] = useState<string | null>(null);
 
+  const builtInMcpServers = useMemo(() => mcpServers.filter((s) => s.managed), [mcpServers]);
+  const customMcpServers = useMemo(() => mcpServers.filter((s) => !s.managed), [mcpServers]);
+  const currentSectionMcpServers = mcpListTab === 'built-in' ? builtInMcpServers : customMcpServers;
+
   const filteredMcpServers = useMemo(() => {
     const q = mcpQuery.trim().toLowerCase();
-    if (!q) return mcpServers;
-    return mcpServers.filter((s) => s.name.toLowerCase().includes(q) || (s.command ?? s.url ?? '').toLowerCase().includes(q));
-  }, [mcpServers, mcpQuery]);
+    const source = mcpListTab === 'built-in' ? builtInMcpServers : customMcpServers;
+    if (!q) return source;
+    return source.filter((s) => s.name.toLowerCase().includes(q) || (s.command ?? s.url ?? '').toLowerCase().includes(q));
+  }, [builtInMcpServers, customMcpServers, mcpListTab, mcpQuery]);
 
   // ── SKILL state ──
   const [skillList, setSkillList] = useState<SkillListVm | null>(null);
@@ -169,13 +177,13 @@ export function ContextManagementPage() {
     try {
       const servers = await listMcpServers();
       setMcpServers(servers);
-      // 对标 Zed maintain_servers: 加载后自动检查所有 enabled 服务器
+      // 健康状态由后端在启动时后台预探测并写入共享缓存，list 返回时已携带；
+      // 这里直接从 VM 回填，无需进入页面后再逐个触发网络检测。
+      const seed: Record<string, { status: string; message?: string | null }> = {};
       for (const s of servers) {
-        if (!s.enabled) continue;
-        checkMcpServerHealth(s.id)
-          .then((h) => setMcpHealth((prev) => ({ ...prev, [s.id]: h })))
-          .catch((err) => setMcpHealth((prev) => ({ ...prev, [s.id]: { status: 'unhealthy', message: displayAppError(t, err) } })));
+        if (s.healthStatus) seed[s.id] = { status: s.healthStatus, message: s.healthMessage };
       }
+      setMcpHealth(seed);
     } catch (err) { setMcpError(displayAppError(t, err)); }
     finally { setMcpLoading(false); }
   };
@@ -343,26 +351,22 @@ export function ContextManagementPage() {
       {/* ── Profiles Tab ── */}
       {activeTab === 'profiles' && (
       <div className="min-h-0 flex-1 p-5 xl:p-6">
-        <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-          <CardHeader className="border-b px-4 pt-2 pb-1">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Tabs value={profileListTab} onValueChange={(value) => setProfileListTab(value as ProfileListTab)}>
-                <TabsList variant="line">
-                  <TabsTrigger value="custom">{t('contextManagement.customSectionTitle')}</TabsTrigger>
-                  <TabsTrigger value="built-in">{t('contextManagement.builtInSectionTitle')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
-                  <RefreshCw className={cn(loading && 'animate-spin')} />
-                  {t('common.refresh')}
-                </Button>
-                <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-            <div className="flex flex-col gap-2 border-b px-4 py-1.5 lg:flex-row lg:items-center">
+        <EntitySection
+          tab={profileListTab}
+          onTabChange={(value) => setProfileListTab(value)}
+          customLabel={t('contextManagement.customSectionTitle')}
+          builtInLabel={t('contextManagement.builtInSectionTitle')}
+          actions={
+            <>
+              <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
+                <RefreshCw className={cn(loading && 'animate-spin')} />
+                {t('common.refresh')}
+              </Button>
+              <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
+            </>
+          }
+          toolbar={
+            <>
               <div className="relative min-w-[240px] flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -382,39 +386,11 @@ export function ContextManagementPage() {
                   </SelectContent>
                 </Select>
               ) : null}
-            </div>
-            {error ? <div className="m-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
-            <ScrollArea className="min-h-0 flex-1">
-              {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-              {vm && profileListTab === 'built-in' ? (
-                <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-                  {builtInProfiles.map((profile) => (
-                    <BuiltInProfileCard
-                      key={`${profile.scope}:${profile.id}`}
-                      profile={profile}
-                      onView={() => openSheet('view', profile)}
-                      onEdit={() => openSheet('edit', profile)}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {vm && profileListTab === 'custom' ? (
-                <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-                  {pagedCustomProfiles.map((profile) => (
-                    <CustomProfileCard
-                      key={`${profile.scope}:${profile.id}`}
-                      profile={profile}
-                      onView={() => openSheet('view', profile)}
-                      onEdit={() => openSheet('edit', profile)}
-                      onDelete={() => openDeleteDialog(profile)}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
-              {vm && profileListTab === 'custom' && customProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
-            </ScrollArea>
-            {profileListTab === 'custom' && customProfiles.length > 0 ? (
+            </>
+          }
+          error={error}
+          footer={
+            profileListTab === 'custom' && customProfiles.length > 0 ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-sm text-muted-foreground">
                 <span>{t('contextManagement.customProfilesPageRange', {
                   start: customProfiles.length ? safePageIndex * pageSize + 1 : 0,
@@ -427,9 +403,38 @@ export function ContextManagementPage() {
                   <ProfilePagination pageIndex={safePageIndex} pageCount={pageCount} onPageChange={setPageIndex} />
                 </div>
               </div>
-            ) : null}
-          </CardContent>
-        </AppCard>
+            ) : null
+          }
+        >
+          {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
+          {vm && profileListTab === 'built-in' ? (
+            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+              {builtInProfiles.map((profile) => (
+                <BuiltInProfileCard
+                  key={`${profile.scope}:${profile.id}`}
+                  profile={profile}
+                  onView={() => openSheet('view', profile)}
+                  onEdit={() => openSheet('edit', profile)}
+                />
+              ))}
+            </div>
+          ) : null}
+          {vm && profileListTab === 'custom' ? (
+            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+              {pagedCustomProfiles.map((profile) => (
+                <CustomProfileCard
+                  key={`${profile.scope}:${profile.id}`}
+                  profile={profile}
+                  onView={() => openSheet('view', profile)}
+                  onEdit={() => openSheet('edit', profile)}
+                  onDelete={() => openDeleteDialog(profile)}
+                />
+              ))}
+            </div>
+          ) : null}
+          {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
+          {vm && profileListTab === 'custom' && customProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
+        </EntitySection>
       </div>
       )}
       <ProfileSheet
@@ -485,169 +490,91 @@ export function ContextManagementPage() {
       {/* ── MCP Tab Content ── */}
       {activeTab === 'mcp' && (
         <div className="min-h-0 flex-1 p-5 xl:p-6">
-          <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 shrink-0">
-            <div className="relative min-w-[200px] flex-1 max-w-sm">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-8 pl-8 text-xs" placeholder="搜索 MCP 服务器..." value={mcpQuery} onChange={(e) => setMcpQuery(e.target.value)} />
+          <EntitySection
+            tab={mcpListTab}
+            onTabChange={setMcpListTab}
+            customLabel={t('contextManagement.mcp.customSectionTitle', '自定义 MCP')}
+            builtInLabel={t('contextManagement.mcp.builtInSectionTitle', '内置 MCP')}
+            actions={
+              <>
+                <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-green-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'healthy').length}</span>
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
+                  <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
+                </span>
+                <Button variant="outline" size="sm" disabled={mcpLoading} onClick={() => void refreshMcp()}><RefreshCw className={cn('size-4', mcpLoading && 'animate-spin')} /></Button>
+                <Button size="sm" onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
+              </>
+            }
+            toolbar={
+              <div className="relative min-w-[240px] flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input className="pl-9" placeholder={t('contextManagement.searchPlaceholder', '搜索…')} value={mcpQuery} onChange={(e) => setMcpQuery(e.target.value)} />
+              </div>
+            }
+            error={mcpError ? (
+              <div className="flex items-start gap-2">
+                <span className="flex-1">{mcpError}</span>
+                <button type="button" onClick={() => setMcpError(null)} className="shrink-0 rounded-sm opacity-70 transition-opacity hover:opacity-100" aria-label="Dismiss">✕</button>
+              </div>
+            ) : null}
+          >
+            {mcpLoading && mcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('common.loading')}</EmptyState></div> : null}
+            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+              {filteredMcpServers.map((s) => (
+                <McpServerCard
+                  key={s.id}
+                  server={s}
+                  health={mcpHealth[s.id]}
+                  isChecking={mcpCheckTarget === s.id}
+                  isToolsFetching={toolsFetchingId === s.id}
+                  onToggle={async (newEnabled) => {
+                    try { setMcpServers(await toggleMcpServer(s.id, newEnabled)); } catch (err) { setMcpError(displayAppError(t, err)); return; }
+                    if (newEnabled) {
+                      setMcpCheckTarget(s.id);
+                      try {
+                        const hh = await checkMcpServerHealth(s.id);
+                        setMcpHealth((prev) => ({ ...prev, [s.id]: hh }));
+                      } catch (err: unknown) {
+                        setMcpHealth((prev) => ({ ...prev, [s.id]: { status: 'unhealthy', message: displayAppError(t, err) } }));
+                      } finally { setMcpCheckTarget(null); }
+                    } else {
+                      setMcpHealth((prev) => { const n = { ...prev }; delete n[s.id]; return n; });
+                    }
+                  }}
+                  onHealthCheck={async () => {
+                    setMcpCheckTarget(s.id);
+                    try {
+                      const result = await checkMcpServerHealth(s.id);
+                      setMcpHealth((prev) => ({ ...prev, [s.id]: result }));
+                    } catch (err: unknown) {
+                      setMcpHealth((prev) => ({ ...prev, [s.id]: { status: 'unhealthy', message: displayAppError(t, err) } }));
+                    } finally { setMcpCheckTarget(null); }
+                  }}
+                  onShowTools={async () => {
+                    if (toolsFetchingId) return;
+                    setToolsFetchingId(s.id);
+                    try {
+                      const tools = await listMcpTools(s.id);
+                      setToolsList(tools);
+                      setToolsError(null);
+                      setToolsSheetServer(s);
+                    } catch (err: unknown) {
+                      setToolsError(displayAppError(t, err));
+                      setToolsList(null);
+                      setToolsSheetServer(s);
+                    } finally {
+                      setToolsFetchingId(null);
+                    }
+                  }}
+                  onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
+                  onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                />
+              ))}
             </div>
-            <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-green-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'healthy').length}</span>
-                <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
-                <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
-              </span>
-              <Button variant="outline" size="sm" disabled={mcpLoading} onClick={() => void refreshMcp()}><RefreshCw className={cn('size-4', mcpLoading && 'animate-spin')} /></Button>
-              <Button size="sm" onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
-            </div>
-          </div>
-          {mcpError ? <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"><span className="flex-1">{mcpError}</span><button type="button" onClick={() => setMcpError(null)} className="shrink-0 rounded-sm opacity-70 transition-opacity hover:opacity-100" aria-label="Dismiss">✕</button></div> : null}
-          <ScrollArea className="min-h-0 flex-1">
-            {mcpLoading && mcpServers.length === 0 ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-            {!mcpLoading && mcpServers.length === 0 ? <EmptyState>{t('contextManagement.mcp.emptyServers', '暂无 MCP 服务器')}</EmptyState> : null}
-            {!mcpLoading && mcpServers.length > 0 && filteredMcpServers.length === 0 ? <EmptyState>无匹配结果</EmptyState> : null}
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {filteredMcpServers.map((s) => {
-                const h = mcpHealth[s.id];
-                const isChecking = mcpCheckTarget === s.id;
-                return (
-                <Card key={s.id} className={cn('group overflow-hidden border-border/50 transition-shadow hover:shadow-sm', !s.enabled && 'opacity-50')}>
-                  <div className="flex items-center gap-3 border-b border-border/30 px-4 py-3">
-                    <span className={cn(
-                      'size-2.5 shrink-0 rounded-full ring-1 ring-offset-1 ring-offset-background',
-                      isChecking ? 'bg-yellow-400 ring-yellow-400/30 animate-pulse' :
-                      h?.status === 'healthy' ? 'bg-green-500 ring-green-500/30' :
-                      h?.status === 'auth_required' ? 'bg-yellow-500 ring-yellow-500/30' :
-                      h?.status === 'unhealthy' ? 'bg-red-500 ring-red-500/30' :
-                      'bg-gray-400 ring-gray-400/30'
-                    )} title={h?.message ?? ''} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-semibold">{s.name}</span>
-                        {s.managed && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">内置</Badge>}
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{s.transport === 'stdio' ? 'Stdio' : s.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
-                        {s.helpMessage && (
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <button type="button" className="inline-flex shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="帮助信息">
-                                <Info className="size-3.5" />
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent side="top" align="start" className="max-w-72 text-xs leading-relaxed whitespace-pre-wrap">
-                              {s.helpMessage}
-                            </PopoverContent>
-                          </Popover>
-                        )}
-                      </div>
-                      <p className="truncate font-mono text-[11px] text-muted-foreground">{s.command ?? s.url ?? ''}</p>
-                    </div>
-                    <button
-                      type="button" role="switch" aria-checked={s.enabled}
-                      className={cn(
-                        'relative h-5 w-9 shrink-0 rounded-full border transition-colors',
-                        s.enabled ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
-                      )}
-                      onClick={async () => {
-                        const newEnabled = !s.enabled;
-                        try { setMcpServers(await toggleMcpServer(s.id, newEnabled)); } catch (err) { setMcpError(displayAppError(t, err)); return; }
-                        if (newEnabled) {
-                          setMcpCheckTarget(s.id);
-                          try {
-                            const hh = await checkMcpServerHealth(s.id);
-                            setMcpHealth((prev) => ({ ...prev, [s.id]: hh }));
-                          } catch (err: unknown) {
-                            setMcpHealth((prev) => ({ ...prev, [s.id]: { status: 'unhealthy', message: displayAppError(t, err) } }));
-                          } finally { setMcpCheckTarget(null); }
-                        } else {
-                          setMcpHealth((prev) => { const n = { ...prev }; delete n[s.id]; return n; });
-                        }
-                      }}
-                    >
-                      <span className={cn('block size-4 rounded-full bg-background shadow-sm transition-transform', s.enabled && 'translate-x-4')} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                    {h?.message && (
-                      <p className="truncate pl-3 text-[11px] text-muted-foreground">{h.message}</p>
-                    )}
-                    {!h?.message && <span />}
-                    <div className="flex shrink-0 items-center gap-1">
-                      <TooltipProvider delayDuration={300}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="ghost" className="size-8" disabled={isChecking} onClick={async () => {
-                              setMcpCheckTarget(s.id);
-                              try {
-                                const result = await checkMcpServerHealth(s.id);
-                                setMcpHealth((prev) => ({ ...prev, [s.id]: result }));
-                              } catch (err: unknown) {
-                                setMcpHealth((prev) => ({ ...prev, [s.id]: { status: 'unhealthy', message: displayAppError(t, err) } }));
-                              } finally { setMcpCheckTarget(null); }
-                            }}>
-                              {isChecking ? <Loader2 className="size-3.5 animate-spin" /> : <Stethoscope className="size-3.5" />}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">{t('contextManagement.mcp.diagnoseServer', 'MCP 服务诊断')}</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                      <TooltipProvider delayDuration={300}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="ghost" className="size-8" disabled={toolsFetchingId === s.id} onClick={async () => {
-                              if (toolsFetchingId) return;
-                              setToolsFetchingId(s.id);
-                              try {
-                                const tools = await listMcpTools(s.id);
-                                setToolsList(tools);
-                                setToolsError(null);
-                                setToolsSheetServer(s);
-                              } catch (err: unknown) {
-                                setToolsError(displayAppError(t, err));
-                                setToolsList(null);
-                                setToolsSheetServer(s);
-                              } finally {
-                                setToolsFetchingId(null);
-                              }
-                            }}>
-                              {toolsFetchingId === s.id ? <Loader2 className="size-3.5 animate-spin" /> : <Wrench className="size-3.5" />}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">工具列表</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                      {!s.managed && (
-                      <TooltipProvider delayDuration={300}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="ghost" className="size-8" onClick={() => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}>
-                              <Pencil className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">{t('contextManagement.mcp.editServer', 'Edit')}</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                      )}
-                      {!s.managed && (
-                      <TooltipProvider delayDuration={300}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => setMcpDeleteTarget(s)}>
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">{t('contextManagement.mcp.deleteServer', 'Delete')}</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                      )}
-                    </div>
-                  </div>
-                </Card>
-              )})}
-            </div>
-            </ScrollArea>
-          </CardContent>
-        </AppCard>
+            {!mcpLoading && currentSectionMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.mcp.emptyServers', '暂无 MCP 服务器')}</EmptyState></div> : null}
+            {!mcpLoading && currentSectionMcpServers.length > 0 && filteredMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
+          </EntitySection>
         </div>
       )}
 

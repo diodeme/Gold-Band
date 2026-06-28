@@ -284,6 +284,8 @@ const resources = {
         tabs: { mcp: "MCP 管理", skills: "SKILL 管理" },
         mcp: {
           addServer: "添加 MCP 服务器",
+          customSectionTitle: "自定义 MCP",
+          builtInSectionTitle: "内置 MCP",
           editServer: "配置 MCP 服务器",
           deleteServer: "删除 MCP 服务器",
           deleteDescription: "确定要删除 MCP 服务器 {{name}} 吗？",
@@ -1432,6 +1434,8 @@ const resources = {
         tabs: { mcp: "MCP", skills: "SKILLs" },
         mcp: {
           addServer: "Add MCP Server",
+          customSectionTitle: "Custom MCP",
+          builtInSectionTitle: "Built-in MCP",
           editServer: "Configure MCP Server",
           deleteServer: "Delete MCP Server",
           deleteDescription: "Delete MCP server {{name}}?",

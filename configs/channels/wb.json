@@ -21,7 +21,7 @@
     {
       "id": "maling-code-graph",
       "name": "码灵代码图谱",
-      "helpMessage": "码灵代码图谱提供代码搜索、调用链分析、节点详情等能力。\n\n接入方式：\n1. 在码灵代码图谱控制台(地址：http://maling.weoa.com/)接入项目\n2. 在 Agent 会话中通过工具直接调用",
+      "helpMessage": "码灵代码图谱提供代码搜索、调用链分析、节点详情等能力。\n\n接入方式：\n1. 在码灵代码图谱控制台(http://maling.weoa.com)接入项目\n2. 在 Agent 会话中通过工具直接调用",
       "enabled": true,
       "transport": {
         "type": "sse",

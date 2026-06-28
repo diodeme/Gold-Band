@@ -1814,28 +1814,6 @@ impl<'a> AcpRuntime<'a> {
         );
         self.persist_event(&response_event)?;
 
-        // 5. 将用户回答格式化为可读文本，作为 userTextDelta 事件写入 timeline
-        //    这样前端无需合成事件，直接走正常消息渲染管道：用户头像 + 右侧气泡
-        self.seq += 1;
-        let answer_text = match &response.action {
-            crate::acp::elicitation::ElicitationAction::Accept => {
-                crate::acp::elicitation::format_elicitation_answer(
-                    &schema,
-                    &response.content.clone().unwrap_or_else(|| json!({})),
-                )
-            }
-            crate::acp::elicitation::ElicitationAction::Decline => "已跳过".to_string(),
-        };
-        let user_delta = crate::acp::events::user_prompt_event(
-            self.seq,
-            self.session_id.clone().unwrap_or_default(),
-            answer_text,
-            None,       // prompt_id
-            false,      // hidden_from_chat
-            Vec::new(), // attachments
-        );
-        self.persist_event(&user_delta)?;
-
         Ok(())
     }
 

@@ -3262,8 +3262,10 @@ fn open_path(path: &std::path::Path) -> Result<(), String> {
 #[tauri::command]
 pub fn list_mcp_servers(state: State<'_, DesktopState>) -> CommandResult<Vec<McpServerVm>> {
     let app = state.app().map_err(command_error)?;
+    let health = state.mcp_health_snapshot().unwrap_or_default();
     Ok(mcp_server_list_vm(
         &app.list_mcp_servers().map_err(command_error)?,
+        &health,
     ))
 }
 
@@ -3276,8 +3278,10 @@ pub fn add_mcp_server(
     ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
     gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
         .map_err(command_error)?;
+    let health = state.mcp_health_snapshot().unwrap_or_default();
     Ok(mcp_server_list_vm(
         &app.add_mcp_server(&json_content).map_err(command_error)?,
+        &health,
     ))
 }
 
@@ -3291,9 +3295,11 @@ pub fn update_mcp_server(
     ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
     gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
         .map_err(command_error)?;
+    let health = state.mcp_health_snapshot().unwrap_or_default();
     Ok(mcp_server_list_vm(
         &app.update_mcp_server(&id, &json_content)
             .map_err(command_error)?,
+        &health,
     ))
 }
 
@@ -3306,8 +3312,10 @@ pub fn delete_mcp_server(
     ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
     gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
         .map_err(command_error)?;
+    let health = state.mcp_health_snapshot().unwrap_or_default();
     Ok(mcp_server_list_vm(
         &app.delete_mcp_server(&id).map_err(command_error)?,
+        &health,
     ))
 }
 
@@ -3321,27 +3329,66 @@ pub fn toggle_mcp_server(
     ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
     gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
         .map_err(command_error)?;
+    let health = state.mcp_health_snapshot().unwrap_or_default();
     Ok(mcp_server_list_vm(
         &app.toggle_mcp_server(&id, enabled).map_err(command_error)?,
+        &health,
     ))
 }
 
 #[tauri::command]
-pub fn check_mcp_server_health(
+pub async fn check_mcp_server_health(
     state: State<'_, DesktopState>,
     id: String,
 ) -> CommandResult<gold_band::config::McpServerHealthResult> {
-    let app = state.app().map_err(command_error)?;
-    app.check_mcp_server_health(&id).map_err(command_error)
+    // 健康检查包含阻塞式网络/进程 I/O，必须在 spawn_blocking 中执行，
+    // 否则同步 command 会卡住 webview 主线程（首次进入 MCP 管理时界面冻结的根因）。
+    let settings_path = {
+        let app = state.app().map_err(command_error)?;
+        app.paths.user_settings_file()
+    };
+    let id_for_cache = id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        gold_band::mcp::McpManager::new(settings_path)
+            .check_health(&id)
+            .map_err(command_error)
+    })
+    .await
+    .map_err(|e| command_error(anyhow::anyhow!("health check task failed: {e}")))??;
+    // 写入共享缓存，供列表 VM 展示（手动诊断与启动后台线程共用此入口）。
+    let cache_state = match result.status.as_str() {
+        "healthy" => gold_band::config::McpServerState::Running { tools: result.tools.clone() },
+        "auth_required" => gold_band::config::McpServerState::AuthRequired {
+            auth_url: result.auth_url.clone(),
+        },
+        _ => gold_band::config::McpServerState::Error {
+            message: result
+                .message
+                .clone()
+                .unwrap_or_else(|| "unknown error".into()),
+        },
+    };
+    let _ = state.record_mcp_health(id_for_cache, cache_state);
+    Ok(result)
 }
 
 #[tauri::command]
-pub fn list_mcp_tools(
+pub async fn list_mcp_tools(
     state: State<'_, DesktopState>,
     id: String,
 ) -> CommandResult<Vec<gold_band::config::ToolInfo>> {
-    let app = state.app().map_err(command_error)?;
-    app.list_mcp_tools(&id).map_err(command_error)
+    // tools/list 同样包含阻塞式 I/O（SSE 长连接 + HTTP），需放到 spawn_blocking。
+    let settings_path = {
+        let app = state.app().map_err(command_error)?;
+        app.paths.user_settings_file()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gold_band::mcp::McpManager::new(settings_path)
+            .list_tools(&id)
+            .map_err(command_error)
+    })
+    .await
+    .map_err(|e| command_error(anyhow::anyhow!("list tools task failed: {e}")))?
 }
 
 // ── SKILL Commands ──

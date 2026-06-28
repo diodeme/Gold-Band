@@ -2,6 +2,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use tracing::{info, warn};
 
+use gold_band::config::McpServerState;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BuiltinMcpServerDef {
@@ -117,4 +119,42 @@ pub fn inject_builtin_mcp_servers(state: &crate::state::DesktopState) {
             }
         }
     }
+}
+
+/// 启动后台线程对所有已启用的 MCP 服务器执行一次健康检查，结果写入共享缓存。
+/// 这样客户端启动后 MCP 服务的可用状态即被预探测，进入 MCP 管理页无需手动诊断。
+/// 健康检查为阻塞式网络/进程 I/O，放在独立线程避免卡住主线程。
+pub fn refresh_all_mcp_health(state: &crate::state::DesktopState) {
+    let Ok(ctx) = state.context() else { return };
+    let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+    let mcp_mgr = gold_band::mcp::McpManager::new(paths.user_settings_file());
+    let Ok(servers) = mcp_mgr.list() else { return };
+
+    for s in servers {
+        if !s.config.enabled {
+            continue;
+        }
+        let id = s.config.id.clone();
+        let cache_state = match mcp_mgr.check_health(&id) {
+            Ok(result) => match result.status.as_str() {
+                "healthy" => McpServerState::Running {
+                    tools: result.tools.clone(),
+                },
+                "auth_required" => McpServerState::AuthRequired {
+                    auth_url: result.auth_url.clone(),
+                },
+                _ => McpServerState::Error {
+                    message: result
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "unknown error".into()),
+                },
+            },
+            Err(e) => McpServerState::Error { message: e.to_string() },
+        };
+        if let Err(e) = state.record_mcp_health(id.clone(), cache_state) {
+            warn!(server_id = %id, error = %e, "failed to record mcp health");
+        }
+    }
+    info!("startup mcp health check completed");
 }

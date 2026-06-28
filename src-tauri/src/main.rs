@@ -106,6 +106,13 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
+            let health_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let state = health_handle.state::<DesktopState>();
+                builtin_mcp::refresh_all_mcp_health(&state);
+            });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             start_heartbeat_polling(app.handle().clone());

@@ -1282,6 +1282,7 @@ pub(crate) fn acp_live_update_emitter(
     Arc::new(move |context, event| {
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             maybe_emit_permission_intervention(lifecycle_bus, &context, &event);
+            maybe_emit_elicitation_intervention(lifecycle_bus, &context, &event);
         }
         emit_acp_event_update(
             &app_handle,
@@ -1336,6 +1337,42 @@ fn maybe_emit_permission_intervention(
         attempt_id: context.attempt_id.clone(),
         node_label: context.node_id.clone(),
         kind: RuntimeInterventionKind::PermissionRequested,
+        task_title: None,
+    });
+}
+
+fn maybe_emit_elicitation_intervention(
+    lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+) {
+    if event.kind != "elicitationRequest" {
+        return;
+    }
+    let is_pending = event
+        .status
+        .as_deref()
+        .map(|s| s == "pending")
+        .unwrap_or(false);
+    if !is_pending {
+        return;
+    }
+    lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
+        event_id: gold_band::app::make_dedup_key_with_suffix(
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            "elicitation-requested",
+        ),
+        occurred_at: current_timestamp(),
+        task_id: context.task_id.clone(),
+        run_id: context.run_id.clone(),
+        round_id: context.round_id.clone(),
+        node_id: context.node_id.clone(),
+        attempt_id: context.attempt_id.clone(),
+        node_label: context.node_id.clone(),
+        kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
 }
@@ -1770,6 +1807,11 @@ pub async fn send_acp_prompt(
             let attempt_id_for_live = attempt_id.clone();
             let outer_node_id_for_live = Some(outer_node_id.to_string());
             let outer_attempt_id_for_live = Some(outer_attempt_id.to_string());
+            let live_update = acp_live_update_emitter(
+                app_handle_for_live.clone(),
+                project_id_for_spawn.clone(),
+                Some(app.lifecycle_bus.clone()),
+            );
             client::run_prompt(
                 provider,
                 &agent_config.adapter,
@@ -1786,9 +1828,8 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
                 Some(&|event| {
-                    maybe_emit_permission_intervention(
-                        &app.lifecycle_bus,
-                        &gold_band::app::AcpLiveEventContext {
+                    live_update(
+                        gold_band::app::AcpLiveEventContext {
                             task_id: task_id_for_live.clone(),
                             run_id: run_id_for_live.clone(),
                             round_id: round_id_for_live.clone(),
@@ -1797,21 +1838,8 @@ pub async fn send_acp_prompt(
                             outer_node_id: outer_node_id_for_live.clone(),
                             outer_attempt_id: outer_attempt_id_for_live.clone(),
                         },
-                        event,
-                    );
-                    emit_acp_event_update(
-                        &app_handle_for_live,
-                        project_id_for_spawn.clone(),
-                        &task_id_for_live,
-                        &run_id_for_live,
-                        &round_id_for_live,
-                        &node_id_for_live,
-                        &attempt_id_for_live,
-                        outer_node_id_for_live.clone(),
-                        outer_attempt_id_for_live.clone(),
                         event.clone(),
-                    );
-                    Ok(())
+                    )
                 }),
                 &app.acp_mcp_servers().unwrap_or_else(|e| {
                     eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
@@ -1914,6 +1942,11 @@ pub async fn send_acp_prompt(
         let round_id_for_live = round_id.clone();
         let node_id_for_live = node_id.clone();
         let attempt_id_for_live = attempt_id.clone();
+        let live_update = acp_live_update_emitter(
+            app_handle_for_live.clone(),
+            project_id_for_spawn.clone(),
+            Some(app.lifecycle_bus.clone()),
+        );
         let model = current_acp_session_model(&attempt_dir);
         client::run_prompt(
             provider,
@@ -1931,9 +1964,8 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
             Some(&|event| {
-                maybe_emit_permission_intervention(
-                    &app.lifecycle_bus,
-                    &gold_band::app::AcpLiveEventContext {
+                live_update(
+                    gold_band::app::AcpLiveEventContext {
                         task_id: task_id_for_live.clone(),
                         run_id: run_id_for_live.clone(),
                         round_id: round_id_for_live.clone(),
@@ -1942,21 +1974,8 @@ pub async fn send_acp_prompt(
                         outer_node_id: None,
                         outer_attempt_id: None,
                     },
-                    event,
-                );
-                emit_acp_event_update(
-                    &app_handle_for_live,
-                    project_id_for_spawn.clone(),
-                    &task_id_for_live,
-                    &run_id_for_live,
-                    &round_id_for_live,
-                    &node_id_for_live,
-                    &attempt_id_for_live,
-                    None,
-                    None,
                     event.clone(),
-                );
-                Ok(())
+                )
             }),
             &app.acp_mcp_servers().unwrap_or_else(|e| {
                 eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
@@ -3692,6 +3711,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::config::RuntimeConfig;
     use gold_band::storage::write_json;
+    use std::sync::{Arc, Mutex};
 
     fn test_app(repo_root: Utf8PathBuf) -> App {
         App::with_config(repo_root, RuntimeConfig::default())
@@ -4185,5 +4205,97 @@ mod tests {
         }));
 
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn maybe_emit_elicitation_intervention_for_pending_request() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::InterventionRequested { kind, event_id, .. } = event {
+                seen_for_handler.lock().unwrap().push((kind, event_id));
+            }
+        }));
+
+        maybe_emit_elicitation_intervention(
+            &bus,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            &AcpUiEvent {
+                kind: "elicitationRequest".to_string(),
+                id: "elicit-001".to_string(),
+                seq: 1,
+                timestamp: "1Z".to_string(),
+                session_id: None,
+                status: Some("pending".to_string()),
+                title: None,
+                content: None,
+                tool_call_id: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: Some("1Z".to_string()),
+                ended_at: None,
+                raw: None,
+            },
+        );
+
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, RuntimeInterventionKind::ElicitationRequested);
+        assert_eq!(
+            events[0].1,
+            "run-001:round-001:plan:attempt-001:elicitation-requested"
+        );
+    }
+
+    #[test]
+    fn maybe_emit_elicitation_intervention_ignores_non_pending_events() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if matches!(event, RuntimeLifecycleEvent::InterventionRequested { .. }) {
+                *seen_for_handler.lock().unwrap() += 1;
+            }
+        }));
+
+        maybe_emit_elicitation_intervention(
+            &bus,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            &AcpUiEvent {
+                kind: "elicitationRequest".to_string(),
+                id: "elicit-001".to_string(),
+                seq: 1,
+                timestamp: "1Z".to_string(),
+                session_id: None,
+                status: Some("completed".to_string()),
+                title: None,
+                content: None,
+                tool_call_id: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: Some("1Z".to_string()),
+                ended_at: Some("2Z".to_string()),
+                raw: None,
+            },
+        );
+
+        assert_eq!(*seen.lock().unwrap(), 0);
     }
 }

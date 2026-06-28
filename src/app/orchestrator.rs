@@ -1642,8 +1642,10 @@ fn intervention_kind_for_pause(
     node: &NodeState,
 ) -> Option<RuntimeInterventionKind> {
     match run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted) {
-        reason @ (PauseReason::WaitingForUserInput
-        | PauseReason::PermissionRequested
+        PauseReason::WaitingForUserInput => Some(waiting_for_user_input_intervention_kind(
+            app, task_id, run, round, node,
+        )),
+        reason @ (PauseReason::PermissionRequested
         | PauseReason::RuntimeAbnormal
         | PauseReason::ErrorBlocked) => Some(RuntimeInterventionKind::from(reason)),
         PauseReason::ProcessInterrupted => {
@@ -1651,6 +1653,38 @@ fn intervention_kind_for_pause(
                 .then_some(RuntimeInterventionKind::ProcessInterrupted)
         }
     }
+}
+
+fn waiting_for_user_input_intervention_kind(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) -> RuntimeInterventionKind {
+    if node.manual_check_pending {
+        return RuntimeInterventionKind::ManualDecisionRequired;
+    }
+    let attempt_dir =
+        app.paths
+            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+    if attempt_has_pending_elicitation(&attempt_dir) {
+        return RuntimeInterventionKind::ElicitationRequested;
+    }
+    RuntimeInterventionKind::ManualDecisionRequired
+}
+
+fn attempt_has_pending_elicitation(attempt_dir: &camino::Utf8Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(attempt_dir.as_std_path()) else {
+        return false;
+    };
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .map(|name| name.starts_with("acp.elicitation-request.") && name.ends_with(".json"))
+            .unwrap_or(false)
+    })
 }
 
 fn emit_pause_side_effects(
@@ -9458,6 +9492,7 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::elicitation::{PendingElicitationState, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{OutputArtifactPayload, ProviderResultPayload, SessionRef};
@@ -9535,6 +9570,134 @@ mod tests {
             parent_continue_prompt_id: None,
             resume_override: None,
         }
+    }
+
+    #[test]
+    fn waiting_for_user_input_maps_to_elicitation_when_pending_request_exists() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-001";
+        let run = RunState {
+            version: crate::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("plan".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: crate::domain::VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: crate::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: std::collections::BTreeMap::new(),
+            manual_check_pending: false,
+            uuid: None,
+        };
+        let attempt_dir =
+            app.paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: "elicit-001".to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                message: "请选择".to_string(),
+                requested_schema: serde_json::json!({ "type": "object" }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let kind = waiting_for_user_input_intervention_kind(&app, task_id, &run, &round, &node);
+
+        assert_eq!(kind, RuntimeInterventionKind::ElicitationRequested);
+    }
+
+    #[test]
+    fn waiting_for_user_input_keeps_manual_check_when_flagged() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let run = RunState {
+            version: crate::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("plan".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: crate::domain::VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: crate::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: std::collections::BTreeMap::new(),
+            manual_check_pending: true,
+            uuid: None,
+        };
+
+        let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
+
+        assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
     }
 
     fn test_worktree_node(id: &str) -> DynamicNodeState {

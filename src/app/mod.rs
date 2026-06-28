@@ -10,7 +10,8 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
+    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key,
+    make_dedup_key_with_suffix, reason_key,
 };
 
 use crate::acp::client as acp_client;
@@ -442,6 +443,7 @@ pub struct NodeRuntimeSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeInterventionKind {
     ManualDecisionRequired,
+    ElicitationRequested,
     PermissionRequested,
     RuntimeAbnormal,
     ErrorBlocked,
@@ -464,6 +466,7 @@ impl From<RuntimeInterventionKind> for PauseReason {
     fn from(kind: RuntimeInterventionKind) -> Self {
         match kind {
             RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
+            RuntimeInterventionKind::ElicitationRequested => Self::WaitingForUserInput,
             RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
             RuntimeInterventionKind::RuntimeAbnormal => Self::RuntimeAbnormal,
             RuntimeInterventionKind::ErrorBlocked => Self::ErrorBlocked,

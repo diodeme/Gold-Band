@@ -187,7 +187,6 @@ pub fn is_elicitation_cancel_requested(attempt_dir: &Utf8Path) -> bool {
     elicitation_cancel_request_file(attempt_dir).exists()
 }
 
-
 /// 根据 elicitation 响应构造 JSON-RPC result
 pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value {
     let action_str = match response.action {
@@ -243,12 +242,7 @@ pub fn format_elicitation_answer(schema: &Value, content: &Value) -> String {
 
             // 多问题时带上 field 标题，单问题时直接用值
             if props.len() > 1 {
-                let label = resolve_elicitation_label(
-                    key,
-                    prop_schema,
-                    props,
-                    &question_titles,
-                );
+                let label = resolve_elicitation_label(key, prop_schema, props, &question_titles);
                 parts.push(format!("{label}：{value_str}"));
             } else {
                 parts.push(value_str);
@@ -415,12 +409,9 @@ mod tests {
             )
             .unwrap();
         });
-        let response = wait_for_elicitation_response(
-            &attempt_dir,
-            elicitation_id,
-            Duration::from_secs(10),
-        )
-        .unwrap();
+        let response =
+            wait_for_elicitation_response(&attempt_dir, elicitation_id, Duration::from_secs(10))
+                .unwrap();
         assert!(matches!(response.action, ElicitationAction::Accept));
         assert_eq!(
             response.content,
@@ -445,11 +436,7 @@ mod tests {
     fn wait_for_elicitation_response_cancelled() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
         // 写入取消标记
-        request_elicitation_cancel(
-            &attempt_dir,
-            "2026-01-01T00:00:00Z".to_string(),
-        )
-        .unwrap();
+        request_elicitation_cancel(&attempt_dir, "2026-01-01T00:00:00Z".to_string()).unwrap();
         let response = wait_for_elicitation_response(
             &attempt_dir,
             "elicit-cancelled",
@@ -505,8 +492,7 @@ mod tests {
         // 取消所有
         cancel_pending_elicitation_requests(&attempt_dir, "now".to_string()).unwrap();
         // 验证响应文件已存在
-        let response_path =
-            elicitation_response_file(&attempt_dir, "elicit-cancel-me");
+        let response_path = elicitation_response_file(&attempt_dir, "elicit-cancel-me");
         assert!(response_path.exists());
         let response: ElicitationResponseState = read_json(&response_path).unwrap();
         assert!(matches!(response.action, ElicitationAction::Decline));
@@ -514,10 +500,7 @@ mod tests {
 
     #[test]
     fn sanitize_id_replaces_special_chars() {
-        let path = pending_elicitation_file(
-            &Utf8PathBuf::from("/tmp"),
-            "elicit:a/b?c=d",
-        );
+        let path = pending_elicitation_file(&Utf8PathBuf::from("/tmp"), "elicit:a/b?c=d");
         let file_name = path.file_name().unwrap();
         assert!(!file_name.contains(':'));
         assert!(!file_name.contains('/'));

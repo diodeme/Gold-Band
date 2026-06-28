@@ -3,15 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { stepMessage } from '../../src/components/acp/ElicitationCard';
 
 describe('ElicitationCard question text', () => {
-  it('uses the schema field title as the visible question', () => {
+  it('uses the schema field description as the visible question', () => {
     expect(
       stepMessage(
         'Please answer the following questions.',
-        '你希望项目主要面向哪个方向？',
+        '你学习这个 Claude Code 源码项目到现在，最让你印象深刻的模块是哪个？',
         0,
         '请选择一个答案',
       ),
-    ).toBe('你希望项目主要面向哪个方向？');
+    ).toBe('你学习这个 Claude Code 源码项目到现在，最让你印象深刻的模块是哪个？');
   });
 
   it('does not show generic provider prompt text as the question', () => {

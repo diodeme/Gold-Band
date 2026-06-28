@@ -271,7 +271,7 @@ export function ElicitationCard({
     : t("acp.elicitation.next", "下一步");
   const questionText = stepMessage(
     message,
-    currentField.title ?? currentField.description,
+    currentField.description ?? currentField.title,
     currentStep,
     t("acp.elicitation.questionFallback", "请选择一个答案"),
   );

@@ -1,10 +1,12 @@
 use gold_band::acp::client;
-use gold_band::acp::events::{
-    AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq,
-    load_timeline_items, permission_decision_event, write_timeline_items,
+use gold_band::acp::elicitation::{
+    ElicitationAction, cancel_pending_elicitation_requests, remove_elicitation_signal_files,
+    write_elicitation_response,
 };
+use gold_band::acp::events::{AcpUiEvent, current_timestamp};
 use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests, write_permission_response,
+    PendingPermissionState, cancel_pending_permission_requests, remove_permission_signal_files,
+    write_permission_response_if_pending,
 };
 use gold_band::app::{
     App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
@@ -17,12 +19,7 @@ use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus}
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use std::{
-    collections::BTreeSet,
-    io::{BufRead, BufReader},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, str::FromStr, sync::Arc};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -1277,6 +1274,7 @@ pub(crate) fn acp_live_update_emitter(
     Arc::new(move |context, event| {
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             maybe_emit_permission_intervention(lifecycle_bus, &context, &event);
+            maybe_emit_elicitation_intervention(lifecycle_bus, &context, &event);
         }
         emit_acp_event_update(
             &app_handle,
@@ -1331,6 +1329,42 @@ fn maybe_emit_permission_intervention(
         attempt_id: context.attempt_id.clone(),
         node_label: context.node_id.clone(),
         kind: RuntimeInterventionKind::PermissionRequested,
+        task_title: None,
+    });
+}
+
+fn maybe_emit_elicitation_intervention(
+    lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+) {
+    if event.kind != "elicitationRequest" {
+        return;
+    }
+    let is_pending = event
+        .status
+        .as_deref()
+        .map(|s| s == "pending")
+        .unwrap_or(false);
+    if !is_pending {
+        return;
+    }
+    lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
+        event_id: gold_band::app::make_dedup_key_with_suffix(
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+            "elicitation-requested",
+        ),
+        occurred_at: current_timestamp(),
+        task_id: context.task_id.clone(),
+        run_id: context.run_id.clone(),
+        round_id: context.round_id.clone(),
+        node_id: context.node_id.clone(),
+        attempt_id: context.attempt_id.clone(),
+        node_label: context.node_id.clone(),
+        kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
 }
@@ -1765,6 +1799,11 @@ pub async fn send_acp_prompt(
             let attempt_id_for_live = attempt_id.clone();
             let outer_node_id_for_live = Some(outer_node_id.to_string());
             let outer_attempt_id_for_live = Some(outer_attempt_id.to_string());
+            let live_update = acp_live_update_emitter(
+                app_handle_for_live.clone(),
+                project_id_for_spawn.clone(),
+                Some(app.lifecycle_bus.clone()),
+            );
             client::run_prompt(
                 provider,
                 &agent_config.adapter,
@@ -1781,9 +1820,8 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
                 Some(&|event| {
-                    maybe_emit_permission_intervention(
-                        &app.lifecycle_bus,
-                        &gold_band::app::AcpLiveEventContext {
+                    live_update(
+                        gold_band::app::AcpLiveEventContext {
                             task_id: task_id_for_live.clone(),
                             run_id: run_id_for_live.clone(),
                             round_id: round_id_for_live.clone(),
@@ -1792,21 +1830,8 @@ pub async fn send_acp_prompt(
                             outer_node_id: outer_node_id_for_live.clone(),
                             outer_attempt_id: outer_attempt_id_for_live.clone(),
                         },
-                        event,
-                    );
-                    emit_acp_event_update(
-                        &app_handle_for_live,
-                        project_id_for_spawn.clone(),
-                        &task_id_for_live,
-                        &run_id_for_live,
-                        &round_id_for_live,
-                        &node_id_for_live,
-                        &attempt_id_for_live,
-                        outer_node_id_for_live.clone(),
-                        outer_attempt_id_for_live.clone(),
                         event.clone(),
-                    );
-                    Ok(())
+                    )
                 }),
                 &app.acp_mcp_servers().unwrap_or_else(|e| {
                     eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
@@ -1909,6 +1934,11 @@ pub async fn send_acp_prompt(
         let round_id_for_live = round_id.clone();
         let node_id_for_live = node_id.clone();
         let attempt_id_for_live = attempt_id.clone();
+        let live_update = acp_live_update_emitter(
+            app_handle_for_live.clone(),
+            project_id_for_spawn.clone(),
+            Some(app.lifecycle_bus.clone()),
+        );
         let model = current_acp_session_model(&attempt_dir);
         client::run_prompt(
             provider,
@@ -1926,9 +1956,8 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
             Some(&|event| {
-                maybe_emit_permission_intervention(
-                    &app.lifecycle_bus,
-                    &gold_band::app::AcpLiveEventContext {
+                live_update(
+                    gold_band::app::AcpLiveEventContext {
                         task_id: task_id_for_live.clone(),
                         run_id: run_id_for_live.clone(),
                         round_id: round_id_for_live.clone(),
@@ -1937,21 +1966,8 @@ pub async fn send_acp_prompt(
                         outer_node_id: None,
                         outer_attempt_id: None,
                     },
-                    event,
-                );
-                emit_acp_event_update(
-                    &app_handle_for_live,
-                    project_id_for_spawn.clone(),
-                    &task_id_for_live,
-                    &run_id_for_live,
-                    &round_id_for_live,
-                    &node_id_for_live,
-                    &attempt_id_for_live,
-                    None,
-                    None,
                     event.clone(),
-                );
-                Ok(())
+                )
             }),
             &app.acp_mcp_servers().unwrap_or_else(|e| {
                 eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
@@ -2045,7 +2061,7 @@ pub fn respond_acp_permission(
             &attempt_id,
         );
         let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        write_permission_response(
+        let wrote_response = write_permission_response_if_pending(
             &attempt_dir,
             &canonical_request_id,
             option_id.clone(),
@@ -2053,13 +2069,14 @@ pub fn respond_acp_permission(
             current_timestamp(),
         )
         .map_err(command_error)?;
-        let events_path = attempt_dir.join("acp.events.jsonl");
-        append_permission_decision_artifacts(
-            &attempt_dir,
-            &events_path,
-            canonical_request_id,
-            option_id,
-        )?;
+        if wrote_response {
+            if !attempt_session_is_active(
+                &attempt_dir.join("acp.snapshot.json"),
+                &attempt_dir.join("acp.session.json"),
+            ) {
+                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
+            }
+        }
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -2078,7 +2095,7 @@ pub fn respond_acp_permission(
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
         let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        write_permission_response(
+        let wrote_response = write_permission_response_if_pending(
             &attempt_dir,
             &canonical_request_id,
             option_id.clone(),
@@ -2086,15 +2103,14 @@ pub fn respond_acp_permission(
             current_timestamp(),
         )
         .map_err(command_error)?;
-        let events_path =
-            app.paths
-                .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        append_permission_decision_artifacts(
-            &attempt_dir,
-            &events_path,
-            canonical_request_id,
-            option_id,
-        )?;
+        if wrote_response {
+            if !attempt_session_is_active(
+                &attempt_dir.join("acp.snapshot.json"),
+                &attempt_dir.join("acp.session.json"),
+            ) {
+                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
+            }
+        }
         acp_session_vm(
             &app,
             &task_id,
@@ -2151,7 +2167,9 @@ fn stop_acp_session(
         locator.outer_node_id(),
         locator.outer_attempt_id(),
     );
-    cancel_pending_permission_requests(&attempt_dir, requested_at).map_err(command_error)?;
+    cancel_pending_permission_requests(&attempt_dir, requested_at.clone())
+        .map_err(command_error)?;
+    cancel_pending_elicitation_requests(&attempt_dir, requested_at).map_err(command_error)?;
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
@@ -2239,6 +2257,7 @@ fn request_acp_cancel_and_persist_interrupted_snapshot(
     app: &gold_band::app::App,
     attempt_dir: &camino::Utf8Path,
 ) {
+    app.cancel_attempt_dir_best_effort(attempt_dir);
     app.request_attempt_prompt_cancel_best_effort(attempt_dir);
     app.persist_cancelled_session_snapshot_best_effort(attempt_dir);
 }
@@ -2278,28 +2297,6 @@ fn spawn_index_attempt(
     });
 }
 
-fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
-    if !path.exists() {
-        return 1;
-    }
-    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
-        return 1;
-    };
-    BufReader::new(file)
-        .lines()
-        .map_while(std::result::Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .count() as u64
-        + 1
-}
-
-fn should_append_legacy_permission_event(
-    events_path: &camino::Utf8Path,
-    timeline_path: &camino::Utf8Path,
-) -> bool {
-    events_path.exists() && !timeline_path.exists()
-}
-
 fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &str) -> String {
     let stripped_request_id = strip_permission_display_prefix(request_id);
     let candidates = [request_id.to_string(), stripped_request_id.clone()];
@@ -2320,40 +2317,31 @@ fn strip_permission_display_prefix(request_id: &str) -> String {
     current.to_string()
 }
 
-fn append_permission_decision_artifacts(
-    attempt_dir: &camino::Utf8Path,
-    events_path: &camino::Utf8Path,
-    request_id: String,
-    option_id: Option<String>,
-) -> CommandResult<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
+fn attempt_session_is_active(
+    snapshot_path: &camino::Utf8Path,
+    session_path: &camino::Utf8Path,
+) -> bool {
+    let metadata = if snapshot_path.exists() {
+        read_json::<serde_json::Value>(snapshot_path).ok()
+    } else if session_path.exists() {
+        read_json::<serde_json::Value>(session_path).ok()
     } else {
-        next_acp_event_seq(events_path)
+        None
     };
-    let mut event = permission_decision_event(source_seq, request_id.clone(), option_id);
-    event.id = format!("permission-{request_id}");
-    event.started_seq = Some(source_seq);
-    event.ended_seq = Some(source_seq);
-    event.started_at = Some(event.timestamp.clone());
-    event.ended_at = Some(event.timestamp.clone());
-
-    if should_append_legacy_permission_event(events_path, &timeline_path) {
-        append_ui_event(events_path, &event).map_err(command_error)?;
-    }
-
-    let mut items = load_timeline_items(&timeline_path).map_err(command_error)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
-        event.started_seq = existing.started_seq.or(event.started_seq);
-        event.started_at = existing.started_at.clone().or(event.started_at.clone());
-        *existing = event;
-    } else {
-        items.push(event);
-    }
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items).map_err(command_error)?;
-    Ok(())
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
+    )
 }
 
 #[tauri::command]
@@ -3216,6 +3204,112 @@ pub fn open_in_file_manager(
     })
 }
 
+#[tauri::command]
+pub fn respond_elicitation(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    elicitation_id: String,
+    action: String, // "accept" | "decline"
+    content: Option<serde_json::Value>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+
+    let action = match action.as_str() {
+        "accept" => ElicitationAction::Accept,
+        _ => ElicitationAction::Decline,
+    };
+
+    let attempt_dir = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        app.paths.dynamic_node_attempt_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        )
+    } else {
+        app.paths
+            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+    };
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+
+    write_elicitation_response(
+        &attempt_dir,
+        &elicitation_id,
+        action.clone(),
+        content.clone(),
+        current_timestamp(),
+    )
+    .map_err(command_error)?;
+
+    if !attempt_session_is_active(&snapshot_path, &session_path) {
+        let _ = remove_elicitation_signal_files(&attempt_dir, &elicitation_id);
+    }
+
+    // Emit session update so the frontend can refresh the timeline
+    // with the elicitation response event written either by the runtime
+    // or by the command-side durable replay fallback.
+    let session =
+        if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+            crate::view_models::dynamic_acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                on,
+                oa,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .ok()
+            .flatten()
+        } else {
+            crate::view_models::acp_session_vm(
+                &app,
+                &task_id,
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                None,
+                None,
+            )
+            .ok()
+            .flatten()
+        };
+
+    emit_acp_session_update(
+        &app_handle,
+        &app,
+        project_id,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+        session,
+    );
+
+    Ok(())
+}
+
 fn open_path(path: &std::path::Path) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Failed to open path: {e}"))
 }
@@ -3448,6 +3542,7 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {
@@ -3861,5 +3956,97 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn maybe_emit_elicitation_intervention_for_pending_request() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::InterventionRequested { kind, event_id, .. } = event {
+                seen_for_handler.lock().unwrap().push((kind, event_id));
+            }
+        }));
+
+        maybe_emit_elicitation_intervention(
+            &bus,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            &AcpUiEvent {
+                kind: "elicitationRequest".to_string(),
+                id: "elicit-001".to_string(),
+                seq: 1,
+                timestamp: "1Z".to_string(),
+                session_id: None,
+                status: Some("pending".to_string()),
+                title: None,
+                content: None,
+                tool_call_id: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: Some("1Z".to_string()),
+                ended_at: None,
+                raw: None,
+            },
+        );
+
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, RuntimeInterventionKind::ElicitationRequested);
+        assert_eq!(
+            events[0].1,
+            "run-001:round-001:plan:attempt-001:elicitation-requested"
+        );
+    }
+
+    #[test]
+    fn maybe_emit_elicitation_intervention_ignores_non_pending_events() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if matches!(event, RuntimeLifecycleEvent::InterventionRequested { .. }) {
+                *seen_for_handler.lock().unwrap() += 1;
+            }
+        }));
+
+        maybe_emit_elicitation_intervention(
+            &bus,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            &AcpUiEvent {
+                kind: "elicitationRequest".to_string(),
+                id: "elicit-001".to_string(),
+                seq: 1,
+                timestamp: "1Z".to_string(),
+                session_id: None,
+                status: Some("completed".to_string()),
+                title: None,
+                content: None,
+                tool_call_id: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: Some("1Z".to_string()),
+                ended_at: Some("2Z".to_string()),
+                raw: None,
+            },
+        );
+
+        assert_eq!(*seen.lock().unwrap(), 0);
     }
 }

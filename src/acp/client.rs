@@ -19,6 +19,11 @@ struct AcpTimelineStreamState {
 }
 
 use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
+use crate::acp::elicitation::{
+    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
+    elicitation_response_result, remove_elicitation_signal_files,
+    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+};
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
     append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
@@ -26,7 +31,9 @@ use crate::acp::events::{
     permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, wait_for_permission_response, write_pending_permission,
+    PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
+    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
+    write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -146,6 +153,7 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
 }
 
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
     AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
 }
 
@@ -515,15 +523,21 @@ pub fn run_prompt(
             } else {
                 "completed"
             };
+            if status == "cancelled" {
+                let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            }
             (status, stop_reason)
         }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
         Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("interrupted".to_string()))
         }
         Err(error) => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -576,6 +590,11 @@ pub fn run_prompt(
     };
     runtime.shutdown();
     Ok(run)
+}
+
+fn cancel_pending_prompt_interactions(attempt_dir: &Utf8Path, decided_at: String) -> Result<()> {
+    cancel_pending_permission_requests(attempt_dir, decided_at.clone())?;
+    cancel_pending_elicitation_requests(attempt_dir, decided_at)
 }
 
 fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]) -> Value {
@@ -663,6 +682,15 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
 }
 
 impl<'a> AcpRuntime<'a> {
+    fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
+        cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
+        self.timeline_items = load_timeline_items(&self.paths.timeline)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        Ok(())
+    }
+
     fn append_timing_diagnostic(&self, event: &str, data: Value) {
         let _ = append_diagnostic(
             &self.paths.diagnostics,
@@ -882,7 +910,11 @@ impl<'a> AcpRuntime<'a> {
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": {
+                    "elicitation": {
+                        "form": {}
+                    }
+                },
                 "clientInfo": {
                     "name": "gold-band",
                     "title": "Gold Band",
@@ -1593,6 +1625,7 @@ impl<'a> AcpRuntime<'a> {
         match value.get("method").and_then(Value::as_str) {
             Some("session/update") => self.handle_session_update(value),
             Some("session/request_permission") => self.handle_permission_request(value),
+            Some("elicitation/create") => self.handle_elicitation_request(value),
             Some(method) => {
                 append_diagnostic(
                     &self.paths.diagnostics,
@@ -1671,9 +1704,28 @@ impl<'a> AcpRuntime<'a> {
             params.clone(),
             current_timestamp(),
         )?;
-        let event = permission_request_event(self.seq, request_id.clone(), params);
+        let mut event = permission_request_event(self.seq, request_id.clone(), params);
+        if read_json::<PermissionResponseState>(&permission_response_file(
+            &self.paths.attempt_dir,
+            &request_id,
+        ))
+        .ok()
+        .is_some_and(|response| response.cancelled)
+        {
+            event.status = Some("cancelled".to_string());
+            event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
+        }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        self.seq += 1;
+        let decision_event = permission_decision_timeline_event(
+            self.seq,
+            &request_id,
+            &response,
+            self.timeline_items.get(&format!("permission-{request_id}")),
+        );
+        self.persist_event(&decision_event)?;
+        let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
         let frame = json!({
             "jsonrpc": "2.0",
@@ -1726,6 +1778,85 @@ impl<'a> AcpRuntime<'a> {
                 Some(frame),
             );
         }
+    }
+
+    fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        let rpc_id = value
+            .get("id")
+            .cloned()
+            .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let schema = params
+            .get("requestedSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+
+        // 1. 持久化请求到 attempt dir
+        write_pending_elicitation(
+            &self.paths.attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.clone(),
+                jsonrpc_id: rpc_id.clone(),
+                message: message.clone(),
+                requested_schema: schema.clone(),
+                created_at: current_timestamp(),
+            },
+        )?;
+
+        // 2. 发送 UI 事件给前端
+        self.seq += 1;
+        let event = crate::acp::events::elicitation_request_event(
+            self.seq,
+            elicitation_id.clone(),
+            message,
+            schema.clone(),
+        );
+        self.persist_event(&event)?;
+
+        // 3. 同步阻塞等待用户响应（含超时保护）
+        let response = wait_for_elicitation_response(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            ELICITATION_DEFAULT_TIMEOUT,
+        )?;
+        upsert_elicitation_response_event(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            &response.action,
+            response.content.clone(),
+        )?;
+
+        // 4. 构造 JSON-RPC response 并发送
+        let result = elicitation_response_result(&response);
+        let response_frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": result,
+        });
+        self.append_outbound_frame(&response_frame)?;
+        self.connection.send_response(rpc_id, result)?;
+
+        self.seq += 1;
+        let response_event = crate::acp::events::elicitation_response_event(
+            self.seq,
+            elicitation_id.clone(),
+            match response.action {
+                crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
+                crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+            },
+            response.content.clone(),
+        );
+        self.persist_event(&response_event)?;
+        let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
+
+        Ok(())
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {
@@ -2120,6 +2251,21 @@ impl<'a> AcpRuntime<'a> {
                     &timestamp,
                 );
             }
+            "elicitationRequest" => {
+                // 不关闭 text/thought/plan 流 — elicitation 穿插在对话中
+                // 不设 ended_at/ended_seq，保持"进行中"状态，等待用户响应
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+            }
+            "elicitationResponse" => {
+                // 关闭对应的 elicitationRequest
+                item.started_seq = Some(seq);
+                item.ended_seq = Some(seq);
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
             _ => {
                 Self::finalize_non_streaming_event(
                     (
@@ -2379,22 +2525,127 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
+fn permission_decision_timeline_event(
+    seq: u64,
+    request_id: &str,
+    response: &PermissionResponseState,
+    existing: Option<&AcpUiEvent>,
+) -> AcpUiEvent {
+    let mut raw = existing
+        .and_then(|event| event.raw.clone())
+        .unwrap_or_else(|| json!({}));
+    if !raw.is_object() {
+        raw = json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("requestId".to_string(), json!(request_id));
+        if response.cancelled {
+            object.insert("cancelled".to_string(), json!(true));
+            object.remove("optionId");
+        } else {
+            object.insert("optionId".to_string(), json!(response.option_id.clone()));
+            object.remove("cancelled");
+        }
+    }
+
+    AcpUiEvent {
+        id: request_id.to_string(),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "permissionRequest".to_string(),
+        session_id: existing.and_then(|event| event.session_id.clone()),
+        content: None,
+        title: existing
+            .and_then(|event| event.title.clone())
+            .or_else(|| Some("Permission answered".to_string())),
+        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
+        status: Some(if response.cancelled {
+            "cancelled".to_string()
+        } else {
+            "selected".to_string()
+        }),
+        started_seq: existing.and_then(|event| event.started_seq),
+        ended_seq: None,
+        started_at: existing.and_then(|event| event.started_at.clone()),
+        ended_at: None,
+        raw: Some(raw),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, resolve_permission_mode,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        permission_decision_timeline_event, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
         session_prompt_params, session_prompt_text,
     };
+    use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
+    }
+
+    #[test]
+    fn permission_decision_event_preserves_pending_timeline_identity() {
+        let existing = AcpUiEvent {
+            id: "permission-0".to_string(),
+            seq: 10,
+            timestamp: "1Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(10),
+            ended_seq: Some(10),
+            started_at: Some("1Z".to_string()),
+            ended_at: Some("1Z".to_string()),
+            raw: Some(json!({
+                "requestId": "0",
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            })),
+        };
+        let response = PermissionResponseState {
+            request_id: "0".to_string(),
+            option_id: Some("allow".to_string()),
+            cancelled: false,
+            decided_at: "2Z".to_string(),
+        };
+
+        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.kind, "permissionRequest");
+        assert_eq!(event.status.as_deref(), Some("selected"));
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(event.title.as_deref(), Some("Write file"));
+        assert_eq!(event.started_seq, Some(10));
+        assert_eq!(event.started_at.as_deref(), Some("1Z"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("optionId"))
+                .and_then(Value::as_str),
+            Some("allow")
+        );
     }
 
     #[test]

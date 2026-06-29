@@ -99,6 +99,10 @@ import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
 import {
+  ElicitationCard,
+  type ElicitationSchema,
+} from "@/components/acp/ElicitationCard";
+import {
   attemptIdFromAcpEvent,
   isAcpAttemptSeparator,
   normalizeAcpEventForAttempt,
@@ -123,6 +127,7 @@ import {
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
+  respondElicitation,
   submitConversationPrompt,
   setAcpSessionModel,
   setAcpSessionPermissionMode,
@@ -132,6 +137,7 @@ import {
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
+import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import { displayAppError, displayStatus } from "@/i18n";
@@ -288,6 +294,8 @@ const hiddenEventKinds = new Set([
   "modeUpdate",
   "configUpdate",
   "permissionRequest",
+  "elicitationRequest",
+  "elicitationResponse",
   "rawDiagnostic",
   "runtimeError",
 ]);
@@ -517,6 +525,9 @@ export const ACPChatDialog = forwardRef<
     Set<string>
   >(() => new Set());
   const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [answeredElicitations, setAnsweredElicitations] = useState<
+    Map<string, Record<string, unknown>>
+  >(() => new Map());
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<
     string | null
   >(null);
@@ -755,6 +766,10 @@ export const ACPChatDialog = forwardRef<
       (request) => !dismissedPermissionIds.has(request.requestId),
     ) ?? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds);
   const waitingForPermission = Boolean(pendingPermission);
+  const pendingElicitation = pendingElicitationFromEvents(
+    effectiveEvents,
+    answeredElicitations,
+  );
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
     : null;
@@ -1161,7 +1176,12 @@ export const ACPChatDialog = forwardRef<
       .map((event) => normalizeEventUpdate(event))
       .filter((event): event is AcpUiEventVm => {
         if (!event) return false;
-        return isRenderableEvent(event) || event.kind === "permissionRequest";
+        return (
+          isRenderableEvent(event) ||
+          event.kind === "permissionRequest" ||
+          event.kind === "elicitationRequest" ||
+          event.kind === "elicitationResponse"
+        );
       });
     if (normalizedUpdates.length === 0) return;
     setLoadedEvents((events) => {
@@ -1951,6 +1971,38 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
+  const answerElicitation = async (
+    elicitationId: string,
+    content?: Record<string, unknown>,
+  ) => {
+    setAnsweredElicitations((current) => {
+      const next = new Map(current);
+      next.set(elicitationId, content ?? {});
+      return next;
+    });
+    try {
+      await respondElicitation(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        elicitationId,
+        "accept",
+        content ?? null,
+        outerNodeId,
+        outerAttemptId,
+      );
+    } catch {
+      setAnsweredElicitations((current) => {
+        const next = new Map(current);
+        next.delete(elicitationId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
     if (
       !queuedInterventionPrompt ||
@@ -2177,6 +2229,21 @@ export const ACPChatDialog = forwardRef<
                     request={pendingPermission}
                     onSelect={(optionId) =>
                       answerPermission(pendingPermission, optionId)
+                    }
+                  />
+                ) : null}
+                {pendingElicitation ? (
+                  <ElicitationCard
+                    key={pendingElicitation.elicitationId}
+                    elicitationId={pendingElicitation.elicitationId}
+                    message={pendingElicitation.message}
+                    schema={pendingElicitation.requestedSchema}
+                    confirmedContent={pendingElicitation.confirmedContent}
+                    onRespond={(content) =>
+                      answerElicitation(
+                        pendingElicitation.elicitationId,
+                        content,
+                      )
                     }
                   />
                 ) : null}
@@ -4525,6 +4592,49 @@ export function pendingPermissionFromEvents(
   return null;
 }
 
+interface PendingElicitationVm {
+  elicitationId: string;
+  message: string;
+  requestedSchema: ElicitationSchema;
+  confirmedContent?: Record<string, unknown> | null;
+}
+
+export function pendingElicitationFromEvents(
+  events: AcpUiEventVm[],
+  answeredElicitations: Map<string, Record<string, unknown>>,
+): PendingElicitationVm | null {
+  const answeredIds = new Set(answeredElicitations.keys());
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.kind === "elicitationResponse") {
+      const elicitationId =
+        stringValue(rawObject(event.raw)?.elicitationId) ??
+        event.id.replace(/-response$/, "");
+      answeredIds.add(elicitationId);
+      continue;
+    }
+    if (event.kind !== "elicitationRequest") continue;
+    // elicitation/create is a blocking interaction in ACP. Once we have
+    // reached the latest elicitationRequest while scanning backward, any
+    // older requests are stale and should not re-surface on reload.
+    if (answeredIds.has(event.id)) return null;
+    if (event.status === "pending") {
+      const raw = rawObject(event.raw) ?? {};
+      const schema: ElicitationSchema =
+        typeof raw === "object" && (raw as Record<string, unknown>).type === "object"
+          ? (raw as unknown as ElicitationSchema)
+          : { type: "object", properties: {} };
+      return {
+        elicitationId: event.id,
+        message: event.content ?? "",
+        requestedSchema: schema,
+      };
+    }
+    return null;
+  }
+  return null;
+}
+
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {
   const message = session.diagnostics.lastError;
   if (!message) return null;
@@ -5012,12 +5122,10 @@ export function limitAcpEvents(
 }
 
 function acpEventKey(event: AcpUiEventVm) {
+  if (event.kind === "permissionRequest")
+    return `permission:${permissionRequestIdFromEvent(event)}`;
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
-  const eventId =
-    event.kind === "permissionRequest"
-      ? `permission-${permissionRequestIdFromEvent(event)}`
-      : event.id;
-  return `${attemptId}:${event.kind}:${eventId}`;
+  return `${attemptId}:${event.kind}:${event.id}`;
 }
 
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {

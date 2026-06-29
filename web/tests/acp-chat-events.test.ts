@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   mergeAcpEvents,
+  pendingElicitationFromEvents,
   pendingPermissionFromEvents,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../src/types';
@@ -64,6 +65,73 @@ describe('ACP chat event handling', () => {
 
     expect(pendingPermissionFromEvents(events, new Set())?.requestId).toBe('0');
     expect(pendingPermissionFromEvents(events, new Set(['0']))).toBeNull();
+  });
+
+  it('does not surface answered elicitation requests after a response event arrives', () => {
+    const events = [
+      event({
+        id: 'elicit-1',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Choose one',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-1-response',
+        seq: 11,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-1', action: 'accept' },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toBeNull();
+  });
+
+  it('keeps unanswered elicitation requests pending until a response event exists', () => {
+    const events = [
+      event({
+        id: 'elicit-2',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Choose one',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+  });
+
+  it('does not resurface older pending elicitation requests after a newer one was answered', () => {
+    const events = [
+      event({
+        id: 'elicit-old',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Old question',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-new',
+        seq: 20,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'New question',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-new-response',
+        seq: 21,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-new', action: 'accept' },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toBeNull();
   });
 
   it('keeps tool call updates merged by tool id', () => {
@@ -374,5 +442,34 @@ describe('ACP chat event handling', () => {
 
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ status: 'selected' });
+  });
+
+  it('replaces pending permission when terminal update omits session id', () => {
+    const merged = mergeAcpEvents(
+      [
+        event({
+          id: 'permission-5',
+          seq: 762,
+          kind: 'permissionRequest',
+          sessionId: 'session-live',
+          status: 'pending',
+          raw: { requestId: '5' },
+        }),
+      ],
+      [
+        event({
+          id: 'permission-5',
+          seq: 920,
+          kind: 'permissionRequest',
+          sessionId: null,
+          status: 'cancelled',
+          raw: { requestId: '5', cancelled: true },
+        }),
+      ],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ status: 'cancelled' });
+    expect(pendingPermissionFromEvents(merged, new Set())).toBeNull();
   });
 });

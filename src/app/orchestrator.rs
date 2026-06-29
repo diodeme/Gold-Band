@@ -11,6 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use jsonschema::JSONSchema;
 use jsonschema::error::{ValidationError, ValidationErrorKind};
 
+use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -89,6 +90,7 @@ static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONS
     OnceLock::new();
 static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DYNAMIC_STATE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static DYNAMIC_GRAPH_PERSIST_FINGERPRINTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 static DYNAMIC_RESUME_REGISTRY: OnceLock<
     Mutex<HashMap<String, mpsc::Sender<DynamicResumeOverride>>>,
 > = OnceLock::new();
@@ -1497,7 +1499,9 @@ fn teardown_node_environment_best_effort(
     let attempt_dir =
         app.paths
             .attempt_dir(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    let _ = cancel_pending_permission_requests(&attempt_dir, now_rfc3339_like());
+    let decided_at = now_rfc3339_like();
+    let _ = cancel_pending_permission_requests(&attempt_dir, decided_at.clone());
+    let _ = cancel_pending_elicitation_requests(&attempt_dir, decided_at);
     let pid_path =
         app.paths
             .provider_pid_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
@@ -1639,8 +1643,10 @@ fn intervention_kind_for_pause(
     node: &NodeState,
 ) -> Option<RuntimeInterventionKind> {
     match run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted) {
-        reason @ (PauseReason::WaitingForUserInput
-        | PauseReason::PermissionRequested
+        PauseReason::WaitingForUserInput => Some(waiting_for_user_input_intervention_kind(
+            app, task_id, run, round, node,
+        )),
+        reason @ (PauseReason::PermissionRequested
         | PauseReason::RuntimeAbnormal
         | PauseReason::ErrorBlocked) => Some(RuntimeInterventionKind::from(reason)),
         PauseReason::ProcessInterrupted => {
@@ -1648,6 +1654,38 @@ fn intervention_kind_for_pause(
                 .then_some(RuntimeInterventionKind::ProcessInterrupted)
         }
     }
+}
+
+fn waiting_for_user_input_intervention_kind(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) -> RuntimeInterventionKind {
+    if node.manual_check_pending {
+        return RuntimeInterventionKind::ManualDecisionRequired;
+    }
+    let attempt_dir =
+        app.paths
+            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+    if attempt_has_pending_elicitation(&attempt_dir) {
+        return RuntimeInterventionKind::ElicitationRequested;
+    }
+    RuntimeInterventionKind::ManualDecisionRequired
+}
+
+fn attempt_has_pending_elicitation(attempt_dir: &camino::Utf8Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(attempt_dir.as_std_path()) else {
+        return false;
+    };
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .map(|name| name.starts_with("acp.elicitation-request.") && name.ends_with(".json"))
+            .unwrap_or(false)
+    })
 }
 
 fn emit_pause_side_effects(
@@ -3003,6 +3041,29 @@ fn dynamic_state_lock_key(
     format!("{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
 }
 
+fn dynamic_graph_persist_fingerprint_key(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> String {
+    format!(
+        "{}/{}/{}",
+        app.paths.repo_root,
+        dynamic_state_lock_key(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        VERSION
+    )
+}
+
+fn dynamic_graph_persist_fingerprint(graph: &DynamicGraphState) -> Result<u64> {
+    let bytes = serde_json::to_vec_pretty(graph)?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
 fn dynamic_state_lock(ctx: &DynamicExecutionContext<'_>) -> Result<Arc<Mutex<()>>> {
     dynamic_state_lock_for(
         ctx.task_id,
@@ -3529,40 +3590,53 @@ fn drive_dynamic_graph(
         )?);
         let ready_refresh_started_at = Instant::now();
         let ready_node_ids = refresh_dynamic_ready_nodes(graph);
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_ready_refreshed",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "elapsedMs": elapsed_ms(ready_refresh_started_at),
-                "readyNodeIds": ready_node_ids,
-                "state": dynamic_timing_data(graph),
-            }),
-        );
         if !ready_node_ids.is_empty() {
-            persist_dynamic_graph(ctx, graph)?;
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_ready_refreshed",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "elapsedMs": elapsed_ms(ready_refresh_started_at),
+                    "readyNodeIds": ready_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+            persist_dynamic_graph_if_changed(ctx, graph)?;
             emit_dynamic_session_updates_best_effort(ctx, graph, &ready_node_ids);
         }
         let launch_started_at = Instant::now();
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_launch_ready_begin",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "state": dynamic_timing_data(graph),
-            }),
-        );
-        launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_launch_ready_end",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "elapsedMs": elapsed_ms(launch_started_at),
-                "state": dynamic_timing_data(graph),
-            }),
-        );
-        persist_dynamic_graph(ctx, graph)?;
+        let ready_launch_node_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == DynamicNodeStatus::Ready)
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        if !ready_launch_node_ids.is_empty() {
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_launch_ready_begin",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "readyNodeIds": ready_launch_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+        }
+        let launched_node_ids =
+            launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
+        if !launched_node_ids.is_empty() {
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_launch_ready_end",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "elapsedMs": elapsed_ms(launch_started_at),
+                    "launchedNodeIds": launched_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+        }
+        persist_dynamic_graph_if_changed(ctx, graph)?;
 
         if advance_dynamic_groups(ctx, graph)?.changed {
             continue;
@@ -3662,13 +3736,14 @@ fn launch_ready_dynamic_nodes(
     graph: &mut DynamicGraphState,
     tx: &mpsc::Sender<DynamicExecutionMessage>,
     launch_resume_overrides: &mut Vec<DynamicResumeOverride>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let ready_ids = graph
         .nodes
         .iter()
         .filter(|node| node.status == DynamicNodeStatus::Ready)
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
+    let mut launched_node_ids = Vec::new();
     for node_id in ready_ids {
         let Some(index) = graph.nodes.iter().position(|node| node.id == node_id) else {
             continue;
@@ -3772,8 +3847,9 @@ fn launch_ready_dynamic_nodes(
                 "state": dynamic_timing_data(graph),
             }),
         );
+        launched_node_ids.push(spawned_node_id);
     }
-    Ok(())
+    Ok(launched_node_ids)
 }
 
 fn persist_paused_dynamic_leaf_or_graph(
@@ -8746,6 +8822,54 @@ fn persist_dynamic_graph(
             .join(format!("{}.json", proposal.id));
         write_json(&path, proposal)?;
     }
+    remember_dynamic_graph_persist_fingerprint(ctx, graph)?;
+    Ok(())
+}
+
+fn persist_dynamic_graph_if_changed(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<bool> {
+    let fingerprint = dynamic_graph_persist_fingerprint(graph)?;
+    let key = dynamic_graph_persist_fingerprint_key(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    {
+        let fingerprints = DYNAMIC_GRAPH_PERSIST_FINGERPRINTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| anyhow!("dynamic graph persist fingerprint registry poisoned"))?;
+        if fingerprints.get(&key) == Some(&fingerprint) {
+            return Ok(false);
+        }
+    }
+    persist_dynamic_graph(ctx, graph)?;
+    Ok(true)
+}
+
+fn remember_dynamic_graph_persist_fingerprint(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<()> {
+    let fingerprint = dynamic_graph_persist_fingerprint(graph)?;
+    let key = dynamic_graph_persist_fingerprint_key(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    let mut fingerprints = DYNAMIC_GRAPH_PERSIST_FINGERPRINTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic graph persist fingerprint registry poisoned"))?;
+    fingerprints.insert(key, fingerprint);
     Ok(())
 }
 
@@ -9455,6 +9579,7 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::elicitation::{PendingElicitationState, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{OutputArtifactPayload, ProviderResultPayload, SessionRef};
@@ -9532,6 +9657,134 @@ mod tests {
             parent_continue_prompt_id: None,
             resume_override: None,
         }
+    }
+
+    #[test]
+    fn waiting_for_user_input_maps_to_elicitation_when_pending_request_exists() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-001";
+        let run = RunState {
+            version: crate::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("plan".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: crate::domain::VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: crate::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: std::collections::BTreeMap::new(),
+            manual_check_pending: false,
+            uuid: None,
+        };
+        let attempt_dir =
+            app.paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: "elicit-001".to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                message: "请选择".to_string(),
+                requested_schema: serde_json::json!({ "type": "object" }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let kind = waiting_for_user_input_intervention_kind(&app, task_id, &run, &round, &node);
+
+        assert_eq!(kind, RuntimeInterventionKind::ElicitationRequested);
+    }
+
+    #[test]
+    fn waiting_for_user_input_keeps_manual_check_when_flagged() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let run = RunState {
+            version: crate::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("plan".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: crate::domain::VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: crate::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: std::collections::BTreeMap::new(),
+            manual_check_pending: true,
+            uuid: None,
+        };
+
+        let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
+
+        assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
     }
 
     fn test_worktree_node(id: &str) -> DynamicNodeState {
@@ -9862,6 +10115,59 @@ mod tests {
         assert_eq!(promoted, vec!["next".to_string()]);
         assert_eq!(graph.nodes[1].status, DynamicNodeStatus::Ready);
         assert_eq!(graph.run.current_node_ids, vec!["next".to_string()]);
+    }
+
+    #[test]
+    fn dynamic_graph_persist_skips_unchanged_snapshot_and_writes_after_change() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph(vec![test_worktree_node("bootstrap")]);
+
+        assert!(persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+        assert!(!persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+
+        graph.run.updated_at = "2026-06-16T00:00:01Z".to_string();
+        assert!(persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+
+        let persisted: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(persisted.run.updated_at, "2026-06-16T00:00:01Z");
+    }
+
+    #[test]
+    fn launch_ready_dynamic_nodes_returns_empty_without_scheduler_events_when_no_ready_nodes() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.status = DynamicNodeStatus::Pending;
+        let mut graph = test_dynamic_graph(vec![node]);
+        let (tx, _rx) = mpsc::channel();
+        let mut overrides = Vec::new();
+
+        let launched = launch_ready_dynamic_nodes(&ctx, &mut graph, &tx, &mut overrides).unwrap();
+
+        assert!(launched.is_empty());
+        assert!(
+            !app.paths
+                .dynamic_events_file(
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.round_id,
+                    ctx.outer_node_id,
+                    ctx.outer_attempt_id,
+                )
+                .exists()
+        );
     }
 
     #[test]

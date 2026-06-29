@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
@@ -16,6 +17,7 @@ use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
     check_update_manual, choose_workspace, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_auto_template, delete_mcp_server, delete_profile, delete_skill,
+    list_mcp_tools,
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
     download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
     get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
@@ -94,6 +96,7 @@ fn run() -> anyhow::Result<()> {
                     needs_workspace = ctx.needs_workspace,
                     "desktop runtime initialized"
                 );
+                builtin_mcp::inject_builtin_mcp_servers(&state);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
@@ -103,6 +106,13 @@ fn run() -> anyhow::Result<()> {
                     let _ = state.refresh_all_agent_diagnostics();
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
+            });
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
+            let health_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let state = health_handle.state::<DesktopState>();
+                builtin_mcp::refresh_all_mcp_health(&state);
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
@@ -226,6 +236,7 @@ fn run() -> anyhow::Result<()> {
             delete_mcp_server,
             toggle_mcp_server,
             check_mcp_server_health,
+            list_mcp_tools,
             list_skills,
             list_project_skills,
             read_skill,

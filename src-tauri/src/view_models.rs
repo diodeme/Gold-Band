@@ -10,7 +10,8 @@ use anyhow::Result;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, McpServerState, RuntimeConfig,
+    RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -136,6 +137,8 @@ pub struct McpServerVm {
     pub env: Option<Vec<AgentEnvEntryVm>>,
     pub url: Option<String>,
     pub headers: Option<Vec<AgentEnvEntryVm>>,
+    pub managed: bool,
+    pub help_message: Option<String>,
     pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
     pub health_message: Option<String>,
 }
@@ -5414,7 +5417,10 @@ fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
 
 // ── MCP Server VM ──
 
-pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec<McpServerVm> {
+pub fn mcp_server_list_vm(
+    servers: &[gold_band::config::McpServerConfig],
+    health: &std::collections::BTreeMap<String, McpServerState>,
+) -> Vec<McpServerVm> {
     servers
         .iter()
         .map(|s| {
@@ -5441,6 +5447,28 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                     Some(u.clone()),
                     Some(env_to_entries(h)),
                 ),
+                gold_band::config::McpTransportConfig::Sse {
+                    url: u, headers: h,
+                } => (
+                    "sse".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
+            };
+            let (health_status, health_message) = match health.get(&s.id) {
+                Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
+                Some(McpServerState::Error { message }) => {
+                    (Some("unhealthy".to_string()), Some(message.clone()))
+                }
+                Some(McpServerState::AuthRequired { auth_url }) => {
+                    (Some("auth_required".to_string()), auth_url.clone())
+                }
+                Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
+                Some(McpServerState::Starting) => (Some("checking".to_string()), None),
+                None => (None, None),
             };
             McpServerVm {
                 id: s.id.clone(),
@@ -5452,8 +5480,10 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                 env,
                 url,
                 headers,
-                health_status: None,
-                health_message: None,
+                managed: s.managed,
+                help_message: s.help_message.clone(),
+                health_status,
+                health_message,
             }
         })
         .collect()

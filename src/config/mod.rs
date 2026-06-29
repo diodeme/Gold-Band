@@ -335,6 +335,10 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(flatten)]
     pub transport: McpTransportConfig,
+    #[serde(default)]
+    pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_message: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -367,6 +371,11 @@ pub enum McpTransportConfig {
         /// 对标 Zed: OAuth 预注册客户端配置
         #[serde(skip_serializing_if = "Option::is_none")]
         oauth: Option<OAuthClientConfig>,
+    },
+    Sse {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
     },
 }
 

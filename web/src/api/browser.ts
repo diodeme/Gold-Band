@@ -473,6 +473,7 @@ export const browserApi: RuntimeApi = {
   deleteMcpServer(_id: string) { return Promise.resolve([]); },
   toggleMcpServer(_id: string, _enabled: boolean) { return Promise.resolve([]); },
   checkMcpServerHealth(_id: string) { return Promise.resolve({ status: 'unknown' }); },
+  listMcpTools(_id: string) { return Promise.resolve([]); },
   listSkills() { return Promise.resolve({ global: [], project: [] }); },
   listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
   readSkill(_name: string, _source: string) { return Promise.resolve({ meta: { name: '', description: '', source: 'global', directoryPath: '', disableModelInvocation: false, loadWarnings: [] }, body: '' }); },

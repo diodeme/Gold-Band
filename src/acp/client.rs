@@ -30,7 +30,8 @@ use crate::acp::events::{
     permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, wait_for_permission_response, write_pending_permission,
+    PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
+    permission_response_file, wait_for_permission_response, write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -150,6 +151,7 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
 }
 
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
     AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
 }
 
@@ -519,23 +521,21 @@ pub fn run_prompt(
             } else {
                 "completed"
             };
+            if status == "cancelled" {
+                let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            }
             (status, stop_reason)
         }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
-            let _ = cancel_pending_elicitation_requests(
-                &runtime.paths.attempt_dir,
-                current_timestamp(),
-            );
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
         Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("interrupted".to_string()))
         }
         Err(error) => {
-            let _ = cancel_pending_elicitation_requests(
-                &runtime.paths.attempt_dir,
-                current_timestamp(),
-            );
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -588,6 +588,11 @@ pub fn run_prompt(
     };
     runtime.shutdown();
     Ok(run)
+}
+
+fn cancel_pending_prompt_interactions(attempt_dir: &Utf8Path, decided_at: String) -> Result<()> {
+    cancel_pending_permission_requests(attempt_dir, decided_at.clone())?;
+    cancel_pending_elicitation_requests(attempt_dir, decided_at)
 }
 
 fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]) -> Value {
@@ -675,6 +680,15 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
 }
 
 impl<'a> AcpRuntime<'a> {
+    fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
+        cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
+        self.timeline_items = load_timeline_items(&self.paths.timeline)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        Ok(())
+    }
+
     fn append_timing_diagnostic(&self, event: &str, data: Value) {
         let _ = append_diagnostic(
             &self.paths.diagnostics,
@@ -1688,7 +1702,17 @@ impl<'a> AcpRuntime<'a> {
             params.clone(),
             current_timestamp(),
         )?;
-        let event = permission_request_event(self.seq, request_id.clone(), params);
+        let mut event = permission_request_event(self.seq, request_id.clone(), params);
+        if read_json::<PermissionResponseState>(&permission_response_file(
+            &self.paths.attempt_dir,
+            &request_id,
+        ))
+        .ok()
+        .is_some_and(|response| response.cancelled)
+        {
+            event.status = Some("cancelled".to_string());
+            event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
+        }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
         let result = acp_permission_response_result(response)?;

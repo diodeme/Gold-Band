@@ -8,7 +8,8 @@ use gold_band::acp::events::{
     write_timeline_items,
 };
 use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests, write_permission_response,
+    PendingPermissionState, cancel_pending_permission_requests,
+    write_permission_response_if_pending,
 };
 use gold_band::app::{
     App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
@@ -2068,7 +2069,7 @@ pub fn respond_acp_permission(
             &attempt_id,
         );
         let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        write_permission_response(
+        let wrote_response = write_permission_response_if_pending(
             &attempt_dir,
             &canonical_request_id,
             option_id.clone(),
@@ -2076,13 +2077,15 @@ pub fn respond_acp_permission(
             current_timestamp(),
         )
         .map_err(command_error)?;
-        let events_path = attempt_dir.join("acp.events.jsonl");
-        append_permission_decision_artifacts(
-            &attempt_dir,
-            &events_path,
-            canonical_request_id,
-            option_id,
-        )?;
+        if wrote_response {
+            let events_path = attempt_dir.join("acp.events.jsonl");
+            append_permission_decision_artifacts(
+                &attempt_dir,
+                &events_path,
+                canonical_request_id,
+                option_id,
+            )?;
+        }
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -2101,7 +2104,7 @@ pub fn respond_acp_permission(
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
         let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        write_permission_response(
+        let wrote_response = write_permission_response_if_pending(
             &attempt_dir,
             &canonical_request_id,
             option_id.clone(),
@@ -2109,15 +2112,17 @@ pub fn respond_acp_permission(
             current_timestamp(),
         )
         .map_err(command_error)?;
-        let events_path =
-            app.paths
-                .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        append_permission_decision_artifacts(
-            &attempt_dir,
-            &events_path,
-            canonical_request_id,
-            option_id,
-        )?;
+        if wrote_response {
+            let events_path =
+                app.paths
+                    .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+            append_permission_decision_artifacts(
+                &attempt_dir,
+                &events_path,
+                canonical_request_id,
+                option_id,
+            )?;
+        }
         acp_session_vm(
             &app,
             &task_id,
@@ -2264,6 +2269,7 @@ fn request_acp_cancel_and_persist_interrupted_snapshot(
     app: &gold_band::app::App,
     attempt_dir: &camino::Utf8Path,
 ) {
+    app.cancel_attempt_dir_best_effort(attempt_dir);
     app.request_attempt_prompt_cancel_best_effort(attempt_dir);
     app.persist_cancelled_session_snapshot_best_effort(attempt_dir);
 }

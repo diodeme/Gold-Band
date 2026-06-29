@@ -3972,7 +3972,7 @@ fn paginate_timeline(
         all_events.to_vec()
     };
     // Compact only the events in the final window (not all events)
-    let filtered: Vec<_> = filtered
+    let mut filtered: Vec<_> = filtered
         .into_iter()
         .map(|event| {
             if matches!(event.kind.as_str(), "permissionRequest") {
@@ -3982,6 +3982,7 @@ fn paginate_timeline(
             }
         })
         .collect();
+    include_latest_permission_events(&mut filtered, latest_permission_events);
     let oldest_seq = filtered
         .first()
         .map(|event| event.started_seq.unwrap_or(event.seq));
@@ -4018,6 +4019,34 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+fn include_latest_permission_events(
+    events: &mut Vec<AcpUiEventVm>,
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+) {
+    if latest_permission_events.is_empty() {
+        return;
+    }
+
+    let mut changed = false;
+    for (request_id, latest) in latest_permission_events {
+        if let Some(existing) = events.iter_mut().find(|event| {
+            event.kind == "permissionRequest"
+                && permission_request_id_from_event(event) == *request_id
+        }) {
+            if latest.seq >= existing.seq {
+                *existing = latest.clone();
+                changed = true;
+            }
+            continue;
+        }
+        events.push(latest.clone());
+        changed = true;
+    }
+    if changed {
+        events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+    }
 }
 
 fn scan_acp_events(
@@ -6496,6 +6525,46 @@ mod tests {
         assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_includes_latest_permission_event_outside_window() {
+        let mut latest = HashMap::new();
+        latest.insert(
+            "req-1".to_string(),
+            permission_event_at("req-1", "selected", 3000),
+        );
+        let events = vec![
+            permission_event_at("req-1", "pending", 1000),
+            text_event_at(1100),
+            text_event_at(1200),
+        ];
+
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &latest,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+
+        let permission = scan
+            .events
+            .iter()
+            .find(|event| event.kind == "permissionRequest")
+            .unwrap();
+        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert_eq!(
+            scan.latest_permission_events
+                .get("req-1")
+                .and_then(|event| event.status.as_deref()),
+            Some("selected")
+        );
     }
 
     #[test]

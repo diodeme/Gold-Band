@@ -5122,12 +5122,10 @@ export function limitAcpEvents(
 }
 
 function acpEventKey(event: AcpUiEventVm) {
+  if (event.kind === "permissionRequest")
+    return `permission:${permissionRequestIdFromEvent(event)}`;
   const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
-  const eventId =
-    event.kind === "permissionRequest"
-      ? `permission-${permissionRequestIdFromEvent(event)}`
-      : event.id;
-  return `${attemptId}:${event.kind}:${eventId}`;
+  return `${attemptId}:${event.kind}:${event.id}`;
 }
 
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {

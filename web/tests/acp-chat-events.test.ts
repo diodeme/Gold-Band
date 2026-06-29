@@ -443,4 +443,33 @@ describe('ACP chat event handling', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ status: 'selected' });
   });
+
+  it('replaces pending permission when terminal update omits session id', () => {
+    const merged = mergeAcpEvents(
+      [
+        event({
+          id: 'permission-5',
+          seq: 762,
+          kind: 'permissionRequest',
+          sessionId: 'session-live',
+          status: 'pending',
+          raw: { requestId: '5' },
+        }),
+      ],
+      [
+        event({
+          id: 'permission-5',
+          seq: 920,
+          kind: 'permissionRequest',
+          sessionId: null,
+          status: 'cancelled',
+          raw: { requestId: '5', cancelled: true },
+        }),
+      ],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ status: 'cancelled' });
+    expect(pendingPermissionFromEvents(merged, new Set())).toBeNull();
+  });
 });

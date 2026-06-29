@@ -38,4 +38,20 @@ describe('AppTitleBar', () => {
     expect(html).toContain('common.minimizeWindow');
     expect(html).toContain('common.closeWindow');
   });
+
+  it('keeps the shared titlebar draggable while excluding interactive controls', () => {
+    const html = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      platform: 'windows',
+      uiMode: 'workbench',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+      onToggleUiMode: () => {},
+    }));
+
+    expect(html).toContain('app-titlebar-drag-region');
+    expect(html).toContain('data-tauri-drag-region');
+    expect(html).toContain('app-titlebar-no-drag');
+    expect(html).toContain('data-titlebar-no-drag="true"');
+  });
 });

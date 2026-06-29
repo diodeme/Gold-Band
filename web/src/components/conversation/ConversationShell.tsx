@@ -129,7 +129,7 @@ export function ConversationShell({
 
   return (
     <div
-      className={cn('flex h-screen flex-col bg-gold-workspace text-foreground', resizing && 'select-none cursor-col-resize')}
+      className={cn('app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground', resizing && 'select-none cursor-col-resize')}
       onContextMenu={(event) => event.preventDefault()}
     >
       <AppTitleBar

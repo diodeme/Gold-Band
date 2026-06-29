@@ -11,6 +11,7 @@
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
 - ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。
+- MCP 管理已支持 stdio / HTTP / SSE 三类 transport、渠道内置 MCP 注入和工具列表查看。内置 MCP 仅由声明 `builtinMcpServers` 的渠道启用；首次注入使用渠道默认 `enabled`，后续启动同步保留用户本机启停状态，只刷新托管配置内容。`tools/list` 走后端接口验收：stdio 在同一子进程会话中等待 initialize 响应后继续读取 tools/list 响应，避免把首个 JSON-RPC 响应误判为工具列表。
 
 ## 设计原则
 

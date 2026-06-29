@@ -554,16 +554,19 @@ export function ContextManagementPage() {
                   onShowTools={async () => {
                     if (toolsFetchingId) return;
                     setToolsFetchingId(s.id);
+                    setToolsSheetServer(s);
+                    setToolsList(null);
+                    setToolsError(null);
+                    setToolsLoading(true);
                     try {
                       const tools = await listMcpTools(s.id);
                       setToolsList(tools);
                       setToolsError(null);
-                      setToolsSheetServer(s);
                     } catch (err: unknown) {
                       setToolsError(displayAppError(t, err));
                       setToolsList(null);
-                      setToolsSheetServer(s);
                     } finally {
+                      setToolsLoading(false);
                       setToolsFetchingId(null);
                     }
                   }}
@@ -734,7 +737,7 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── MCP Tools Sheet ── */}
-      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); } }}>
+      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/tools-sheet" defaultSize={560} minSize={420} maxSize={800}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">

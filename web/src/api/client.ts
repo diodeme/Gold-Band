@@ -201,6 +201,7 @@ export interface RuntimeApi {
   deleteMcpServer(id: string): Promise<McpServerVm[]>;
   toggleMcpServer(id: string, enabled: boolean): Promise<McpServerVm[]>;
   checkMcpServerHealth(id: string): Promise<import('../types').McpServerHealthResult>;
+  listMcpTools(id: string): Promise<import('../types').ToolInfo[]>;
   listSkills(): Promise<SkillListVm>;
   listProjectSkills(workspacePath: string): Promise<import('../types').SkillMetaVm[]>;
   readSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillContentVm>;

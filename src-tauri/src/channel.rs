@@ -17,6 +17,7 @@ pub struct DesktopChannelConfig {
     pub metrics_base_url: &'static str,
     pub metrics_api_key: &'static str,
     pub silent_update_enabled: bool,
+    pub builtin_mcp_servers_json: &'static str,
 }
 
 pub fn current_channel_config() -> DesktopChannelConfig {
@@ -35,6 +36,7 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         metrics_base_url: option_env!("GOLD_BAND_METRICS_BASE_URL").unwrap_or(""),
         metrics_api_key: option_env!("GOLD_BAND_METRICS_API_KEY").unwrap_or(""),
         silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
+        builtin_mcp_servers_json: option_env!("GOLD_BAND_BUILTIN_MCP_SERVERS").unwrap_or("[]"),
     };
     eprintln!(
         "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} base_url={} apikey_set={}",

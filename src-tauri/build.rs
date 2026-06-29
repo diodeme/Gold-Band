@@ -20,6 +20,8 @@ struct ChannelConfig {
     #[serde(default)]
     metrics_base_url: String,
     metrics_api_key: String,
+    #[serde(default)]
+    builtin_mcp_servers: Vec<serde_json::Value>,
 }
 
 fn main() {
@@ -112,6 +114,8 @@ fn main() {
         "cargo:rustc-env=GOLD_BAND_SILENT_UPDATE_ENABLED={}",
         config.silent_update_enabled
     );
+    let builtin_mcp_json = serde_json::to_string(&config.builtin_mcp_servers).unwrap_or_default();
+    println!("cargo:rustc-env=GOLD_BAND_BUILTIN_MCP_SERVERS={builtin_mcp_json}");
 
     tauri_build::build()
 }

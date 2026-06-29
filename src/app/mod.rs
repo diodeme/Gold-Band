@@ -1104,6 +1104,10 @@ impl App {
         self.mcp_manager().check_health(id)
     }
 
+    pub fn list_mcp_tools(&self, id: &str) -> Result<Vec<crate::config::ToolInfo>> {
+        self.mcp_manager().list_tools(id)
+    }
+
     pub fn enabled_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
         self.mcp_manager().enabled_servers()
     }

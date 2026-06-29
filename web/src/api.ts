@@ -390,6 +390,10 @@ export function checkMcpServerHealth(id: string) {
   return getRuntimeApi().checkMcpServerHealth(id);
 }
 
+export function listMcpTools(id: string) {
+  return getRuntimeApi().listMcpTools(id);
+}
+
 export function listSkills() {
   return getRuntimeApi().listSkills();
 }

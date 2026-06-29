@@ -283,8 +283,8 @@ export function ElicitationCard({
   if (confirmedContent) {
     const choice = formatConfirmedChoice(schema, confirmedContent);
     return (
-      <Card className="my-2 border-primary/20 bg-background">
-        <CardContent className="flex items-center gap-2 py-3 text-sm">
+      <Card className="my-2 gap-0 py-0 border-primary/20 bg-background">
+        <CardContent className="flex items-center gap-2 py-2.5 text-sm">
           <Check className="size-4 text-primary shrink-0" />
           <span className="text-muted-foreground">{message}</span>
           <span className="font-medium">{choice}</span>
@@ -310,7 +310,7 @@ export function ElicitationCard({
 
   // ── 进度指示器 ──
   const ProgressDots = isMultiStep ? (
-    <div className="flex items-center justify-center gap-1.5 mb-1">
+    <div className="flex items-center justify-center gap-1.5 mb-0.5">
       {fields.map((_, i) => (
         <span
           key={i}
@@ -324,7 +324,7 @@ export function ElicitationCard({
           )}
         />
       ))}
-      <span className="text-[10px] text-muted-foreground ml-1">
+      <span className="ml-1 text-[10px] text-muted-foreground">
         {t("acp.elicitation.step", { current: currentStep + 1, total: fields.length })}
       </span>
     </div>
@@ -346,21 +346,21 @@ export function ElicitationCard({
     ) : null;
 
   return (
-    <Card className="my-2 border-primary/30">
-      <CardContent className="space-y-3 pt-4">
+    <Card className="my-2 gap-0 border-primary/30 py-0">
+      <CardContent className="space-y-2.5 px-5 py-4">
         {/* 进度指示器 */}
         {ProgressDots}
 
         {/* 当前字段标题 */}
         {showFieldTitle && (
-          <div className="text-sm font-medium text-foreground">
+          <div className="text-[13px] font-medium leading-5 text-foreground">
             {currentField.title}
           </div>
         )}
 
         {/* 当前问题文本 */}
         {questionText && (
-          <div className="text-sm text-muted-foreground">
+          <div className="text-[13px] leading-6 text-muted-foreground">
             <Markdown>{questionText}</Markdown>
           </div>
         )}
@@ -372,7 +372,7 @@ export function ElicitationCard({
               {currentField.options!.map((o) => {
                 const sel = selectedValue === o.value;
                 return (<button key={o.value} type="button" onClick={() => setSelectedValue(o.value)}
-                  className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2.5 text-sm transition-all",
+                  className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
                     sel ? "border-primary bg-primary/5 shadow-sm" : "hover:border-primary/40 hover:bg-muted/50",
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
                 ><span className="font-medium">{o.label}</span>
@@ -380,12 +380,12 @@ export function ElicitationCard({
               })}
               {currentField.hasCustomVariant && (
                 <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
-                  className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground transition-colors",
+                  className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
                     "hover:border-primary hover:text-foreground")}
                 ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
               )}
             </>) : (
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <button type="button" onClick={() => { setCustomActive(false); setCustomText(""); }}
                   className={cn("text-xs text-muted-foreground hover:text-foreground transition-colors")}
                 >← {t("acp.elicitation.backToOptions", "返回选项")}</button>
@@ -419,7 +419,7 @@ export function ElicitationCard({
                     )
                   }
                   className={cn(
-                    "w-full flex items-center gap-3 text-left rounded-md border px-3 py-2.5 text-sm transition-all",
+                    "w-full flex items-center gap-2.5 text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
                     selected
                       ? "border-primary bg-primary/5"
                       : "hover:bg-muted/50",
@@ -454,7 +454,7 @@ export function ElicitationCard({
                 type="button"
                 onClick={() => setCustomActive(true)}
                 className={cn(
-                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground transition-colors",
+                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
                   "hover:border-primary hover:text-foreground",
                   "disabled:opacity-50",
                 )}
@@ -491,16 +491,16 @@ export function ElicitationCard({
         )}
 
         {/* ── 操作按钮区 ── */}
-        <div className="flex items-center justify-between pt-1">
+        <div className="flex items-center justify-between pt-0.5">
           {BackButton}
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="ml-auto flex items-center gap-1.5">
             {/* 跳过按钮（非必填字段） */}
             {!currentIsRequired && (
               <button
                 type="button"
                 onClick={handleSkip}
                 className={cn(
-                  "text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1",
+                  "px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
                 )}
               >
                 {t("acp.elicitation.skip", "跳过")}
@@ -516,7 +516,7 @@ export function ElicitationCard({
                     handleStepSubmit(customText.trim(), currentField.customVariantKey);
                   } else if (selectedValue) { handleStepSubmit(selectedValue); }
                 }}
-                className={cn("inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors",
+                className={cn("inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-colors",
                   "hover:bg-primary/90", "disabled:opacity-50 disabled:cursor-not-allowed")}
               >{actionLabel}<ChevronRight className="size-3" /></button>
             )}
@@ -529,7 +529,7 @@ export function ElicitationCard({
                     handleStepSubmit(customText.trim(), currentField.customVariantKey);
                   } else { handleStepSubmit(multiValues); }
                 }}
-                className={cn("inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors",
+                className={cn("inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-colors",
                   "hover:bg-primary/90", "disabled:opacity-50 disabled:cursor-not-allowed")}
               >{actionLabel}<ChevronRight className="size-3" /></button>
             )}

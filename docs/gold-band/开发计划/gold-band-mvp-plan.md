@@ -139,6 +139,7 @@
 - 2026-06-28：修复关闭应用/启动恢复后权限申请重复弹窗的问题。停止流程中的 attempt cancel 现在会同步把未决 ACP permission request 写成 `cancelled` response，并 upsert `acp.timeline.jsonl` / legacy `acp.events.jsonl` 的 `permissionRequest(status=cancelled)`；ACP prompt 的 cancelled/interrupted/error 收尾路径也会执行同一 pending interaction 收敛。`AcpSessionVm.events` 即使做分页裁剪也会附带每个 permission request 的最新终态，用来覆盖前端缓存中的旧 pending。重进页面只回放取消/已选择事实，不再恢复权限弹窗；迟到的旧弹窗授权不能把已取消权限反写为 `selected`。已选择的 `selected` 权限事件不会被停止流程覆盖。前端 ACP event 合并改为按 canonical permission request id 替换 permission 事件，不再把 `sessionId` 混入权限请求身份；后端 cancelled permission event 继承原 pending event 的 session/tool/raw 上下文，避免同一权限裂变为旧 pending 与新 cancelled 两条 UI 事实。
 - 2026-06-29：ACP permission / elicitation 的 request-response JSON 文件收敛为临时信号文件，长期事实源统一为 timeline/events。runtime 消费响应并写入终态事件后会清理对应 request/response 文件；非 active session 的 command-side durable replay 写完终态事件后也会清理信号文件。停止流程写出的 cancelled response 保留到 live waiter 消费，避免提前删除导致阻塞线程无法解除。
 - 2026-06-29：AI-DYNAMIC driver 热循环持久化改为按 `DynamicGraphState` 内容指纹去重；graph 未变化的 200ms worker 等待轮次不再重复重写 graph/run/node/group/proposal JSON，ready/launch scheduler 诊断事件也只在实际 promoted ready 或实际 launch 时写入，避免无意义磁盘 I/O 和 JSONL 心跳膨胀。
+- 2026-06-29：ACP elicitation 卡片视觉密度收敛：已确认回答、多步骤进度、题干、选项行、自定义输入与底部操作区统一压缩上下留白和控制高度，保持会话流内联提问的轻量表单形态，不改变 request/response 协议与答案提交语义。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 - 仓库级依赖安装与锁文件统一使用 `npm` / `package-lock.json`；除非单独立项迁移包管理器，否则不新增 `pnpm-lock.yaml`、`yarn.lock` 等并行 lockfile。
 

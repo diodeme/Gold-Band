@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.6.0](https://github.com/diodeme/Gold-Band/compare/v0.5.0...v0.6.0) (2026-06-29)
+
+
+### Features
+
+* **acp:** collapse session asset panel ([79f9718](https://github.com/diodeme/Gold-Band/commit/79f97182c5d199923987cbfaa89a221d76cb4e9e))
+* **acp:** implement AskUserQuestion/elicitation support with custom input ([514562a](https://github.com/diodeme/Gold-Band/commit/514562ab7768e8c16f349fdacf0d829450b3c0df))
+* Add MCP and SKILL management ([ff7234e](https://github.com/diodeme/Gold-Band/commit/ff7234e3405ae789958aee3a2ff7fe8bf4a28fc3))
+* implement AskUserQuestion/elicitation support with custom ([f20ab6c](https://github.com/diodeme/Gold-Band/commit/f20ab6c9d859721ec9cf5820a039b3ae0bfd576a))
+* improve new ui ([18d4c41](https://github.com/diodeme/Gold-Band/commit/18d4c418724f7af7ddb67cddf3a79ee41cf09e5c))
+* improve new ui ([356f32a](https://github.com/diodeme/Gold-Band/commit/356f32a9defae85b54a91c34566ba8f318bd59ad))
+* improve session resume & ai dynamic output constract ([94530cd](https://github.com/diodeme/Gold-Band/commit/94530cdd20a864f3f2f5e3125f6b388a82a6b301))
+* intervention popup 20260618 ([d9ecd96](https://github.com/diodeme/Gold-Band/commit/d9ecd962487944f8a0bd524c71878b96d772f35d))
+* **mcp:** add SSE transport, managed servers, builtin injection, and tools/list support ([e4e6e3c](https://github.com/diodeme/Gold-Band/commit/e4e6e3ccffd36a75223a6013547b5f2d7b51c342))
+* **mcp:** add SSE transport, managed servers, builtin injection, and… ([947a506](https://github.com/diodeme/Gold-Band/commit/947a506296d3359598cab23e49fbc7cba66f1e5d))
+* **notification:** add OS-level intervention Toast notifications ([33528e3](https://github.com/diodeme/Gold-Band/commit/33528e346487c062041ae2af7d741b24d27165dc))
+* **output:** adjuest outputs location ([51e9d7e](https://github.com/diodeme/Gold-Band/commit/51e9d7e0f388d97908226cd689d466f43a5f5318))
+* **output:** adjuest outputs location ([a4b3306](https://github.com/diodeme/Gold-Band/commit/a4b330691ad885ac140d549c22ea1ad537a1e20d))
+
+
+### Bug Fixes
+
+* **acp:** clean interaction signal files ([65b61c4](https://github.com/diodeme/Gold-Band/commit/65b61c4b354a5677e61f79a5e508c0983fb65c2d))
+* **acp:** guard Windows Claude npm binary lookup ([cd3bb7a](https://github.com/diodeme/Gold-Band/commit/cd3bb7a2a7d635bfde76d54552fb5e8f74ccf419))
+* **acp:** improve elicitation card rendering and replay ([3d8f26d](https://github.com/diodeme/Gold-Band/commit/3d8f26dd61ef5c1fdfe04fbead8bda5c28fd8167))
+* **acp:** keep live stream text monotonic ([22ee273](https://github.com/diodeme/Gold-Band/commit/22ee2734ba97b3edb02be591cba8d2dda63ec407))
+* **acp:** only pass native .exe as CLAUDE_CODE_EXECUTABLE on Windows ([28d76e5](https://github.com/diodeme/Gold-Band/commit/28d76e5144a8a46d516ed5cc0430b54845358f7a))
+* **acp:** only pass native .exe as CLAUDE_CODE_EXECUTABLE on Windows ([9845fcb](https://github.com/diodeme/Gold-Band/commit/9845fcbea6731da1a04278e02b229c4fcfb083dd))
+* **acp:** persist elicitation responses in runtime timeline ([7ce16ed](https://github.com/diodeme/Gold-Band/commit/7ce16ed579114f9fa6e5b837e202e67293eb54c7))
+* **acp:** persist interaction decisions ([569b462](https://github.com/diodeme/Gold-Band/commit/569b462649cb79d41b9b737c02f876a115b1be61))
+* **acp:** resolve Windows Claude native binary ([d3b46df](https://github.com/diodeme/Gold-Band/commit/d3b46df5b0b1a9ef474e78f2ab7096d7afbc5061))
+* **acp:** restore manual check follow-up state ([94241f2](https://github.com/diodeme/Gold-Band/commit/94241f2d4bfa98a02d977e15dcd152c8cc09c24a))
+* **acp:** settle permission decisions in runtime timeline ([eef7dd6](https://github.com/diodeme/Gold-Band/commit/eef7dd64d710e507c30c6e62f89f96c746ca03d1))
+* **acp:** settle stale permission prompts ([7b2fffb](https://github.com/diodeme/Gold-Band/commit/7b2fffbb2a492bf304bfcad86871b115167e3efb))
+* **acp:** stop rendering elicitation replies as user prompts ([78a0acf](https://github.com/diodeme/Gold-Band/commit/78a0acf9d5fa7f556bdc1a97d73edad70b3716fe))
+* **acp:** theme session scrollbars ([4d920e6](https://github.com/diodeme/Gold-Band/commit/4d920e643a479a25fdf50a85c28a7823e3fdaf18))
+* **acp:** unify elicitation intervention notifications ([2a69a48](https://github.com/diodeme/Gold-Band/commit/2a69a484a165142021063ad9a010e46e29d938ee))
+* **acp:** unify elicitation replay and session cleanup ([4a96fb7](https://github.com/diodeme/Gold-Band/commit/4a96fb7473efba907ec959d4c6dc02105f8c15bf))
+* **ai-dynamic:** reject worktree single successors ([a996e78](https://github.com/diodeme/Gold-Band/commit/a996e7842d6d8c985218fc3c5aa96523114a74a4))
+* **build:** separate web build typecheck from tests ([dba27ff](https://github.com/diodeme/Gold-Band/commit/dba27ff94cc91a805e4f731859275e7e59d283a1))
+* **conversation:** preserve auto-follow during dynamic fanout ([aab5225](https://github.com/diodeme/Gold-Band/commit/aab5225fa730ee41d01247efe05d917f42a213a7))
+* **conversation:** settle dynamic completion and run refresh ([4fcdda3](https://github.com/diodeme/Gold-Band/commit/4fcdda3bb9c1df60425de0b1f1a36e0058a3b855))
+* **conversation:** surface dynamic leaf lifecycle updates ([0b14a11](https://github.com/diodeme/Gold-Band/commit/0b14a1167c8b05b9b9828431538bc19aababcf97))
+* **desktop:** hide windows toast helper processes ([79a5e1b](https://github.com/diodeme/Gold-Band/commit/79a5e1bbe1eb8d2c39ccad6ad3ae1f626f1a9114))
+* **desktop:** strengthen frameless window chrome ([420bf37](https://github.com/diodeme/Gold-Band/commit/420bf37d7da3ffa7fe8b2daf9010e6d77a56437a))
+* **dsl:** accept mapped AI-DYNAMIC permission modes ([f9ac7a5](https://github.com/diodeme/Gold-Band/commit/f9ac7a52bfd8bf529ec0a2e44b1fca5678d65965))
+* improve elicitaionCard title ([56c1785](https://github.com/diodeme/Gold-Band/commit/56c1785c5f050c90608ecbe1bad83e5ec1cd6691))
+* **mcp:** add helpMessage field with serde rename, fix SSE tools/list with concurrent reader ([2714fb3](https://github.com/diodeme/Gold-Band/commit/2714fb3d1c11ef9af31f2ff03d0e3217f3d87973))
+* **mcp:** emit ACP-compatible server config ([fa6ab7d](https://github.com/diodeme/Gold-Band/commit/fa6ab7db4a96143be1c14af7e47b0cd53f9cd4c9))
+* **mcp:** hide stdio tools helper windows ([66ca023](https://github.com/diodeme/Gold-Band/commit/66ca0235b0735e6275c7f98b9eff107236e5d91a))
+* **mcp:** preserve builtin state and tool listing ([a01e056](https://github.com/diodeme/Gold-Band/commit/a01e05620f1b516885299fd6fc53dedbef533423))
+* **metrics:** restore token reporting from ACP session files ([c155ea5](https://github.com/diodeme/Gold-Band/commit/c155ea5b0422224bdb2a29aa354feb648c0d1a55))
+* **prompts:** read predecessor artifacts from node context ([fd7c435](https://github.com/diodeme/Gold-Band/commit/fd7c435e93e7dd935db61fadbda0110c689d784a))
+* **runtime:** align prompt render modes ([8b6f584](https://github.com/diodeme/Gold-Band/commit/8b6f5846d31f3aa26369b818d25801cdbe6d090b))
+* **runtime:** hide background CLI windows on Windows ([8146c26](https://github.com/diodeme/Gold-Band/commit/8146c26d7a3abf7fcec44e9623534eb1fc2794fb))
+* **runtime:** instrument AI-DYNAMIC startup timing ([98ab066](https://github.com/diodeme/Gold-Band/commit/98ab066172d98c282a7a28c0a1029f077efd3cae))
+* **runtime:** keep dynamic leaf resumes isolated ([bbe30b1](https://github.com/diodeme/Gold-Band/commit/bbe30b17ceb47cfd960c6a9da901b15df7f0ec5a))
+* **runtime:** keep manual checks in ACP prompt flow ([2731568](https://github.com/diodeme/Gold-Band/commit/27315687f321f2b9fec5ebb467ec9e602c74c265))
+* **runtime:** make ACP abnormal pauses resumable ([79ad4a5](https://github.com/diodeme/Gold-Band/commit/79ad4a58b16cf28cc8a7c6a2eec47cc3cd26fcd1))
+* **runtime:** refresh dynamic leaf lifecycle updates ([0a6f53e](https://github.com/diodeme/Gold-Band/commit/0a6f53e7b2fccaca5f9141fed6b4bcbd62f418f9))
+* **runtime:** retire killed run stop path ([a63ac9d](https://github.com/diodeme/Gold-Band/commit/a63ac9de591a263d859b5281f13123f9638d9564))
+* **runtime:** scope AI-DYNAMIC stop and resume ([852f480](https://github.com/diodeme/Gold-Band/commit/852f480efab23604b134f3e4de66aa869104b5fc))
+* **runtime:** unify workflow ACP lifecycle handling ([85afb5b](https://github.com/diodeme/Gold-Band/commit/85afb5b5a5f0164ae6a5026b42d1251638a7bbd4))
+* **runtime:** validate provider catalogs before launch ([f40ac8e](https://github.com/diodeme/Gold-Band/commit/f40ac8ef697b0be3a23b9a028a445e242048a89a))
+* **shell:** use native mac window controls ([6ffb9f4](https://github.com/diodeme/Gold-Band/commit/6ffb9f4cefc9f2e6a89eb331bfeff756813d709b))
+
+
+### Performance Improvements
+
+* **dynamic:** avoid idle graph persistence ([844baa5](https://github.com/diodeme/Gold-Band/commit/844baa5021af92a2aef984d852ac67273edf7b6a))
+
 ## [0.5.0](https://github.com/diodeme/Gold-Band/compare/v0.4.0...v0.5.0) (2026-06-19)
 
 

@@ -112,7 +112,7 @@ function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, s
   const { t } = useTranslation();
   return (
     <TooltipProvider>
-      <div className="flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
+      <div className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
         <AppTitleBar
           appName={appName}
           platform={platform}

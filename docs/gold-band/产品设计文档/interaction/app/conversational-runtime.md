@@ -36,7 +36,7 @@
 - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端收到 terminal/interactive 状态后刷新完整 run VM；不能让选中 leaf 长时间停留在旧的 `launching-next-node` runtime-active 派生状态。
 - AI-DYNAMIC dynamic graph 中任意 leaf 从不可见/待依赖状态变为 `Ready | Running`，或 graph 内部创建新的后继 leaf 后，都必须在 graph 持久化后发出该 leaf 的 lifecycle update；这条规则按通用 dynamic leaf 可见性处理，不按 merge / acceptance 等具体节点类型写特殊分支。
 - AI-DYNAMIC worker 在用户停止与最终输出几乎同时发生时，ACP snapshot 可以保留 `cancelled` 事实；但如果后端已经拿到完整且通过 DSL/schema 校验的 `dynamic-node-completion`，业务层按 `Completed + Success` 接受并继续推进 graph。半截 JSON、非法 schema 或 rejected proposal 仍保持 `Paused + ProcessInterrupted`，等待用户继续。
-- Windows 桌面端运行 workflow / ACP / AI-DYNAMIC 时，后台 Git worktree 命令、MCP stdio 健康检查和 shell fallback 都属于非交互子进程，必须通过统一进程工具以隐藏控制台窗口；运行态不向用户暴露 `git.exe` / `cmd.exe` 弹窗，避免桌面产品退回 terminal 心智。
+- Windows 桌面端运行 workflow / ACP / AI-DYNAMIC 时，后台 Git worktree 命令、MCP stdio 健康检查、MCP stdio `tools/list` 和 shell fallback 都属于非交互子进程，必须通过统一进程工具以隐藏控制台窗口；运行态不向用户暴露 `git.exe` / `cmd.exe` / MCP helper 弹窗，避免桌面产品退回 terminal 心智。
 - 左侧会话侧边栏的 run 终态刷新不能只依赖 ACP session terminal update。ACP update 继续负责 session/graph 实时状态；run 真正完成并持久化后，后端通过 runtime `RunCompleted` lifecycle 推送 run 级事件，前端统一刷新当前 run 和 sidebar，让 run 行从 running 空心点切到既有终态展示。
 - 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器
 - 修改只影响未来 run，不影响当前 run snapshot

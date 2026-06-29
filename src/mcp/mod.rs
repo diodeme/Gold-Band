@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -753,7 +753,7 @@ fn fetch_stdio_tools(
     args: &[String],
     env: &BTreeMap<String, String>,
 ) -> Result<Vec<crate::config::ToolInfo>> {
-    let mut cmd = Command::new(command);
+    let mut cmd = background_command(command);
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);

@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 

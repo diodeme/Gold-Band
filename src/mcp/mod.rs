@@ -396,47 +396,7 @@ impl McpManager {
                 };
                 is_healthy
             })
-            .map(|s| match &s.transport {
-                McpTransportConfig::Stdio { command, args, env } => {
-                    serde_json::json!({
-                        "id": s.id,
-                        "name": s.name,
-                        "transport": "stdio",
-                        "command": command,
-                        "args": args,
-                        "env": env,
-                    })
-                }
-                McpTransportConfig::Http {
-                    url,
-                    headers,
-                    oauth,
-                } => {
-                    let mut json = serde_json::json!({
-                        "id": s.id,
-                        "name": s.name,
-                        "transport": "http",
-                        "url": url,
-                        "headers": headers,
-                    });
-                    if let Some(o) = oauth {
-                        json["oauth"] = serde_json::json!({
-                            "clientId": o.client_id,
-                            "clientSecret": o.client_secret,
-                        });
-                    }
-                    json
-                }
-                McpTransportConfig::Sse { url, headers } => {
-                    serde_json::json!({
-                        "id": s.id,
-                        "name": s.name,
-                        "transport": "sse",
-                        "url": url,
-                        "headers": headers,
-                    })
-                }
-            })
+            .map(|s| mcp_server_to_acp_json(&s))
             .collect())
     }
 
@@ -451,6 +411,47 @@ impl McpManager {
 
     fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
         write_json(&self.settings_path, settings)
+    }
+}
+
+fn name_value_entries(entries: &BTreeMap<String, String>) -> Vec<Value> {
+    entries
+        .iter()
+        .map(|(name, value)| {
+            serde_json::json!({
+                "name": name,
+                "value": value,
+            })
+        })
+        .collect()
+}
+
+fn mcp_server_to_acp_json(server: &McpServerConfig) -> Value {
+    match &server.transport {
+        McpTransportConfig::Stdio { command, args, env } => {
+            serde_json::json!({
+                "name": server.name,
+                "command": command,
+                "args": args,
+                "env": name_value_entries(env),
+            })
+        }
+        McpTransportConfig::Http { url, headers, .. } => {
+            serde_json::json!({
+                "type": "http",
+                "name": server.name,
+                "url": url,
+                "headers": name_value_entries(headers),
+            })
+        }
+        McpTransportConfig::Sse { url, headers } => {
+            serde_json::json!({
+                "type": "sse",
+                "name": server.name,
+                "url": url,
+                "headers": name_value_entries(headers),
+            })
+        }
     }
 }
 
@@ -1193,6 +1194,77 @@ mod tests {
             }
             _ => panic!("expected sse transport"),
         }
+    }
+
+    #[test]
+    fn serializes_servers_to_acp_mcp_schema() {
+        let stdio = McpServerConfig {
+            id: "stdio-id".into(),
+            name: "Stdio Server".into(),
+            enabled: true,
+            transport: McpTransportConfig::Stdio {
+                command: "node".into(),
+                args: vec!["server.js".into()],
+                env: BTreeMap::from([("API_KEY".into(), "secret".into())]),
+            },
+            managed: false,
+            help_message: None,
+        };
+        assert_eq!(
+            mcp_server_to_acp_json(&stdio),
+            serde_json::json!({
+                "name": "Stdio Server",
+                "command": "node",
+                "args": ["server.js"],
+                "env": [{"name": "API_KEY", "value": "secret"}],
+            })
+        );
+
+        let http = McpServerConfig {
+            id: "http-id".into(),
+            name: "HTTP Server".into(),
+            enabled: true,
+            transport: McpTransportConfig::Http {
+                url: "https://example.test/mcp".into(),
+                headers: BTreeMap::from([("Authorization".into(), "Bearer token".into())]),
+                oauth: Some(OAuthClientConfig {
+                    client_id: "client".into(),
+                    client_secret: Some("secret".into()),
+                }),
+            },
+            managed: false,
+            help_message: None,
+        };
+        assert_eq!(
+            mcp_server_to_acp_json(&http),
+            serde_json::json!({
+                "type": "http",
+                "name": "HTTP Server",
+                "url": "https://example.test/mcp",
+                "headers": [{"name": "Authorization", "value": "Bearer token"}],
+            })
+        );
+
+        let sse = McpServerConfig {
+            id: "sse-id".into(),
+            name: "SSE Server".into(),
+            enabled: true,
+            transport: McpTransportConfig::Sse {
+                url: "https://example.test/mcp/sse".into(),
+                headers: BTreeMap::new(),
+            },
+            managed: false,
+            help_message: None,
+        };
+        assert_eq!(
+            mcp_server_to_acp_json(&sse),
+            serde_json::json!({
+                "type": "sse",
+                "name": "SSE Server",
+                "url": "https://example.test/mcp/sse",
+                "headers": [],
+            })
+        );
     }
 
     #[test]

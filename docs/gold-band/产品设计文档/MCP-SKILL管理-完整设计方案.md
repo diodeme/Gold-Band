@@ -138,6 +138,7 @@ pub fn to_acp_mcp_servers(&self) -> Result<Vec<Value>> {
     // 1. 检查 state_cache: Running → 直接通过
     // 2. 缓存未命中 → verify_server() → 更新缓存
     // 3. 仅返回 status=="healthy" 的服务器
+    // 4. 将内部 McpServerConfig 转换为 ACP mcpServers wire format
 }
 
 // check_health() — 手动刷新并更新缓存
@@ -155,10 +156,17 @@ pub fn invalidate_health(&self, id: &str);
 ```
 1. UI 配置 MCP → settings.json
 2. node_executor 创建 McpManager → render_mcp_tools_catalog() → {{mcp_tools}}
-3. node_executor 调用 to_acp_mcp_servers() → 健康门控 → mcp_servers
+3. node_executor 调用 to_acp_mcp_servers() → 健康门控 → ACP schema mcp_servers
 4. provider 传递 &req.mcp_servers → ACP session/new { mcpServers: [...] }
 5. ACP Agent 直连 MCP 服务器（路径 B — 不经过 Gold-Band 中转）
 ```
+
+`settings.json` / UI VM 允许使用 Gold Band 内部结构保存 `id`、`transport`、`env` map 和 `headers` map；ACP 出站层必须按协议转换：
+
+- stdio：`{ name, command, args, env: [{ name, value }] }`，不带 `type`。
+- HTTP：`{ type: "http", name, url, headers: [{ name, value }] }`。
+- SSE：`{ type: "sse", name, url, headers: [{ name, value }] }`。
+- 不向 ACP `mcpServers` 透传内部 `id`、`transport`、OAuth 配置或对象 map。
 
 ### 2.6 Tauri Commands
 

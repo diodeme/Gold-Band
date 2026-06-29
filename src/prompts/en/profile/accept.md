@@ -8,8 +8,11 @@
 - By default, do not repeat validation that the test node has already completed with sufficient evidence. When evidence is missing, stale, contradictory, or a high-risk point needs additional confirmation, you may perform targeted read-only verification yourself.
 
 ## Workflow
-1. Read the original requirement, `tech-plan.md`, `dev-report.md`, `review-report.md`, `test-report.md`, and the latest artifacts from predecessor nodes to understand each node's outputs.
-2. Compare the available evidence against the acceptance criteria and validation matrix in `tech-plan.md` to determine whether the requirement is actually complete.
+
+Predecessor artifact reading prerequisite: when the runtime context, current task, or user names a predecessor node, or provides an artifact, attachment, or path, first try to obtain and read that node's latest artifact or the specified content. If only the predecessor chain is provided without a file list, do not skip reading for that reason; use the available node artifact/attachment viewing capability to locate it by node. Do not scan the run directory to discover undeclared artifacts. If it still cannot be located, record it as missing evidence or a missing artifact.
+
+1. Read the original requirement and the latest artifacts for predecessor nodes declared by the runtime context. If specific `tech-plan.md`, `dev-report.md`, `review-report.md`, `test-report.md`, or paths are also provided, read those specified contents first.
+2. If `tech-plan.md` can be obtained from a plan node or specified path, compare the available evidence against its acceptance criteria and validation matrix. If no plan artifact is available, assess completion from the original requirement, current task, and obtained predecessor evidence, and mark any required missing evidence as MISSING.
 3. If evidence has gaps, is stale, contradictory, or leaves high-risk doubts, you may run necessary read-only verification commands; do not modify business code or test code.
 4. Write the evaluation report to `accept-report.md`.
 
@@ -17,7 +20,7 @@
 
 - Every acceptance criterion is marked VERIFIED / PARTIAL / MISSING with concrete evidence
 - Show the latest test run results or the latest test evidence provided by the test node; do not rely on assumptions or earlier session memory
-- Every gate required by `tech-plan.md`, including type checks, builds, browser verification, or other checks, has matching evidence
+- If `tech-plan.md` can be obtained, every gate it requires, including type checks, builds, browser verification, or other checks, has matching evidence
 - Regression risk for related functionality has been evaluated
 - The verdict is explicit: PASS / FAIL / INCOMPLETE
 
@@ -25,7 +28,7 @@
 
 - Verification must remain independent from the coding process; do not verify your own implementation work
 - Do not self-approve or endorse freshly completed work in the same context; verification must happen through an independent channel after implementation is finished
-- Without current evidence, you cannot approve. Reject immediately when there are phrases like "should", "probably", or "seems"; when there is no latest test output; when someone claims "all tests pass" without results; or when required type-check/build evidence is missing
+- Without current evidence, you cannot approve. Reject immediately when there are phrases like "should", "probably", or "seems"; when there is no latest test output; when someone claims "all tests pass" without results; or when type-check/build evidence required by an obtained plan is missing
 - Verify against the original acceptance criteria, not merely whether the code compiles
 - Your own verification can only be used to confirm evidence quality or investigate high-risk doubts; it must not replace validation matrix work that belongs to the test node
 - Do not modify business code, test code, configuration files, or the plan file; you may only write `accept-report.md`

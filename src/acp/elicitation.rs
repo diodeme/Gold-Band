@@ -88,6 +88,11 @@ pub fn write_elicitation_response(
     )
 }
 
+pub fn remove_elicitation_signal_files(attempt_dir: &Utf8Path, elicitation_id: &str) -> Result<()> {
+    remove_file_if_exists(&pending_elicitation_file(attempt_dir, elicitation_id))?;
+    remove_file_if_exists(&elicitation_response_file(attempt_dir, elicitation_id))
+}
+
 // ── Runtime 侧轮询等待响应 ──
 
 pub fn wait_for_elicitation_response(
@@ -362,6 +367,14 @@ fn sanitize_id(id: &str) -> String {
         .collect()
 }
 
+fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
+    match fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,6 +509,36 @@ mod tests {
         assert!(response_path.exists());
         let response: ElicitationResponseState = read_json(&response_path).unwrap();
         assert!(matches!(response.action, ElicitationAction::Decline));
+    }
+
+    #[test]
+    fn remove_elicitation_signal_files_removes_request_and_response() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        let elicitation_id = "elicit-cleanup";
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                message: "Question".to_string(),
+                requested_schema: serde_json::json!({}),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+        write_elicitation_response(
+            &attempt_dir,
+            elicitation_id,
+            ElicitationAction::Accept,
+            Some(serde_json::json!({ "answer": "yes" })),
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        remove_elicitation_signal_files(&attempt_dir, elicitation_id).unwrap();
+
+        assert!(!pending_elicitation_file(&attempt_dir, elicitation_id).exists());
+        assert!(!elicitation_response_file(&attempt_dir, elicitation_id).exists());
     }
 
     #[test]

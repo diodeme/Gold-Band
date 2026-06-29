@@ -1,6 +1,7 @@
 use gold_band::acp::client;
 use gold_band::acp::elicitation::{
-    ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
+    ElicitationAction, cancel_pending_elicitation_requests, remove_elicitation_signal_files,
+    write_elicitation_response,
 };
 use gold_band::acp::events::{
     AcpUiEvent, append_ui_event, current_timestamp, elicitation_response_event,
@@ -8,7 +9,7 @@ use gold_band::acp::events::{
     write_timeline_items,
 };
 use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests,
+    PendingPermissionState, cancel_pending_permission_requests, remove_permission_signal_files,
     write_permission_response_if_pending,
 };
 use gold_band::app::{
@@ -2082,9 +2083,15 @@ pub fn respond_acp_permission(
             append_permission_decision_artifacts(
                 &attempt_dir,
                 &events_path,
-                canonical_request_id,
+                canonical_request_id.clone(),
                 option_id,
             )?;
+            if !attempt_session_is_active(
+                &attempt_dir.join("acp.snapshot.json"),
+                &attempt_dir.join("acp.session.json"),
+            ) {
+                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
+            }
         }
         dynamic_acp_session_vm(
             &app,
@@ -2119,9 +2126,15 @@ pub fn respond_acp_permission(
             append_permission_decision_artifacts(
                 &attempt_dir,
                 &events_path,
-                canonical_request_id,
+                canonical_request_id.clone(),
                 option_id,
             )?;
+            if !attempt_session_is_active(
+                &attempt_dir.join("acp.snapshot.json"),
+                &attempt_dir.join("acp.session.json"),
+            ) {
+                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
+            }
         }
         acp_session_vm(
             &app,
@@ -3374,6 +3387,7 @@ pub fn respond_elicitation(
             &action,
             content,
         )?;
+        let _ = remove_elicitation_signal_files(&attempt_dir, &elicitation_id);
     }
 
     // Emit session update so the frontend can refresh the timeline

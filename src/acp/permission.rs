@@ -95,6 +95,7 @@ pub fn cancel_pending_permission_requests(
     }
     for request_id in cancelled_request_ids {
         upsert_cancelled_permission_event(attempt_dir, &request_id)?;
+        remove_file_if_exists(&pending_permission_file(attempt_dir, &request_id))?;
     }
     Ok(())
 }
@@ -157,6 +158,11 @@ pub fn write_permission_response_if_pending(
     }
     write_permission_response(attempt_dir, request_id, option_id, cancelled, decided_at)?;
     Ok(true)
+}
+
+pub fn remove_permission_signal_files(attempt_dir: &Utf8Path, request_id: &str) -> Result<()> {
+    remove_file_if_exists(&pending_permission_file(attempt_dir, request_id))?;
+    remove_file_if_exists(&permission_response_file(attempt_dir, request_id))
 }
 
 pub fn wait_for_permission_response(
@@ -331,6 +337,14 @@ fn strip_permission_prefix(value: &str) -> String {
         current = next;
     }
     current.to_string()
+}
+
+fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
+    match fs::remove_file(path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
@@ -545,5 +559,32 @@ mod tests {
         assert!(!permission_response_file(&attempt_dir, request_id).exists());
         let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
         assert_eq!(items[0].status.as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn remove_permission_signal_files_removes_request_and_response() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let request_id = "cleanup";
+        write_pending_permission(
+            &attempt_dir,
+            request_id,
+            serde_json::json!({}),
+            "1Z".to_string(),
+        )
+        .unwrap();
+        write_permission_response(
+            &attempt_dir,
+            request_id,
+            Some("allow".to_string()),
+            false,
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        remove_permission_signal_files(&attempt_dir, request_id).unwrap();
+
+        assert!(!pending_permission_file(&attempt_dir, request_id).exists());
+        assert!(!permission_response_file(&attempt_dir, request_id).exists());
     }
 }

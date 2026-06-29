@@ -15,6 +15,9 @@ use tracing::warn;
 
 use crate::state::DesktopState;
 
+#[cfg(windows)]
+use std::process::Stdio;
+
 /// Toast「查看详情」点击后，后端 emit 导航事件，前端 deep link 到节点。
 pub const INTERVENTION_NAVIGATE_EVENT: &str = "gold-band://intervention-navigate";
 
@@ -306,7 +309,7 @@ fn register_aumid_and_shortcut() -> Result<(), Box<dyn std::error::Error>> {
 fn register_aumid_in_registry(exe_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let key = format!(r"HKCU\Software\Classes\AppUserModelId\{}", WINDOWS_AUMID);
     // 注册失败不致命（Toast 仍可能以默认行为显示），但记录 warn。
-    let status = std::process::Command::new("reg")
+    let status = gold_band::process::background_command("reg")
         .args([
             "ADD",
             &key,
@@ -318,14 +321,18 @@ fn register_aumid_in_registry(exe_path: &str) -> Result<(), Box<dyn std::error::
             APP_DISPLAY_NAME,
             "/f",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
     if let Err(error) = status {
         warn!(?error, "reg add DisplayName failed");
     }
-    let status = std::process::Command::new("reg")
+    let status = gold_band::process::background_command("reg")
         .args([
             "ADD", &key, "/v", "IconUri", "/t", "REG_SZ", "/d", exe_path, "/f",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
     if let Err(error) = status {
         warn!(?error, "reg add IconUri failed");
@@ -350,8 +357,9 @@ fn shortcut_target_mismatch(lnk: &std::path::Path, exe_path: &str) -> bool {
          Write-Output $ws.CreateShortcut('{}').TargetPath",
         lnk.to_string_lossy().replace('\'', "''"),
     );
-    let output = match std::process::Command::new("powershell")
+    let output = match gold_band::process::background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .stderr(Stdio::null())
         .output()
     {
         Ok(o) => o,
@@ -376,8 +384,10 @@ fn create_or_rebuild_shortcut(
         exe_path.replace('\'', "''"),
         exe_path.replace('\'', "''"),
     );
-    let status = std::process::Command::new("powershell")
+    let status = gold_band::process::background_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()?;
     if !status.success() {
         return Err(format!("powershell shortcut creation failed with status {status}").into());

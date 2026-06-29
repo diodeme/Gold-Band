@@ -21,8 +21,8 @@ struct AcpTimelineStreamState {
 use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
-    elicitation_response_result, remove_elicitation_signal_files, wait_for_elicitation_response,
-    write_pending_elicitation,
+    elicitation_response_result, remove_elicitation_signal_files,
+    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
@@ -32,8 +32,8 @@ use crate::acp::events::{
 };
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
-    write_pending_permission,
+    permission_response_file, remove_permission_signal_files, upsert_permission_decision_event,
+    wait_for_permission_response, write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -1717,6 +1717,12 @@ impl<'a> AcpRuntime<'a> {
         }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        upsert_permission_decision_event(
+            &self.paths.attempt_dir,
+            &request_id,
+            response.option_id.clone(),
+            response.cancelled,
+        )?;
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
         let frame = json!({
@@ -1817,6 +1823,12 @@ impl<'a> AcpRuntime<'a> {
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
+        )?;
+        upsert_elicitation_response_event(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            &response.action,
+            response.content.clone(),
         )?;
 
         // 4. 构造 JSON-RPC response 并发送

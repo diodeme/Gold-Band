@@ -3,11 +3,7 @@ use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, remove_elicitation_signal_files,
     write_elicitation_response,
 };
-use gold_band::acp::events::{
-    AcpUiEvent, append_ui_event, current_timestamp, elicitation_response_event,
-    latest_timeline_source_seq, load_timeline_items, permission_decision_event,
-    write_timeline_items,
-};
+use gold_band::acp::events::{AcpUiEvent, current_timestamp};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests, remove_permission_signal_files,
     write_permission_response_if_pending,
@@ -23,12 +19,7 @@ use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus}
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use std::{
-    collections::BTreeSet,
-    io::{BufRead, BufReader},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, str::FromStr, sync::Arc};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -2079,13 +2070,6 @@ pub fn respond_acp_permission(
         )
         .map_err(command_error)?;
         if wrote_response {
-            let events_path = attempt_dir.join("acp.events.jsonl");
-            append_permission_decision_artifacts(
-                &attempt_dir,
-                &events_path,
-                canonical_request_id.clone(),
-                option_id,
-            )?;
             if !attempt_session_is_active(
                 &attempt_dir.join("acp.snapshot.json"),
                 &attempt_dir.join("acp.session.json"),
@@ -2120,15 +2104,6 @@ pub fn respond_acp_permission(
         )
         .map_err(command_error)?;
         if wrote_response {
-            let events_path =
-                app.paths
-                    .acp_events_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-            append_permission_decision_artifacts(
-                &attempt_dir,
-                &events_path,
-                canonical_request_id.clone(),
-                option_id,
-            )?;
             if !attempt_session_is_active(
                 &attempt_dir.join("acp.snapshot.json"),
                 &attempt_dir.join("acp.session.json"),
@@ -2322,28 +2297,6 @@ fn spawn_index_attempt(
     });
 }
 
-fn next_acp_event_seq(path: &camino::Utf8Path) -> u64 {
-    if !path.exists() {
-        return 1;
-    }
-    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
-        return 1;
-    };
-    BufReader::new(file)
-        .lines()
-        .map_while(std::result::Result::ok)
-        .filter(|line| !line.trim().is_empty())
-        .count() as u64
-        + 1
-}
-
-fn should_append_legacy_permission_event(
-    events_path: &camino::Utf8Path,
-    timeline_path: &camino::Utf8Path,
-) -> bool {
-    events_path.exists() && !timeline_path.exists()
-}
-
 fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &str) -> String {
     let stripped_request_id = strip_permission_display_prefix(request_id);
     let candidates = [request_id.to_string(), stripped_request_id.clone()];
@@ -2362,72 +2315,6 @@ fn strip_permission_display_prefix(request_id: &str) -> String {
         current = next;
     }
     current.to_string()
-}
-
-fn append_permission_decision_artifacts(
-    attempt_dir: &camino::Utf8Path,
-    events_path: &camino::Utf8Path,
-    request_id: String,
-    option_id: Option<String>,
-) -> CommandResult<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
-    } else {
-        next_acp_event_seq(events_path)
-    };
-    let mut event = permission_decision_event(source_seq, request_id.clone(), option_id);
-    event.id = format!("permission-{request_id}");
-    event.started_seq = Some(source_seq);
-    event.ended_seq = Some(source_seq);
-    event.started_at = Some(event.timestamp.clone());
-    event.ended_at = Some(event.timestamp.clone());
-
-    if should_append_legacy_permission_event(events_path, &timeline_path) {
-        append_ui_event(events_path, &event).map_err(command_error)?;
-    }
-
-    let mut items = load_timeline_items(&timeline_path).map_err(command_error)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
-        event.started_seq = existing.started_seq.or(event.started_seq);
-        event.started_at = existing.started_at.clone().or(event.started_at.clone());
-        *existing = event;
-    } else {
-        items.push(event);
-    }
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items).map_err(command_error)?;
-    Ok(())
-}
-
-fn append_elicitation_response_artifacts(
-    attempt_dir: &camino::Utf8Path,
-    events_path: &camino::Utf8Path,
-    elicitation_id: &str,
-    action: &ElicitationAction,
-    content: Option<serde_json::Value>,
-) -> CommandResult<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let response_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
-    } else {
-        next_acp_event_seq(events_path)
-    };
-    let action_value = match action {
-        ElicitationAction::Accept => "accept",
-        ElicitationAction::Decline => "decline",
-    };
-    let response_event = elicitation_response_event(
-        response_seq,
-        elicitation_id.to_string(),
-        action_value.to_string(),
-        content.clone(),
-    );
-    let mut items = load_timeline_items(&timeline_path).map_err(command_error)?;
-    upsert_timeline_event(&mut items, response_event);
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items).map_err(command_error)?;
-    Ok(())
 }
 
 fn attempt_session_is_active(
@@ -2455,16 +2342,6 @@ fn attempt_session_is_active(
             .as_str(),
         "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
     )
-}
-
-fn upsert_timeline_event(items: &mut Vec<AcpUiEvent>, mut event: AcpUiEvent) {
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
-        event.started_seq = existing.started_seq.or(event.started_seq);
-        event.started_at = existing.started_at.clone().or(event.started_at.clone());
-        *existing = event;
-    } else {
-        items.push(event);
-    }
 }
 
 #[tauri::command]
@@ -3366,7 +3243,6 @@ pub fn respond_elicitation(
         app.paths
             .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
     };
-    let events_path = attempt_dir.join("acp.events.jsonl");
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
 
@@ -3380,13 +3256,6 @@ pub fn respond_elicitation(
     .map_err(command_error)?;
 
     if !attempt_session_is_active(&snapshot_path, &session_path) {
-        append_elicitation_response_artifacts(
-            &attempt_dir,
-            &events_path,
-            &elicitation_id,
-            &action,
-            content,
-        )?;
         let _ = remove_elicitation_signal_files(&attempt_dir, &elicitation_id);
     }
 
@@ -3672,13 +3541,8 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
-    use gold_band::config::RuntimeConfig;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
-
-    fn test_app(repo_root: Utf8PathBuf) -> App {
-        App::with_config(repo_root, RuntimeConfig::default())
-    }
 
     #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {
@@ -4092,72 +3956,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn append_elicitation_response_artifacts_persists_response_without_fake_user_message() {
-        let temp = std::env::temp_dir().join(format!(
-            "gold-band-elicitation-replay-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp);
-        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
-        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = test_app(repo_root);
-        let attempt_dir =
-            app.paths
-                .attempt_dir("task-001", "run-001", "round-001", "plan", "attempt-001");
-        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
-        write_json(
-            &attempt_dir.join("acp.snapshot.json"),
-            &serde_json::json!({
-                "sessionId": "session-001",
-                "status": "completed"
-            }),
-        )
-        .unwrap();
-        write_json(
-            &gold_band::acp::elicitation::pending_elicitation_file(&attempt_dir, "elicit-001"),
-            &gold_band::acp::elicitation::PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                message: "请选择输出形式".to_string(),
-                requested_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "format": {
-                            "title": "输出形式",
-                            "oneOf": [{ "const": "summary", "title": "摘要" }]
-                        }
-                    }
-                }),
-                created_at: "1Z".to_string(),
-            },
-        )
-        .unwrap();
-
-        append_elicitation_response_artifacts(
-            &attempt_dir,
-            &attempt_dir.join("acp.events.jsonl"),
-            "elicit-001",
-            &ElicitationAction::Accept,
-            Some(serde_json::json!({ "format": "summary" })),
-        )
-        .unwrap();
-
-        let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
-        assert!(items.iter().any(|item| {
-            item.kind == "elicitationResponse"
-                && item
-                    .raw
-                    .as_ref()
-                    .and_then(|raw| raw.get("elicitationId"))
-                    .and_then(|value| value.as_str())
-                    == Some("elicit-001")
-        }));
-        assert!(!items.iter().any(|item| item.kind == "userTextDelta"));
-
-        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]

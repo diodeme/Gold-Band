@@ -156,7 +156,14 @@ pub fn write_permission_response_if_pending(
     {
         return Ok(false);
     }
-    write_permission_response(attempt_dir, request_id, option_id, cancelled, decided_at)?;
+    write_permission_response(
+        attempt_dir,
+        request_id,
+        option_id.clone(),
+        cancelled,
+        decided_at,
+    )?;
+    upsert_permission_decision_event(attempt_dir, request_id, option_id, cancelled)?;
     Ok(true)
 }
 
@@ -195,6 +202,60 @@ pub fn acp_permission_response_result(response: PermissionResponseState) -> Resu
     }))
 }
 
+pub fn upsert_permission_decision_event(
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+    option_id: Option<String>,
+    cancelled: bool,
+) -> Result<()> {
+    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+    let events_path = attempt_dir.join("acp.events.jsonl");
+    let source_seq = if timeline_path.exists() || !events_path.exists() {
+        latest_timeline_source_seq(&timeline_path) + 1
+    } else {
+        legacy_event_count(&events_path) + 1
+    };
+    let existing = latest_permission_event(attempt_dir, request_id);
+    let mut event = if cancelled {
+        cancelled_permission_event(source_seq, request_id.to_string(), existing.as_ref())
+    } else {
+        selected_permission_event(
+            source_seq,
+            request_id.to_string(),
+            option_id,
+            existing.as_ref(),
+        )
+    };
+    event.id = format!("permission-{request_id}");
+    event.started_seq = Some(
+        existing
+            .as_ref()
+            .and_then(|event| event.started_seq)
+            .unwrap_or(source_seq),
+    );
+    event.ended_seq = Some(source_seq);
+    event.started_at = Some(
+        existing
+            .as_ref()
+            .and_then(|event| event.started_at.clone())
+            .unwrap_or_else(|| event.timestamp.clone()),
+    );
+    event.ended_at = Some(event.timestamp.clone());
+
+    if events_path.exists() && !timeline_path.exists() {
+        append_ui_event(&events_path, &event)?;
+    }
+
+    let mut items = load_timeline_items(&timeline_path)?;
+    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
+        *existing = event;
+    } else {
+        items.push(event);
+    }
+    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+    write_timeline_items(&timeline_path, &items)
+}
+
 fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|ch| {
@@ -208,36 +269,7 @@ fn sanitize_id(id: &str) -> String {
 }
 
 fn upsert_cancelled_permission_event(attempt_dir: &Utf8Path, request_id: &str) -> Result<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let events_path = attempt_dir.join("acp.events.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
-    } else {
-        legacy_event_count(&events_path) + 1
-    };
-    let existing = latest_permission_event(attempt_dir, request_id);
-    let mut event =
-        cancelled_permission_event(source_seq, request_id.to_string(), existing.as_ref());
-    event.id = format!("permission-{request_id}");
-    event.started_seq = Some(source_seq);
-    event.ended_seq = Some(source_seq);
-    event.started_at = Some(event.timestamp.clone());
-    event.ended_at = Some(event.timestamp.clone());
-
-    if events_path.exists() && !timeline_path.exists() {
-        append_ui_event(&events_path, &event)?;
-    }
-
-    let mut items = load_timeline_items(&timeline_path)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
-        event.started_seq = existing.started_seq.or(event.started_seq);
-        event.started_at = existing.started_at.clone().or(event.started_at.clone());
-        *existing = event;
-    } else {
-        items.push(event);
-    }
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items)
+    upsert_permission_decision_event(attempt_dir, request_id, None, true)
 }
 
 fn cancelled_permission_event(
@@ -270,6 +302,46 @@ fn cancelled_permission_event(
             .or_else(|| Some("Permission cancelled".to_string())),
         tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
         status: Some("cancelled".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
+        raw: Some(raw),
+    }
+}
+
+fn selected_permission_event(
+    seq: u64,
+    request_id: String,
+    option_id: Option<String>,
+    existing: Option<&AcpUiEvent>,
+) -> AcpUiEvent {
+    let mut raw = existing
+        .and_then(|event| event.raw.clone())
+        .unwrap_or_default();
+    if !raw.is_object() {
+        raw = serde_json::json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert(
+            "requestId".to_string(),
+            serde_json::json!(request_id.clone()),
+        );
+        object.insert("optionId".to_string(), serde_json::json!(option_id));
+        object.remove("cancelled");
+    }
+    AcpUiEvent {
+        id: request_id.clone(),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "permissionRequest".to_string(),
+        session_id: existing.and_then(|event| event.session_id.clone()),
+        content: None,
+        title: existing
+            .and_then(|event| event.title.clone())
+            .or_else(|| Some("Permission answered".to_string())),
+        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
+        status: Some("selected".to_string()),
         started_seq: None,
         ended_seq: None,
         started_at: None,
@@ -520,6 +592,80 @@ mod tests {
         let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].status.as_deref(), Some("selected"));
+    }
+
+    #[test]
+    fn write_permission_response_if_pending_updates_timeline_status() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let request_id = "allow";
+        write_pending_permission(
+            &attempt_dir,
+            request_id,
+            serde_json::json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "tool-1",
+                    "title": "Write file"
+                },
+                "options": [
+                    { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+                ]
+            }),
+            "1Z".to_string(),
+        )
+        .unwrap();
+        let mut pending = permission_request_event(
+            7,
+            request_id.to_string(),
+            serde_json::json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "tool-1",
+                    "title": "Write file"
+                },
+                "options": [
+                    { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+                ]
+            }),
+        );
+        pending.id = format!("permission-{request_id}");
+        pending.started_seq = Some(7);
+        pending.ended_seq = Some(7);
+        write_timeline_items(&attempt_dir.join("acp.timeline.jsonl"), &[pending]).unwrap();
+
+        let written = write_permission_response_if_pending(
+            &attempt_dir,
+            request_id,
+            Some("allow".to_string()),
+            false,
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        assert!(written);
+        let response: PermissionResponseState =
+            read_json(&permission_response_file(&attempt_dir, request_id)).unwrap();
+        assert_eq!(response.option_id.as_deref(), Some("allow"));
+        let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
+        let event = items
+            .iter()
+            .find(|item| item.id == "permission-allow")
+            .unwrap();
+        assert_eq!(event.status.as_deref(), Some("selected"));
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(event.title.as_deref(), Some("Write file"));
+        assert_eq!(event.started_seq, Some(7));
+        assert!(event.ended_seq.is_some_and(|seq| seq > 7));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("optionId"))
+                .and_then(|value| value.as_str()),
+            Some("allow")
+        );
     }
 
     #[test]

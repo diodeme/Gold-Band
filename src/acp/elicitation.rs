@@ -5,7 +5,13 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::storage::{ensure_parent_dir, read_json, write_json};
+use crate::{
+    acp::events::{
+        append_ui_event, current_timestamp, elicitation_response_event, latest_timeline_source_seq,
+        load_timeline_items, write_timeline_items,
+    },
+    storage::{ensure_parent_dir, read_json, write_json},
+};
 
 /// 默认 elicitation 超时时间：无超时（与 Claude Code TUI 行为对齐）。
 /// 用户可通过取消 session 随时中断等待。
@@ -81,11 +87,12 @@ pub fn write_elicitation_response(
         &path,
         &ElicitationResponseState {
             elicitation_id: elicitation_id.to_string(),
-            action,
-            content,
+            action: action.clone(),
+            content: content.clone(),
             decided_at,
         },
-    )
+    )?;
+    upsert_elicitation_response_event(attempt_dir, elicitation_id, &action, content)
 }
 
 pub fn remove_elicitation_signal_files(attempt_dir: &Utf8Path, elicitation_id: &str) -> Result<()> {
@@ -113,7 +120,7 @@ pub fn wait_for_elicitation_response(
                 elicitation_id: elicitation_id.to_string(),
                 action: ElicitationAction::Decline,
                 content: None,
-                decided_at: crate::acp::events::current_timestamp(),
+                decided_at: current_timestamp(),
             });
         }
         if started_at.elapsed() >= timeout {
@@ -121,7 +128,7 @@ pub fn wait_for_elicitation_response(
                 elicitation_id: elicitation_id.to_string(),
                 action: ElicitationAction::Decline,
                 content: None,
-                decided_at: crate::acp::events::current_timestamp(),
+                decided_at: current_timestamp(),
             });
         }
         thread::sleep(ELICITATION_POLL_INTERVAL);
@@ -153,6 +160,14 @@ pub fn cancel_pending_elicitation_requests(
         };
         let response_path = elicitation_response_file(attempt_dir, &pending.elicitation_id);
         if response_path.exists() {
+            if let Ok(response) = read_json::<ElicitationResponseState>(&response_path) {
+                upsert_elicitation_response_event(
+                    attempt_dir,
+                    &pending.elicitation_id,
+                    &response.action,
+                    response.content,
+                )?;
+            }
             continue;
         }
         write_elicitation_response(
@@ -164,6 +179,48 @@ pub fn cancel_pending_elicitation_requests(
         )?;
     }
     Ok(())
+}
+
+pub fn upsert_elicitation_response_event(
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+    action: &ElicitationAction,
+    content: Option<Value>,
+) -> Result<()> {
+    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+    let events_path = attempt_dir.join("acp.events.jsonl");
+    let source_seq = if timeline_path.exists() || !events_path.exists() {
+        latest_timeline_source_seq(&timeline_path) + 1
+    } else {
+        legacy_event_count(&events_path) + 1
+    };
+    let action_value = match action {
+        ElicitationAction::Accept => "accept",
+        ElicitationAction::Decline => "decline",
+    };
+    let mut event = elicitation_response_event(
+        source_seq,
+        elicitation_id.to_string(),
+        action_value.to_string(),
+        content,
+    );
+    event.started_seq = Some(source_seq);
+    event.ended_seq = Some(source_seq);
+    event.started_at = Some(event.timestamp.clone());
+    event.ended_at = Some(event.timestamp.clone());
+
+    if events_path.exists() && !timeline_path.exists() {
+        append_ui_event(&events_path, &event)?;
+    }
+
+    let mut items = load_timeline_items(&timeline_path)?;
+    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
+        *existing = event;
+    } else {
+        items.push(event);
+    }
+    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+    write_timeline_items(&timeline_path, &items)
 }
 // ── Elicitation-specific cancel mechanism ──
 // Separate from permission domain to avoid semantic coupling.
@@ -367,6 +424,16 @@ fn sanitize_id(id: &str) -> String {
         .collect()
 }
 
+fn legacy_event_count(path: &Utf8Path) -> u64 {
+    let Ok(content) = fs::read_to_string(path.as_std_path()) else {
+        return 0;
+    };
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count() as u64
+}
+
 fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
     match fs::remove_file(path.as_std_path()) {
         Ok(()) => Ok(()),
@@ -488,6 +555,44 @@ mod tests {
     }
 
     #[test]
+    fn write_elicitation_response_persists_timeline_response() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        write_elicitation_response(
+            &attempt_dir,
+            "elicit-answered",
+            ElicitationAction::Accept,
+            Some(serde_json::json!({ "answer": "mysql" })),
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
+        let event = items
+            .iter()
+            .find(|item| item.id == "elicit-answered-response")
+            .unwrap();
+        assert_eq!(event.kind, "elicitationResponse");
+        assert_eq!(event.status.as_deref(), Some("completed"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("elicitationId"))
+                .and_then(|value| value.as_str()),
+            Some("elicit-answered")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("action"))
+                .and_then(|value| value.as_str()),
+            Some("accept")
+        );
+        assert!(!items.iter().any(|item| item.kind == "userTextDelta"));
+    }
+
+    #[test]
     fn cancel_pending_elicitation_requests_writes_decline_for_unanswered() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
         // 写入一个 pending 请求
@@ -509,6 +614,20 @@ mod tests {
         assert!(response_path.exists());
         let response: ElicitationResponseState = read_json(&response_path).unwrap();
         assert!(matches!(response.action, ElicitationAction::Decline));
+        let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
+        let event = items
+            .iter()
+            .find(|item| item.id == "elicit-cancel-me-response")
+            .unwrap();
+        assert_eq!(event.kind, "elicitationResponse");
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("action"))
+                .and_then(|value| value.as_str()),
+            Some("decline")
+        );
     }
 
     #[test]

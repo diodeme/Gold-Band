@@ -890,6 +890,7 @@ runtime 负责：
 - 让 merge / acceptance 使用 main workspace，普通 fanout 可写分支使用独立 worktree
 - 成功后按策略清理 worktree
 - 对同一 dynamic run 的状态快照读写使用 run 级状态锁；`graph.json` 等 JSON 状态文件通过同目录临时文件原子替换写入，避免并发读写时出现半写入或新旧内容混合
+- driver 热循环持久化以 `DynamicGraphState` 序列化内容指纹判断是否变化；首次或 graph 实际变化时写出 graph/run/node/group/proposal 派生文件，等待 worker 消息的 200ms scheduler 心跳不重复重写磁盘，不用枚举 Ready→Running、proposal 接受等具体状态转换作为 dirty flag
 
 runtime 不负责：
 
@@ -1004,7 +1005,7 @@ internal node completed
   -> materialize next
 ```
 
-说明：AI-DYNAMIC 现在不是串行“挑一个 ready node 执行到底”，而是主线程调度 + 子线程执行 + 完成回传后继续补位。主线程是 graph 的唯一写入者；并行执行只发生在 node job 本身，proposal 回写和 materialize 不在子线程直接改共享 graph。
+说明：AI-DYNAMIC 现在不是串行“挑一个 ready node 执行到底”，而是主线程调度 + 子线程执行 + 完成回传后继续补位。主线程是 graph 的唯一写入者；并行执行只发生在 node job 本身，proposal 回写和 materialize 不在子线程直接改共享 graph。scheduler 诊断事件按实际状态变化写入：只有本轮 promoted ready、实际 launch 或低频等待节流时写 `dynamic/events.jsonl`，不把 200ms `recv_timeout` 等待轮次当成日志心跳。
 
 ### 17.3 materialize next=end
 

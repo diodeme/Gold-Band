@@ -90,6 +90,7 @@ static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONS
     OnceLock::new();
 static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DYNAMIC_STATE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static DYNAMIC_GRAPH_PERSIST_FINGERPRINTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 static DYNAMIC_RESUME_REGISTRY: OnceLock<
     Mutex<HashMap<String, mpsc::Sender<DynamicResumeOverride>>>,
 > = OnceLock::new();
@@ -3040,6 +3041,29 @@ fn dynamic_state_lock_key(
     format!("{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
 }
 
+fn dynamic_graph_persist_fingerprint_key(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+) -> String {
+    format!(
+        "{}/{}/{}",
+        app.paths.repo_root,
+        dynamic_state_lock_key(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        VERSION
+    )
+}
+
+fn dynamic_graph_persist_fingerprint(graph: &DynamicGraphState) -> Result<u64> {
+    let bytes = serde_json::to_vec_pretty(graph)?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
 fn dynamic_state_lock(ctx: &DynamicExecutionContext<'_>) -> Result<Arc<Mutex<()>>> {
     dynamic_state_lock_for(
         ctx.task_id,
@@ -3566,40 +3590,53 @@ fn drive_dynamic_graph(
         )?);
         let ready_refresh_started_at = Instant::now();
         let ready_node_ids = refresh_dynamic_ready_nodes(graph);
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_ready_refreshed",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "elapsedMs": elapsed_ms(ready_refresh_started_at),
-                "readyNodeIds": ready_node_ids,
-                "state": dynamic_timing_data(graph),
-            }),
-        );
         if !ready_node_ids.is_empty() {
-            persist_dynamic_graph(ctx, graph)?;
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_ready_refreshed",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "elapsedMs": elapsed_ms(ready_refresh_started_at),
+                    "readyNodeIds": ready_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+            persist_dynamic_graph_if_changed(ctx, graph)?;
             emit_dynamic_session_updates_best_effort(ctx, graph, &ready_node_ids);
         }
         let launch_started_at = Instant::now();
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_launch_ready_begin",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "state": dynamic_timing_data(graph),
-            }),
-        );
-        launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
-        dynamic_event_best_effort(
-            ctx,
-            "dynamic_launch_ready_end",
-            serde_json::json!({
-                "loop": scheduler_loop_count,
-                "elapsedMs": elapsed_ms(launch_started_at),
-                "state": dynamic_timing_data(graph),
-            }),
-        );
-        persist_dynamic_graph(ctx, graph)?;
+        let ready_launch_node_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == DynamicNodeStatus::Ready)
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        if !ready_launch_node_ids.is_empty() {
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_launch_ready_begin",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "readyNodeIds": ready_launch_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+        }
+        let launched_node_ids =
+            launch_ready_dynamic_nodes(ctx, graph, &tx, &mut launch_resume_overrides)?;
+        if !launched_node_ids.is_empty() {
+            dynamic_event_best_effort(
+                ctx,
+                "dynamic_launch_ready_end",
+                serde_json::json!({
+                    "loop": scheduler_loop_count,
+                    "elapsedMs": elapsed_ms(launch_started_at),
+                    "launchedNodeIds": launched_node_ids,
+                    "state": dynamic_timing_data(graph),
+                }),
+            );
+        }
+        persist_dynamic_graph_if_changed(ctx, graph)?;
 
         if advance_dynamic_groups(ctx, graph)?.changed {
             continue;
@@ -3699,13 +3736,14 @@ fn launch_ready_dynamic_nodes(
     graph: &mut DynamicGraphState,
     tx: &mpsc::Sender<DynamicExecutionMessage>,
     launch_resume_overrides: &mut Vec<DynamicResumeOverride>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let ready_ids = graph
         .nodes
         .iter()
         .filter(|node| node.status == DynamicNodeStatus::Ready)
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
+    let mut launched_node_ids = Vec::new();
     for node_id in ready_ids {
         let Some(index) = graph.nodes.iter().position(|node| node.id == node_id) else {
             continue;
@@ -3809,8 +3847,9 @@ fn launch_ready_dynamic_nodes(
                 "state": dynamic_timing_data(graph),
             }),
         );
+        launched_node_ids.push(spawned_node_id);
     }
-    Ok(())
+    Ok(launched_node_ids)
 }
 
 fn persist_paused_dynamic_leaf_or_graph(
@@ -8783,6 +8822,54 @@ fn persist_dynamic_graph(
             .join(format!("{}.json", proposal.id));
         write_json(&path, proposal)?;
     }
+    remember_dynamic_graph_persist_fingerprint(ctx, graph)?;
+    Ok(())
+}
+
+fn persist_dynamic_graph_if_changed(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<bool> {
+    let fingerprint = dynamic_graph_persist_fingerprint(graph)?;
+    let key = dynamic_graph_persist_fingerprint_key(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    {
+        let fingerprints = DYNAMIC_GRAPH_PERSIST_FINGERPRINTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| anyhow!("dynamic graph persist fingerprint registry poisoned"))?;
+        if fingerprints.get(&key) == Some(&fingerprint) {
+            return Ok(false);
+        }
+    }
+    persist_dynamic_graph(ctx, graph)?;
+    Ok(true)
+}
+
+fn remember_dynamic_graph_persist_fingerprint(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) -> Result<()> {
+    let fingerprint = dynamic_graph_persist_fingerprint(graph)?;
+    let key = dynamic_graph_persist_fingerprint_key(
+        ctx.app,
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    );
+    let mut fingerprints = DYNAMIC_GRAPH_PERSIST_FINGERPRINTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic graph persist fingerprint registry poisoned"))?;
+    fingerprints.insert(key, fingerprint);
     Ok(())
 }
 
@@ -10028,6 +10115,59 @@ mod tests {
         assert_eq!(promoted, vec!["next".to_string()]);
         assert_eq!(graph.nodes[1].status, DynamicNodeStatus::Ready);
         assert_eq!(graph.run.current_node_ids, vec!["next".to_string()]);
+    }
+
+    #[test]
+    fn dynamic_graph_persist_skips_unchanged_snapshot_and_writes_after_change() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph(vec![test_worktree_node("bootstrap")]);
+
+        assert!(persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+        assert!(!persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+
+        graph.run.updated_at = "2026-06-16T00:00:01Z".to_string();
+        assert!(persist_dynamic_graph_if_changed(&ctx, &graph).unwrap());
+
+        let persisted: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(persisted.run.updated_at, "2026-06-16T00:00:01Z");
+    }
+
+    #[test]
+    fn launch_ready_dynamic_nodes_returns_empty_without_scheduler_events_when_no_ready_nodes() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("bootstrap");
+        node.status = DynamicNodeStatus::Pending;
+        let mut graph = test_dynamic_graph(vec![node]);
+        let (tx, _rx) = mpsc::channel();
+        let mut overrides = Vec::new();
+
+        let launched = launch_ready_dynamic_nodes(&ctx, &mut graph, &tx, &mut overrides).unwrap();
+
+        assert!(launched.is_empty());
+        assert!(
+            !app.paths
+                .dynamic_events_file(
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.round_id,
+                    ctx.outer_node_id,
+                    ctx.outer_attempt_id,
+                )
+                .exists()
+        );
     }
 
     #[test]

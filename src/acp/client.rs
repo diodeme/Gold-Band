@@ -32,8 +32,8 @@ use crate::acp::events::{
 };
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files, upsert_permission_decision_event,
-    wait_for_permission_response, write_pending_permission,
+    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
+    write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -1717,12 +1717,14 @@ impl<'a> AcpRuntime<'a> {
         }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
-        upsert_permission_decision_event(
-            &self.paths.attempt_dir,
+        self.seq += 1;
+        let decision_event = permission_decision_timeline_event(
+            self.seq,
             &request_id,
-            response.option_id.clone(),
-            response.cancelled,
-        )?;
+            &response,
+            self.timeline_items.get(&format!("permission-{request_id}")),
+        );
+        self.persist_event(&decision_event)?;
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
         let frame = json!({
@@ -2523,22 +2525,127 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
+fn permission_decision_timeline_event(
+    seq: u64,
+    request_id: &str,
+    response: &PermissionResponseState,
+    existing: Option<&AcpUiEvent>,
+) -> AcpUiEvent {
+    let mut raw = existing
+        .and_then(|event| event.raw.clone())
+        .unwrap_or_else(|| json!({}));
+    if !raw.is_object() {
+        raw = json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("requestId".to_string(), json!(request_id));
+        if response.cancelled {
+            object.insert("cancelled".to_string(), json!(true));
+            object.remove("optionId");
+        } else {
+            object.insert("optionId".to_string(), json!(response.option_id.clone()));
+            object.remove("cancelled");
+        }
+    }
+
+    AcpUiEvent {
+        id: request_id.to_string(),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "permissionRequest".to_string(),
+        session_id: existing.and_then(|event| event.session_id.clone()),
+        content: None,
+        title: existing
+            .and_then(|event| event.title.clone())
+            .or_else(|| Some("Permission answered".to_string())),
+        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
+        status: Some(if response.cancelled {
+            "cancelled".to_string()
+        } else {
+            "selected".to_string()
+        }),
+        started_seq: existing.and_then(|event| event.started_seq),
+        ended_seq: None,
+        started_at: existing.and_then(|event| event.started_at.clone()),
+        ended_at: None,
+        raw: Some(raw),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, resolve_permission_mode,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        permission_decision_timeline_event, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
         session_prompt_params, session_prompt_text,
     };
+    use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
+    }
+
+    #[test]
+    fn permission_decision_event_preserves_pending_timeline_identity() {
+        let existing = AcpUiEvent {
+            id: "permission-0".to_string(),
+            seq: 10,
+            timestamp: "1Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(10),
+            ended_seq: Some(10),
+            started_at: Some("1Z".to_string()),
+            ended_at: Some("1Z".to_string()),
+            raw: Some(json!({
+                "requestId": "0",
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            })),
+        };
+        let response = PermissionResponseState {
+            request_id: "0".to_string(),
+            option_id: Some("allow".to_string()),
+            cancelled: false,
+            decided_at: "2Z".to_string(),
+        };
+
+        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.kind, "permissionRequest");
+        assert_eq!(event.status.as_deref(), Some("selected"));
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(event.title.as_deref(), Some("Write file"));
+        assert_eq!(event.started_seq, Some(10));
+        assert_eq!(event.started_at.as_deref(), Some("1Z"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("optionId"))
+                .and_then(Value::as_str),
+            Some("allow")
+        );
     }
 
     #[test]

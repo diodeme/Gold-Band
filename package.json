@@ -17,7 +17,7 @@
     "web:dev": "vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",
     "test:channel-config": "node --test scripts/channel-config.test.mjs",
-    "web:build": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
+    "web:build": "tsc -p web/tsconfig.build.json && vite build --config web/vite.config.ts",
     "web:preview": "vite preview --config web/vite.config.ts"
   },
   "dependencies": {

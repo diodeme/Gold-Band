@@ -140,6 +140,8 @@
 - 2026-06-29：ACP permission / elicitation 的 request-response JSON 文件收敛为临时信号文件，长期事实源统一为 timeline/events。runtime 消费响应并写入终态事件后会清理对应 request/response 文件；非 active session 的 command-side durable replay 写完终态事件后也会清理信号文件。停止流程写出的 cancelled response 保留到 live waiter 消费，避免提前删除导致阻塞线程无法解除。
 - 2026-06-29：AI-DYNAMIC driver 热循环持久化改为按 `DynamicGraphState` 内容指纹去重；graph 未变化的 200ms worker 等待轮次不再重复重写 graph/run/node/group/proposal JSON，ready/launch scheduler 诊断事件也只在实际 promoted ready 或实际 launch 时写入，避免无意义磁盘 I/O 和 JSONL 心跳膨胀。
 - 2026-06-29：ACP elicitation 卡片视觉密度收敛：已确认回答、多步骤进度、题干、选项行、自定义输入与底部操作区统一压缩上下留白和控制高度，保持会话流内联提问的轻量表单形态，不改变 request/response 协议与答案提交语义。
+- 2026-06-29：前端构建类型检查拆分为生产源码配置 `web/tsconfig.build.json` 与 Vitest 测试运行配置；`npm run web:build` 不再把 Node 环境测试文件纳入浏览器源码编译，测试验收继续通过 `npm run web:test` 固化。
+- 2026-06-29：wb 构建链路补齐 MCP stdio 握手实现对 `std::process::Command` 的显式依赖，保持新增 stdio MCP health/tools 探测逻辑可被 Rust 编译器稳定解析。
 - 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 - 仓库级依赖安装与锁文件统一使用 `npm` / `package-lock.json`；除非单独立项迁移包管理器，否则不新增 `pnpm-lock.yaml`、`yarn.lock` 等并行 lockfile。
 

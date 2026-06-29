@@ -324,6 +324,131 @@ pub struct DesktopAvailableUpdate {
     pub pub_date: Option<String>,
 }
 
+// ── MCP Server Configuration ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub transport: McpTransportConfig,
+    #[serde(default)]
+    pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_message: Option<String>,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// 对标 Zed OAuthClientSettings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthClientConfig {
+    pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "camelCase")]
+pub enum McpTransportConfig {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        /// 对标 Zed: OAuth 预注册客户端配置
+        #[serde(skip_serializing_if = "Option::is_none")]
+        oauth: Option<OAuthClientConfig>,
+    },
+    Sse {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+    },
+}
+
+// ── SKILL Constants & Types ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerHealthResult {
+    pub status: String, // "healthy" | "unhealthy" | "auth_required" | "unknown"
+    pub message: Option<String>,
+    /// 对标 Zed AuthRequired — 需要 OAuth 认证时的授权 URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    /// 对标 Zed ClientSecretRequired — 需要输入 client_secret
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_client_secret: Option<bool>,
+    /// tools/list 发现的工具列表（仅 Running 状态时填充）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolInfo>,
+}
+
+/// MCP 服务器状态机（对标 Zed ContextServerState）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerState {
+    /// 正在启动（握手进行中）
+    Starting,
+    /// 运行中，持有已发现的工具列表
+    Running { tools: Vec<ToolInfo> },
+    /// 已停止（用户禁用或手动停止）
+    Stopped,
+    /// 启动失败
+    Error { message: String },
+    /// 需要 OAuth 认证
+    AuthRequired { auth_url: Option<String> },
+}
+
+/// MCP 工具信息（从 tools/list 响应解析）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+}
+
+pub const AGENTS_DIR_NAME: &str = ".agents";
+pub const SKILLS_DIR_NAME: &str = "skills";
+pub const SKILL_FILE_NAME: &str = "SKILL.md";
+pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
+pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: String,
+    pub source: SkillSource,
+    pub directory_path: String,
+    pub disable_model_invocation: bool,
+    pub load_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillSource {
+    BuiltIn,
+    Global,
+    Project,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
@@ -342,6 +467,8 @@ pub struct SettingsConfig {
     pub desktop_metrics_enabled: Option<bool>,
     pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
+    #[serde(default)]
+    pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -379,6 +506,14 @@ pub struct ProjectAppConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDiagnosticSnapshot {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+    pub capabilities: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub log_level: RuntimeLogLevel,
     pub log_prompts: bool,
@@ -402,6 +537,8 @@ pub struct RuntimeConfig {
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
 }
 
 impl Default for RuntimeConfig {
@@ -434,6 +571,7 @@ impl Default for RuntimeConfig {
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
+            provider_diagnostics: BTreeMap::new(),
         };
         base.apply_app_config(embedded_project_app_config())
     }
@@ -505,6 +643,14 @@ impl RuntimeConfig {
         self.desktop_updater_last_checked_at = state.desktop_updater_last_checked_at.clone();
         self.desktop_update_badges = state.desktop_update_badges.clone();
         self.desktop_available_update = state.desktop_available_update.clone();
+        self
+    }
+
+    pub fn with_provider_diagnostics(
+        mut self,
+        provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
+    ) -> Self {
+        self.provider_diagnostics = provider_diagnostics;
         self
     }
 

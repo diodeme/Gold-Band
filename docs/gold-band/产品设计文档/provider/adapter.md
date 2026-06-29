@@ -18,7 +18,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 接收 runtime 传来的外层调用请求
 - 在 A() 内部选择热数据与冷数据
 - 在 A() 内部把调用请求整理成 prompt bundle
-- 把 prompt bundle 映射为 ACP 调用：新建 session 时通过 `_meta.systemPrompt.append` 注入 system prompt，继续会话的 `session/prompt` 只发送用户 prompt 内容
+- 把 prompt bundle 映射为 ACP 调用：根据 `supports_system_prompt` 决定是否通过 `_meta.systemPrompt.append` 注入稳定 system prompt；不支持时把稳定 system prompt 作为 Gold Band hidden 段内联到 user prompt 前
 - 接收 ACP `session/update`、permission request 与 prompt response
 - 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、通过项目级 feature flag 控制的可选 `session/list` 轮询 best-effort 拉取的 session title 缓存与 raw frame
 - 提供 worker reference 与外部 CLI handoff
@@ -44,6 +44,8 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 当前环境是否满足最小运行条件
 - 失败时给出明确原因
 
+桌面端持久化的 doctor 结果是 `~/.gold-band/desktop/agent-diagnostics.json`。doctor 运行时可以临时创建 `~/.gold-band/doctor/acp` 作为一次性 ACP 诊断 attempt 目录；每次运行前清理旧目录，成功后删除该目录，失败时只保留最近一次有界 raw/timeline/diagnostics JSONL bundle，并移除 `provider.pid`。这些文件只用于诊断，不参与 runtime、UI 状态、业务 session 判断，也不作为 `supports_system_prompt` 等静态 provider capability 的事实来源。
+
 ### `runWorker()`
 运行一次 AI worker attempt。
 
@@ -61,11 +63,13 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `predecessors[]`
 - `taskInstruction`
 - `sessionMode`（可选，缺省为 `new`）
+- `userPromptRenderMode`（`RequirementTask` / `WorkflowResume` / `RuntimeRepair` / `UserMessage`，用于区分 workflow runtime 调用、内部修复和用户普通追问）
 - `continueRefPath`
 - `streamMode`
 
 说明：
 - `sessionMode` / `continueRefPath` 只影响 provider 如何启动本次 attempt
+- `userPromptRenderMode` 决定 prompt 文本形态：workflow new/resume 才注入 hidden runtime context；runtime repair 和用户普通追问直接发送对应 prompt 原文
 - 未显式提供 `sessionMode` 时，默认使用 `new`
 - CLI 级 `continue` / `retry` 是 runtime 对 attempt 的控制动作，不等同于 provider 输入里的 `sessionMode`
 
@@ -123,6 +127,8 @@ provider adapter 是 provider-specific 差异的隔离层。
 ### Level 2：会话可继续能力
 - `openSession`
 - `buildContinueCommand`
+- `supports_continue_session`
+- `supports_system_prompt`
 - 可继续或可打开的原始会话引用
 
 运行时规则：

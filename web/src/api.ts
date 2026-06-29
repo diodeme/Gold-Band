@@ -135,8 +135,8 @@ export function continueRun(projectId: string | null | undefined, taskId: string
   return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
 }
 
-export function pauseRun(taskId: string, runId: string) {
-  return getRuntimeApi().pauseRun(taskId, runId);
+export function pauseRun(taskId: string, runId: string, projectId?: string | null) {
+  return getRuntimeApi().pauseRun(taskId, runId, projectId);
 }
 
 export function stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['stopActiveSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -151,10 +151,6 @@ export function retryRun(taskId: string, runId: string) {
   return getRuntimeApi().retryRun(taskId, runId);
 }
 
-export function killRun(taskId: string, runId: string) {
-  return getRuntimeApi().killRun(taskId, runId);
-}
-
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
   return getRuntimeApi().getLogPage(query);
 }
@@ -165,6 +161,19 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
 
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeConversationRunStateUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeConversationRunStateUpdates']>>[0]) {
+  return getRuntimeApi().subscribeConversationRunStateUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+// 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
+export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
+  return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
 export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
@@ -181,6 +190,10 @@ export function setAcpSessionPermissionMode(projectId: string | null | undefined
 
 export function respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['respondAcpPermission']>[8], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
+}
+
+export function respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().respondElicitation(projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId);
 }
 
 export function cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -213,6 +226,10 @@ export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRu
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
   return getRuntimeApi().saveUpdaterSettings(overrideUrl);
+}
+
+export function updateNotificationAttention(input: Parameters<NonNullable<RuntimeApi['updateNotificationAttention']>>[0]) {
+  return getRuntimeApi().updateNotificationAttention?.(input) ?? Promise.resolve();
 }
 
 export function getUpdateStatus() {
@@ -345,4 +362,54 @@ export function getSupportedAttachmentExtensions() {
 
 export function openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+}
+
+// ── MCP & SKILL management ──
+
+export function listMcpServers() {
+  return getRuntimeApi().listMcpServers();
+}
+
+export function addMcpServer(jsonContent: string) {
+  return getRuntimeApi().addMcpServer(jsonContent);
+}
+
+export function updateMcpServer(id: string, jsonContent: string) {
+  return getRuntimeApi().updateMcpServer(id, jsonContent);
+}
+
+export function deleteMcpServer(id: string) {
+  return getRuntimeApi().deleteMcpServer(id);
+}
+
+export function toggleMcpServer(id: string, enabled: boolean) {
+  return getRuntimeApi().toggleMcpServer(id, enabled);
+}
+
+export function checkMcpServerHealth(id: string) {
+  return getRuntimeApi().checkMcpServerHealth(id);
+}
+
+export function listMcpTools(id: string) {
+  return getRuntimeApi().listMcpTools(id);
+}
+
+export function listSkills() {
+  return getRuntimeApi().listSkills();
+}
+
+export function listProjectSkills(workspacePath: string) {
+  return getRuntimeApi().listProjectSkills(workspacePath);
+}
+
+export function readSkill(name: string, source: string, workspacePath?: string | null) {
+  return getRuntimeApi().readSkill(name, source, workspacePath);
+}
+
+export function writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
+  return getRuntimeApi().writeSkill(name, source, content, workspacePath, oldName);
+}
+
+export function deleteSkill(name: string, source: string, workspacePath?: string | null) {
+  return getRuntimeApi().deleteSkill(name, source, workspacePath);
 }

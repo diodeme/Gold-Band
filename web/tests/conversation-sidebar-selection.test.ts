@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  canOpenConversationSidebarRunMenu,
+  canPauseConversationSidebarRun,
   conversationSidebarRunKey,
   conversationSidebarTaskKey,
   isConversationSidebarRunActive,
   prioritizeConversationSidebarWorkspace,
+  selectConversationSidebarRunPauseAction,
 } from '@/components/conversation/ConversationSidebar';
 
 describe('ConversationSidebar run selection identity', () => {
@@ -33,5 +36,26 @@ describe('ConversationSidebar run selection identity', () => {
 
     expect(sidebar.lastActiveWorkspaceId).toBe('project-b');
     expect(sidebar.workspaces.map((workspace) => workspace.projectId)).toEqual(['project-b', 'project-a']);
+  });
+
+  it('enables run stop only for running runs', () => {
+    expect(canPauseConversationSidebarRun({ status: 'running' })).toBe(true);
+    expect(canPauseConversationSidebarRun({ status: 'paused' })).toBe(false);
+    expect(canPauseConversationSidebarRun({ status: 'completed' })).toBe(false);
+  });
+
+  it('opens stop context menu only for concrete run rows', () => {
+    expect(canOpenConversationSidebarRunMenu('run')).toBe(true);
+    expect(canOpenConversationSidebarRunMenu('task')).toBe(false);
+  });
+
+  it('routes run stop menu selection to pause callback only when running', () => {
+    const onPauseRun = vi.fn();
+
+    expect(selectConversationSidebarRunPauseAction({ runId: 'run-001', status: 'running' }, onPauseRun)).toBe(true);
+    expect(selectConversationSidebarRunPauseAction({ runId: 'run-002', status: 'paused' }, onPauseRun)).toBe(false);
+
+    expect(onPauseRun).toHaveBeenCalledTimes(1);
+    expect(onPauseRun).toHaveBeenCalledWith('run-001');
   });
 });

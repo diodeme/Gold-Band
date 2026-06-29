@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::process::Child;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::thread;
+use std::sync::{
+    Arc, LazyLock, Mutex,
+    mpsc::{Receiver, RecvTimeoutError, TryRecvError},
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -18,7 +18,12 @@ struct AcpTimelineStreamState {
     content: String,
 }
 
-use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
+use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
+use crate::acp::elicitation::{
+    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
+    elicitation_response_result, remove_elicitation_signal_files,
+    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+};
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
     append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
@@ -26,22 +31,27 @@ use crate::acp::events::{
     permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, clear_cancel_request, is_cancel_requested,
-    wait_for_permission_response, write_pending_permission,
+    PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
+    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
+    write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
-use crate::process::kill_process_tree;
-use crate::provider::{PromptBundle, PromptVisibility};
+use crate::provider::{
+    PromptBundle, PromptVisibility, gold_band_hidden_block, supports_system_prompt,
+};
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
-use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, write_json};
+use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
-const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(200);
-const CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
+const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
+const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -54,26 +64,234 @@ impl std::fmt::Display for AcpCancelled {
 
 impl std::error::Error for AcpCancelled {}
 
-fn session_file_is_cancelled(path: &Utf8Path) -> bool {
-    read_json::<Value>(path)
+#[derive(Debug)]
+struct AcpTransportInterrupted;
+
+impl std::fmt::Display for AcpTransportInterrupted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ACP adapter transport interrupted")
+    }
+}
+
+impl std::error::Error for AcpTransportInterrupted {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderControlState {
+    Running,
+    CancelRequested,
+    Stopped,
+}
+
+#[derive(Debug)]
+struct ProviderControl {
+    state: Mutex<ProviderControlState>,
+    cancel_sent: Mutex<bool>,
+}
+
+impl ProviderControl {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ProviderControlState::Running),
+            cancel_sent: Mutex::new(false),
+        }
+    }
+
+    fn state(&self) -> ProviderControlState {
+        self.state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(ProviderControlState::Stopped)
+    }
+
+    fn request_prompt_cancel(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        match *state {
+            ProviderControlState::Running => {
+                *state = ProviderControlState::CancelRequested;
+                true
+            }
+            ProviderControlState::CancelRequested | ProviderControlState::Stopped => false,
+        }
+    }
+
+    fn mark_cancel_sent(&self) -> bool {
+        let Ok(mut sent) = self.cancel_sent.lock() else {
+            return false;
+        };
+        if *sent {
+            false
+        } else {
+            *sent = true;
+            true
+        }
+    }
+
+    fn mark_stopped(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = ProviderControlState::Stopped;
+        }
+    }
+}
+
+static PROVIDER_CONTROLS: LazyLock<Mutex<HashMap<String, Arc<ProviderControl>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn attempt_control_key(attempt_dir: &Utf8Path) -> String {
+    attempt_dir.to_string()
+}
+
+pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
+    let key = attempt_control_key(attempt_dir);
+    PROVIDER_CONTROLS
+        .lock()
         .ok()
-        .and_then(|session| {
-            let status = session
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let stop_reason = session
-                .get("stopReason")
-                .or_else(|| session.get("stop_reason"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            (status.eq_ignore_ascii_case("cancelled")
-                || status.eq_ignore_ascii_case("canceled")
-                || stop_reason.eq_ignore_ascii_case("cancelled")
-                || stop_reason.eq_ignore_ascii_case("canceled"))
-            .then_some(())
-        })
-        .is_some()
+        .and_then(|controls| controls.get(&key).cloned())
+        .map(|control| control.request_prompt_cancel())
+        .unwrap_or(false)
+}
+
+pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
+    AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
+}
+
+pub fn close_attempt_session_bounded(attempt_dir: &Utf8Path) -> Result<bool> {
+    AdapterConnectionManager::shared()
+        .close_attempt_session_bounded(attempt_dir, SESSION_CLOSE_TIMEOUT)
+}
+
+pub fn close_workspace_connections_bounded(workspace_root: &Utf8Path) -> Result<()> {
+    AdapterConnectionManager::shared()
+        .close_workspace_connections_bounded(workspace_root, SESSION_CLOSE_TIMEOUT)
+}
+
+pub fn close_all_connections_bounded() -> Result<()> {
+    AdapterConnectionManager::shared().close_all_connections_bounded(SESSION_CLOSE_TIMEOUT)
+}
+
+pub fn close_provider_workspace_bounded(
+    provider_id: &str,
+    workspace_root: &Utf8Path,
+) -> Result<()> {
+    AdapterConnectionManager::shared().close_provider_workspace_bounded(
+        provider_id,
+        workspace_root,
+        SESSION_CLOSE_TIMEOUT,
+    )
+}
+
+pub fn has_active_prompts_in_workspace(workspace_root: &Utf8Path) -> bool {
+    AdapterConnectionManager::shared().has_active_prompts_in_workspace(workspace_root)
+}
+
+pub fn has_active_prompts_in_provider_workspace(
+    provider_id: &str,
+    workspace_root: &Utf8Path,
+) -> bool {
+    AdapterConnectionManager::shared()
+        .has_active_prompts_in_provider_workspace(provider_id, workspace_root)
+}
+
+fn register_provider_control(attempt_dir: &Utf8Path) -> Arc<ProviderControl> {
+    let key = attempt_control_key(attempt_dir);
+    let control = Arc::new(ProviderControl::new());
+    if let Ok(mut controls) = PROVIDER_CONTROLS.lock() {
+        controls.insert(key, control.clone());
+    }
+    control
+}
+
+fn unregister_provider_control(attempt_dir: &Utf8Path, control: &Arc<ProviderControl>) {
+    control.mark_stopped();
+    let key = attempt_control_key(attempt_dir);
+    if let Ok(mut controls) = PROVIDER_CONTROLS.lock() {
+        if controls
+            .get(&key)
+            .is_some_and(|existing| Arc::ptr_eq(existing, control))
+        {
+            controls.remove(&key);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeStopProbe {
+    pub run_file: Utf8PathBuf,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub attempt_state_file: Option<Utf8PathBuf>,
+}
+
+impl RuntimeStopProbe {
+    fn is_stopped(&self) -> bool {
+        self.attempt_state_file
+            .as_ref()
+            .is_some_and(|path| self.attempt_state_is_stopped(path))
+            || self.run_state_is_stopped()
+    }
+
+    fn attempt_state_is_stopped(&self, path: &Utf8PathBuf) -> bool {
+        read_json::<serde_json::Value>(path)
+            .ok()
+            .is_some_and(|attempt| {
+                let manual_check_pending = attempt
+                    .get("manualCheckPending")
+                    .or_else(|| attempt.get("manual_check_pending"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if manual_check_pending {
+                    return false;
+                }
+                let status = attempt
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                status.eq_ignore_ascii_case("paused")
+                    && attempt
+                        .get("outcome")
+                        .is_none_or(|outcome| outcome.is_null())
+            })
+    }
+
+    fn run_state_is_stopped(&self) -> bool {
+        read_json::<serde_json::Value>(&self.run_file)
+            .ok()
+            .is_some_and(|run| {
+                let status = run
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let pause_reason = run
+                    .get("pauseReason")
+                    .or_else(|| run.get("pause_reason"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                status.eq_ignore_ascii_case("paused")
+                    && normalize_stop_code(pause_reason) == "process-interrupted"
+                    && run
+                        .get("currentRound")
+                        .or_else(|| run.get("current_round"))
+                        .and_then(Value::as_str)
+                        == Some(self.round_id.as_str())
+                    && run
+                        .get("currentNode")
+                        .or_else(|| run.get("current_node"))
+                        .and_then(Value::as_str)
+                        == Some(self.node_id.as_str())
+                    && run
+                        .get("currentAttempt")
+                        .or_else(|| run.get("current_attempt"))
+                        .and_then(Value::as_str)
+                        == Some(self.attempt_id.as_str())
+            })
+    }
+}
+
+fn normalize_stop_code(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
 #[derive(Debug, Clone)]
@@ -98,11 +316,9 @@ pub struct AcpPromptRun {
 
 struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
-    child: Child,
-    adapter: ResolvedAcpAdapter,
-    stdin: std::process::ChildStdin,
-    rx: Receiver<Value>,
-    next_id: u64,
+    connection_key: Option<AdapterConnectionKey>,
+    connection: Arc<AdapterConnection>,
+    rx: Option<Receiver<Value>>,
     seq: u64,
     timeline_revision: u64,
     timeline_items: HashMap<String, AcpUiEvent>,
@@ -135,6 +351,8 @@ struct AcpRuntime<'a> {
     last_timeline_patch_at: Option<Instant>,
     raw_max_size: u64,
     raw_target_size: u64,
+    control: Arc<ProviderControl>,
+    stop_probe: Option<RuntimeStopProbe>,
 }
 
 pub fn doctor(
@@ -143,29 +361,64 @@ pub fn doctor(
     use_local_claude: bool,
 ) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
-    let mut runtime = AcpRuntime::start(
+    let doctor_acp_dir = paths.doctor_acp_dir();
+    cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
+    let mut runtime = AcpRuntime::start_standalone(
+        "doctor",
         config,
         cwd.clone(),
-        paths.doctor_acp_dir(),
+        doctor_acp_dir.clone(),
         use_local_claude,
-        5 * 1024 * 1024,
-        4 * 1024 * 1024,
+        DOCTOR_DIAGNOSTIC_MAX_SIZE,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        None,
         None,
     )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session(cwd, None, None, None, "", false)?;
+        runtime.setup_session("doctor", cwd, None, None, None, "", false, &[])?;
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
         Ok(capabilities)
     })();
     runtime.shutdown();
+    if result.is_ok() {
+        cleanup_doctor_acp_dir_after_success(&doctor_acp_dir);
+    } else {
+        retain_bounded_doctor_acp_failure_bundle(&doctor_acp_dir);
+    }
     result
+}
+
+fn cleanup_doctor_acp_dir_before_run(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn cleanup_doctor_acp_dir_after_success(dir: &Utf8Path) {
+    let _ = std::fs::remove_dir_all(dir.as_std_path());
+}
+
+fn retain_bounded_doctor_acp_failure_bundle(dir: &Utf8Path) {
+    let paths = AcpAttemptPaths::from_attempt_dir(dir.to_path_buf());
+    let _ = std::fs::remove_file(paths.provider_pid.as_std_path());
+    for path in [
+        &paths.events,
+        &paths.timeline,
+        &paths.diagnostics,
+        &paths.raw,
+    ] {
+        let _ = roll_jsonl(
+            path,
+            DOCTOR_DIAGNOSTIC_MAX_SIZE,
+            DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        );
+    }
 }
 
 pub fn run_prompt(
     provider_id: &str,
     config: &AcpAdapterConfig,
+    adapter_workspace_dir: Utf8PathBuf,
     workspace_dir: Utf8PathBuf,
     attempt_dir: Utf8PathBuf,
     prompt: &PromptBundle,
@@ -178,34 +431,65 @@ pub fn run_prompt(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
+    mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
+    stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
-    clear_cancel_request(&attempt_dir)?;
     let mut runtime = AcpRuntime::start(
+        provider_id,
         config,
-        workspace_dir.clone(),
+        adapter_workspace_dir,
         attempt_dir,
         use_local_claude,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
         live_update,
+        stop_probe,
     )?;
-    let capabilities = runtime.initialize()?;
+    let capabilities = match runtime.initialize() {
+        Ok(capabilities) => capabilities,
+        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let run = runtime.interrupted_run(false, "cancelled");
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let run = runtime.interrupted_run(false, "interrupted");
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) => return Err(error),
+    };
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
-    let restored = runtime.setup_session(
+    let restored = match runtime.setup_session(
+        provider_id,
         workspace_dir.clone(),
         continue_ref,
         permission_mode.as_deref(),
         model.as_deref(),
         &prompt.system_prompt,
         strict_continue,
-    )?;
+        mcp_servers,
+    ) {
+        Ok(restored) => restored,
+        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let run = runtime.interrupted_run(false, "cancelled");
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let run = runtime.interrupted_run(false, "interrupted");
+            runtime.shutdown();
+            return Ok(run);
+        }
+        Err(error) => return Err(error),
+    };
     let session_id = runtime
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(prompt, session_update.is_none())?;
+    runtime.record_user_prompt_event(provider_id, prompt, session_update.is_none())?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -228,11 +512,32 @@ pub fn run_prompt(
         acp_session_title_refresh_enabled,
     );
     let (status, stop_reason) = match prompt_result {
-        Ok(stop_reason) => ("completed", stop_reason),
+        Ok(stop_reason) => {
+            let status = if stop_reason.as_deref().is_some_and(|reason| {
+                matches!(
+                    normalize_stop_code(reason).as_str(),
+                    "cancelled" | "canceled" | "interrupted"
+                )
+            }) {
+                "cancelled"
+            } else {
+                "completed"
+            };
+            if status == "cancelled" {
+                let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            }
+            (status, stop_reason)
+        }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
+        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            ("cancelled", Some("interrupted".to_string()))
+        }
         Err(error) => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -265,13 +570,10 @@ pub fn run_prompt(
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
-    if status != "running" {
-        let _ = clear_cancel_request(&runtime.paths.attempt_dir);
-    }
     let run = AcpPromptRun {
         session_id,
-        adapter_id: runtime.adapter.adapter_id.clone(),
-        adapter_display_name: runtime.adapter.display_name.clone(),
+        adapter_id: runtime.connection.adapter().adapter_id.clone(),
+        adapter_display_name: runtime.connection.adapter().display_name.clone(),
         stop_reason,
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
@@ -290,10 +592,15 @@ pub fn run_prompt(
     Ok(run)
 }
 
-fn session_new_params(cwd: &Utf8Path, system_prompt: &str) -> Value {
+fn cancel_pending_prompt_interactions(attempt_dir: &Utf8Path, decided_at: String) -> Result<()> {
+    cancel_pending_permission_requests(attempt_dir, decided_at.clone())?;
+    cancel_pending_elicitation_requests(attempt_dir, decided_at)
+}
+
+fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
     });
     if !system_prompt.trim().is_empty() {
         params["_meta"] = json!({
@@ -305,10 +612,15 @@ fn session_new_params(cwd: &Utf8Path, system_prompt: &str) -> Value {
     params
 }
 
-fn session_load_params(cwd: &Utf8Path, session_id: &str, system_prompt: &str) -> Value {
+fn session_load_params(
+    cwd: &Utf8Path,
+    session_id: &str,
+    system_prompt: &str,
+    mcp_servers: &[Value],
+) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
-        "mcpServers": [],
+        "mcpServers": mcp_servers,
         "sessionId": session_id,
     });
     if !system_prompt.trim().is_empty() {
@@ -345,18 +657,51 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
 }
 
 fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
-    if provider_id == "codex-acp" && !prompt.system_prompt.trim().is_empty() {
-        return format!(
-            "# Gold Band System Prompt\n{}\n\n# User Prompt\n{}",
-            prompt.system_prompt, prompt.user_prompt
-        );
+    if !supports_system_prompt(provider_id).unwrap_or(false)
+        && !prompt.system_prompt.trim().is_empty()
+    {
+        let system_prompt =
+            gold_band_hidden_block("Gold Band stable system prompt", &prompt.system_prompt);
+        return format!("{}\n\n{}", system_prompt, prompt.user_prompt);
     }
 
     prompt.user_prompt.clone()
 }
 
+fn is_cancel_stop_reason(result: &Value) -> bool {
+    result
+        .get("stopReason")
+        .or_else(|| result.get("stop_reason"))
+        .and_then(Value::as_str)
+        .is_some_and(|reason| {
+            matches!(
+                normalize_stop_code(reason).as_str(),
+                "cancelled" | "canceled" | "interrupted"
+            )
+        })
+}
+
 impl<'a> AcpRuntime<'a> {
+    fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
+        cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
+        self.timeline_items = load_timeline_items(&self.paths.timeline)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        Ok(())
+    }
+
+    fn append_timing_diagnostic(&self, event: &str, data: Value) {
+        let _ = append_diagnostic(
+            &self.paths.diagnostics,
+            "info",
+            format!("acp timing: {event}"),
+            Some(data),
+        );
+    }
+
     fn start(
+        provider_id: &str,
         config: &AcpAdapterConfig,
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
@@ -364,15 +709,17 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let (adapter, mut child) = match spawn_adapter(config, cwd.as_std_path(), use_local_claude)
-        {
-            Ok(result) => result,
-            Err(error) => {
-                append_diagnostic(
+        let key = AdapterConnectionKey::new(provider_id, cwd.clone());
+        let adapter_started_at = Instant::now();
+        let resolution = AdapterConnectionManager::shared()
+            .get_or_spawn_with_outcome(provider_id, config, cwd.clone(), use_local_claude)
+            .map_err(|error| {
+                let _ = append_diagnostic(
                     &paths.diagnostics,
                     "error",
                     format!("failed to start ACP adapter: {error}"),
@@ -381,94 +728,94 @@ impl<'a> AcpRuntime<'a> {
                         "args": config.args,
                         "displayName": config.display_name,
                     })),
-                )?;
-                return Err(error);
-            }
-        };
+                );
+                error
+            })?;
+        let connection = resolution.connection;
+        let _ = append_diagnostic(
+            &paths.diagnostics,
+            "info",
+            "acp timing: adapter connection resolved",
+            Some(json!({
+                "event": "acp_adapter_resolved",
+                "elapsedMs": adapter_started_at.elapsed().as_millis(),
+                "providerId": provider_id,
+                "workspaceRoot": cwd.as_str(),
+                "outcome": resolution.outcome.as_str(),
+                "pid": connection.pid(),
+            })),
+        );
+        Self::from_connection(
+            provider_id,
+            cwd,
+            Some(key),
+            connection,
+            paths,
+            raw_max_size,
+            raw_target_size,
+            live_update,
+            stop_probe,
+        )
+    }
+
+    fn start_standalone(
+        provider_id: &str,
+        config: &AcpAdapterConfig,
+        cwd: Utf8PathBuf,
+        attempt_dir: Utf8PathBuf,
+        use_local_claude: bool,
+        raw_max_size: u64,
+        raw_target_size: u64,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        stop_probe: Option<RuntimeStopProbe>,
+    ) -> Result<Self> {
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
+        ensure_parent_dir(&paths.raw)?;
+        ensure_parent_dir(&paths.diagnostics)?;
+        let connection = AdapterConnection::spawn_standalone(config, &cwd, use_local_claude)
+            .map_err(|error| {
+                let _ = append_diagnostic(
+                    &paths.diagnostics,
+                    "error",
+                    format!("failed to start ACP adapter: {error}"),
+                    Some(json!({
+                        "command": config.command,
+                        "args": config.args,
+                        "displayName": config.display_name,
+                    })),
+                );
+                error
+            })?;
+        Self::from_connection(
+            provider_id,
+            cwd,
+            None,
+            connection,
+            paths,
+            raw_max_size,
+            raw_target_size,
+            live_update,
+            stop_probe,
+        )
+    }
+
+    fn from_connection(
+        _provider_id: &str,
+        _workspace_dir: Utf8PathBuf,
+        connection_key: Option<AdapterConnectionKey>,
+        connection: Arc<AdapterConnection>,
+        paths: AcpAttemptPaths,
+        raw_max_size: u64,
+        raw_target_size: u64,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        stop_probe: Option<RuntimeStopProbe>,
+    ) -> Result<Self> {
         ensure_parent_dir(&paths.provider_pid)?;
-        std::fs::write(paths.provider_pid.as_std_path(), child.id().to_string())?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture ACP adapter stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture ACP adapter stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("failed to capture ACP adapter stderr"))?;
-        let (tx, rx) = mpsc::sync_channel(1024);
-        let raw_path = paths.raw.clone();
-        let diagnostics_path = paths.diagnostics.clone();
-        let raw_max = raw_max_size;
-        let raw_target = raw_target_size;
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) if line.trim().is_empty() => {}
-                    Ok(line) => match serde_json::from_str::<Value>(&line) {
-                        Ok(value) => {
-                            let _ = append_raw_frame(
-                                &raw_path,
-                                "inbound",
-                                value.clone(),
-                                raw_max,
-                                raw_target,
-                            );
-                            if tx.send(value).is_err() {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            let _ = append_diagnostic(
-                                &diagnostics_path,
-                                "error",
-                                format!("invalid ACP stdout frame: {err}"),
-                                Some(json!({ "line": line })),
-                            );
-                        }
-                    },
-                    Err(err) => {
-                        let _ = append_diagnostic(
-                            &diagnostics_path,
-                            "error",
-                            format!("failed reading ACP stdout: {err}"),
-                            None,
-                        );
-                        break;
-                    }
-                }
-            }
-        });
-        let stderr_diagnostics_path = paths.diagnostics.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) if line.trim().is_empty() => {}
-                    Ok(line) => {
-                        let _ = append_diagnostic(
-                            &stderr_diagnostics_path,
-                            "info",
-                            truncate_text(line, 8_000),
-                            None,
-                        );
-                    }
-                    Err(err) => {
-                        let _ = append_diagnostic(
-                            &stderr_diagnostics_path,
-                            "error",
-                            format!("failed reading ACP stderr: {err}"),
-                            None,
-                        );
-                        break;
-                    }
-                }
-            }
-        });
+        std::fs::write(
+            paths.provider_pid.as_std_path(),
+            connection.pid().to_string(),
+        )?;
+        let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
         let timeline_items = load_timeline_items(&paths.timeline)?
             .into_iter()
@@ -477,11 +824,9 @@ impl<'a> AcpRuntime<'a> {
         let timeline_revision = seq;
         Ok(Self {
             paths,
-            child,
-            adapter,
-            stdin,
-            rx,
-            next_id: 1,
+            connection_key,
+            connection,
+            rx: None,
             seq,
             timeline_revision,
             timeline_items,
@@ -514,6 +859,8 @@ impl<'a> AcpRuntime<'a> {
             last_timeline_patch_at: None,
             raw_max_size,
             raw_target_size,
+            control,
+            stop_probe,
         })
     }
 
@@ -521,12 +868,53 @@ impl<'a> AcpRuntime<'a> {
         self.initialize_with_timeout(None)
     }
 
+    fn interrupted_run(&self, restored: bool, stop_reason: &str) -> AcpPromptRun {
+        AcpPromptRun {
+            session_id: self.session_id.clone().unwrap_or_else(|| {
+                self.paths
+                    .attempt_dir
+                    .file_name()
+                    .unwrap_or("session")
+                    .to_string()
+            }),
+            adapter_id: self.connection.adapter().adapter_id.clone(),
+            adapter_display_name: self.connection.adapter().display_name.clone(),
+            stop_reason: Some(stop_reason.to_string()),
+            final_text: self.final_text.clone(),
+            final_outputs: self.final_outputs.clone(),
+            restored,
+            used_tokens: self.used_tokens,
+            context_window_size: self.context_window_size,
+            total_cost_usd: self.total_cost_usd,
+            accumulated_used_tokens: self.accumulated_used_tokens,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cached_read_tokens: self.cached_read_tokens,
+            cached_write_tokens: self.cached_write_tokens,
+            total_tokens: self.total_tokens,
+        }
+    }
+
     fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
+        if let Some(capabilities) = self.connection.initialized_capabilities() {
+            self.append_timing_diagnostic(
+                "acp_initialize_cached",
+                json!({
+                    "event": "acp_initialize_cached",
+                    "status": "ok",
+                }),
+            );
+            return Ok(capabilities);
+        }
         let result = self.request_with_timeout(
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": {
+                    "elicitation": {
+                        "form": {}
+                    }
+                },
                 "clientInfo": {
                     "name": "gold-band",
                     "title": "Gold Band",
@@ -535,25 +923,35 @@ impl<'a> AcpRuntime<'a> {
             }),
             timeout,
         )?;
-        Ok(result
+        let capabilities = result
             .get("agentCapabilities")
             .cloned()
-            .unwrap_or_else(|| json!({})))
+            .unwrap_or_else(|| json!({}));
+        self.connection
+            .set_initialized_capabilities(capabilities.clone());
+        Ok(capabilities)
     }
 
     fn setup_session(
         &mut self,
+        provider_id: &str,
         cwd: Utf8PathBuf,
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
         model: Option<&str>,
         system_prompt: &str,
         strict_continue: bool,
+        mcp_servers: &[Value],
     ) -> Result<bool> {
-        self.system_prompt_append = if system_prompt.trim().is_empty() {
+        let adapter_system_prompt = if supports_system_prompt(provider_id).unwrap_or(false) {
+            system_prompt
+        } else {
+            ""
+        };
+        self.system_prompt_append = if adapter_system_prompt.trim().is_empty() {
             None
         } else {
-            Some(system_prompt.to_string())
+            Some(adapter_system_prompt.to_string())
         };
         if let Some(session_id) = continue_ref
             .as_ref()
@@ -563,13 +961,13 @@ impl<'a> AcpRuntime<'a> {
             self.suppress_session_updates = true;
             let load = self.request(
                 "session/load",
-                session_load_params(&cwd, session_id, system_prompt),
+                session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
             );
             self.suppress_session_updates = false;
             match load {
                 Ok(result) => {
                     self.capture_session_config(&result);
-                    self.session_id = Some(session_id.to_string());
+                    self.set_session_id(session_id.to_string());
                     self.apply_session_mode_options(permission_mode, model)?;
                     return Ok(true);
                 }
@@ -580,6 +978,10 @@ impl<'a> AcpRuntime<'a> {
                         format!("failed to load ACP session `{session_id}`: {err}"),
                         None,
                     )?;
+                    if err.downcast_ref::<AcpTransportInterrupted>().is_some() {
+                        self.set_session_id(session_id.to_string());
+                        return Err(err);
+                    }
                     if strict_continue {
                         bail!("failed to load existing ACP session for continue: {err}");
                     }
@@ -591,15 +993,33 @@ impl<'a> AcpRuntime<'a> {
             bail!("ACP continue requires an existing session id");
         }
 
-        let result = self.request("session/new", session_new_params(&cwd, system_prompt))?;
+        let result = self.request(
+            "session/new",
+            session_new_params(&cwd, adapter_system_prompt, mcp_servers),
+        )?;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
-        self.session_id = Some(session_id.to_string());
+        self.set_session_id(session_id.to_string());
         self.apply_session_mode_options(permission_mode, model)?;
         Ok(false)
+    }
+
+    fn set_session_id(&mut self, session_id: String) {
+        if let Some(existing) = self.session_id.take() {
+            self.connection.unregister_session_route(&existing);
+        }
+        self.rx = Some(self.connection.register_session_route(&session_id));
+        if let Some(key) = self.connection_key.clone() {
+            AdapterConnectionManager::shared().register_attempt_session(
+                &self.paths.attempt_dir,
+                key,
+                session_id.clone(),
+            );
+        }
+        self.session_id = Some(session_id);
     }
 
     fn capture_session_config(&mut self, result: &Value) {
@@ -777,28 +1197,34 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         };
         if self
-            .request(
-                "session/delete",
-                json!({
-                    "sessionId": session_id,
-                }),
-            )
+            .delete_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT)
             .is_ok()
         {
-            self.session_id = None;
             return Ok(());
         }
-        if self
-            .request(
-                "session/close",
-                json!({
-                    "sessionId": session_id,
-                }),
-            )
-            .is_ok()
-        {
-            self.session_id = None;
-        }
+        let _ = self.close_session_bounded(&session_id, SESSION_CLOSE_TIMEOUT);
+        Ok(())
+    }
+
+    fn close_session_bounded(&mut self, session_id: &str, timeout: Duration) -> Result<()> {
+        self.request_with_timeout(
+            "session/close",
+            json!({
+                "sessionId": session_id,
+            }),
+            Some(timeout),
+        )?;
+        Ok(())
+    }
+
+    fn delete_session_bounded(&mut self, session_id: &str, timeout: Duration) -> Result<()> {
+        self.request_with_timeout(
+            "session/delete",
+            json!({
+                "sessionId": session_id,
+            }),
+            Some(timeout),
+        )?;
         Ok(())
     }
 
@@ -854,6 +1280,7 @@ impl<'a> AcpRuntime<'a> {
 
     fn record_user_prompt_event(
         &mut self,
+        provider_id: &str,
         prompt: &PromptBundle,
         emit_live_update: bool,
     ) -> Result<()> {
@@ -865,7 +1292,7 @@ impl<'a> AcpRuntime<'a> {
         let user_event = user_prompt_event(
             self.seq,
             session_id,
-            prompt.user_prompt.clone(),
+            session_prompt_text(provider_id, prompt),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
@@ -890,10 +1317,10 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
-        let result = self.request_with_progress(
-            "session/prompt",
-            session_prompt_params(provider_id, &session_id, prompt),
-            None,
+        let result = self.request_prompt_with_cancel(
+            provider_id,
+            &session_id,
+            prompt,
             acp_session_title_refresh_enabled.then_some((
                 workspace_dir,
                 "running",
@@ -946,110 +1373,259 @@ impl<'a> AcpRuntime<'a> {
         timeout: Option<Duration>,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let frame = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        self.send_frame(&frame)?;
+        if self.is_prompt_cancel_requested() {
+            self.observe_prompt_cancel_request()?;
+            return Err(anyhow!(AcpCancelled));
+        }
+        let diagnostic_started_at = Instant::now();
+        self.append_timing_diagnostic(
+            "acp_rpc_begin",
+            json!({
+                "event": "acp_rpc_begin",
+                "method": method,
+                "sessionId": self.session_id,
+            }),
+        );
+        let request = self.connection.begin_request(method, params)?;
+        self.append_outbound_frame(&request.frame)?;
         let started_at = Instant::now();
-        let mut cancel_started_at = None;
-        let mut cancel_notified = false;
         let mut last_title_refresh_at = Instant::now();
         loop {
+            if self.is_prompt_cancel_requested() {
+                self.observe_prompt_cancel_request()?;
+                self.connection.cancel_pending(request.id);
+                return Err(anyhow!(AcpCancelled));
+            }
             let wait_for = match timeout {
                 Some(timeout) => match timeout.checked_sub(started_at.elapsed()) {
-                    Some(remaining) => remaining.min(CANCEL_CHECK_INTERVAL),
+                    Some(remaining) => remaining.min(STOP_CHECK_INTERVAL),
                     None => {
-                        self.kill_adapter_process();
+                        self.connection.cancel_pending(request.id);
+                        self.append_timing_diagnostic(
+                            "acp_rpc_end",
+                            json!({
+                                "event": "acp_rpc_end",
+                                "method": method,
+                                "requestId": request.id,
+                                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                                "status": "timeout",
+                                "timeoutSeconds": timeout.as_secs(),
+                                "sessionId": self.session_id,
+                            }),
+                        );
                         bail!(
                             "ACP `{method}` timed out after {} seconds",
                             timeout.as_secs()
                         );
                     }
                 },
-                None => CANCEL_CHECK_INTERVAL,
+                None => STOP_CHECK_INTERVAL,
             };
-            match self.rx.recv_timeout(wait_for) {
+            match request.recv_timeout(wait_for) {
                 Ok(value) => {
-                    if value.get("method").is_some() {
-                        self.handle_inbound(value)?;
-                        continue;
-                    }
-
-                    if response_matches_request(&value, id) {
-                        if let Some(error) = value.get("error") {
-                            if self.is_cancellation_observed() {
-                                return Err(anyhow!(AcpCancelled));
-                            }
-                            bail!("ACP `{method}` failed: {error}");
-                        }
-                        return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
-                    }
-                    self.handle_inbound(value)?;
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Some((workspace_dir, status, restored, ref stop_reason, capabilities)) =
-                        title_refresh
-                    {
-                        if last_title_refresh_at.elapsed() >= SESSION_TITLE_REFRESH_INTERVAL {
-                            self.refresh_session_title_and_persist(
-                                workspace_dir,
-                                status,
-                                restored,
-                                stop_reason.clone(),
-                                capabilities,
-                            );
-                            last_title_refresh_at = Instant::now();
-                        }
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    if self.is_cancellation_observed() {
+                    self.append_inbound_frame(&value)?;
+                    self.drain_available_inbound()?;
+                    if self.is_prompt_cancel_requested() {
+                        self.observe_prompt_cancel_request()?;
                         return Err(anyhow!(AcpCancelled));
                     }
-                    bail!("ACP adapter closed before `{method}` response");
+                    if let Some(error) = value.get("error") {
+                        self.append_timing_diagnostic(
+                            "acp_rpc_end",
+                            json!({
+                                "event": "acp_rpc_end",
+                                "method": method,
+                                "requestId": request.id,
+                                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                                "status": "error",
+                                "error": error,
+                                "sessionId": self.session_id,
+                            }),
+                        );
+                        bail!("ACP `{method}` failed: {error}");
+                    }
+                    self.append_timing_diagnostic(
+                        "acp_rpc_end",
+                        json!({
+                            "event": "acp_rpc_end",
+                            "method": method,
+                            "requestId": request.id,
+                            "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                            "status": "ok",
+                            "sessionId": self.session_id,
+                        }),
+                    );
+                    return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.refresh_session_title_if_due(&title_refresh, &mut last_title_refresh_at);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.connection.cancel_pending(request.id);
+                    self.append_timing_diagnostic(
+                        "acp_rpc_end",
+                        json!({
+                            "event": "acp_rpc_end",
+                            "method": method,
+                            "requestId": request.id,
+                            "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                            "status": "disconnected",
+                            "sessionId": self.session_id,
+                        }),
+                    );
+                    return Err(anyhow!(AcpTransportInterrupted));
                 }
             }
 
-            if is_cancel_requested(&self.paths.attempt_dir) {
-                if cancel_started_at.is_none() {
-                    cancel_started_at = Some(Instant::now());
-                }
-                if !cancel_notified {
-                    append_diagnostic(
-                        &self.paths.diagnostics,
-                        "info",
-                        "ACP cancellation requested".to_string(),
-                        Some(json!({ "method": method })),
-                    )?;
-                    self.send_cancel_notification()?;
-                    cancel_notified = true;
-                }
-                if cancel_started_at
-                    .is_some_and(|started_at| started_at.elapsed() >= CANCEL_GRACE_PERIOD)
-                {
-                    self.kill_adapter_process();
-                    return Err(anyhow!(AcpCancelled));
-                }
+            if self.connection.is_transport_closed() {
+                self.connection.cancel_pending(request.id);
+                return Err(anyhow!(AcpTransportInterrupted));
             }
-
-            if let Some(status) = self.child.try_wait()? {
-                if self.is_cancellation_observed() {
-                    return Err(anyhow!(AcpCancelled));
-                }
-                bail!("ACP adapter exited before `{method}` response with status {status}");
+            if self.connection.try_wait()?.is_some() {
+                self.connection.cancel_pending(request.id);
+                return Err(anyhow!(AcpTransportInterrupted));
             }
         }
+    }
+
+    fn request_prompt_with_cancel(
+        &mut self,
+        provider_id: &str,
+        session_id: &str,
+        prompt: &PromptBundle,
+        title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
+    ) -> Result<Value> {
+        if self.is_prompt_cancel_requested() {
+            self.observe_prompt_cancel_request()?;
+            return Err(anyhow!(AcpCancelled));
+        }
+        let diagnostic_started_at = Instant::now();
+        self.append_timing_diagnostic(
+            "acp_rpc_begin",
+            json!({
+                "event": "acp_rpc_begin",
+                "method": "session/prompt",
+                "sessionId": session_id,
+                "providerId": provider_id,
+            }),
+        );
+        let request = self.connection.begin_request(
+            "session/prompt",
+            session_prompt_params(provider_id, session_id, prompt),
+        )?;
+        self.append_outbound_frame(&request.frame)?;
+        self.connection.mark_prompt_active();
+        let result = (|| {
+            let mut cancel_started_at: Option<Instant> = None;
+            let mut last_title_refresh_at = Instant::now();
+            loop {
+                if self.is_prompt_cancel_requested() {
+                    self.observe_prompt_cancel_request()?;
+                    cancel_started_at.get_or_insert_with(Instant::now);
+                }
+                let wait_for = cancel_started_at
+                    .and_then(|started| PROMPT_CANCEL_TIMEOUT.checked_sub(started.elapsed()))
+                    .map(|remaining| remaining.min(STOP_CHECK_INTERVAL))
+                    .unwrap_or(STOP_CHECK_INTERVAL);
+                self.drain_available_inbound()?;
+                match request.recv_timeout(wait_for) {
+                    Ok(value) => {
+                        self.append_inbound_frame(&value)?;
+                        self.drain_available_inbound()?;
+                        if let Some(error) = value.get("error") {
+                            if cancel_started_at.is_some() {
+                                break Err(anyhow!(AcpCancelled));
+                            }
+                            break Err(anyhow!("ACP `session/prompt` failed: {error}"));
+                        }
+                        let result = value.get("result").cloned().unwrap_or_else(|| json!({}));
+                        if cancel_started_at.is_some() && !is_cancel_stop_reason(&result) {
+                            break Err(anyhow!(AcpCancelled));
+                        }
+                        break Ok(result);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.refresh_session_title_if_due(
+                            &title_refresh,
+                            &mut last_title_refresh_at,
+                        );
+                        if cancel_started_at
+                            .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
+                        {
+                            self.connection.cancel_pending(request.id);
+                            break Err(anyhow!(
+                                "ACP `session/cancel` timed out after {} seconds",
+                                PROMPT_CANCEL_TIMEOUT.as_secs()
+                            ));
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        self.connection.cancel_pending(request.id);
+                        break Err(anyhow!(AcpTransportInterrupted));
+                    }
+                }
+
+                if self.connection.is_transport_closed() {
+                    self.connection.cancel_pending(request.id);
+                    break Err(anyhow!(AcpTransportInterrupted));
+                }
+                if self.connection.try_wait()?.is_some() {
+                    self.connection.cancel_pending(request.id);
+                    break Err(anyhow!(AcpTransportInterrupted));
+                }
+            }
+        })();
+        self.connection.mark_prompt_inactive();
+        let status = if result.is_ok() { "ok" } else { "error" };
+        let stop_reason = result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("stopReason"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.append_timing_diagnostic(
+            "acp_rpc_end",
+            json!({
+                "event": "acp_rpc_end",
+                "method": "session/prompt",
+                "requestId": request.id,
+                "elapsedMs": diagnostic_started_at.elapsed().as_millis(),
+                "status": status,
+                "stopReason": stop_reason,
+                "sessionId": session_id,
+                "providerId": provider_id,
+            }),
+        );
+        result
+    }
+
+    fn refresh_session_title_if_due(
+        &mut self,
+        title_refresh: &Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
+        last_title_refresh_at: &mut Instant,
+    ) {
+        let Some((workspace_dir, status, restored, stop_reason, capabilities)) = title_refresh
+        else {
+            return;
+        };
+        if last_title_refresh_at.elapsed() < SESSION_TITLE_REFRESH_INTERVAL {
+            return;
+        }
+        self.refresh_session_title_and_persist(
+            workspace_dir,
+            status,
+            *restored,
+            stop_reason.clone(),
+            capabilities,
+        );
+        *last_title_refresh_at = Instant::now();
     }
 
     fn handle_inbound(&mut self, value: Value) -> Result<()> {
         match value.get("method").and_then(Value::as_str) {
             Some("session/update") => self.handle_session_update(value),
             Some("session/request_permission") => self.handle_permission_request(value),
+            Some("elicitation/create") => self.handle_elicitation_request(value),
             Some(method) => {
                 append_diagnostic(
                     &self.paths.diagnostics,
@@ -1128,51 +1704,196 @@ impl<'a> AcpRuntime<'a> {
             params.clone(),
             current_timestamp(),
         )?;
-        let event = permission_request_event(self.seq, request_id.clone(), params);
+        let mut event = permission_request_event(self.seq, request_id.clone(), params);
+        if read_json::<PermissionResponseState>(&permission_response_file(
+            &self.paths.attempt_dir,
+            &request_id,
+        ))
+        .ok()
+        .is_some_and(|response| response.cancelled)
+        {
+            event.status = Some("cancelled".to_string());
+            event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
+        }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        self.seq += 1;
+        let decision_event = permission_decision_timeline_event(
+            self.seq,
+            &request_id,
+            &response,
+            self.timeline_items.get(&format!("permission-{request_id}")),
+        );
+        self.persist_event(&decision_event)?;
+        let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
-        self.send_frame(&json!({
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn is_prompt_cancel_requested(&self) -> bool {
+        self.control.state() == ProviderControlState::CancelRequested
+            || self
+                .stop_probe
+                .as_ref()
+                .is_some_and(RuntimeStopProbe::is_stopped)
+    }
+
+    fn observe_prompt_cancel_request(&mut self) -> Result<()> {
+        if self.session_id.is_some() {
+            self.send_cancel_notification_best_effort();
+        }
+        self.drain_available_inbound()
+    }
+
+    fn send_cancel_notification_best_effort(&mut self) {
+        if !self.control.mark_cancel_sent() {
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": {
+                "sessionId": session_id,
+            },
+        });
+        if let Err(error) = self.append_outbound_frame(&frame).and_then(|_| {
+            self.connection.send_notification(
+                "session/cancel",
+                frame.get("params").cloned().unwrap_or_else(|| json!({})),
+            )
+        }) {
+            let _ = append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                format!("failed to send ACP session/cancel notification: {error}"),
+                Some(frame),
+            );
+        }
+    }
+
+    fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        let rpc_id = value
+            .get("id")
+            .cloned()
+            .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let schema = params
+            .get("requestedSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+
+        // 1. 持久化请求到 attempt dir
+        write_pending_elicitation(
+            &self.paths.attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.clone(),
+                jsonrpc_id: rpc_id.clone(),
+                message: message.clone(),
+                requested_schema: schema.clone(),
+                created_at: current_timestamp(),
+            },
+        )?;
+
+        // 2. 发送 UI 事件给前端
+        self.seq += 1;
+        let event = crate::acp::events::elicitation_request_event(
+            self.seq,
+            elicitation_id.clone(),
+            message,
+            schema.clone(),
+        );
+        self.persist_event(&event)?;
+
+        // 3. 同步阻塞等待用户响应（含超时保护）
+        let response = wait_for_elicitation_response(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            ELICITATION_DEFAULT_TIMEOUT,
+        )?;
+        upsert_elicitation_response_event(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            &response.action,
+            response.content.clone(),
+        )?;
+
+        // 4. 构造 JSON-RPC response 并发送
+        let result = elicitation_response_result(&response);
+        let response_frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": result,
-        }))
+        });
+        self.append_outbound_frame(&response_frame)?;
+        self.connection.send_response(rpc_id, result)?;
+
+        self.seq += 1;
+        let response_event = crate::acp::events::elicitation_response_event(
+            self.seq,
+            elicitation_id.clone(),
+            match response.action {
+                crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
+                crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+            },
+            response.content.clone(),
+        );
+        self.persist_event(&response_event)?;
+        let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
+
+        Ok(())
     }
 
-    fn send_cancel_notification(&mut self) -> Result<()> {
-        let Some(session_id) = self.session_id.clone() else {
-            return Ok(());
-        };
-        self.send_frame(&cancel_notification_frame(&session_id))
+    fn drain_available_inbound(&mut self) -> Result<()> {
+        loop {
+            if self.is_prompt_cancel_requested() {
+                self.send_cancel_notification_best_effort();
+            }
+            let value = match self.rx.as_ref().map(Receiver::try_recv) {
+                Some(Ok(value)) => value,
+                Some(Err(TryRecvError::Empty)) | None => return Ok(()),
+                Some(Err(TryRecvError::Disconnected)) => {
+                    return Err(anyhow!(AcpTransportInterrupted));
+                }
+            };
+            self.append_inbound_frame(&value)?;
+            self.handle_inbound(value)?;
+        }
     }
 
-    fn kill_adapter_process(&mut self) {
-        let pid = self.child.id();
-        let _ = kill_process_tree(pid);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(self.paths.provider_pid.as_std_path());
-    }
-
-    fn is_cancellation_observed(&self) -> bool {
-        is_cancel_requested(&self.paths.attempt_dir)
-            || session_file_is_cancelled(&self.paths.snapshot)
-            || session_file_is_cancelled(&self.paths.session)
-    }
-
-    fn send_frame(&mut self, frame: &Value) -> Result<()> {
+    fn append_outbound_frame(&self, frame: &Value) -> Result<()> {
         append_raw_frame(
             &self.paths.raw,
             "outbound",
             frame.clone(),
             self.raw_max_size,
             self.raw_target_size,
-        )?;
-        let line = serde_json::to_string(frame)?;
-        self.stdin.write_all(line.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        Ok(())
+        )
+    }
+
+    fn append_inbound_frame(&self, frame: &Value) -> Result<()> {
+        append_raw_frame(
+            &self.paths.raw,
+            "inbound",
+            frame.clone(),
+            self.raw_max_size,
+            self.raw_target_size,
+        )
     }
 
     fn write_worker_ref(
@@ -1195,8 +1916,8 @@ impl<'a> AcpRuntime<'a> {
             supports_continue_session: true,
             continue_ref: Some(json!({
                 "acpSessionId": session_id,
-                "adapterId": self.adapter.adapter_id.clone(),
-                "adapterDisplayName": self.adapter.display_name.clone(),
+                "adapterId": self.connection.adapter().adapter_id.clone(),
+                "adapterDisplayName": self.connection.adapter().display_name.clone(),
                 "cwd": workspace_dir.as_str(),
                 "snapshotFile": self.paths.snapshot.as_str(),
                 "lastStopReason": stop_reason,
@@ -1241,8 +1962,8 @@ impl<'a> AcpRuntime<'a> {
             now.clone()
         };
         AcpSessionMetadata {
-            adapter_id: self.adapter.adapter_id.clone(),
-            adapter_display_name: self.adapter.display_name.clone(),
+            adapter_id: self.connection.adapter().adapter_id.clone(),
+            adapter_display_name: self.connection.adapter().display_name.clone(),
             cwd: self.paths.attempt_dir.to_string(),
             title: self.session_title.clone(),
             status: status.to_string(),
@@ -1530,6 +2251,21 @@ impl<'a> AcpRuntime<'a> {
                     &timestamp,
                 );
             }
+            "elicitationRequest" => {
+                // 不关闭 text/thought/plan 流 — elicitation 穿插在对话中
+                // 不设 ended_at/ended_seq，保持"进行中"状态，等待用户响应
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+            }
+            "elicitationResponse" => {
+                // 关闭对应的 elicitationRequest
+                item.started_seq = Some(seq);
+                item.ended_seq = Some(seq);
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
             _ => {
                 Self::finalize_non_streaming_event(
                     (
@@ -1558,12 +2294,17 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn shutdown(mut self) {
-        debug!(adapter = %self.adapter.adapter_id, "shutting down ACP adapter");
+        debug!(adapter = %self.connection.adapter().adapter_id, "releasing ACP runtime session");
         let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
         let _ = self.persist_timeline_items();
-        let _ = self.stdin.flush();
-        self.kill_adapter_process();
+        if let Some(session_id) = self.session_id.as_deref() {
+            self.connection.unregister_session_route(session_id);
+        }
+        if self.connection_key.is_none() {
+            self.connection.shutdown();
+        }
+        unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
 }
 
@@ -1571,9 +2312,10 @@ impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
         let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
-        if self.child.try_wait().ok().flatten().is_none() {
-            self.kill_adapter_process();
+        if let Some(session_id) = self.session_id.as_deref() {
+            self.connection.unregister_session_route(session_id);
         }
+        unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
 }
 
@@ -1701,15 +2443,6 @@ fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
     target.push('…');
 }
 
-fn truncate_text(value: String, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value;
-    }
-    let mut truncated = value.chars().take(max_chars).collect::<String>();
-    truncated.push('…');
-    truncated
-}
-
 fn rpc_id_to_string(id: &Value) -> String {
     id.as_str()
         .map(str::to_string)
@@ -1792,31 +2525,65 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
-fn cancel_notification_frame(session_id: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "session/cancel",
-        "params": {
-            "sessionId": session_id,
+fn permission_decision_timeline_event(
+    seq: u64,
+    request_id: &str,
+    response: &PermissionResponseState,
+    existing: Option<&AcpUiEvent>,
+) -> AcpUiEvent {
+    let mut raw = existing
+        .and_then(|event| event.raw.clone())
+        .unwrap_or_else(|| json!({}));
+    if !raw.is_object() {
+        raw = json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("requestId".to_string(), json!(request_id));
+        if response.cancelled {
+            object.insert("cancelled".to_string(), json!(true));
+            object.remove("optionId");
+        } else {
+            object.insert("optionId".to_string(), json!(response.option_id.clone()));
+            object.remove("cancelled");
         }
-    })
-}
+    }
 
-fn response_matches_request(value: &Value, request_id: u64) -> bool {
-    value.get("method").is_none()
-        && value.get("id").and_then(Value::as_u64) == Some(request_id)
-        && (value.get("result").is_some() || value.get("error").is_some())
+    AcpUiEvent {
+        id: request_id.to_string(),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "permissionRequest".to_string(),
+        session_id: existing.and_then(|event| event.session_id.clone()),
+        content: None,
+        title: existing
+            .and_then(|event| event.title.clone())
+            .or_else(|| Some("Permission answered".to_string())),
+        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
+        status: Some(if response.cancelled {
+            "cancelled".to_string()
+        } else {
+            "selected".to_string()
+        }),
+        started_seq: existing.and_then(|event| event.started_seq),
+        ended_seq: None,
+        started_at: existing.and_then(|event| event.started_at.clone()),
+        ended_at: None,
+        raw: Some(raw),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
-        PromptBundle, PromptVisibility, cancel_notification_frame, contributes_to_final_text,
-        resolve_permission_mode, response_matches_request, session_load_params, session_new_params,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        permission_decision_timeline_event, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
         session_prompt_params, session_prompt_text,
     };
+    use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
@@ -1826,42 +2593,65 @@ mod tests {
     }
 
     #[test]
-    fn cancel_frame_is_notification_without_id() {
-        let frame = cancel_notification_frame("session-123");
-        assert_eq!(frame.get("id"), None);
+    fn permission_decision_event_preserves_pending_timeline_identity() {
+        let existing = AcpUiEvent {
+            id: "permission-0".to_string(),
+            seq: 10,
+            timestamp: "1Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(10),
+            ended_seq: Some(10),
+            started_at: Some("1Z".to_string()),
+            ended_at: Some("1Z".to_string()),
+            raw: Some(json!({
+                "requestId": "0",
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            })),
+        };
+        let response = PermissionResponseState {
+            request_id: "0".to_string(),
+            option_id: Some("allow".to_string()),
+            cancelled: false,
+            decided_at: "2Z".to_string(),
+        };
+
+        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.kind, "permissionRequest");
+        assert_eq!(event.status.as_deref(), Some("selected"));
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(event.title.as_deref(), Some("Write file"));
+        assert_eq!(event.started_seq, Some(10));
+        assert_eq!(event.started_at.as_deref(), Some("1Z"));
         assert_eq!(
-            frame,
-            json!({
-                "jsonrpc": "2.0",
-                "method": "session/cancel",
-                "params": {
-                    "sessionId": "session-123",
-                }
-            })
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("optionId"))
+                .and_then(Value::as_str),
+            Some("allow")
         );
     }
 
     #[test]
-    fn inbound_request_with_matching_id_is_not_response() {
-        let permission_request = json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "session/request_permission",
-            "params": {}
-        });
-        let prompt_response = json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "result": { "stopReason": "end_turn" }
-        });
-
-        assert!(!response_matches_request(&permission_request, 3));
-        assert!(response_matches_request(&prompt_response, 3));
-    }
-
-    #[test]
     fn session_setup_params_append_system_prompt() {
-        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "node constraints");
+        let new_params =
+            session_new_params(camino::Utf8Path::new("/repo"), "node constraints", &[]);
         assert_eq!(
             new_params["_meta"]["systemPrompt"]["append"],
             "node constraints"
@@ -1871,6 +2661,7 @@ mod tests {
             camino::Utf8Path::new("/repo"),
             "session-123",
             "node constraints",
+            &[],
         );
         assert_eq!(load_params["sessionId"], "session-123");
         assert_eq!(
@@ -1891,8 +2682,11 @@ mod tests {
         };
 
         let text = session_prompt_text("codex-acp", &prompt);
-        assert!(text.contains("# Gold Band System Prompt\nnode constraints"));
-        assert!(text.contains("# User Prompt\ndo the task"));
+        assert!(text.contains(
+            "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
+        ));
+        assert!(text.contains("node constraints"));
+        assert!(text.ends_with("do the task"));
 
         let params = session_prompt_params("codex-acp", "session-123", &prompt);
         assert_eq!(params["sessionId"], "session-123");
@@ -1928,5 +2722,175 @@ mod tests {
 
         assert!(error.contains("unknown"));
         assert!(error.contains("read-only, auto"));
+    }
+
+    #[test]
+    fn doctor_success_cleanup_removes_acp_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        std::fs::write(acp_dir.join("acp.raw.jsonl").as_std_path(), "{}\n").unwrap();
+
+        cleanup_doctor_acp_dir_after_success(&acp_dir);
+
+        assert!(!acp_dir.exists());
+        drop(temp);
+    }
+
+    #[test]
+    fn doctor_failure_bundle_removes_pid_and_bounds_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let acp_dir = dir.join("doctor/acp");
+        std::fs::create_dir_all(acp_dir.as_std_path()).unwrap();
+        std::fs::write(acp_dir.join("provider.pid").as_std_path(), "123").unwrap();
+        let large = (0..4096)
+            .map(|index| format!(r#"{{"index":{index},"payload":"{}"}}"#, "x".repeat(256)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(acp_dir.join("acp.diagnostics.jsonl").as_std_path(), large).unwrap();
+
+        retain_bounded_doctor_acp_failure_bundle(&acp_dir);
+
+        assert!(!acp_dir.join("provider.pid").exists());
+        let size = std::fs::metadata(acp_dir.join("acp.diagnostics.jsonl").as_std_path())
+            .unwrap()
+            .len();
+        assert!(size <= DOCTOR_DIAGNOSTIC_TARGET_SIZE + 512);
+        drop(temp);
+    }
+
+    #[test]
+    fn runtime_stop_probe_uses_runtime_locator() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "pause_reason": "process-interrupted",
+                "current_round": "round-001",
+                "current_node": "ai-dynamic1",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let outer_probe = RuntimeStopProbe {
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic1".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
+        };
+        let inner_probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "bootstrap".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
+        };
+
+        assert!(outer_probe.is_stopped());
+        assert!(!inner_probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_uses_own_dynamic_attempt_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let own_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("own-node.json")).unwrap();
+        let sibling_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("sibling-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "ai-dynamic",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            own_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sibling_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let running_leaf_probe = RuntimeStopProbe {
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(own_state),
+        };
+        let paused_leaf_probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "ai-dynamic".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(sibling_state),
+        };
+
+        assert!(!running_leaf_probe.is_stopped());
+        assert!(paused_leaf_probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_keeps_manual_check_attempt_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let manual_check_state =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("manual-check-node.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "running",
+                "current_round": "round-001",
+                "current_node": "plan",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            manual_check_state.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "outcome": null,
+                "manual_check_pending": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: Some(manual_check_state),
+        };
+
+        assert!(!probe.is_stopped());
     }
 }

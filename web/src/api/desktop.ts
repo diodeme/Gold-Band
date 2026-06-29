@@ -1,5 +1,5 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
-import type { AcpSessionUpdatedEventVm, RuntimeApi } from './client';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -20,6 +20,20 @@ export const desktopApi: RuntimeApi = {
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeConversationRunStateUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ConversationRunStateUpdatedEventVm>('gold-band://conversation-run-state-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeInterventionNavigate(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<InterventionNavigateEventVm>('gold-band://intervention-navigate', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -126,8 +140,8 @@ export const desktopApi: RuntimeApi = {
   continueRun(projectId, taskId, runId, promptId, prompt) {
     return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
   },
-  pauseRun(taskId: string, runId: string) {
-    return invokeCommand('pause_run', { taskId, runId });
+  pauseRun(taskId: string, runId: string, projectId?: string | null) {
+    return invokeCommand('pause_run', { taskId, runId, projectId });
   },
   stopActiveSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand('stop_active_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
@@ -138,14 +152,14 @@ export const desktopApi: RuntimeApi = {
   retryRun(taskId: string, runId: string) {
     return invokeCommand('retry_run', { taskId, runId });
   },
-  killRun(taskId: string, runId: string) {
-    return invokeCommand('kill_run', { taskId, runId });
-  },
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });
   },
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  },
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
   sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
@@ -158,6 +172,9 @@ export const desktopApi: RuntimeApi = {
   },
   respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
+  },
+  respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
   },
   cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
@@ -183,6 +200,9 @@ export const desktopApi: RuntimeApi = {
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });
+  },
+  updateNotificationAttention(input) {
+    return invokeCommand('update_notification_attention', { input });
   },
   getMetricsSettings() {
     return invokeCommand<MetricsSettingsVm>('get_metrics_settings');
@@ -292,5 +312,42 @@ export const desktopApi: RuntimeApi = {
   },
   openInFileManager(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('open_in_file_manager', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  // ── MCP & SKILL management ──
+  listMcpServers() {
+    return invokeCommand('list_mcp_servers');
+  },
+  addMcpServer(jsonContent: string) {
+    return invokeCommand('add_mcp_server', { jsonContent });
+  },
+  updateMcpServer(id: string, jsonContent: string) {
+    return invokeCommand('update_mcp_server', { id, jsonContent });
+  },
+  deleteMcpServer(id: string) {
+    return invokeCommand('delete_mcp_server', { id });
+  },
+  toggleMcpServer(id: string, enabled: boolean) {
+    return invokeCommand('toggle_mcp_server', { id, enabled });
+  },
+  checkMcpServerHealth(id: string) {
+    return invokeCommand('check_mcp_server_health', { id });
+  },
+  listMcpTools(id: string) {
+    return invokeCommand('list_mcp_tools', { id });
+  },
+  listSkills() {
+    return invokeCommand('list_skills');
+  },
+  listProjectSkills(workspacePath: string) {
+    return invokeCommand('list_project_skills', { workspacePath });
+  },
+  readSkill(name: string, source: string, workspacePath?: string | null) {
+    return invokeCommand('read_skill', { name, source, workspacePath });
+  },
+  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
+    return invokeCommand('write_skill', { name, source, content, workspacePath, oldName });
+  },
+  deleteSkill(name: string, source: string, workspacePath?: string | null) {
+    return invokeCommand('delete_skill', { name, source, workspacePath });
   },
 };

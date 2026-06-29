@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConversationPage, ConversationSidebarVm } from '../../types';
+import { useTranslation } from 'react-i18next';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform } from '../../types';
 import { ConversationSidebar } from './ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -7,6 +8,7 @@ import { cn } from '@/lib/utils';
 
 interface ConversationShellProps {
   appName: string;
+  platform?: DesktopPlatform | null;
   vm: ConversationSidebarVm;
   active: ConversationPage;
   sidebarCollapsed: boolean;
@@ -17,6 +19,8 @@ interface ConversationShellProps {
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  stoppingRun?: boolean;
+  onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -52,6 +56,7 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 
 export function ConversationShell({
   appName,
+  platform,
   vm,
   active,
   sidebarCollapsed,
@@ -62,6 +67,8 @@ export function ConversationShell({
   onSearch,
   onSelectTask,
   onSelectRun,
+  stoppingRun = false,
+  onPauseRun,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -72,6 +79,7 @@ export function ConversationShell({
   activeWorkspaceId,
   children,
 }: ConversationShellProps) {
+  const { t } = useTranslation();
   const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth(vm.preferences));
   const [resizing, setResizing] = useState(false);
   const startXRef = useRef(0);
@@ -126,6 +134,7 @@ export function ConversationShell({
     >
       <AppTitleBar
         appName={appName}
+        platform={platform}
         uiMode="conversation"
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}
@@ -156,6 +165,7 @@ export function ConversationShell({
               onSearch={onSearch}
               onSelectTask={onSelectTask}
               onSelectRun={onSelectRun}
+              onPauseRun={onPauseRun}
               onPinTask={onPinTask}
               onUnpinTask={onUnpinTask}
               onRenameTask={onRenameTask}
@@ -173,7 +183,17 @@ export function ConversationShell({
             onMouseDown={handleMouseDown}
           />
         </div>
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-sidebar-border/70 rounded-tl-2xl bg-gold-workspace">{children}</main>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-sidebar-border/70 rounded-tl-2xl bg-gold-workspace">
+          {children}
+          {stoppingRun ? (
+            <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/55 backdrop-blur-sm">
+              <div className="flex items-center gap-3 rounded-full border border-border/60 bg-popover/95 px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg">
+                <span className="size-3.5 animate-spin rounded-full border-2 border-primary/25 border-t-primary" aria-hidden="true" />
+                <span>{t('conversation.runtime.stoppingRunOverlay')}</span>
+              </div>
+            </div>
+          ) : null}
+        </main>
       </div>
     </div>
   );

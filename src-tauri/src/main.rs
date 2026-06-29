@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
 mod i18n;
 mod metrics;
+mod notifications;
 mod state;
 mod updater;
 mod view_models;
@@ -12,21 +14,25 @@ mod view_models_conversation;
 
 use anyhow::Context;
 use commands::{
-    cancel_acp_session, check_local_claude, check_update_manual, choose_workspace, continue_run,
-    create_agent, create_profile, create_task, delete_agent, delete_auto_template, delete_profile,
+    add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
+    check_update_manual, choose_workspace, continue_run, create_agent, create_profile, create_task,
+    delete_agent, delete_auto_template, delete_mcp_server, delete_profile, delete_skill,
+    list_mcp_tools,
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
     download_and_install_update, get_acp_raw_frames, get_acp_session, get_agent_registry,
     get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings, get_profile,
     get_profiles, get_round_detail, get_run_detail, get_system_fonts, get_task_detail,
-    get_task_list, get_update_status, get_workflow, get_workflow_templates, kill_run,
-    mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
-    replace_auto_templates, respond_acp_permission, retry_run, save_auto_template,
+    get_task_list, get_update_status, get_workflow, get_workflow_templates, list_mcp_servers,
+    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_in_file_manager, pause_run, read_skill, replace_auto_templates,
+    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
     save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_workspace, send_acp_prompt, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
-    stop_active_session, submit_manual_check, update_agent, update_auto_template, update_profile,
-    update_workflow_template,
+    stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_workflow_template, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
@@ -45,7 +51,7 @@ use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
-use tracing::info;
+use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 
 fn main() {
@@ -60,6 +66,13 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
+    let mut tauri_context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
+        window.decorations = true;
+        window.title_bar_style = tauri::TitleBarStyle::Overlay;
+        window.hidden_title = true;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -68,6 +81,9 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            if let Ok(runtime_app) = state.app() {
+                let _ = runtime_app.recover_interrupted_running_sessions();
+            }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
@@ -80,6 +96,7 @@ fn run() -> anyhow::Result<()> {
                     needs_workspace = ctx.needs_workspace,
                     "desktop runtime initialized"
                 );
+                builtin_mcp::inject_builtin_mcp_servers(&state);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
@@ -90,6 +107,13 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
+            let health_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let state = health_handle.state::<DesktopState>();
+                builtin_mcp::refresh_all_mcp_health(&state);
+            });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             start_heartbeat_polling(app.handle().clone());
@@ -98,8 +122,10 @@ fn run() -> anyhow::Result<()> {
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<DesktopState>();
-                if let Ok(app) = state.app() {
-                    let _ = app.pause_all_running_sessions();
+                if let Ok(app) = state.app()
+                    && let Err(error) = app.stop_all_running_sessions()
+                {
+                    warn!(%error, "failed to stop running sessions before window close");
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
                 // 关键更新：退出前安装已下载的包，成功自动删文件
@@ -145,10 +171,12 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            submit_conversation_prompt,
             send_acp_prompt,
             set_acp_session_model,
             set_acp_session_permission_mode,
             respond_acp_permission,
+            respond_elicitation,
             cancel_acp_session,
             get_acp_raw_frames,
             start_run,
@@ -157,13 +185,13 @@ fn run() -> anyhow::Result<()> {
             stop_active_session,
             submit_manual_check,
             retry_run,
-            kill_run,
             show_artifact,
             show_attachment,
             show_worker_ref,
             save_desktop_preferences,
             save_updater_settings,
             get_metrics_settings,
+            update_notification_attention,
             save_metrics_settings,
             get_update_status,
             mark_settings_update_seen,
@@ -201,8 +229,21 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            // MCP & SKILL management
+            list_mcp_servers,
+            add_mcp_server,
+            update_mcp_server,
+            delete_mcp_server,
+            toggle_mcp_server,
+            check_mcp_server_health,
+            list_mcp_tools,
+            list_skills,
+            list_project_skills,
+            read_skill,
+            write_skill,
+            delete_skill,
         ])
-        .run(tauri::generate_context!())
+        .run(tauri_context)
         .context("tauri runtime failed")?;
     Ok(())
 }

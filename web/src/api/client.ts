@@ -19,6 +19,8 @@ import type {
   ConversationSidebarVm,
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
+  InterventionNavigateEventVm,
+  NotificationAttentionInput,
   PinRef,
   CreateTaskInput,
   DesktopFontPreference,
@@ -28,6 +30,9 @@ import type {
   LogPageVm,
   LogQueryInput,
   ManagedAgentInput,
+  McpServerVm,
+  SkillContentVm,
+  SkillListVm,
   PreferencesVm,
   ProfileInput,
   ProfileListVm,
@@ -43,6 +48,7 @@ import type {
   UpdaterSettingsVm,
   MetricsSettingsVm,
   WorkflowDsl,
+  ConversationAttemptLifecycleVm,
   WorkflowTemplateStore,
   WorkflowVm,
 } from '../types';
@@ -61,6 +67,25 @@ export interface AcpSessionUpdatedEventVm {
   outerAttemptId?: string | null;
   session?: AcpSessionVm | null;
   event?: AcpUiEventVm | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
+export interface ConversationRunStateUpdatedEventVm {
+  projectId?: string | null;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  status: string;
+  outcome?: string | null;
+}
+
+export interface ConversationPromptSubmitVm {
+  kind: 'acp-session' | 'runtime-continue-started' | 'rejected' | string;
+  session?: AcpSessionVm | null;
+  run?: RunSummaryVm | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
 export interface AttachmentFileRef {
@@ -110,18 +135,22 @@ export interface RuntimeApi {
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;
   continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null): Promise<RunSummaryVm>;
-  pauseRun(taskId: string, runId: string): Promise<RunSummaryVm>;
+  pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
-  killRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
+  subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
+  // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
+  subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
+  submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
   cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
   showArtifact(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
@@ -130,6 +159,7 @@ export interface RuntimeApi {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
+  updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
@@ -164,6 +194,19 @@ export interface RuntimeApi {
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
+  // MCP & SKILL management
+  listMcpServers(): Promise<McpServerVm[]>;
+  addMcpServer(jsonContent: string): Promise<McpServerVm[]>;
+  updateMcpServer(id: string, jsonContent: string): Promise<McpServerVm[]>;
+  deleteMcpServer(id: string): Promise<McpServerVm[]>;
+  toggleMcpServer(id: string, enabled: boolean): Promise<McpServerVm[]>;
+  checkMcpServerHealth(id: string): Promise<import('../types').McpServerHealthResult>;
+  listMcpTools(id: string): Promise<import('../types').ToolInfo[]>;
+  listSkills(): Promise<SkillListVm>;
+  listProjectSkills(workspacePath: string): Promise<import('../types').SkillMetaVm[]>;
+  readSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillContentVm>;
+  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null): Promise<SkillListVm>;
+  deleteSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillListVm>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

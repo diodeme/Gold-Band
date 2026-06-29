@@ -1,5 +1,5 @@
 import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
-import { mockAgentRegistry, mockBootstrap, mockContent, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
+import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
@@ -192,7 +192,7 @@ export const browserApi: RuntimeApi = {
   continueRun(_projectId, taskId, runId, _promptId, _prompt) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  pauseRun(taskId: string, runId: string) {
+  pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },
   stopActiveSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
@@ -204,9 +204,6 @@ export const browserApi: RuntimeApi = {
   retryRun(taskId: string, runId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  killRun(taskId: string, runId: string) {
-    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'completed', outcome: 'killed' });
-  },
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
@@ -215,6 +212,15 @@ export const browserApi: RuntimeApi = {
   },
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
+  },
+  subscribeConversationRunStateUpdates() {
+    return Promise.resolve(() => {});
+  },
+  subscribeInterventionNavigate() {
+    return Promise.resolve(() => {});
+  },
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+    return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
   sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve(fallback ?? null);
@@ -227,6 +233,9 @@ export const browserApi: RuntimeApi = {
   },
   respondAcpPermission(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _requestId, _optionId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
+  },
+  respondElicitation(_projectId: string | null | undefined, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _elicitationId: string, _action: string, _content?: Record<string, unknown> | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve();
   },
   cancelAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
@@ -279,6 +288,9 @@ export const browserApi: RuntimeApi = {
       overrideUrl: normalized,
       effectiveUrl: normalized ?? current.builtInUrl,
     }));
+  },
+  updateNotificationAttention(_input) {
+    return Promise.resolve();
   },
   getMetricsSettings() {
     return Promise.resolve({
@@ -333,6 +345,7 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(sidebar);
   },
   getConversationRun(_projectId, _taskId, runId) {
+    if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     const run: ConversationRunVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -351,10 +364,12 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
+      runtimeErrorMessage: null,
     };
     return Promise.resolve(run);
   },
   switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession, artifacts: [], attachments: [] });
     return Promise.resolve({ selectedSession: null, artifacts: [], attachments: [] });
   },
   validateConversationCreate(_input) {
@@ -379,6 +394,7 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
+      runtimeErrorMessage: null,
     };
     return Promise.resolve(run);
   },
@@ -450,6 +466,19 @@ export const browserApi: RuntimeApi = {
   openInFileManager(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve();
   },
+  // MCP & SKILL stubs
+  listMcpServers() { return Promise.resolve([]); },
+  addMcpServer(_jsonContent: string) { return Promise.resolve([]); },
+  updateMcpServer(_id: string, _jsonContent: string) { return Promise.resolve([]); },
+  deleteMcpServer(_id: string) { return Promise.resolve([]); },
+  toggleMcpServer(_id: string, _enabled: boolean) { return Promise.resolve([]); },
+  checkMcpServerHealth(_id: string) { return Promise.resolve({ status: 'unknown' }); },
+  listMcpTools(_id: string) { return Promise.resolve([]); },
+  listSkills() { return Promise.resolve({ global: [], project: [] }); },
+  listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
+  readSkill(_name: string, _source: string) { return Promise.resolve({ meta: { name: '', description: '', source: 'global', directoryPath: '', disableModelInvocation: false, loadWarnings: [] }, body: '' }); },
+  writeSkill(_name: string, _source: string, _content: string) { return Promise.resolve({ global: [], project: [] }); },
+  deleteSkill(_name: string, _source: string) { return Promise.resolve({ global: [], project: [] }); },
 };
 
 function browserProfileId() {

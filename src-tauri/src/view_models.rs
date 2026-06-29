@@ -7,13 +7,13 @@ use std::{
 };
 
 use anyhow::Result;
-use gold_band::acp::permission::{clear_cancel_request, is_cancel_requested};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, McpServerState, RuntimeConfig,
+    RuntimeLogLevel,
 };
-use gold_band::domain::{NodeType, PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::provider::{supported_models_from_capabilities, supported_modes_from_capabilities};
@@ -24,11 +24,8 @@ use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
-use gold_band::process::kill_process_tree;
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
-
-const ACP_CANCEL_FUSE_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +64,7 @@ pub struct AppBootstrapVm {
     pub update_badges: UpdateBadgeStateVm,
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
+    pub platform: String,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
     pub needs_workspace: bool,
@@ -123,6 +121,53 @@ pub struct AcpModeVm {
 pub struct AgentEnvEntryVm {
     pub key: String,
     pub value: String,
+}
+
+// ── MCP ViewModels ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerVm {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<Vec<AgentEnvEntryVm>>,
+    pub url: Option<String>,
+    pub headers: Option<Vec<AgentEnvEntryVm>>,
+    pub managed: bool,
+    pub help_message: Option<String>,
+    pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
+    pub health_message: Option<String>,
+}
+
+// ── SKILL ViewModels ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMetaVm {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub directory_path: String,
+    pub disable_model_invocation: bool,
+    pub load_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillListVm {
+    pub global: Vec<SkillMetaVm>,
+    pub project: Vec<SkillMetaVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillContentVm {
+    pub meta: SkillMetaVm,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,6 +440,9 @@ pub fn runtime_display_vm(
             Some("paused") if current && reason_code.as_deref() == Some("error-blocked") => {
                 ("error-blocked", "danger", "error", false)
             }
+            Some("paused") if current && reason_code.as_deref() == Some("runtime-abnormal") => {
+                ("runtime-abnormal", "danger", "error", false)
+            }
             Some("paused") => ("paused", "warning", "pause", false),
             Some("pending") | Some("ready") => ("pending", "neutral", "dot", false),
             Some("completed") | Some("complete") => ("completed", "neutral", "dot", true),
@@ -420,7 +468,7 @@ pub fn runtime_display_vm(
         tone: tone.to_string(),
         icon: icon.to_string(),
         terminal,
-        resumable: (code == "paused" || code == "error-blocked") && resumable,
+        resumable: matches!(code.as_ref(), "paused" | "runtime-abnormal") && resumable,
         reason_code,
         blocking_error,
     }
@@ -430,6 +478,7 @@ fn normalize_status_code(value: &str) -> String {
     match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
         "errorblocked" => "error-blocked".to_string(),
         "processinterrupted" => "process-interrupted".to_string(),
+        "runtimeabnormal" => "runtime-abnormal".to_string(),
         "waitingforuserinput" => "waiting-for-user-input".to_string(),
         "permissionrequested" => "permission-requested".to_string(),
         other => other.to_string(),
@@ -864,6 +913,15 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     }
 }
 
+#[cfg(target_os = "macos")]
+const DESKTOP_PLATFORM: &str = "macos";
+#[cfg(target_os = "windows")]
+const DESKTOP_PLATFORM: &str = "windows";
+#[cfg(target_os = "linux")]
+const DESKTOP_PLATFORM: &str = "linux";
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const DESKTOP_PLATFORM: &str = "unknown";
+
 pub fn bootstrap_vm(
     app: &App,
     recent_workspaces: Vec<String>,
@@ -892,6 +950,7 @@ pub fn bootstrap_vm(
             &client_version_string,
         ),
         client_version: client_version_string,
+        platform: DESKTOP_PLATFORM.to_string(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),
@@ -1660,6 +1719,11 @@ fn round_trace_graph_vm(
     node_labels: &HashMap<String, String>,
     control_failure: Option<&ControlFailureVm>,
 ) -> Result<GraphVm> {
+    const TRACE_SEQUENCE_RANK_WIDTH: u32 = 100;
+    fn trace_rank_sequence(sequence: u32) -> u32 {
+        sequence.saturating_mul(TRACE_SEQUENCE_RANK_WIDTH)
+    }
+
     let mut steps = round.trace.clone();
     steps.sort_by_key(|step| step.sequence);
 
@@ -1686,7 +1750,7 @@ fn round_trace_graph_vm(
                 &node.node_id,
                 &node.attempt_id,
             ) {
-                let base_sequence = step.sequence.saturating_mul(100);
+                let base_sequence = trace_rank_sequence(step.sequence);
                 let pause_reason = run.pause_reason.as_ref().map(enum_label);
                 let run_resumable = is_run_continuable(run);
                 let mut internal_nodes = dynamic_graph
@@ -1721,19 +1785,14 @@ fn round_trace_graph_vm(
                 if let Some(first) = internal_nodes.first() {
                     ai_dynamic_entry_map.insert(node.node_id.clone(), first.id.clone());
                 }
-                let terminal_ids = internal_nodes
-                    .iter()
-                    .filter(|candidate| {
-                        !dynamic_graph.nodes.iter().any(|other| {
-                            other
-                                .depends_on
-                                .iter()
-                                .any(|dep| dep == candidate.node_id.as_deref().unwrap_or_default())
-                        })
-                    })
-                    .map(|candidate| candidate.id.clone())
-                    .collect::<Vec<_>>();
-                ai_dynamic_terminal_map.insert(node.node_id.clone(), terminal_ids);
+                ai_dynamic_terminal_map.insert(
+                    node.node_id.clone(),
+                    dynamic_external_exit_graph_node_ids(
+                        &node.node_id,
+                        &node.attempt_id,
+                        &dynamic_graph,
+                    ),
+                );
 
                 for vm in internal_nodes.drain(..) {
                     if added_ids.insert(vm.id.clone()) {
@@ -1779,7 +1838,9 @@ fn round_trace_graph_vm(
             candidate.node_id == latest_step.node_id
                 && candidate.attempt_id == latest_step.attempt_id
         });
-        let first_sequence = node_steps.first().map(|candidate| candidate.sequence);
+        let first_sequence = node_steps
+            .first()
+            .map(|candidate| trace_rank_sequence(candidate.sequence));
         let mut attempts = Vec::new();
         for node_step in &node_steps {
             if let Some(node_attempt) = nodes.iter().find(|candidate| {
@@ -2158,7 +2219,7 @@ fn dynamic_node_graph_vm(
         resumable,
     );
     GraphNodeVm {
-        id: format!("{outer_node_id}::{outer_attempt_id}::{}", node.id),
+        id: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id),
         node_id: Some(node.id.clone()),
         sequence: Some(sequence_hint.unwrap_or(sequence)),
         label: node.title.clone(),
@@ -2227,12 +2288,12 @@ fn dynamic_internal_graph_vm(
 
     let mut edges = Vec::new();
     for node in &graph.nodes {
-        let to = format!("{outer_node_id}::{outer_attempt_id}::{}", node.id);
+        let to = dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id);
         let mut has_dependency = false;
         for dependency in &node.depends_on {
             has_dependency = true;
             edges.push(GraphEdgeVm {
-                from: format!("{outer_node_id}::{outer_attempt_id}::{dependency}"),
+                from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, dependency),
                 to: to.clone(),
                 label: "depends-on".to_string(),
                 traversal_count: 1,
@@ -2240,34 +2301,11 @@ fn dynamic_internal_graph_vm(
                 blocked_reason: None,
             });
         }
-        if !has_dependency && node.depth > 0 {
-            let upstream = graph
-                .nodes
-                .iter()
-                .find(|candidate| {
-                    candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth
-                })
-                .or_else(|| {
-                    node.group_id.as_deref().and_then(|group_id| {
-                        graph
-                            .groups
-                            .iter()
-                            .find(|group| {
-                                group.id == group_id
-                                    && group.root_node_ids.iter().any(|id| id == &node.id)
-                            })
-                            .map(|group| &group.created_by_node_id)
-                            .and_then(|source_id| {
-                                graph
-                                    .nodes
-                                    .iter()
-                                    .find(|candidate| candidate.id == *source_id)
-                            })
-                    })
-                });
+        if !has_dependency {
+            let upstream = dynamic_implicit_upstream_node(graph, node);
             if let Some(upstream) = upstream {
                 edges.push(GraphEdgeVm {
-                    from: format!("{outer_node_id}::{outer_attempt_id}::{}", upstream.id),
+                    from: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &upstream.id),
                     to: to.clone(),
                     label: "success".to_string(),
                     traversal_count: 1,
@@ -2279,7 +2317,11 @@ fn dynamic_internal_graph_vm(
         if node.session_mode == SessionMode::Continue {
             if let Some(continue_from_node_id) = &node.continue_from_node_id {
                 edges.push(GraphEdgeVm {
-                    from: format!("{outer_node_id}::{outer_attempt_id}::{continue_from_node_id}"),
+                    from: dynamic_graph_node_vm_id(
+                        outer_node_id,
+                        outer_attempt_id,
+                        continue_from_node_id,
+                    ),
                     to: to.clone(),
                     label: "continue".to_string(),
                     traversal_count: 1,
@@ -2291,6 +2333,68 @@ fn dynamic_internal_graph_vm(
     }
 
     GraphVm { nodes, edges }
+}
+
+fn dynamic_graph_node_vm_id(outer_node_id: &str, outer_attempt_id: &str, node_id: &str) -> String {
+    format!("{outer_node_id}::{outer_attempt_id}::{node_id}")
+}
+
+fn dynamic_external_exit_graph_node_ids(
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    graph: &DynamicGraphState,
+) -> Vec<String> {
+    let mut non_exit_node_ids = HashSet::<String>::new();
+    for node in &graph.nodes {
+        for dependency in &node.depends_on {
+            non_exit_node_ids.insert(dependency.clone());
+        }
+        if let Some(upstream) = dynamic_implicit_upstream_node(graph, node) {
+            non_exit_node_ids.insert(upstream.id.clone());
+        }
+        if node.session_mode == SessionMode::Continue {
+            if let Some(continue_from_node_id) = &node.continue_from_node_id {
+                non_exit_node_ids.insert(continue_from_node_id.clone());
+            }
+        }
+    }
+
+    graph
+        .nodes
+        .iter()
+        .filter(|node| !non_exit_node_ids.contains(&node.id))
+        .map(|node| dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id))
+        .collect()
+}
+
+fn dynamic_implicit_upstream_node<'a>(
+    graph: &'a DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<&'a gold_band::dynamic::DynamicNodeState> {
+    if !node.depends_on.is_empty() || node.depth == 0 {
+        return None;
+    }
+    graph
+        .nodes
+        .iter()
+        .find(|candidate| candidate.chain_id == node.chain_id && candidate.depth + 1 == node.depth)
+        .or_else(|| {
+            node.group_id.as_deref().and_then(|group_id| {
+                graph
+                    .groups
+                    .iter()
+                    .find(|group| {
+                        group.id == group_id && group.root_node_ids.iter().any(|id| id == &node.id)
+                    })
+                    .map(|group| &group.created_by_node_id)
+                    .and_then(|source_id| {
+                        graph
+                            .nodes
+                            .iter()
+                            .find(|candidate| candidate.id == *source_id)
+                    })
+            })
+        })
 }
 
 pub fn dynamic_runtime_graph_vm(
@@ -3116,33 +3220,14 @@ pub fn dynamic_acp_session_vm(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_session_completion_fuse_dynamic(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        node_id,
-        attempt_id,
-        &attempt_dir,
-        &node_path,
-        &mut session,
-    )?;
+    apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let provider_pid_path = attempt_dir.join("provider.pid");
-    let cancelling =
-        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
-    let status = if cancelling {
-        "cancelling"
-    } else {
-        metadata_status
-    }
-    .to_string();
+    let stopping = is_acp_session_stopping_status(metadata_status);
+    let status = metadata_status.to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3159,7 +3244,7 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if cancelling {
+    let pending_permissions = if stopping {
         Vec::new()
     } else {
         event_scan
@@ -3354,9 +3439,6 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let attempt_dir = app
-        .paths
-        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     let node_path = app
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3368,16 +3450,6 @@ pub fn acp_session_vm(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_cancel_fuse(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        &attempt_dir,
-        &mut session,
-    )?;
     apply_stale_session_completion_fuse(
         app,
         task_id,
@@ -3385,7 +3457,6 @@ pub fn acp_session_vm(
         round_id,
         node_id,
         attempt_id,
-        &attempt_dir,
         &node_path,
         &mut session,
     )?;
@@ -3394,17 +3465,8 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let provider_pid_path = app
-        .paths
-        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
-    let cancelling =
-        acp_cancel_request_in_progress(&attempt_dir, &provider_pid_path, metadata_status);
-    let status = if cancelling {
-        "cancelling"
-    } else {
-        metadata_status
-    }
-    .to_string();
+    let stopping = is_acp_session_stopping_status(metadata_status);
+    let status = metadata_status.to_string();
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3421,7 +3483,7 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if cancelling {
+    let pending_permissions = if stopping {
         Vec::new()
     } else {
         event_scan
@@ -3913,7 +3975,7 @@ fn paginate_timeline(
         all_events.to_vec()
     };
     // Compact only the events in the final window (not all events)
-    let filtered: Vec<_> = filtered
+    let mut filtered: Vec<_> = filtered
         .into_iter()
         .map(|event| {
             if matches!(event.kind.as_str(), "permissionRequest") {
@@ -3923,6 +3985,7 @@ fn paginate_timeline(
             }
         })
         .collect();
+    include_latest_permission_events(&mut filtered, latest_permission_events);
     let oldest_seq = filtered
         .first()
         .map(|event| event.started_seq.unwrap_or(event.seq));
@@ -3959,6 +4022,34 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+fn include_latest_permission_events(
+    events: &mut Vec<AcpUiEventVm>,
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+) {
+    if latest_permission_events.is_empty() {
+        return;
+    }
+
+    let mut changed = false;
+    for (request_id, latest) in latest_permission_events {
+        if let Some(existing) = events.iter_mut().find(|event| {
+            event.kind == "permissionRequest"
+                && permission_request_id_from_event(event) == *request_id
+        }) {
+            if latest.seq >= existing.seq {
+                *existing = latest.clone();
+                changed = true;
+            }
+            continue;
+        }
+        events.push(latest.clone());
+        changed = true;
+    }
+    if changed {
+        events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+    }
 }
 
 fn scan_acp_events(
@@ -4154,66 +4245,6 @@ fn flush_pending_delta(pending: &mut Option<AcpUiEventVm>, events: &mut Vec<AcpU
     }
 }
 
-fn apply_stale_cancel_fuse(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    attempt_dir: &camino::Utf8Path,
-    session: &mut serde_json::Value,
-) -> Result<()> {
-    if !is_cancel_requested(attempt_dir) || !cancel_request_is_stale(attempt_dir) {
-        return Ok(());
-    }
-
-    let pid_path = app
-        .paths
-        .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
-    if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
-        if let Ok(pid) = pid_text.trim().parse::<u32>() {
-            let _ = kill_process_tree(pid);
-        }
-        let _ = fs::remove_file(pid_path.as_std_path());
-    }
-    let _ = clear_cancel_request(attempt_dir);
-
-    session["status"] = serde_json::json!("cancelled");
-    session["stopReason"] = serde_json::json!("cancelled");
-    session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-    write_json(
-        &app.paths
-            .acp_session_file(task_id, run_id, round_id, node_id, attempt_id),
-        session,
-    )?;
-    let snapshot_path = app
-        .paths
-        .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
-    let _ = write_json(&snapshot_path, &*session);
-
-    app.pause_attempt_runtime_state(
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        PauseReason::ProcessInterrupted,
-    )?;
-    Ok(())
-}
-
-fn cancel_request_is_stale(attempt_dir: &camino::Utf8Path) -> bool {
-    let path = gold_band::acp::permission::cancel_requested_file(attempt_dir);
-    let Ok(value) = fs::read_to_string(path.as_std_path()) else {
-        return false;
-    };
-    let Some(requested_at) = parse_epoch_timestamp(value.trim()) else {
-        return false;
-    };
-    current_epoch_seconds().saturating_sub(requested_at) >= ACP_CANCEL_FUSE_SECONDS
-}
-
 fn apply_stale_session_completion_fuse(
     app: &App,
     task_id: &str,
@@ -4221,7 +4252,6 @@ fn apply_stale_session_completion_fuse(
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
-    attempt_dir: &camino::Utf8Path,
     node_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
 ) -> Result<()> {
@@ -4237,7 +4267,6 @@ fn apply_stale_session_completion_fuse(
     };
     let fused = apply_stale_session_completion_fuse_common(
         &pid_path,
-        attempt_dir,
         session,
         node_status
             .map(|status| status == RunStatus::Completed)
@@ -4253,14 +4282,6 @@ fn apply_stale_session_completion_fuse(
 }
 
 fn apply_stale_session_completion_fuse_dynamic(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    outer_node_id: &str,
-    outer_attempt_id: &str,
-    node_id: &str,
-    attempt_id: &str,
     attempt_dir: &camino::Utf8Path,
     node_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
@@ -4274,37 +4295,7 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    if is_cancel_requested(attempt_dir) && cancel_request_is_stale(attempt_dir) {
-        if let Ok(pid_text) = fs::read_to_string(pid_path.as_std_path()) {
-            if let Ok(pid) = pid_text.trim().parse::<u32>() {
-                let _ = kill_process_tree(pid);
-            }
-            let _ = fs::remove_file(pid_path.as_std_path());
-        }
-        let _ = clear_cancel_request(attempt_dir);
-        session["status"] = serde_json::json!("cancelled");
-        session["stopReason"] = serde_json::json!("cancelled");
-        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let _ = write_json(&snapshot_path, &*session);
-        app.pause_dynamic_attempt_runtime_state(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-            node_id,
-            PauseReason::ProcessInterrupted,
-        )?;
-        return Ok(());
-    }
-    let _ = attempt_id;
-    let fused = apply_stale_session_completion_fuse_common(
-        &pid_path,
-        attempt_dir,
-        session,
-        node_completed,
-    )?;
+    let fused = apply_stale_session_completion_fuse_common(&pid_path, session, node_completed)?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -4314,7 +4305,6 @@ fn apply_stale_session_completion_fuse_dynamic(
 
 fn apply_stale_session_completion_fuse_common(
     pid_path: &camino::Utf8Path,
-    attempt_dir: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
 ) -> Result<bool> {
@@ -4328,7 +4318,7 @@ fn apply_stale_session_completion_fuse_common(
     if pid_path.exists() && !node_completed {
         return Ok(false);
     }
-    if !node_completed && !is_cancel_requested(attempt_dir) {
+    if !node_completed {
         return Ok(false);
     }
     if node_completed && pid_path.exists() {
@@ -4695,32 +4685,15 @@ fn is_acp_session_active_status(status: &str) -> bool {
     )
 }
 
-fn is_acp_session_terminal_status(status: &str) -> bool {
+fn is_acp_session_stopping_status(status: &str) -> bool {
     matches!(
         status
             .trim()
             .to_ascii_lowercase()
             .replace('_', "-")
             .as_str(),
-        "completed"
-            | "complete"
-            | "failed"
-            | "failure"
-            | "error"
-            | "killed"
-            | "cancelled"
-            | "canceled"
+        "cancelling" | "cancel-requested"
     )
-}
-
-fn acp_cancel_request_in_progress(
-    attempt_dir: &camino::Utf8Path,
-    provider_pid_path: &camino::Utf8Path,
-    metadata_status: &str,
-) -> bool {
-    is_cancel_requested(attempt_dir)
-        && !is_acp_session_terminal_status(metadata_status)
-        && (provider_pid_path.exists() || is_acp_session_active_status(metadata_status))
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
@@ -5442,6 +5415,124 @@ fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
     items
 }
 
+// ── MCP Server VM ──
+
+pub fn mcp_server_list_vm(
+    servers: &[gold_band::config::McpServerConfig],
+    health: &std::collections::BTreeMap<String, McpServerState>,
+) -> Vec<McpServerVm> {
+    servers
+        .iter()
+        .map(|s| {
+            let (transport, command, args, env, url, headers) = match &s.transport {
+                gold_band::config::McpTransportConfig::Stdio {
+                    command: cmd,
+                    args: a,
+                    env: e,
+                } => (
+                    "stdio".to_string(),
+                    Some(cmd.clone()),
+                    Some(a.clone()),
+                    Some(env_to_entries(e)),
+                    None,
+                    None,
+                ),
+                gold_band::config::McpTransportConfig::Http {
+                    url: u, headers: h, ..
+                } => (
+                    "http".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
+                gold_band::config::McpTransportConfig::Sse {
+                    url: u, headers: h,
+                } => (
+                    "sse".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
+            };
+            let (health_status, health_message) = match health.get(&s.id) {
+                Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
+                Some(McpServerState::Error { message }) => {
+                    (Some("unhealthy".to_string()), Some(message.clone()))
+                }
+                Some(McpServerState::AuthRequired { auth_url }) => {
+                    (Some("auth_required".to_string()), auth_url.clone())
+                }
+                Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
+                Some(McpServerState::Starting) => (Some("checking".to_string()), None),
+                None => (None, None),
+            };
+            McpServerVm {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                enabled: s.enabled,
+                transport,
+                command,
+                args,
+                env,
+                url,
+                headers,
+                managed: s.managed,
+                help_message: s.help_message.clone(),
+                health_status,
+                health_message,
+            }
+        })
+        .collect()
+}
+
+fn env_to_entries(map: &std::collections::BTreeMap<String, String>) -> Vec<AgentEnvEntryVm> {
+    map.iter()
+        .map(|(k, v)| AgentEnvEntryVm {
+            key: k.clone(),
+            value: v.clone(),
+        })
+        .collect()
+}
+
+// ── SKILL VM ──
+
+pub fn skill_list_vm(result: &gold_band::skill::SkillListResult) -> SkillListVm {
+    SkillListVm {
+        global: result.global.iter().map(skill_meta_vm).collect(),
+        project: result.project.iter().map(skill_meta_vm).collect(),
+    }
+}
+
+pub fn skill_content_vm(content: &gold_band::skill::SkillContent) -> SkillContentVm {
+    SkillContentVm {
+        meta: skill_meta_vm(&content.meta),
+        body: content.body.clone(),
+    }
+}
+
+pub fn skill_meta_vm(meta: &gold_band::config::SkillMeta) -> SkillMetaVm {
+    SkillMetaVm {
+        name: meta.name.clone(),
+        description: meta.description.clone(),
+        source: skill_source_str(meta.source),
+        directory_path: meta.directory_path.clone(),
+        disable_model_invocation: meta.disable_model_invocation,
+        load_warnings: meta.load_warnings.clone(),
+    }
+}
+
+fn skill_source_str(source: gold_band::config::SkillSource) -> String {
+    match source {
+        gold_band::config::SkillSource::BuiltIn => "built-in".to_string(),
+        gold_band::config::SkillSource::Global => "global".to_string(),
+        gold_band::config::SkillSource::Project => "project".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5556,17 +5647,291 @@ mod tests {
         state.finish_at(session_active, now)
     }
 
+    fn seed_dynamic_round_graph_fixture(app: &App) {
+        let task_id = "task-dynamic-round-graph";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let workflow = json!({
+            "version": "0.1",
+            "id": "dynamic-to-accept",
+            "entry": "ai-dynamic1",
+            "control": {},
+            "nodes": [
+                {
+                    "type": "ai-dynamic",
+                    "id": "ai-dynamic1",
+                    "agentStrategy": { "mode": "fixed", "provider": "claude-acp" },
+                    "control": {}
+                },
+                {
+                    "type": "worker",
+                    "id": "accept",
+                    "provider": "claude-acp",
+                    "profile": "pf-builtin-accept"
+                }
+            ],
+            "edges": [
+                { "from": "ai-dynamic1", "to": "accept", "on": "success" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        });
+        write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": "0.1",
+                "id": task_id,
+                "title": "Dynamic round graph"
+            }),
+        )
+        .unwrap();
+        write_json(&app.paths.workflow_file(task_id), &workflow).unwrap();
+        write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &workflow,
+        )
+        .unwrap();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": "0.1",
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:00:00Z",
+                "updated_at": "2026-06-17T10:03:00Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": null,
+                "current_node": null,
+                "current_attempt": null,
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &json!({
+                "version": "0.1",
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "success",
+                "trigger": "initial",
+                "started_at": "2026-06-17T10:00:00Z",
+                "trace": [
+                    {
+                        "sequence": 1,
+                        "node_id": "ai-dynamic1",
+                        "attempt_id": "attempt-001",
+                        "from_node_id": null,
+                        "edge_outcome": null,
+                        "entered_at": "2026-06-17T10:00:00Z"
+                    },
+                    {
+                        "sequence": 2,
+                        "node_id": "accept",
+                        "attempt_id": "attempt-001",
+                        "from_node_id": "ai-dynamic1",
+                        "edge_outcome": "success",
+                        "entered_at": "2026-06-17T10:03:00Z"
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "node_id": "ai-dynamic1",
+                "node_type": "ai-dynamic",
+                "run_id": run_id,
+                "round_id": round_id,
+                "attempt_id": "attempt-001",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:00:00Z",
+                "finished_at": "2026-06-17T10:02:50Z",
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "accept", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "node_id": "accept",
+                "node_type": "worker",
+                "run_id": run_id,
+                "round_id": round_id,
+                "attempt_id": "attempt-001",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-17T10:03:00Z",
+                "finished_at": "2026-06-17T10:03:20Z",
+                "manual_check_pending": false,
+                "resolved_config": { "provider": "claude-acp" }
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .dynamic_graph_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
+            &json!({
+                "version": "0.1",
+                "run": {
+                    "version": "0.1",
+                    "id": "dynamic-run-001",
+                    "parentRunId": run_id,
+                    "parentRoundId": round_id,
+                    "parentNodeId": "ai-dynamic1",
+                    "parentAttemptId": "attempt-001",
+                    "status": "completed",
+                    "outcome": "success",
+                    "pauseReason": null,
+                    "startedAt": "2026-06-17T10:00:00Z",
+                    "updatedAt": "2026-06-17T10:02:50Z",
+                    "control": {},
+                    "allowedWorkflowSnapshots": [],
+                    "currentNodeIds": []
+                },
+                "nodes": [
+                    {
+                        "version": "0.1",
+                        "id": "bootstrap",
+                        "dynamicRunId": "dynamic-run-001",
+                        "kind": "worker",
+                        "title": "AI-DYNAMIC bootstrap",
+                        "task": "Design the first internal dynamic step.",
+                        "status": "completed",
+                        "outcome": "success",
+                        "groupId": null,
+                        "chainId": "bootstrap",
+                        "depth": 0,
+                        "dependsOn": [],
+                        "workspace": { "mode": "readonly" },
+                        "workspacePath": null,
+                        "provider": "claude-acp",
+                        "profile": null,
+                        "permissionMode": "bypassPermissions",
+                        "model": null,
+                        "sessionMode": "new",
+                        "continueFromNodeId": null,
+                        "workflowId": null,
+                        "workflowSnapshotId": null,
+                        "childRunId": null,
+                        "startedAt": "2026-06-17T10:00:00Z",
+                        "finishedAt": "2026-06-17T10:01:00Z"
+                    },
+                    {
+                        "version": "0.1",
+                        "id": "create-hello-world-py",
+                        "dynamicRunId": "dynamic-run-001",
+                        "kind": "worker",
+                        "title": "Create hello-world Python class",
+                        "task": "Create hello_world.py.",
+                        "status": "completed",
+                        "outcome": "success",
+                        "groupId": null,
+                        "chainId": "bootstrap",
+                        "depth": 1,
+                        "dependsOn": [],
+                        "workspace": { "mode": "main" },
+                        "workspacePath": null,
+                        "provider": "claude-acp",
+                        "profile": "pf-builtin-dev",
+                        "permissionMode": "bypassPermissions",
+                        "model": null,
+                        "sessionMode": "new",
+                        "continueFromNodeId": null,
+                        "workflowId": null,
+                        "workflowSnapshotId": null,
+                        "childRunId": null,
+                        "startedAt": "2026-06-17T10:01:00Z",
+                        "finishedAt": "2026-06-17T10:02:50Z"
+                    }
+                ],
+                "groups": [],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn runtime_display_marks_workflow_failure_as_non_blocking() {
         let failure = runtime_display_vm(Some("completed"), Some("failure"), false, None, false);
         let error_blocked =
             runtime_display_vm(Some("paused"), None, true, Some("error-blocked"), true);
+        let runtime_abnormal =
+            runtime_display_vm(Some("paused"), None, true, Some("runtime-abnormal"), true);
         let killed = runtime_display_vm(Some("completed"), Some("killed"), false, None, false);
 
         assert_eq!(failure.tone, "danger");
         assert!(!failure.blocking_error);
         assert!(error_blocked.blocking_error);
+        assert!(!error_blocked.resumable);
+        assert_eq!(runtime_abnormal.code, "runtime-abnormal");
+        assert_eq!(runtime_abnormal.tone, "danger");
+        assert!(!runtime_abnormal.blocking_error);
+        assert!(runtime_abnormal.resumable);
         assert!(killed.blocking_error);
+    }
+
+    #[test]
+    fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-dynamic-round-graph-test-{}",
+            std::process::id()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let app = App::new(repo_root);
+        seed_dynamic_round_graph_fixture(&app);
+
+        let detail = round_detail_vm(
+            &app,
+            "task-dynamic-round-graph",
+            "run-001",
+            "round-001",
+            None,
+        )
+        .unwrap();
+
+        assert!(detail.graph.edges.iter().any(|edge| {
+            edge.from == "ai-dynamic1::attempt-001::create-hello-world-py"
+                && edge.to == "accept"
+                && edge.label == "success"
+        }));
+        assert!(!detail.graph.edges.iter().any(|edge| {
+            edge.from == "ai-dynamic1::attempt-001::bootstrap"
+                && edge.to == "accept"
+                && edge.label == "success"
+        }));
+        let dynamic_exit_sequence = detail
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "ai-dynamic1::attempt-001::create-hello-world-py")
+            .and_then(|node| node.sequence)
+            .unwrap();
+        let accept_sequence = detail
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "accept")
+            .and_then(|node| node.sequence)
+            .unwrap();
+        assert!(
+            dynamic_exit_sequence < accept_sequence,
+            "AI-DYNAMIC exit should rank before the next workflow node"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -5582,8 +5947,7 @@ mod tests {
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
-                .unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -5605,13 +5969,8 @@ mod tests {
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
-        let fused = apply_stale_session_completion_fuse_common(
-            &pid_path,
-            &attempt_dir,
-            &mut session,
-            false,
-        )
-        .unwrap();
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, false).unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -5635,8 +5994,7 @@ mod tests {
         let mut session = json!({ "status": "failed" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &attempt_dir, &mut session, true)
-                .unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -5648,47 +6006,13 @@ mod tests {
     }
 
     #[test]
-    fn cancel_requested_with_live_provider_stays_cancelling() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-cancel-status-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
-            .unwrap();
-
-        assert!(acp_cancel_request_in_progress(
-            &attempt_dir,
-            &pid_path,
-            "running"
-        ));
-
-        fs::remove_dir_all(dir).unwrap();
+    fn provider_pid_with_running_session_does_not_force_stopping() {
+        assert!(!is_acp_session_stopping_status("running"));
     }
 
     #[test]
-    fn cancel_requested_with_terminal_snapshot_does_not_stay_cancelling() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-terminal-cancel-status-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        gold_band::acp::permission::request_cancel(&attempt_dir, "1778771541Z".to_string())
-            .unwrap();
-
-        assert!(!acp_cancel_request_in_progress(
-            &attempt_dir,
-            &pid_path,
-            "cancelled"
-        ));
-
-        fs::remove_dir_all(dir).unwrap();
+    fn explicit_cancelling_session_is_stopping() {
+        assert!(is_acp_session_stopping_status("cancelling"));
     }
 
     #[test]
@@ -6231,6 +6555,46 @@ mod tests {
         assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_includes_latest_permission_event_outside_window() {
+        let mut latest = HashMap::new();
+        latest.insert(
+            "req-1".to_string(),
+            permission_event_at("req-1", "selected", 3000),
+        );
+        let events = vec![
+            permission_event_at("req-1", "pending", 1000),
+            text_event_at(1100),
+            text_event_at(1200),
+        ];
+
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &latest,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+
+        let permission = scan
+            .events
+            .iter()
+            .find(|event| event.kind == "permissionRequest")
+            .unwrap();
+        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert_eq!(
+            scan.latest_permission_events
+                .get("req-1")
+                .and_then(|event| event.status.as_deref()),
+            Some("selected")
+        );
     }
 
     #[test]

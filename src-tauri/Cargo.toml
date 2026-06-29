@@ -1,6 +1,6 @@
 [package]
 name = "gold-band-desktop"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -29,3 +29,16 @@ trash = "5"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
+base64 = "0.22"
+# macOS / Linux OS 通知 fallback。
+notify-rust = { version = "4", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# Windows Toast 一等公民：干预通知 + 结构化 action（查看详情/忽略）。
+tauri-winrt-notification = "0.7"
+
+[features]
+default = ["native-notification"]
+# 启用 OS 原生通知（Windows Toast 始终可用；macOS/Linux 经 notify-rust）。
+native-notification = ["dep:notify-rust"]
+

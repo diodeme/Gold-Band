@@ -5,6 +5,7 @@ import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } f
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -24,6 +25,7 @@ interface ConversationSidebarProps {
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
   onDeleteTask: (projectId: string, taskId: string) => void;
+  onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => void;
@@ -43,6 +45,7 @@ export function ConversationSidebar({
   onUnpinTask,
   onRenameTask,
   onDeleteTask,
+  onPauseRun,
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
@@ -219,6 +222,7 @@ export function ConversationSidebar({
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
                               onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                              onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                               t={t}
                             />
                           ))}
@@ -279,6 +283,7 @@ export function ConversationSidebar({
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
                         onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                        onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                         t={t}
                       />
                     ))}
@@ -328,6 +333,62 @@ function runStatusColor(run: ConversationTaskRowVm['runs'][0]) {
   return 'bg-yellow-500/50';
 }
 
+export function canPauseConversationSidebarRun(run: { status: string }) {
+  return run.status === 'running';
+}
+
+export function selectConversationSidebarRunPauseAction(
+  run: { runId: string; status: string },
+  onPauseRun?: (runId: string) => void | Promise<void>,
+) {
+  if (!canPauseConversationSidebarRun(run)) return false;
+  onPauseRun?.(run.runId);
+  return true;
+}
+
+export function canOpenConversationSidebarRunMenu(scope: 'task' | 'run') {
+  return scope === 'run';
+}
+
+function RunStopMenu({
+  run,
+  open,
+  children,
+  onOpenChange,
+  onPauseRun,
+  t,
+}: {
+  run: { runId: string; status: string };
+  open: boolean;
+  children: React.ReactNode;
+  onOpenChange: (open: boolean) => void;
+  onPauseRun?: (runId: string) => void | Promise<void>;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const canPauseRun = canPauseConversationSidebarRun(run);
+  return (
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+      <DropdownMenuContent align="start" onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}>
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={!canPauseRun}
+          onSelect={() => {
+            if (!canPauseRun) return;
+            onOpenChange(false);
+            void onPauseRun?.(run.runId);
+          }}
+        >
+          {t('common.stopRun')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function TaskRow({
   task,
   pinned,
@@ -342,6 +403,7 @@ function TaskRow({
   onUnpin,
   onRename,
   onDelete,
+  onPauseRun,
   t,
 }: {
   task: ConversationTaskRowVm;
@@ -357,17 +419,20 @@ function TaskRow({
   onUnpin?: () => void;
   onRename?: (title: string) => void;
   onDelete?: () => void;
+  onPauseRun?: (runId: string) => void | Promise<void>;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [editing, setEditing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasMultipleRuns = task.runs.length > 1;
 
-  const latestColor = task.latestRun ? runStatusColor(task.latestRun) : 'bg-muted-foreground/30';
-  const relativeTime = task.latestRun && task.latestRun.status !== 'running'
-    ? formatRelativeTime(task.latestRun.updatedAt, t)
+  const latestRun = task.latestRun;
+  const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
+  const relativeTime = latestRun && latestRun.status !== 'running'
+    ? formatRelativeTime(latestRun.updatedAt, t)
     : null;
 
   const handleRowClick = () => {
@@ -412,57 +477,61 @@ function TaskRow({
     onDelete?.();
   };
 
+  const taskRow = (
+    <div
+      className={cn(
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
+        isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
+      )}
+      onClick={handleRowClick}
+    >
+      <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
+        {editing ? (
+          <input
+            ref={editInputRef}
+            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={handleRenameKeyDown}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
+        )}
+        {relativeTime ? (
+          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
+        ) : null}
+      </div>
+      <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
+        {onRename ? (
+          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
+            <Pencil className="size-3" />
+          </Button>
+        ) : null}
+        {pinned && onUnpin ? (
+          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
+            <PinOff className="size-3" />
+          </Button>
+        ) : onPin ? (
+          <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
+            <Pin className="size-3" />
+          </Button>
+        ) : null}
+        {onDelete ? (
+          <Button variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+            <Trash2 className="size-3" />
+          </Button>
+        ) : null}
+      </span>
+    </div>
+  );
+
   return (
     <>
     <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
-      <div
-        className={cn(
-          'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
-          isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
-        )}
-        onClick={handleRowClick}
-      >
-        <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
-          {editing ? (
-            <input
-              ref={editInputRef}
-              className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={handleRenameKeyDown}
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
-            <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
-          )}
-          {relativeTime ? (
-            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
-          ) : null}
-        </div>
-        <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
-          {onRename ? (
-            <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={startRename}>
-              <Pencil className="size-3" />
-            </Button>
-          ) : null}
-          {pinned && onUnpin ? (
-            <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onUnpin(); }}>
-              <PinOff className="size-3" />
-            </Button>
-          ) : onPin ? (
-            <Button variant="ghost" size="icon" className="size-5 shrink-0" onClick={(e) => { e.stopPropagation(); onPin(); }}>
-              <Pin className="size-3" />
-            </Button>
-          ) : null}
-          {onDelete ? (
-            <Button variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
-              <Trash2 className="size-3" />
-            </Button>
-          ) : null}
-        </span>
-      </div>
+      {taskRow}
       {expanded && hasMultipleRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
@@ -471,22 +540,38 @@ function TaskRow({
               ? formatRelativeTime(run.updatedAt, t)
               : null;
             return (
-              <div
+              <RunStopMenu
                 key={run.runId}
-                className={cn(
-                  'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
-                  isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
-                    ? 'bg-sidebar-accent text-sidebar-primary'
-                    : 'hover:bg-sidebar-accent',
-                )}
-                onClick={() => onSelectRun?.(run.runId)}
+                run={run}
+                open={openRunMenuId === run.runId}
+                onOpenChange={(open) => setOpenRunMenuId(open ? run.runId : null)}
+                onPauseRun={onPauseRun}
+                t={t}
               >
-                <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
-                {runTime ? (
-                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>
-                ) : null}
-              </div>
+                <div
+                  className={cn(
+                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
+                    isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
+                      ? 'bg-sidebar-accent text-sidebar-primary'
+                      : 'hover:bg-sidebar-accent',
+                  )}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => onSelectRun?.(run.runId)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (canOpenConversationSidebarRunMenu('run')) {
+                      setOpenRunMenuId(run.runId);
+                    }
+                  }}
+                >
+                  <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
+                  {runTime ? (
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>
+                  ) : null}
+                </div>
+              </RunStopMenu>
             );
           })}
         </div>

@@ -124,6 +124,9 @@
   --gold-success: #3ddc97;
   --gold-warning: #d6b36a;
   --gold-danger: #ff6b76;
+  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 44%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, var(--muted-foreground));
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 62%, var(--muted-foreground));
   --titlebar: var(--sidebar);
   --titlebar-foreground: #f4efe6;
   --titlebar-muted: #9b9488;
@@ -169,6 +172,9 @@
   --gold-success: #2dd48f;
   --gold-warning: #d6b36a;
   --gold-danger: #ff7185;
+  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 50%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 42%, var(--muted-foreground));
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 64%, var(--muted-foreground));
   --titlebar: var(--sidebar);
   --titlebar-foreground: #edf4ff;
   --titlebar-muted: #98a6bd;
@@ -213,6 +219,9 @@
   --gold-success: #15803d;
   --gold-warning: #9a6b1f;
   --gold-danger: #dc2626;
+  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 46%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, var(--muted-foreground));
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 62%, var(--muted-foreground));
   --titlebar: var(--sidebar);
   --titlebar-foreground: #111827;
   --titlebar-muted: #667085;
@@ -257,6 +266,9 @@
   --gold-success: #15803d;
   --gold-warning: #9a6b1f;
   --gold-danger: #c83e43;
+  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 48%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 34%, var(--muted-foreground));
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 58%, var(--muted-foreground));
   --titlebar: var(--sidebar);
   --titlebar-foreground: #211d16;
   --titlebar-muted: #756d60;
@@ -298,6 +310,49 @@
 
   ::selection {
     @apply bg-primary/30 text-foreground;
+  }
+}
+
+@layer utilities {
+  .gold-themed-scrollbar {
+    scrollbar-color: var(--gold-scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .gold-themed-scrollbar:hover::-webkit-scrollbar-track {
+    background: var(--gold-scrollbar-track);
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar-thumb {
+    min-height: 40px;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: var(--gold-scrollbar-thumb);
+    background-clip: content-box;
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: var(--gold-scrollbar-thumb-hover);
+    background-clip: content-box;
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  .gold-themed-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 

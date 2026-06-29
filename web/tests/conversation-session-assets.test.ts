@@ -22,6 +22,7 @@ function leaf(overrides: Partial<ConversationSessionLeafVm> = {}): ConversationS
       blockingError: false,
     },
     current: false,
+    manualCheckPending: false,
     startedAt: '2026-06-15T00:00:00Z',
     finishedAt: '2026-06-15T00:00:01Z',
     sessionId: null,

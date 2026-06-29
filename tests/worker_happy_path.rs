@@ -18,6 +18,7 @@ impl ProviderAdapter for FakeProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -106,7 +107,9 @@ fn run_start_executes_worker_node() {
               "output": {{ "kind": "json", "artifact": "implementation-result" }}
             }}
           ],
-          "edges": []
+          "edges": [
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
         }}"#,
             dev_profile
         ),

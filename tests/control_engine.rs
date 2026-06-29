@@ -104,7 +104,8 @@ fn worker_invalid_completes_run_as_failure() {
                 { "id": "accept", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
-                { "from": "test", "to": "accept", "on": "success" }
+                { "from": "test", "to": "accept", "on": "success" },
+                { "from": "accept", "to": "$end", "on": "success" }
             ]
         }"#,
     );
@@ -157,7 +158,8 @@ fn worker_failure_uses_explicit_edge() {
                 { "id": "dev", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
-                { "from": "review", "to": "dev", "on": "failure", "session": "continue" }
+                { "from": "review", "to": "dev", "on": "failure", "session": "continue" },
+                { "from": "dev", "to": "$end", "on": "success" }
             ]
         }"#,
     );
@@ -186,7 +188,8 @@ fn edge_to_new_round_opens_round() {
                 { "id": "accept", "type": "worker", "provider": "claude-acp", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
             "edges": [
-                { "from": "accept", "to": "$new-round", "on": "failure" }
+                { "from": "accept", "to": "$new-round", "on": "failure" },
+                { "from": "accept", "to": "$end", "on": "success" }
             ]
         }"#,
     );

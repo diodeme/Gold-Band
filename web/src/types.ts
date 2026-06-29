@@ -3,6 +3,7 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
@@ -66,6 +67,7 @@ export interface AppBootstrapVm {
   updateBadges: UpdateBadgeStateVm;
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
+  platform: DesktopPlatform;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
   needsWorkspace: boolean;
@@ -610,6 +612,7 @@ export interface ActiveSessionStopVm {
   kind: 'run-paused' | 'session-cancelled' | string;
   run?: RunSummaryVm | null;
   session?: AcpSessionVm | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
 export interface AcpSessionQueryInput {
@@ -672,6 +675,32 @@ export interface AcpPermissionOptionVm {
   name: string;
   kind: string;
 }
+
+// Toast「查看详情」点击后后端 emit 的导航事件 payload（含完整定位字段 + dedupKey）。
+// 应用内不再保留右上角弹窗；系统级 Toast 是唯一干预提醒表面。
+export interface InterventionNavigateEventVm {
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  dedupKey: string;
+}
+
+export interface NotificationAttentionInput {
+  windowFocused: boolean;
+  windowMinimized: boolean;
+  windowVisible: boolean;
+  projectId?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  nodeId?: string | null;
+  attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}
+
 
 export interface AcpDiagnosticsVm {
   rawFrameCount: number;
@@ -872,6 +901,7 @@ export interface ConversationRuntimeFacetVm {
   current: boolean;
   active: boolean;
   continuable: boolean;
+  phase: string;
 }
 
 export interface ConversationAcpFacetVm {
@@ -881,12 +911,22 @@ export interface ConversationAcpFacetVm {
   terminal: boolean;
 }
 
+export interface ConversationComposerVm {
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
+  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping' | 'launching-next-node' | string;
+  statusKey?: string | null;
+  canStop: boolean;
+  lockInput: boolean;
+}
+
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'input' | 'action' | string | null;
+  continueKind?: 'input' | null;
+  composer: ConversationComposerVm;
 }
 
 export interface ConversationSessionLeafVm {
@@ -901,6 +941,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
@@ -955,6 +996,7 @@ export interface ConversationRunVm {
   workflowGraph: GraphVm;
   resumable: boolean;
   pauseReason?: string | null;
+  runtimeErrorMessage?: string | null;
 }
 
 export interface ConversationSessionSwitchVm {
@@ -973,6 +1015,7 @@ export interface ConversationActiveSessionVm {
   status: string;
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  manualCheckPending: boolean;
   sessionId?: string | null;
   startedAt?: string | null;
 }
@@ -1035,4 +1078,54 @@ export interface ConversationSearchResultVm {
 export interface AcpModelVm {
   id: string;
   name: string;
+}
+
+// ── MCP & SKILL types ──
+
+export interface McpServerHealthResult {
+  status: 'healthy' | 'unhealthy' | 'auth_required' | 'unknown';
+  message?: string | null;
+  authUrl?: string | null;
+  needsClientSecret?: boolean | null;
+}
+
+export interface McpServerVm {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: 'stdio' | 'http' | 'sse';
+  command?: string | null;
+  args?: string[] | null;
+  env?: AgentEnvEntryVm[] | null;
+  url?: string | null;
+  headers?: AgentEnvEntryVm[] | null;
+  managed: boolean;
+  helpMessage?: string | null;
+  healthStatus?: 'healthy' | 'unhealthy' | 'auth_required' | 'stopped' | 'checking' | 'unknown' | null;
+  healthMessage?: string | null;
+}
+
+export interface ToolInfo {
+  name: string;
+  description?: string | null;
+  inputSchema?: Record<string, unknown> | null;
+}
+
+export interface SkillMetaVm {
+  name: string;
+  description: string;
+  source: 'built-in' | 'global' | 'project';
+  directoryPath: string;
+  disableModelInvocation: boolean;
+  loadWarnings: string[];
+}
+
+export interface SkillListVm {
+  global: SkillMetaVm[];
+  project: SkillMetaVm[];
+}
+
+export interface SkillContentVm {
+  meta: SkillMetaVm;
+  body: string;
 }

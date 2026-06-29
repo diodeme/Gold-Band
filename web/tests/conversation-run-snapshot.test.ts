@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
+  conversationSessionKeyFromParts,
+  isConversationActiveStatus,
   mergeConversationRunSnapshot,
 } from '@/lib/conversation-run-snapshot';
 import type { ConversationRunVm, ConversationSessionLeafVm, RuntimeDisplayVm } from '@/types';
@@ -26,6 +28,26 @@ const unknownDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
+const pausedDisplay: RuntimeDisplayVm = {
+  code: 'paused',
+  tone: 'warning',
+  icon: 'pause',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'process-interrupted',
+  blockingError: false,
+};
+
+const runtimeAbnormalDisplay: RuntimeDisplayVm = {
+  code: 'runtime-abnormal',
+  tone: 'danger',
+  icon: 'error',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'runtime-abnormal',
+  blockingError: false,
+};
+
 function leaf(
   status: string,
   runtimeDisplay: RuntimeDisplayVm,
@@ -44,6 +66,7 @@ function leaf(
     outcome: null,
     runtimeDisplay,
     current: true,
+    manualCheckPending: false,
     startedAt: '2026-06-12T00:00:00Z',
     finishedAt: null,
     sessionId: null,
@@ -94,6 +117,7 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
       pathLabel: selectedAttempt.pathLabel,
       status: selectedAttempt.status,
       runtimeDisplay: selectedAttempt.runtimeDisplay,
+      manualCheckPending: selectedAttempt.manualCheckPending,
       sessionId: null,
       startedAt: selectedAttempt.startedAt,
     }],
@@ -129,6 +153,55 @@ function withLeaf(base: ConversationRunVm, nextLeaf: ConversationSessionLeafVm):
   };
 }
 
+describe('conversationSessionKeyFromParts', () => {
+  it('builds the selected session key from run-state update identity', () => {
+    expect(conversationSessionKeyFromParts({
+      roundId: 'round-001',
+      nodeId: 'plan',
+      attemptId: 'attempt-001',
+    })).toBe('round-001/plan/attempt-001');
+  });
+});
+
+describe('isConversationActiveStatus', () => {
+  it('treats dynamic ready and normalized active statuses as active', () => {
+    expect(isConversationActiveStatus('ready')).toBe(true);
+    expect(isConversationActiveStatus('in_progress')).toBe(true);
+    expect(isConversationActiveStatus('cancel_requested')).toBe(true);
+    expect(isConversationActiveStatus('completed')).toBe(false);
+  });
+
+  it('does not treat runtime-abnormal as an active running status', () => {
+    expect(isConversationActiveStatus('runtime-abnormal')).toBe(false);
+  });
+});
+
+describe('runtime-abnormal snapshots', () => {
+  it('removes paused abnormal sessions from active sessions while preserving selected leaf state', () => {
+    const current = run();
+    const abnormalLeaf = leaf('paused', runtimeAbnormalDisplay, { current: true });
+
+    const patched = applyConversationSelectedSessionSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'paused', outcome: null, pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+      },
+    });
+
+    expect(patched?.activeSessions).toEqual([]);
+    expect(patched?.sessionTree.rounds[0].nodes[0].attempts[0].runtimeDisplay).toEqual(abnormalLeaf.runtimeDisplay);
+  });
+});
+
 describe('applyConversationSelectedSessionSnapshot', () => {
   it('patches selected session when a full snapshot matches the selected identity', () => {
     const current = run({
@@ -146,6 +219,56 @@ describe('applyConversationSelectedSessionSnapshot', () => {
 
     expect(patched?.selectedSession?.status).toBe('cancelled');
     expect(patched?.selectedSession?.events).toEqual([{ content: 'stopped' }]);
+  });
+
+  it('patches workflow graph status from a lifecycle-only selected snapshot', () => {
+    const currentLeaf = leaf('paused', pausedDisplay, { current: true });
+    const current = run({
+      selectedSession: { sessionId: 'session-1', status: 'cancelled', events: [] } as any,
+      workflowGraph: {
+        nodes: [{
+          id: '1:dev:attempt-001',
+          nodeId: 'dev',
+          sequence: 1,
+          label: 'dev',
+          nodeType: 'worker',
+          status: 'paused',
+          outcome: null,
+          runtimeDisplay: pausedDisplay,
+          attemptId: 'attempt-001',
+          outerNodeId: null,
+          outerAttemptId: null,
+          attemptCount: 1,
+          attempts: [{ attemptId: 'attempt-001', sequence: 1, status: 'paused', outcome: null, runtimeDisplay: pausedDisplay, current: true }],
+          artifactCount: 0,
+          attachmentCount: 0,
+          current: true,
+        }],
+        edges: [],
+      },
+    }, [currentLeaf]);
+
+    const patched = applyConversationSelectedSessionSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'running',
+        runtimeDisplay: runningDisplay,
+        continueKind: null,
+        composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: true, lockInput: true },
+      },
+    });
+
+    expect(patched?.selectedSession?.status).toBe('cancelled');
+    expect(patched?.sessionTree.rounds[0].nodes[0].attempts[0].status).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].status).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].runtimeDisplay.tone).toBe('running');
+    expect(patched?.workflowGraph.nodes[0].attempts?.[0].status).toBe('running');
   });
 
   it('ignores full snapshots from non-selected session identities', () => {
@@ -224,6 +347,7 @@ describe('applyConversationBackgroundSessionRuntimeSnapshot', () => {
         pathLabel: 'test/attempt-001',
         status: 'running',
         runtimeDisplay: runningDisplay,
+        manualCheckPending: false,
         sessionId: 'test-session',
         startedAt: '2026-06-12T00:00:00Z',
       }],

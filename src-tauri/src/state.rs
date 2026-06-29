@@ -6,8 +6,10 @@ use std::{
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
-use gold_band::app::App;
-use gold_band::config::{ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig};
+use gold_band::app::{App, NotificationDedup};
+use gold_band::config::{
+    ManagedAgentType, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig, StateConfig,
+};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
@@ -59,57 +61,9 @@ impl DesktopContext {
     pub fn app(&self) -> App {
         App::with_config(self.repo_root.clone(), self.config.clone())
     }
-
-    pub fn app_with_acp_live_update(
-        &self,
-        live_update: Arc<
-            dyn Fn(
-                    gold_band::app::AcpLiveEventContext,
-                    gold_band::acp::events::AcpUiEvent,
-                ) -> anyhow::Result<()>
-                + Send
-                + Sync,
-        >,
-        session_update: Arc<
-            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
-        >,
-    ) -> App {
-        self.app()
-            .with_acp_live_update(live_update)
-            .with_acp_session_update(session_update)
-    }
-
-    pub fn app_with_metrics(
-        &self,
-        live_update: Arc<
-            dyn Fn(
-                    gold_band::app::AcpLiveEventContext,
-                    gold_band::acp::events::AcpUiEvent,
-                ) -> anyhow::Result<()>
-                + Send
-                + Sync,
-        >,
-        session_update: Arc<
-            dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync,
-        >,
-        metrics_callback: Arc<
-            dyn Fn(gold_band::app::MetricsEventContext, gold_band::app::MetricsEvent) + Send + Sync,
-        >,
-    ) -> App {
-        self.app()
-            .with_acp_live_update(live_update)
-            .with_acp_session_update(session_update)
-            .with_metrics_callback(metrics_callback)
-    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentDiagnosticState {
-    pub available: bool,
-    pub reason: Option<String>,
-    pub checked_at: String,
-    pub capabilities: Option<serde_json::Value>,
-}
+pub type AgentDiagnosticState = ProviderDiagnosticSnapshot;
 
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateBadgeSeenTarget {
@@ -118,11 +72,111 @@ pub enum UpdateBadgeSeenTarget {
     Announcement,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAttentionInput {
+    pub window_focused: bool,
+    pub window_minimized: bool,
+    pub window_visible: bool,
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub node_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationAttentionTarget<'a> {
+    pub task_id: &'a str,
+    pub run_id: &'a str,
+    pub round_id: &'a str,
+    pub node_id: &'a str,
+    pub attempt_id: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationAttentionState {
+    window_focused: bool,
+    window_minimized: bool,
+    window_visible: bool,
+    project_id: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
+    round_id: Option<String>,
+    node_id: Option<String>,
+    attempt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+impl Default for NotificationAttentionState {
+    fn default() -> Self {
+        Self {
+            window_focused: false,
+            window_minimized: true,
+            window_visible: false,
+            project_id: None,
+            task_id: None,
+            run_id: None,
+            round_id: None,
+            node_id: None,
+            attempt_id: None,
+            outer_node_id: None,
+            outer_attempt_id: None,
+        }
+    }
+}
+
+impl NotificationAttentionState {
+    fn update(&mut self, input: NotificationAttentionInput) {
+        self.window_focused = input.window_focused;
+        self.window_minimized = input.window_minimized;
+        self.window_visible = input.window_visible;
+        self.project_id = input.project_id;
+        self.task_id = input.task_id;
+        self.run_id = input.run_id;
+        self.round_id = input.round_id;
+        self.node_id = input.node_id;
+        self.attempt_id = input.attempt_id;
+        self.outer_node_id = input.outer_node_id;
+        self.outer_attempt_id = input.outer_attempt_id;
+    }
+
+    pub fn should_notify(
+        &self,
+        target: &NotificationAttentionTarget<'_>,
+        require_session_match: bool,
+    ) -> bool {
+        if !self.window_focused || self.window_minimized || !self.window_visible {
+            return true;
+        }
+        if self.task_id.as_deref() != Some(target.task_id)
+            || self.run_id.as_deref() != Some(target.run_id)
+        {
+            return true;
+        }
+        if !require_session_match {
+            return false;
+        }
+        self.round_id.as_deref() != Some(target.round_id)
+            || self.node_id.as_deref() != Some(target.node_id)
+            || self.attempt_id.as_deref() != Some(target.attempt_id)
+    }
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
-    agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
+    agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
+    notification_attention: Mutex<NotificationAttentionState>,
+    /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
+    notification_dedup: Arc<NotificationDedup>,
+    /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
+    mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
 }
 
 impl DesktopState {
@@ -131,18 +185,94 @@ impl DesktopState {
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
-            agent_diagnostics: Mutex::new(persisted_diagnostics),
+            agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
+            notification_attention: Mutex::new(NotificationAttentionState::default()),
+            notification_dedup: Arc::new(NotificationDedup::new()),
+            mcp_health: Mutex::new(BTreeMap::new()),
         }
     }
 
-    pub fn app(&self) -> Result<App> {
+    /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
+    pub fn mcp_health_snapshot(&self) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
         Ok(self
+            .mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .clone())
+    }
+
+    /// 写入/更新单个 MCP 服务器的健康状态（启动后台线程与诊断命令共用）。
+    pub fn record_mcp_health(
+        &self,
+        id: String,
+        state: gold_band::config::McpServerState,
+    ) -> Result<()> {
+        self.mcp_health
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mcp health lock poisoned"))?
+            .insert(id, state);
+        Ok(())
+    }
+
+    /// 干预通知去重表（共享实例）。路径 A/B 与 dismiss 命令均经此访问。
+    pub fn notification_dedup(&self) -> Arc<NotificationDedup> {
+        self.notification_dedup.clone()
+    }
+
+    pub fn update_notification_attention(&self, input: NotificationAttentionInput) -> Result<()> {
+        self.notification_attention
+            .lock()
+            .map_err(|_| anyhow::anyhow!("notification attention lock poisoned"))?
+            .update(input);
+        Ok(())
+    }
+
+    pub fn should_send_notification(
+        &self,
+        target: &NotificationAttentionTarget<'_>,
+        require_session_match: bool,
+    ) -> bool {
+        self.notification_attention
+            .lock()
+            .map(|state| state.should_notify(target, require_session_match))
+            .unwrap_or(true)
+    }
+
+    pub fn app(&self) -> Result<App> {
+        let context = self
             .context
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .app())
+            .clone();
+        let diagnostics = self.agent_diagnostics.clone();
+        Ok(
+            App::with_config(context.repo_root, context.config).with_provider_diagnostics_source(
+                Arc::new(move || {
+                    Ok(diagnostics
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+                        .iter()
+                        .map(|(agent_type, diagnostic)| {
+                            (agent_type.as_str().to_string(), diagnostic.clone())
+                        })
+                        .collect())
+                }),
+            ),
+        )
+    }
+
+    pub fn provider_diagnostic_snapshots(
+        &self,
+    ) -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> {
+        Ok(self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .iter()
+            .map(|(agent_type, diagnostic)| (agent_type.as_str().to_string(), diagnostic.clone()))
+            .collect())
     }
 
     pub fn context(&self) -> Result<DesktopContext> {
@@ -263,6 +393,7 @@ impl DesktopState {
         Ok(guard.config.clone())
     }
 
+    #[allow(dead_code)]
     pub fn clear_agent_diagnostics(&self) -> Result<()> {
         let snapshot = {
             let mut diagnostics = self
@@ -395,7 +526,7 @@ impl DesktopState {
 }
 
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
-    AgentDiagnosticState {
+    ProviderDiagnosticSnapshot {
         available: result.available,
         reason: result.reason,
         checked_at: current_timestamp(),
@@ -455,4 +586,56 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
         }
     }
     workspaces
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target() -> NotificationAttentionTarget<'static> {
+        NotificationAttentionTarget {
+            task_id: "task-1",
+            run_id: "run-1",
+            round_id: "round-1",
+            node_id: "node-1",
+            attempt_id: "attempt-1",
+        }
+    }
+
+    fn input() -> NotificationAttentionInput {
+        NotificationAttentionInput {
+            window_focused: true,
+            window_minimized: false,
+            window_visible: true,
+            project_id: Some("project-1".to_string()),
+            task_id: Some("task-1".to_string()),
+            run_id: Some("run-1".to_string()),
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        }
+    }
+
+    #[test]
+    fn notification_attention_suppresses_visible_selected_session() {
+        let mut state = NotificationAttentionState::default();
+        state.update(input());
+        assert!(!state.should_notify(&target(), true));
+    }
+
+    #[test]
+    fn notification_attention_notifies_when_minimized_or_different_session() {
+        let mut state = NotificationAttentionState::default();
+        let mut minimized = input();
+        minimized.window_minimized = true;
+        state.update(minimized);
+        assert!(state.should_notify(&target(), true));
+
+        let mut other = input();
+        other.attempt_id = Some("attempt-2".to_string());
+        state.update(other);
+        assert!(state.should_notify(&target(), true));
+    }
 }

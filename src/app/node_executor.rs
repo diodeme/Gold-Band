@@ -1,6 +1,8 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
 
+use tracing::warn;
+
 use crate::artifacts::parse_json_artifact;
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
@@ -9,7 +11,8 @@ use crate::dsl::{
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
     PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
+    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
+    WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -28,6 +31,21 @@ fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn attempt_is_still_current_running(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    let run: crate::runtime::RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+    Ok(run.status == RunStatus::Running
+        && run.current_round.as_deref() == Some(round_id)
+        && run.current_node.as_deref() == Some(node_id)
+        && run.current_attempt.as_deref() == Some(attempt_id))
 }
 
 fn success_condition_text(condition: &JsonConditionDsl) -> String {
@@ -67,6 +85,12 @@ fn runtime_prompt_context(
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
         attempt_id: attempt_id.to_string(),
+        runtime_node_id: None,
+        runtime_attempt_id: None,
+        attempt_state_file: Some(
+            app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        ),
         language: app.config.desktop_language,
         run_dir: app.paths.run_dir(task_id, run_id),
         round_dir: app.paths.round_dir(task_id, run_id, round_id),
@@ -287,6 +311,7 @@ pub(crate) fn build_worker_invocation(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
 ) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
@@ -324,8 +349,17 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
+    let input_attachment_paths = if matches!(session_mode, SessionMode::New) {
+        super::task_input_attachment_paths(app, task_id)
+    } else {
+        Vec::new()
+    };
 
-    let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
+    let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
+    let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
+        warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
+        Vec::new()
+    });
 
     Ok(WorkerInvocation {
         invocation_kind,
@@ -333,6 +367,7 @@ pub(crate) fn build_worker_invocation(
         profile_content,
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
+        adapter_workspace_dir: app.paths.repo_root.clone(),
         workspace_dir: app.paths.repo_root.clone(),
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
@@ -341,6 +376,7 @@ pub(crate) fn build_worker_invocation(
         extra_system_sections: Vec::new(),
         task_instruction,
         session_mode,
+        user_prompt_render_mode,
         permission_mode,
         model,
         continue_ref,
@@ -357,6 +393,7 @@ pub(crate) fn build_worker_invocation(
         cold_artifacts,
         cold_attachments,
         input_attachment_paths,
+        mcp_servers,
     })
 }
 
@@ -374,6 +411,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let invocation = build_worker_invocation(
@@ -389,6 +427,7 @@ pub(crate) fn execute_ai_node(
         resume_prompt,
         resume_prompt_id,
         resume_prompt_visibility,
+        user_prompt_render_mode,
     )?;
 
     progress(&format!(
@@ -425,6 +464,14 @@ pub(crate) fn execute_ai_node(
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
         )?;
+
+    if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {
+        return Ok(read_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+        )
+        .unwrap_or(node));
+    }
 
     // Fire-and-forget: index this attempt for cross-session search
     let ctx = AttemptIndexContext {

@@ -64,6 +64,7 @@ Agent 管理
 - 点击“任务编排”应回到任务列表根页面，而不是保留任务工作流或 Round 详情等深层页面。
 - 当前实现任务编排、Agent 管理、上下文管理和设置。
 - 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile；列表拆成“自定义角色 / 内置角色”双 tab，自定义角色维护独立分页与过滤，内置角色单独浏览。内置角色与自定义角色卡片使用同一套紧凑密度基线，桌面常见宽度下优先维持一行 3 张卡片，再按宽度退化。浏览器预览 mock 与桌面端 Tauri 数据通路必须分层隔离，不能在正式路径复用 mock 状态；该分层由前端 Vitest 回归测试持续覆盖 runtime 选择、facade 透传和 desktop/browser 双实现语义。
+- 上下文管理的 MCP 管理页按“自定义 MCP / 内置 MCP”分段展示。自定义 MCP 允许用户新增、编辑、删除和启停；内置 MCP 由渠道配置注入，只允许用户查看、诊断、查看工具列表和启停，不能编辑或删除。内置 MCP 仅在对应渠道声明 `builtinMcpServers` 时注入，首次注入使用渠道配置的 `enabled` 默认值；后续启动同步只刷新名称、连接方式和帮助信息，必须保留用户在本机选择的启停状态。MCP 工具列表通过后端 `tools/list` 获取，stdio transport 必须在同一个子进程会话中先完成 `initialize`，再等待 `tools/list` 的 JSON-RPC 响应，不能把 initialize 响应误当作工具列表结果。
 - 模型管理保持占位，可显示 disabled 或 coming soon 状态。
 - 不在一级菜单中放 run、round、node 等任务内部对象。
 

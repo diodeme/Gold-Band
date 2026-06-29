@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use camino::Utf8PathBuf;
@@ -158,18 +158,24 @@ impl McpManager {
     pub fn add_managed(
         &self,
         json_content: &str,
+        default_enabled: bool,
     ) -> Result<(McpServerWithStatus, Vec<McpServerWithStatus>)> {
         let (id, transport, display_name, help_message) = parse_mcp_json(json_content)?;
+        let mut settings = self.load_settings()?;
+        let mut servers = settings.context_servers.unwrap_or_default();
+        let enabled = servers
+            .iter()
+            .find(|s| s.id == id && s.managed)
+            .map(|s| s.enabled)
+            .unwrap_or(default_enabled);
         let config = McpServerConfig {
             name: display_name.unwrap_or_else(|| id.clone()),
             id,
-            enabled: true,
+            enabled,
             transport,
             managed: true,
             help_message,
         };
-        let mut settings = self.load_settings()?;
-        let mut servers = settings.context_servers.unwrap_or_default();
         servers.retain(|s| s.id != config.id);
         servers.push(config.clone());
         settings.context_servers = Some(servers);
@@ -234,7 +240,11 @@ impl McpManager {
     pub fn delete(&self, id: &str) -> Result<Vec<McpServerWithStatus>> {
         let mut settings = self.load_settings()?;
         // Check managed before mutation — borrow then move
-        if let Some(s) = settings.context_servers.as_ref().and_then(|servers| servers.iter().find(|s| s.id == id)) {
+        if let Some(s) = settings
+            .context_servers
+            .as_ref()
+            .and_then(|servers| servers.iter().find(|s| s.id == id))
+        {
             anyhow::ensure!(
                 !s.managed,
                 "MCP server `{id}` is managed and cannot be deleted"
@@ -312,12 +322,8 @@ impl McpManager {
             McpTransportConfig::Stdio { command, args, env } => {
                 fetch_stdio_tools(command, args, env)
             }
-            McpTransportConfig::Http { url, headers, .. } => {
-                fetch_http_tools(url, headers)
-            }
-            McpTransportConfig::Sse { url, headers } => {
-                fetch_sse_tools(url, headers)
-            }
+            McpTransportConfig::Http { url, headers, .. } => fetch_http_tools(url, headers),
+            McpTransportConfig::Sse { url, headers } => fetch_sse_tools(url, headers),
         }
     }
 
@@ -630,9 +636,7 @@ fn verify_sse_server(
         .build()
         .context("failed to create HTTP client")?;
 
-    let mut req = client
-        .get(url)
-        .header("Accept", "text/event-stream");
+    let mut req = client.get(url).header("Accept", "text/event-stream");
 
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
@@ -674,9 +678,43 @@ fn build_tools_list_request() -> Value {
     })
 }
 
+fn jsonrpc_response_id(response_text: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(response_text.trim()).ok()?;
+    value
+        .get("id")
+        .and_then(|id| id.as_u64().or_else(|| id.as_str()?.parse::<u64>().ok()))
+}
+
+fn recv_jsonrpc_response(
+    rx: &mpsc::Receiver<std::io::Result<String>>,
+    expected_id: u64,
+    timeout: Duration,
+    label: &str,
+) -> Result<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("{label} timed out");
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let text = match rx.recv_timeout(remaining) {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
+                return Err(e).with_context(|| format!("failed to read {label} response"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!("{label} timed out"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => bail!("{label} response stream closed"),
+        };
+        if jsonrpc_response_id(&text) == Some(expected_id) {
+            return Ok(text);
+        }
+    }
+}
+
 fn parse_tools_list_response(response_text: &str) -> Result<Vec<crate::config::ToolInfo>> {
-    let response: Value =
-        serde_json::from_str(response_text.trim()).context("invalid JSON response for tools/list")?;
+    let response: Value = serde_json::from_str(response_text.trim())
+        .context("invalid JSON response for tools/list")?;
     if let Some(err) = response.get("error") {
         let msg = err
             .get("message")
@@ -698,7 +736,10 @@ fn parse_tools_list_response(response_text: &str) -> Result<Vec<crate::config::T
                     .and_then(Value::as_str)
                     .context("tool missing name")?
                     .to_string(),
-                description: t.get("description").and_then(Value::as_str).map(String::from),
+                description: t
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(String::from),
                 input_schema: t.get("inputSchema").cloned(),
             })
         })
@@ -726,11 +767,6 @@ fn fetch_stdio_tools(
     let mut stdin = child.stdin.take().context("failed to capture stdin")?;
     let stdout = child.stdout.take().context("failed to capture stdout")?;
 
-    // Step 1: initialize
-    let init_line = serde_json::to_string(&build_initialize_request())? + "\n";
-    stdin.write_all(init_line.as_bytes())?;
-    stdin.flush()?;
-
     let (tx, rx) = mpsc::channel();
     let stdout_reader = std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -739,8 +775,9 @@ fn fetch_stdio_tools(
                 Ok(text) => {
                     let trimmed = text.trim().to_string();
                     if !trimmed.is_empty() {
-                        let _ = tx.send(Ok(trimmed));
-                        return;
+                        if tx.send(Ok(trimmed)).is_err() {
+                            return;
+                        }
                     }
                 }
                 Err(e) => {
@@ -755,27 +792,29 @@ fn fetch_stdio_tools(
         )));
     });
 
-    let _init_response = rx
-        .recv_timeout(Duration::from_secs(10))
-        .context("initialize timed out")?
-        .context("failed to read initialize response")?;
+    let result = (|| -> Result<Vec<crate::config::ToolInfo>> {
+        // Step 1: initialize
+        let init_line = serde_json::to_string(&build_initialize_request())? + "\n";
+        stdin.write_all(init_line.as_bytes())?;
+        stdin.flush()?;
+        let init_response = recv_jsonrpc_response(&rx, 1, Duration::from_secs(10), "initialize")?;
+        parse_initialize_response(&init_response).context("initialize failed")?;
 
-    // Step 2: tools/list
-    let tools_line = serde_json::to_string(&build_tools_list_request())? + "\n";
-    stdin.write_all(tools_line.as_bytes())?;
-    stdin.flush()?;
-    drop(stdin);
+        // Step 2: tools/list
+        let tools_line = serde_json::to_string(&build_tools_list_request())? + "\n";
+        stdin.write_all(tools_line.as_bytes())?;
+        stdin.flush()?;
+        drop(stdin);
 
-    let tools_response = rx
-        .recv_timeout(Duration::from_secs(10))
-        .context("tools/list timed out")?
-        .context("failed to read tools/list response")?;
+        let tools_response = recv_jsonrpc_response(&rx, 2, Duration::from_secs(10), "tools/list")?;
+        parse_tools_list_response(&tools_response)
+    })();
 
-    let _ = stdout_reader.join();
     let _ = child.kill();
     let _ = child.wait();
+    let _ = stdout_reader.join();
 
-    parse_tools_list_response(&tools_response)
+    result
 }
 
 fn fetch_http_tools(
@@ -821,7 +860,9 @@ fn fetch_sse_tools(
 
     use std::io::Read;
     let mut buf = [0u8; 8192];
-    let n = resp.read(&mut buf).context("failed to read SSE handshake")?;
+    let n = resp
+        .read(&mut buf)
+        .context("failed to read SSE handshake")?;
     let sse_body = String::from_utf8_lossy(&buf[..n]);
     let endpoint_url = discover_sse_endpoint(&sse_body, &base_url)
         .context("SSE handshake did not contain an endpoint event")?;
@@ -987,7 +1028,9 @@ fn try_oauth_discovery(
 
 // ── JSON Parser（对标 Zed parse_input / parse_http_input） ──
 
-fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Option<String>, Option<String>)> {
+fn parse_mcp_json(
+    json_content: &str,
+) -> Result<(String, McpTransportConfig, Option<String>, Option<String>)> {
     let stripped: String = json_content
         .lines()
         .filter(|line| !line.trim().starts_with("///"))
@@ -1025,4 +1068,200 @@ fn parse_mcp_json(json_content: &str) -> Result<(String, McpTransportConfig, Opt
         }
     };
     Ok((id, transport, display_name, help_message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::read_json;
+    use std::fs;
+
+    fn settings_path(temp: &tempfile::TempDir) -> Utf8PathBuf {
+        Utf8PathBuf::from_path_buf(temp.path().join("settings.json")).unwrap()
+    }
+
+    #[test]
+    fn managed_upsert_preserves_existing_enabled_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = settings_path(&temp);
+        let initial = SettingsConfig {
+            context_servers: Some(vec![McpServerConfig {
+                id: "managed-code-graph".into(),
+                name: "Old".into(),
+                enabled: false,
+                transport: McpTransportConfig::Stdio {
+                    command: "missing-old-command".into(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                },
+                managed: true,
+                help_message: None,
+            }]),
+            ..SettingsConfig::default()
+        };
+        write_json(&settings_path, &initial).unwrap();
+
+        let manager = McpManager::new(settings_path.clone());
+        manager
+            .add_managed(
+                r#"{
+                  "managed-code-graph": {
+                    "command": "missing-new-command",
+                    "name": "Code Graph",
+                    "helpMessage": "Open the graph console before use"
+                  }
+                }"#,
+                true,
+            )
+            .unwrap();
+
+        let settings: SettingsConfig = read_json(&settings_path).unwrap();
+        let server = settings
+            .context_servers
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == "managed-code-graph")
+            .unwrap();
+        assert!(!server.enabled);
+        assert!(server.managed);
+        assert_eq!(server.name, "Code Graph");
+        assert_eq!(
+            server.help_message.as_deref(),
+            Some("Open the graph console before use")
+        );
+        match server.transport {
+            McpTransportConfig::Stdio { command, .. } => {
+                assert_eq!(command, "missing-new-command");
+            }
+            _ => panic!("expected stdio transport"),
+        }
+    }
+
+    #[test]
+    fn managed_insert_uses_channel_default_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = settings_path(&temp);
+        let manager = McpManager::new(settings_path.clone());
+
+        manager
+            .add_managed(
+                r#"{
+                  "disabled-by-channel": {
+                    "command": "missing-command",
+                    "name": "Disabled By Channel"
+                  }
+                }"#,
+                false,
+            )
+            .unwrap();
+
+        let settings: SettingsConfig = read_json(&settings_path).unwrap();
+        let server = settings.context_servers.unwrap().pop().unwrap();
+        assert_eq!(server.id, "disabled-by-channel");
+        assert!(!server.enabled);
+        assert!(server.managed);
+    }
+
+    #[test]
+    fn parses_sse_transport_name_and_help_message() {
+        let (id, transport, name, help_message) = parse_mcp_json(
+            r#"{
+              "code-graph": {
+                "type": "sse",
+                "url": "https://example.test/mcp/sse",
+                "headers": { "Authorization": "Bearer token" },
+                "name": "Code Graph",
+                "helpMessage": "Use this after project indexing finishes"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(id, "code-graph");
+        assert_eq!(name.as_deref(), Some("Code Graph"));
+        assert_eq!(
+            help_message.as_deref(),
+            Some("Use this after project indexing finishes")
+        );
+        match transport {
+            McpTransportConfig::Sse { url, headers } => {
+                assert_eq!(url, "https://example.test/mcp/sse");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer token")
+                );
+            }
+            _ => panic!("expected sse transport"),
+        }
+    }
+
+    #[test]
+    fn stdio_tools_list_waits_for_response_after_initialize() {
+        let temp = tempfile::tempdir().unwrap();
+        let (command, args) = stdio_fixture_command(&temp);
+
+        let tools = fetch_stdio_tools(&command, &args, &BTreeMap::new()).unwrap();
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "lookup");
+        assert_eq!(tools[0].description.as_deref(), Some("Lookup"));
+        assert_eq!(
+            tools[0].input_schema.as_ref().and_then(|s| s.get("type")),
+            Some(&serde_json::json!("object"))
+        );
+    }
+
+    #[cfg(windows)]
+    fn stdio_fixture_command(temp: &tempfile::TempDir) -> (String, Vec<String>) {
+        let script = temp.path().join("mcp-fixture.ps1");
+        fs::write(
+            &script,
+            r#"
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  if ($line -like '*initialize*') {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}')
+    [Console]::Out.Flush()
+  } elseif ($line -like '*tools/list*') {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"}}]}}')
+    [Console]::Out.Flush()
+    break
+  }
+}
+"#,
+        )
+        .unwrap();
+        (
+            "powershell".into(),
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                script.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn stdio_fixture_command(temp: &tempfile::TempDir) -> (String, Vec<String>) {
+        let script = temp.path().join("mcp-fixture.sh");
+        fs::write(
+            &script,
+            r#"
+while IFS= read -r line; do
+  case "$line" in
+    *initialize*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"}}]}}'
+      break
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        ("sh".into(), vec![script.to_string_lossy().into_owned()])
+    }
 }

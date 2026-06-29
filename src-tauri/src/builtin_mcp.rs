@@ -10,13 +10,15 @@ struct BuiltinMcpServerDef {
     id: String,
     name: String,
     #[serde(default = "default_enabled")]
-    _enabled: bool,
+    enabled: bool,
     transport: BuiltinMcpTransportDef,
     #[serde(default)]
     help_message: Option<String>,
 }
 
-fn default_enabled() -> bool { true }
+fn default_enabled() -> bool {
+    true
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -107,15 +109,17 @@ pub fn inject_builtin_mcp_servers(state: &crate::state::DesktopState) {
         let json = server.to_mcp_json();
         if existing_managed.contains(sid) {
             // Managed server already exists — update its config (name/transport may have changed)
-            match mcp_mgr.add_managed(&json) {
+            match mcp_mgr.add_managed(&json, server.enabled) {
                 Ok(_) => info!(server_id = %sid, "synced builtin MCP server config"),
                 Err(e) => warn!(server_id = %sid, error = %e, "failed to sync builtin MCP server"),
             }
         } else {
             // Not yet injected — add as new managed server
-            match mcp_mgr.add_managed(&json) {
+            match mcp_mgr.add_managed(&json, server.enabled) {
                 Ok(_) => info!(server_id = %sid, "injected builtin MCP server"),
-                Err(e) => warn!(server_id = %sid, error = %e, "failed to inject builtin MCP server"),
+                Err(e) => {
+                    warn!(server_id = %sid, error = %e, "failed to inject builtin MCP server")
+                }
             }
         }
     }
@@ -150,7 +154,9 @@ pub fn refresh_all_mcp_health(state: &crate::state::DesktopState) {
                         .unwrap_or_else(|| "unknown error".into()),
                 },
             },
-            Err(e) => McpServerState::Error { message: e.to_string() },
+            Err(e) => McpServerState::Error {
+                message: e.to_string(),
+            },
         };
         if let Err(e) = state.record_mcp_health(id.clone(), cache_state) {
             warn!(server_id = %id, error = %e, "failed to record mcp health");

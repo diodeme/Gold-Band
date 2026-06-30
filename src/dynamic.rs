@@ -129,6 +129,9 @@ pub struct DynamicNodeState {
     pub child_run_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// Hidden UUID used for metrics reporting (see docs/gold-band/observability-bus-design.md).
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -738,4 +741,54 @@ pub fn validate_dynamic_group_state(state: &DynamicGroupState) -> Result<()> {
         "dynamic group must have root nodes"
     );
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A DynamicNodeState without the `uuid` field (legacy on-disk data)
+    /// must still deserialize thanks to `#[serde(default)]`.
+    #[test]
+    fn dynamic_node_state_uuid_is_optional_for_legacy_data() {
+        let json = r#"{
+            "version": "1",
+            "id": "bootstrap",
+            "dynamicRunId": "dr-1",
+            "kind": "worker",
+            "title": "t",
+            "task": "t",
+            "status": "ready",
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspace": { "mode": "readonly" },
+            "sessionMode": "new"
+        }"#;
+        let node: DynamicNodeState = serde_json::from_str(json).expect("legacy node must deserialize");
+        assert!(node.uuid.is_none());
+    }
+
+    /// When present, the uuid field round-trips through serde.
+    #[test]
+    fn dynamic_node_state_uuid_round_trips() {
+        let json = r#"{
+            "version": "1",
+            "id": "bootstrap",
+            "dynamicRunId": "dr-1",
+            "kind": "worker",
+            "title": "t",
+            "task": "t",
+            "status": "ready",
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspace": { "mode": "readonly" },
+            "sessionMode": "new",
+            "uuid": "abc123"
+        }"#;
+        let node: DynamicNodeState = serde_json::from_str(json).expect("node must deserialize");
+        assert_eq!(node.uuid.as_deref(), Some("abc123"));
+    }
 }

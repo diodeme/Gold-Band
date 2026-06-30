@@ -82,6 +82,7 @@ import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
+import { ConversationComposerDraftProvider, useConversationComposerDraftOwner } from '@/lib/conversation-composer-draft';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
@@ -296,6 +297,7 @@ export function App() {
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
+  const composerDraftOwner = useConversationComposerDraftOwner();
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
   const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -1236,6 +1238,7 @@ export function App() {
   };
 
   return (
+    <ConversationComposerDraftProvider value={composerDraftOwner}>
     <Shell
       uiMode={uiMode}
       active={primaryModule}
@@ -1371,6 +1374,7 @@ export function App() {
         }}
       />
     </Shell>
+    </ConversationComposerDraftProvider>
   );
 
   function renderConversationContent() {
@@ -1446,6 +1450,7 @@ export function App() {
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
               applyConversationRunSnapshot(run, 'create');
+              composerDraftOwner.reset();
               setConversationPage({
                 kind: 'conversation-run',
                 projectId: run.projectId,
@@ -1468,6 +1473,7 @@ export function App() {
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
+            composerDraftOwner.reset();
             setDraftConversationWorkspaceId(projectId);
             getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
           }}
@@ -1615,6 +1621,7 @@ export function App() {
       onSubmit={(_input) => null}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {
+        composerDraftOwner.reset();
         setDraftConversationWorkspaceId(projectId);
         getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
       }}

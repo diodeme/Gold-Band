@@ -129,12 +129,18 @@ function fileToBase64(file: File): Promise<string> {
 export interface UseAttachmentPickerOptions {
   maxCount?: number;
   maxTotalSize?: number;
+  attachments?: AttachmentStateController;
 }
+
+export type AttachmentStateController = [
+  AttachmentItem[],
+  (next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[])) => void,
+];
 
 export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const { t } = useTranslation();
   const allowedExts = useAttachmentExtensions();
-  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [attachments, setAttachments] = options.attachments ?? useState<AttachmentItem[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<AttachmentItem | null>(null);
   const [textPreview, setTextPreview] = useState<{ name: string; content: string } | null>(null);

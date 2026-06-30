@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStart } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -39,7 +40,9 @@ export function ConversationComposer({
   onWorkspaceChange,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
-  const [content, setContent] = useState('');
+  const composerDraft = useConversationComposerDraft();
+  const content = composerDraft.draft.content;
+  const setContent = composerDraft.setContent;
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
@@ -69,7 +72,7 @@ export function ConversationComposer({
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
-  } = useAttachmentPicker();
+  } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
 
   useWindowDragGuard();
 
@@ -150,8 +153,7 @@ export function ConversationComposer({
         setRunModeError(submitError);
         return;
       }
-      setContent('');
-      clearAttachments();
+      composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.
     } finally {

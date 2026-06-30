@@ -3521,6 +3521,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         child_run_id: None,
         started_at: None,
         finished_at: None,
+        uuid: Some(generate_uuid()),
     };
     let run = DynamicRunState {
         version: VERSION.to_string(),
@@ -4165,7 +4166,7 @@ fn emit_dynamic_worker_completed(
             round_id: ctx.round_id.to_string(),
             round_uuid: ctx.round_uuid.map(|s| s.to_string()),
             node_id: node.id.clone(),
-            node_uuid: None,
+            node_uuid: node.uuid.clone(),
             attempt_id: dynamic_attempt_id(node),
             repo_root: app.paths.repo_root.to_string(),
             seq: None,
@@ -6757,6 +6758,7 @@ fn dynamic_node_state_from_spec(
         child_run_id: None,
         started_at: None,
         finished_at: None,
+        uuid: Some(generate_uuid()),
     };
     validate_dynamic_node_state(&node)?;
     Ok(node)
@@ -7093,6 +7095,7 @@ fn create_dynamic_merge_node(
         child_run_id: None,
         started_at: None,
         finished_at: None,
+        uuid: Some(generate_uuid()),
     };
     validate_dynamic_node_state(&node)?;
     Ok(node)
@@ -7156,6 +7159,7 @@ fn create_dynamic_acceptance_node(
         child_run_id: None,
         started_at: None,
         finished_at: None,
+        uuid: Some(generate_uuid()),
     };
     validate_dynamic_node_state(&node)?;
     Ok(node)
@@ -9816,6 +9820,7 @@ mod tests {
             child_run_id: None,
             started_at: None,
             finished_at: None,
+            uuid: None,
         }
     }
 

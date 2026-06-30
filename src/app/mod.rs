@@ -3453,6 +3453,7 @@ mod tests {
             child_run_id: None,
             started_at: Some("2026-06-16T00:00:00Z".to_string()),
             finished_at: None,
+            uuid: None,
         }
     }
 

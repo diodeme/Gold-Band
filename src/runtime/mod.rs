@@ -4,6 +4,7 @@ use crate::domain::{
 };
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +124,7 @@ impl TaskState {
             id: id.into(),
             title: None,
             description: None,
-            uuid: None,
+            uuid: Some(Uuid::new_v4().simple().to_string()),
         }
     }
 }
@@ -208,4 +209,25 @@ pub fn validate_worker_ref_state(state: &WorkerRefState) -> Result<()> {
         "worker-ref provider cannot be empty"
     );
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_state_new_generates_uuid() {
+        let task = TaskState::new("task-001");
+        let uuid = task.uuid.expect("TaskState::new must generate a uuid");
+        assert_eq!(uuid.len(), 32);
+        assert!(uuid.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn task_state_uuid_is_unique_per_construction() {
+        let a = TaskState::new("task-a");
+        let b = TaskState::new("task-b");
+        assert_ne!(a.uuid, b.uuid);
+    }
 }

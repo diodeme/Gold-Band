@@ -2658,7 +2658,7 @@ function AcpTodoPanel({
           <ChevronDown
             className={cn(
               "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-180",
+              !open && "rotate-180",
             )}
           />
         </Button>
@@ -3226,7 +3226,7 @@ function AcpSessionAssetsPanel({
             <ChevronDown
               className={cn(
                 "size-3.5 shrink-0 text-muted-foreground transition-transform",
-                open && "rotate-180",
+                !open && "rotate-180",
               )}
             />
           </Button>

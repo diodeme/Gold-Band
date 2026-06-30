@@ -40,6 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -69,6 +70,7 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
   decideAcpLiveEventFlush,
@@ -3023,6 +3025,9 @@ function ACPArtifactsDialog({
   onBack: () => void;
 }) {
   const { t } = useTranslation();
+  const [renderMarkdown, setRenderMarkdown] = useState<boolean>(() =>
+    loadArtifactMarkdownRender(),
+  );
   const allAssets = [
     ...artifacts.map((a) => ({ ...a, kind: "artifact" as const })),
     ...attachments.map((a) => ({ ...a, kind: "attachment" as const })),
@@ -3034,7 +3039,7 @@ function ACPArtifactsDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
           overlayClassName="bg-black/16 backdrop-blur-md"
-          className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55"
+          className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
         >
           <DialogHeader className="border-b border-border/40 px-5 py-4">
             <div className="flex items-center gap-2">
@@ -3052,38 +3057,55 @@ function ACPArtifactsDialog({
               </DialogTitle>
             </div>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-auto p-5">
+          {!artifactLoading && artifactContent && !imagePreviewSrc ? (
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/40 px-5 py-2.5 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant="secondary"
+                  className="rounded-full px-2.5 text-[11px]"
+                >
+                  {selectedArtifact.kind}
+                </Badge>
+                <span>{artifactContent.kind}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span>{t("acp.renderMarkdown")}</span>
+                <Switch
+                  checked={renderMarkdown}
+                  onCheckedChange={(next) => {
+                    setRenderMarkdown(next);
+                    saveArtifactMarkdownRender(next);
+                  }}
+                  aria-label={t("acp.renderMarkdown")}
+                />
+              </div>
+            </div>
+          ) : null}
+          <div className="gold-themed-scrollbar min-h-0 flex-1 overflow-auto p-5">
             {artifactLoading ? (
               <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
                 <Loader2 className="mr-2 size-4 animate-spin" />
                 {t("common.loading")}
               </div>
             ) : artifactContent ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Badge
-                    variant="secondary"
-                    className="rounded-full px-2.5 text-[11px]"
-                  >
-                    {selectedArtifact.kind}
-                  </Badge>
-                  <span>{artifactContent.kind}</span>
+              imagePreviewSrc ? (
+                <div className="flex max-h-[64vh] items-center justify-center overflow-hidden rounded-xl border border-border/45 bg-black/5 p-2">
+                  <img
+                    src={imagePreviewSrc}
+                    alt={selectedArtifact.title}
+                    draggable={false}
+                    className="max-h-[60vh] max-w-full object-contain"
+                  />
                 </div>
-                {imagePreviewSrc ? (
-                  <div className="flex max-h-[64vh] items-center justify-center overflow-hidden rounded-xl border border-border/45 bg-black/5 p-2">
-                    <img
-                      src={imagePreviewSrc}
-                      alt={selectedArtifact.title}
-                      draggable={false}
-                      className="max-h-[60vh] max-w-full object-contain"
-                    />
-                  </div>
-                ) : (
-                  <pre className="max-h-[60vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-                    {artifactContent.content}
-                  </pre>
-                )}
-              </div>
+              ) : renderMarkdown ? (
+                <div className="rounded-xl border bg-muted/20 p-4">
+                  <Markdown>{artifactContent.content}</Markdown>
+                </div>
+              ) : (
+                <pre className="rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
+                  {artifactContent.content}
+                </pre>
+              )
             ) : (
               <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
                 {t("common.empty")}
@@ -3099,14 +3121,14 @@ function ACPArtifactsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/16 backdrop-blur-md"
-        className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55"
+        className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
       >
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle className="text-base">
             {t("acp.artifactsTitle")}
           </DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 space-y-3 overflow-auto px-5 pb-5">
+        <div className="gold-themed-scrollbar min-h-0 flex-1 space-y-3 overflow-auto px-5 pb-5">
           {attachments.length > 0 ? (
             <section className="space-y-2">
               <div className="flex items-center justify-between gap-3">

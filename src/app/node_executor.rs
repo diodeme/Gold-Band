@@ -18,6 +18,7 @@ use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
     validate_worker_ref_state,
 };
+use crate::runtime_error::runtime_error;
 use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 use crate::storage::{read_json, write_json};
 
@@ -312,13 +313,17 @@ pub(crate) fn build_worker_invocation(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    model_override: Option<String>,
 ) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
         profile,
         permission_mode,
-        model,
+        model: model_override
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or(model),
         output_contract,
         task_instruction,
         invocation_kind,
@@ -412,6 +417,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    model_override: Option<String>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let invocation = build_worker_invocation(
@@ -428,6 +434,7 @@ pub(crate) fn execute_ai_node(
         resume_prompt_id,
         resume_prompt_visibility,
         user_prompt_render_mode,
+        model_override,
     )?;
 
     progress(&format!(
@@ -721,6 +728,10 @@ pub(crate) fn finalize_ai_attempt(
         )?;
     }
 
+    if let Some(info) = result.runtime_error {
+        return Err(runtime_error(info));
+    }
+
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
@@ -838,6 +849,7 @@ pub(crate) fn re_evaluate_attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info};
 
     #[test]
     fn selects_nested_array_json_path() {
@@ -872,5 +884,60 @@ mod tests {
         let value = serde_json::json!({ "reason": "ok" });
         let schema = serde_json::json!({ "reason": "String", "result": "boolean" });
         assert!(!matches_simple_schema(&value, &schema).expect("schema should not match"));
+    }
+
+    #[test]
+    fn provider_runtime_error_does_not_become_business_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path"),
+            crate::config::RuntimeConfig::default(),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "node-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        let result = ProviderRunResult {
+            status: ProviderRunStatus::Failure,
+            exit_code: None,
+            result_payload: None,
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: Some(manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "provider.execution-error",
+                "provider failed before business result",
+                serde_json::json!({}),
+            )),
+        };
+
+        let error = finalize_ai_attempt(
+            &app,
+            "task-001",
+            "run-001",
+            "round-001",
+            "attempt-001",
+            "node-001",
+            node,
+            result,
+        )
+        .expect_err("runtime error should bubble to orchestrator");
+
+        assert!(
+            error
+                .to_string()
+                .contains("provider failed before business result")
+        );
     }
 }

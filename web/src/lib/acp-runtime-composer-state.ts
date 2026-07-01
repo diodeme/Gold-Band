@@ -226,7 +226,6 @@ function composerModeFromBackend(input: {
   if (input.stopInProgress) return 'stopping';
   if (input.turnSubmitting) return 'submitting';
   if (input.runtimeContinueBlockedByWorkflow) return 'invalid-workflow';
-  if (input.runtimeErrorMessage) return 'runtime-error';
   return input.backendMode;
 }
 
@@ -319,9 +318,9 @@ function runtimeContinueKindFromInput(input: AcpRuntimeComposerStateInput): 'inp
 }
 
 function runtimeErrorMessageFromInput(input: AcpRuntimeComposerStateInput) {
+  if (input.lifecycle?.composer.mode !== 'runtime-error') return null;
   if (input.runtimeErrorMessage) return input.runtimeErrorMessage;
-  if (input.lifecycle?.composer.mode === 'runtime-error') return 'runtime-error';
-  return null;
+  return 'runtime-error';
 }
 
 function normalizeProcessingKind(kind?: string | null): AcpComposerProcessingKind {

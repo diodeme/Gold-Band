@@ -4,11 +4,13 @@
 Runtime Control 是运行时状态机：它读取当前 worker 节点的 `NodeOutcome`，按 workflow edge 决定下一步，并负责 run / round / node 状态落盘。
 
 ## 2. 节点模型
-当前 runtime 只执行 `worker` 节点。节点 outcome 来自三种路径：
+当前 runtime 执行 `worker` 与 AI-DYNAMIC 派生节点。节点 outcome 只表达业务结果，不表达运行异常。节点 outcome 来自三种路径：
 
 1. provider 成功且无需产物校验：`success`。
 2. AI 输出验证：读取 `output.artifact`，按 `success_condition` 得到 `success / failure`；声明了 `output.schema` 且输出不合法时进入内部 `invalid` 修复流程。
 3. 人工 check：会话结束后暂停，用户提交成功或失败。
+
+provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归一化为 `RuntimeErrorInfo`，再映射到 `runtime-abnormal` 或 `error-blocked`。它们不能写成 `NodeOutcome::Failure`，也不能驱动 `failure` edge。
 
 ## 3. 控制决策
 
@@ -25,6 +27,8 @@ edge target 规则：
 - 指向 worker：创建目标节点的新 attempt 并继续执行。
 - 指向 `$end`：根据 edge outcome 完成 run。
 - 指向 `$new-round`：关闭当前 round，创建新 round，并从 workflow entry 重新开始；`success -> $new-round` 在 DSL 校验阶段被拒绝。
+
+`failure` edge 只承接业务失败：artifact 结构合法，但 success condition 明确判定不通过，或人工 check 明确判定失败。运行异常、provider 异常和 adapter/ACP 异常不属于 failure edge 输入。
 
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
@@ -67,19 +71,21 @@ edge target 规则：
 
 - 本地 IO、系统资源或临时文件写入异常，例如 Windows `os error 1450`。
 - ACP transport 断开、adapter stdout 断开、driver 线程提前退出等会话仍可能继续的运行期异常。
+- auth、quota、rate limit、provider 暂不可用、model invalid、catalog missing、provider 缺失、workspace 能力缺失等用户处理外部条件后可继续的异常。
 - 事件、timeline、raw frame 等观察性写入失败，且不会改变 workflow 前提条件。
 
-`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地或协议层问题。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许用字符串特征作为最后兜底。
+`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
 ## 9. 错误阻塞
 以下情况进入 `paused + error-blocked`：
 
-- edge 缺失导致无法决定下一步。
-- provider、model、catalog、workspace 或 workflow/DSL 前提缺失，继续当前 session 无法改变结果。
-- AI 输出验证声明了产物但产物缺失。
-- 输出结构或成功条件路径不满足 DSL 声明。
+- 已有确定业务 outcome，但 edge 缺失导致无法决定下一步。
+- workflow / DSL 无效或 workflow snapshot 与 runtime 状态不一致。
+- AI-DYNAMIC proposal repair 耗尽后仍不合法。
+- AI 输出验证声明了产物但产物缺失，且 repair 机制耗尽。
+- dynamic 控制约束或 runtime invariant 被破坏，无法确定安全恢复点。
 
-`error-blocked` 表示不可直接恢复的前提/配置/业务阻塞；UI 可以展示错误横幅或修复入口，但不能把它当成普通 runtime continue 输入。
+`error-blocked` 表示当前 runtime 路径不可直接恢复；UI 可以展示错误详情和按错误类型派生的处理入口，但不能把它当成普通 runtime continue 输入。处理入口不等于继续，只有后端验证存在安全恢复点并生成明确恢复计划时，才允许恢复；否则只能重新运行、从节点重新开始或进入诊断流程。
 
 ## 10. 状态一致性
 每次节点进入、完成、暂停、跳转或打开新 round 时，runtime 必须同步更新：

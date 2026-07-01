@@ -73,6 +73,7 @@ impl ProviderAdapter for LoopingProvider {
                 open_command: Some(format!("claude -c session-{}", *count)),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

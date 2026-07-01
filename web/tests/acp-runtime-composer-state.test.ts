@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { deriveAcpRuntimeComposerState, type AcpRuntimeComposerStateInput } from '@/lib/acp-runtime-composer-state';
+import {
+  deriveAcpRuntimeComposerState,
+  type AcpRuntimeComposerStateInput,
+} from '@/lib/acp-runtime-composer-state';
 import type { ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
 
 const pausedDisplay: RuntimeDisplayVm = {
@@ -216,6 +219,64 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.submitTarget).toBe('runtime-continue');
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
+  });
+
+  it('ignores stale runtime error messages unless backend composer is runtime-error', () => {
+    const activeState = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: null,
+          resumable: false,
+          current: true,
+          active: true,
+          continuable: false,
+          phase: 'provider-running',
+        },
+        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: pausedDisplay,
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'processing',
+          statusKey: 'conversation.runtime.runtimeActive',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'failed',
+      runtimeErrorMessage: '当前会话运行失败，请查看错误原因',
+    }));
+
+    expect(activeState.mode).toBe('runtime-active');
+    expect(activeState.externalKind).toBeNull();
+
+    const abnormalState = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'runtime-abnormal',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        displayStatus: 'runtime-abnormal',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'failed',
+      runtimeErrorMessage: '当前会话运行失败，请查看错误原因',
+    }));
+
+    expect(abnormalState.mode).toBe('interrupted-input');
+    expect(abnormalState.submitTarget).toBe('runtime-continue');
+    expect(abnormalState.externalKind).toBeNull();
+    expect(abnormalState.inputDisabled).toBe(false);
   });
 
   it('does not treat stale ACP cancelled as runtime error after continue starts', () => {

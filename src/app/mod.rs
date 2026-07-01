@@ -2577,6 +2577,7 @@ impl App {
             prompt_id,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
+            None,
         )?;
         render_prompt_bundle(&invocation)
     }
@@ -2616,7 +2617,18 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, None)
+    }
+
+    pub fn run_continue_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, model_override)
     }
 
     pub fn run_continue_background(
@@ -2626,7 +2638,25 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt, None)
+    }
+
+    pub fn run_continue_background_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            model_override,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2642,6 +2672,7 @@ impl App {
         prompt_id: Option<String>,
         prompt: String,
         attachment_paths: Vec<String>,
+        model_override: Option<String>,
     ) -> Result<RunState> {
         orchestrator::run_continue_dynamic_inner_background(
             self,
@@ -2655,6 +2686,7 @@ impl App {
             prompt_id,
             prompt,
             attachment_paths,
+            model_override,
         )
     }
 

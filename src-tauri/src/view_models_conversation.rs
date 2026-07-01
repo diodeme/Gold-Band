@@ -1362,7 +1362,10 @@ pub fn conversation_run_vm(
     let task_state = app
         .task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
-    let task_uuid = task_state.uuid.clone().or_else(|| Some(task_id.to_string()));
+    let task_uuid = task_state
+        .uuid
+        .clone()
+        .or_else(|| Some(task_id.to_string()));
     let title = task_state.title.unwrap_or_else(|| task_id.to_string());
 
     // Read conversation metadata if exists
@@ -2297,11 +2300,7 @@ pub fn create_conversation_run_vm(
     })?;
 
     let task_id = summary.task.id.clone();
-    let task_uuid = summary
-        .task
-        .uuid
-        .clone()
-        .or_else(|| Some(task_id.clone()));
+    let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");

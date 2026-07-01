@@ -211,7 +211,6 @@ pub fn validate_worker_ref_state(state: &WorkerRefState) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

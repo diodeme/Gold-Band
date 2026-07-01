@@ -5234,11 +5234,22 @@ function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) 
       continue;
     }
     if (turnStartedAt == null || timestamp == null) continue;
-    turnLastEventAt = timestamp;
+    if (isSessionElapsedProgressEvent(event)) {
+      turnLastEventAt = timestamp;
+    }
   }
 
   if (!sawTurn) return null;
-  return elapsedSeconds + finishTurn(isActiveAcpStatus(status));
+  return elapsedSeconds + finishTurn(isSessionActiveStatus(status));
+}
+
+function isSessionElapsedProgressEvent(event: AcpUiEventVm) {
+  const sessionUpdate = stringValue(rawObject(event.raw)?.sessionUpdate);
+  return ![
+    "available_commands_update",
+    "current_mode_update",
+    "session_info_update",
+  ].includes(sessionUpdate ?? "");
 }
 
 function mergeOptimisticSession(
@@ -5269,6 +5280,7 @@ function sessionsEquivalent(
   if (!previous || !next) return previous === next;
   if (previous.status !== next.status) return false;
   if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
+  if (previous.sessionElapsedSeconds !== next.sessionElapsedSeconds) return false;
   if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
   if (acpSessionMetadataSignature(previous) !== acpSessionMetadataSignature(next)) return false;
   if (previous.events.length !== next.events.length) return false;
@@ -5299,6 +5311,7 @@ function acpSessionMetadataSignature(session: AcpSessionVm) {
 export {
   timelineEventKey,
   buildAcpTimeline,
+  calculateSessionElapsedSeconds,
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,

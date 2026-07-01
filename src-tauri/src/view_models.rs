@@ -4368,7 +4368,9 @@ impl AcpSessionElapsedState {
             return;
         };
         self.observe_permission_event(event, timestamp);
-        self.active_turn_last_event_at = Some(timestamp);
+        if is_session_elapsed_progress_event(event) {
+            self.active_turn_last_event_at = Some(timestamp);
+        }
     }
 
     fn finish(&self, session_active: bool) -> Option<u64> {
@@ -4442,6 +4444,18 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
             .and_then(|raw| raw.get("source"))
             .and_then(|value| value.as_str())
             == Some("goldBandPrompt")
+}
+
+fn is_session_elapsed_progress_event(event: &AcpUiEventVm) -> bool {
+    let session_update = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(|value| value.as_str());
+    !matches!(
+        session_update,
+        Some("available_commands_update" | "current_mode_update" | "session_info_update")
+    )
 }
 
 fn current_epoch_timestamp() -> String {
@@ -5447,9 +5461,7 @@ pub fn mcp_server_list_vm(
                     Some(u.clone()),
                     Some(env_to_entries(h)),
                 ),
-                gold_band::config::McpTransportConfig::Sse {
-                    url: u, headers: h,
-                } => (
+                gold_band::config::McpTransportConfig::Sse { url: u, headers: h } => (
                     "sse".to_string(),
                     None,
                     None,
@@ -5600,6 +5612,16 @@ mod tests {
             Some("completed"),
             timestamp,
             None,
+        )
+    }
+
+    fn metadata_update_at(kind: &str, session_update: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("{kind}-{timestamp}"),
+            kind,
+            None,
+            timestamp,
+            Some(json!({ "sessionUpdate": session_update })),
         )
     }
 
@@ -6203,6 +6225,54 @@ mod tests {
     }
 
     #[test]
+    fn session_elapsed_excludes_idle_resume_gaps_between_prompt_turns() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(1_782_903_916),
+                text_event_at(1_782_903_917),
+                gold_band_prompt_at(1_782_904_743),
+                text_event_at(1_782_904_746),
+                gold_band_prompt_at(1_782_905_348),
+                text_event_at(1_782_905_355),
+                gold_band_prompt_at(1_782_905_444),
+                text_event_at(1_782_905_448),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_906_094,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_906_094),
+                gold_band_prompt_at(1_782_906_094),
+                text_event_at(1_782_906_106),
+                gold_band_prompt_at(1_782_906_114),
+                text_event_at(1_782_906_115),
+                gold_band_prompt_at(1_782_906_120),
+                text_event_at(1_782_906_121),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_907_082,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_907_082),
+                gold_band_prompt_at(1_782_907_082),
+                text_event_at(1_782_907_085),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_907_091,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_907_091),
+                gold_band_prompt_at(1_782_907_091),
+                text_event_at(1_782_907_091),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(32));
+    }
+
+    #[test]
     fn session_elapsed_excludes_plan_intervention_permission_wait() {
         let elapsed = elapsed_for(
             vec![
@@ -6387,6 +6457,38 @@ mod tests {
         assert_eq!(count, 50);
         assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
         assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_timeline_elapsed_ignores_metadata_updates_before_next_prompt() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-elapsed-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                gold_band_prompt_at(1_782_903_916),
+                text_event_at(1_782_903_917),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
+                gold_band_prompt_at(1_782_904_743),
+                text_event_at(1_782_904_746),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_905_348,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
+                gold_band_prompt_at(1_782_905_348),
+                text_event_at(1_782_905_355),
+            ],
+        );
+
+        let (_, _, elapsed, _, _, _) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(elapsed, Some(11));
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -79,6 +79,7 @@ pub struct ConversationRunSummaryVm {
 pub struct ConversationRunVm {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub title: String,
     pub auto_title: bool,
@@ -1349,6 +1350,7 @@ pub fn conversation_run_vm(
     let task_state = app
         .task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
+    let task_uuid = task_state.uuid.clone().or_else(|| Some(task_id.to_string()));
     let title = task_state.title.unwrap_or_else(|| task_id.to_string());
 
     // Read conversation metadata if exists
@@ -1888,6 +1890,7 @@ pub fn conversation_run_vm(
         workflow_graph,
         project_id: project_id.to_string(),
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         title,
         auto_title,
@@ -2284,6 +2287,11 @@ pub fn create_conversation_run_vm(
     })?;
 
     let task_id = summary.task.id.clone();
+    let task_uuid = summary
+        .task
+        .uuid
+        .clone()
+        .or_else(|| Some(task_id.clone()));
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
@@ -2324,6 +2332,7 @@ pub fn create_conversation_run_vm(
         Ok(ConversationRunVm {
             project_id: input.project_id.clone(),
             task_id: task_id.clone(),
+            task_uuid: task_uuid.clone(),
             run_id: run.id,
             title,
             auto_title: true,
@@ -2380,6 +2389,11 @@ pub fn rerun_conversation_task_vm(
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
+            task_uuid: app
+                .task_show(task_id)
+                .ok()
+                .and_then(|task| task.uuid)
+                .or_else(|| Some(task_id.to_string())),
             run_id: run.id,
             title: String::new(),
             auto_title: false,
@@ -3042,6 +3056,7 @@ mod tests {
         assert_eq!(vm.artifacts[0].name, "测试-result");
         assert_eq!(vm.attachments.len(), 1);
         assert_eq!(vm.attachments[0].name, "test-report.md");
+        assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
             .attempts
@@ -3378,6 +3393,7 @@ mod tests {
             &json!({
                 "version": gold_band::domain::VERSION,
                 "id": task_id,
+                "uuid": "task-046-fixture-uuid",
                 "title": "中文节点资源回归",
                 "description": null
             }),

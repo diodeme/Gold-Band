@@ -976,6 +976,7 @@ export interface ConversationTreeNodeVm {
 export interface ConversationRunVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   title: string;
   autoTitle: boolean;

@@ -4,7 +4,7 @@
 
 会话运行时窗口是用户与 agent 交互的核心区域。左侧选中最小单位是 run，右侧主区域永远展示当前选中 session 的具体对话。
 
-运行态身份以 `projectId + taskId + runId + session locator` 为准。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
+运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
 ## 顶部信息栏
 

@@ -1604,6 +1604,7 @@ pub async fn submit_conversation_prompt(
     };
 
     if submit_target == "runtime-continue" {
+        let model_override = current_acp_session_model(&locator.attempt_dir(&app));
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
         {
@@ -1618,9 +1619,16 @@ pub async fn submit_conversation_prompt(
                 prompt_id,
                 prompt,
                 attachment_paths.unwrap_or_default(),
+                model_override,
             )
         } else {
-            app.run_continue_background(&locator.task_id, &locator.run_id, prompt_id, Some(prompt))
+            app.run_continue_background_with_model_override(
+                &locator.task_id,
+                &locator.run_id,
+                prompt_id,
+                Some(prompt),
+                model_override,
+            )
         }
         .map(run_summary_vm)
         .map_err(command_error)?;
@@ -3414,7 +3422,9 @@ pub async fn check_mcp_server_health(
     .map_err(|e| command_error(anyhow::anyhow!("health check task failed: {e}")))??;
     // 写入共享缓存，供列表 VM 展示（手动诊断与启动后台线程共用此入口）。
     let cache_state = match result.status.as_str() {
-        "healthy" => gold_band::config::McpServerState::Running { tools: result.tools.clone() },
+        "healthy" => gold_band::config::McpServerState::Running {
+            tools: result.tools.clone(),
+        },
         "auth_required" => gold_band::config::McpServerState::AuthRequired {
             auth_url: result.auth_url.clone(),
         },

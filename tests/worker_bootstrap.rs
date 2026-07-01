@@ -1000,6 +1000,99 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
 }
 
 #[test]
+fn run_continue_model_override_uses_current_acp_session_model() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-model";
+
+    let provider = InterruptThenSuccessProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Check feature",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "continue-model-flow",
+          "entry": "accept",
+          "control": {{ "max_attempts": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","model":"deepseek","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-continue-model"}"#,
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert!(is_run_continuable(&paused));
+
+    gold_band::storage::write_json(
+        &app.paths
+            .worker_ref_file(task_id, "run-001", "round-001", "accept", "attempt-001"),
+        &WorkerRefState {
+            version: gold_band::domain::VERSION.to_string(),
+            provider: "claude-acp".to_string(),
+            mode: SessionMode::Continue,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(serde_json::json!({"acpSessionId":"session-123"})),
+            open_command: None,
+        },
+    )
+    .unwrap();
+
+    let completed = app
+        .run_continue_with_model_override(
+            task_id,
+            "run-001",
+            Some("prompt-continue-model-001".to_string()),
+            Some("继续使用新模型".to_string()),
+            Some("gpt-5.4".to_string()),
+        )
+        .unwrap();
+    assert_eq!(completed.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].model.as_deref(), Some("deepseek"));
+    assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(invocations[1].model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        invocations[1]
+            .continue_ref
+            .as_ref()
+            .and_then(|value| value.get("acpSessionId"))
+            .and_then(|value| value.as_str()),
+        Some("session-123"),
+    );
+}
+
+#[test]
 fn transition_continue_uses_latest_target_attempt_ref() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();

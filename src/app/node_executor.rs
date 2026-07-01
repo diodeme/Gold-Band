@@ -320,10 +320,7 @@ pub(crate) fn build_worker_invocation(
     let (
         profile,
         permission_mode,
-        model: model_override
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .or(model),
+        configured_model,
         output_contract,
         task_instruction,
         invocation_kind,
@@ -344,6 +341,10 @@ pub(crate) fn build_worker_invocation(
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
         }
     };
+    let model = model_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(configured_model);
 
     let profile_content = profile
         .as_deref()

@@ -1111,8 +1111,7 @@ pub(crate) fn run_continue_background(
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt, model_override)
-        {
+        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt, model_override) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -1247,6 +1246,7 @@ pub(crate) fn submit_manual_check(
             None,
             None,
             workflow_user_prompt_render_mode_for_session(next.session_mode),
+            None,
             None,
             None,
             None,
@@ -2269,6 +2269,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         UserPromptRenderMode::RequirementTask,
+        None,
         None,
         None,
         None,
@@ -4452,6 +4453,7 @@ fn execute_dynamic_worker(
     };
     let mut resume_prompt_id = None;
     let mut resume_input_attachment_paths = Vec::new();
+    let mut resume_model_override = None;
     if let Some(resume) = ctx
         .resume_override
         .as_ref()
@@ -4468,6 +4470,7 @@ fn execute_dynamic_worker(
         resume_prompt = Some(resume.prompt.clone());
         resume_prompt_id = resume.prompt_id.clone();
         resume_input_attachment_paths = resume.attachment_paths.clone();
+        resume_model_override = resume.model_override.clone();
     }
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = if let Some(resume) = ctx.resume_override.as_ref() {
@@ -4527,6 +4530,7 @@ fn execute_dynamic_worker(
             resume_prompt_visibility,
             user_prompt_render_mode,
             resume_input_attachment_paths.clone(),
+            resume_model_override.take(),
         )
         .with_context(|| {
             format!(
@@ -4897,6 +4901,7 @@ fn execute_dynamic_agent_stage(
         PromptVisibility::Visible,
         workflow_user_prompt_render_mode_for_session(session_mode),
         Vec::new(),
+        None,
     )?;
     dynamic_event_best_effort(
         ctx,
@@ -7351,6 +7356,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         PromptVisibility::Visible,
         UserPromptRenderMode::UserMessage,
         Vec::new(),
+        None,
     )?;
     render_prompt_bundle(&invocation)
 }
@@ -7368,6 +7374,7 @@ fn build_dynamic_worker_invocation(
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
 ) -> Result<WorkerInvocation> {
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
@@ -7444,23 +7451,26 @@ fn build_dynamic_worker_invocation(
     );
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
-    let model = match node.kind {
-        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
-            dynamic_acceptance_model(ctx.dynamic)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    node.provider
-                        .as_deref()
-                        .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-                })
-                .or_else(|| node.model.clone())
-        }
-        _ => node
-            .provider
-            .as_deref()
-            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-            .or_else(|| node.model.clone()),
-    };
+    let model = model_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| match node.kind {
+            DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+                dynamic_acceptance_model(ctx.dynamic)
+                    .map(ToOwned::to_owned)
+                    .or_else(|| {
+                        node.provider
+                            .as_deref()
+                            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+                    })
+                    .or_else(|| node.model.clone())
+            }
+            _ => node
+                .provider
+                .as_deref()
+                .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+                .or_else(|| node.model.clone()),
+        });
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -10338,6 +10348,7 @@ mod tests {
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -10566,6 +10577,7 @@ mod tests {
             prompt: "continue morning".to_string(),
             prompt_id: Some("prompt-morning".to_string()),
             attachment_paths: Vec::new(),
+            model_override: None,
         };
         let second = DynamicResumeOverride {
             node_id: "good-night".to_string(),
@@ -10573,6 +10585,7 @@ mod tests {
             prompt: "continue night".to_string(),
             prompt_id: Some("prompt-night".to_string()),
             attachment_paths: Vec::new(),
+            model_override: None,
         };
 
         let first_dispatch = dispatch_dynamic_resume_override(
@@ -10639,6 +10652,7 @@ mod tests {
             prompt: "continue".to_string(),
             prompt_id: None,
             attachment_paths: Vec::new(),
+            model_override: None,
         };
 
         resume_paused_dynamic_graph(&mut graph, Some(&resume)).unwrap();
@@ -10831,6 +10845,7 @@ mod tests {
             prompt: "continue".to_string(),
             prompt_id: None,
             attachment_paths: Vec::new(),
+            model_override: None,
         };
 
         assert!(!recover_legacy_cancelled_dynamic_leaves_for_paused_graph(
@@ -10869,6 +10884,7 @@ mod tests {
             prompt: "continue".to_string(),
             prompt_id: None,
             attachment_paths: Vec::new(),
+            model_override: None,
         };
 
         resume_paused_dynamic_graph(&mut graph, Some(&resume)).unwrap();
@@ -11296,6 +11312,7 @@ mod tests {
             prompt: "continue".to_string(),
             prompt_id: None,
             attachment_paths: Vec::new(),
+            model_override: None,
         };
 
         assert!(try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume).unwrap());

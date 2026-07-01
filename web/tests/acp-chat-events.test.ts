@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
+  calculateSessionElapsedSeconds,
   mergeAcpEvents,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
@@ -471,5 +472,53 @@ describe('ACP chat event handling', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ status: 'cancelled' });
     expect(pendingPermissionFromEvents(merged, new Set())).toBeNull();
+  });
+
+  it('calculates session elapsed from active prompt turns without idle resume gaps', () => {
+    const events = [
+      event({
+        id: 'gold-band-user-prompt-3',
+        seq: 3,
+        timestamp: '1782903916Z',
+        kind: 'userTextDelta',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt' },
+      }),
+      event({ id: 'assistant-message-4', seq: 4, timestamp: '1782903917Z', kind: 'textDelta' }),
+      event({
+        id: 'acp-event-6',
+        seq: 6,
+        timestamp: '1782904743Z',
+        kind: 'modeUpdate',
+        raw: { sessionUpdate: 'current_mode_update' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-7',
+        seq: 7,
+        timestamp: '1782904743Z',
+        kind: 'userTextDelta',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt' },
+      }),
+      event({ id: 'assistant-message-8', seq: 8, timestamp: '1782904746Z', kind: 'textDelta' }),
+      event({
+        id: 'acp-event-10',
+        seq: 10,
+        timestamp: '1782905348Z',
+        kind: 'modeUpdate',
+        raw: { sessionUpdate: 'current_mode_update' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-11',
+        seq: 11,
+        timestamp: '1782905348Z',
+        kind: 'userTextDelta',
+        status: 'completed',
+        raw: { source: 'goldBandPrompt' },
+      }),
+      event({ id: 'assistant-message-12', seq: 12, timestamp: '1782905355Z', kind: 'textDelta' }),
+    ];
+
+    expect(calculateSessionElapsedSeconds(events, 'failed')).toBe(11);
   });
 });

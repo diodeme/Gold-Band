@@ -106,6 +106,8 @@
 
 运行中的状态提示必须放在 composer 内，compact 模式下也不能只展示耗时或 token。当前步骤状态应展示具体文案：发送中、处理中、思考中、工具调用中、响应中、停止中、拉起下一节点中；会话式运行页的 compact 用量栏需在计时前展示带轻量旋转图标的状态标签，例如“思考中...”“工具调用中...”或“拉起下一节点中...”。这类状态是否展示运行态视觉取决于后端 composer active/lifecycle，而不只取决于 ACP session 是否仍 active；当 ACP 已 completed 但 runtime 仍处于 `launching-next-node` 时，compact 栏仍必须展示旋转状态、当前用时、会话累计与 token 用量。ACP completed 只表示上一轮 turn 已结束，不表示该会话不能继续追问；用户发起新的 same-session ACP prompt 后，发送中、处理中和计时属于前端本地 turn overlay，不得被旧 terminal snapshot 压掉。旋转标识应避免 SVG stroke 在高频刷新下掉帧，优先使用 CSS 边框圆环。Round 详情等非 compact 面板继续使用 composer 内状态行，不作为消息流卡片。
 
+会话累计的口径是当前 ACP attempt 内所有 Gold Band prompt turn 的 agent 净处理耗时之和：每轮从 Gold Band synthetic/user prompt 写入 timeline 开始，到该轮最后一个可观察的处理事件结束；多次继续、恢复、余额错误重试或用户空闲造成的两轮 prompt 之间墙钟间隔不得计入。`available_commands_update`、`current_mode_update`、`session_info_update` 等会话元数据更新不推进处理耗时，`acp.snapshot.json.createdAt -> updatedAt` 只描述底层 ACP session 生命周期跨度，不能作为会话累计的 fallback。
+
 ## 系统通知
 
 系统通知只用于用户可能没有看到当前会话页时的关键提醒，不替代会话内状态展示。
@@ -260,7 +262,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - composer 底部模型与权限配置统一使用胶囊式控件外观，模型选择器需要明确表现出“可展开下拉”的交互心智，不能像纯文本标签
 - 模型下拉列表默认向上弹出，并受当前窗口可用高度约束；超出时内部滚动，不允许选项直接溢出会话窗口外
 - 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
-- 后续同一 ACP session 的每次追问都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 必须继续带上最新选择，而不是回退到节点初始配置。
+- 后续同一 ACP session 的每次追问和 runtime continue 都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 或停止/异常后的继续恢复必须继续带上最新选择，而不是回退到节点初始配置。该选择属于当前 attempt 的运行配置，只影响本次恢复的目标会话，不回写 workflow DSL，也不污染后继节点的模型策略。
 - 模型选中态只在触发器展示模型名称，长描述只在下拉项中换行展示，不允许撑破触发器或越出窗口边界
 - 配置栏解析逻辑统一收敛在前端 ACP session config 工具中：优先读取 provider 返回的 `models.availableModels / modes.availableModes`，缺失时回退 `configOptions[category=model|mode].options`。展示组件只消费归一化后的 id/name/description，不在 JSX 内重复解析协议 payload。
 

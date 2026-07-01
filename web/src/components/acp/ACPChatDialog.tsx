@@ -210,6 +210,7 @@ interface ACPChatDialogProps {
   allArtifacts?: AssetItemVm[];
   allAttachments?: AssetItemVm[];
   usageCompact?: boolean;
+  cacheNamespace?: string;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -407,6 +408,24 @@ export function storeAcpLoadedEvents(
   }
 }
 
+export function createAcpSessionCacheKey(
+  namespace: string | null | undefined,
+  taskId: string,
+  runId: string,
+  roundId: string,
+  nodeId: string,
+  attemptId: string,
+) {
+  return [
+    namespace?.trim() || "default",
+    taskId,
+    runId,
+    roundId,
+    nodeId,
+    attemptId,
+  ].join(":");
+}
+
 function normalizeEventPageSize(value?: number) {
   return Number.isFinite(value) && value && value > 0
     ? Math.floor(value)
@@ -452,6 +471,7 @@ export const ACPChatDialog = forwardRef<
     allArtifacts,
     allAttachments,
     usageCompact,
+    cacheNamespace,
   },
   ref,
 ) {
@@ -460,7 +480,14 @@ export const ACPChatDialog = forwardRef<
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(
     effectiveEventPageSize,
   );
-  const sessionKey = `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
+  const sessionKey = createAcpSessionCacheKey(
+    cacheNamespace,
+    taskId,
+    runId,
+    roundId,
+    nodeId,
+    attemptId,
+  );
   const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${eventIdPrefix ?? ""}`;
   const sessionIdentity = eventWindowKey;
   const restoredOptimisticEvents =

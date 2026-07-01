@@ -359,7 +359,7 @@ export function ConversationRunPage({
         {selectedLeaf ? (
           <ACPChatDialog
             ref={chatDialogRef}
-            key={selectedSessionKey ?? 'empty'}
+            key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             projectId={run.projectId}
             taskId={run.taskId}
@@ -381,6 +381,7 @@ export function ConversationRunPage({
             allArtifacts={run.artifacts}
             allAttachments={run.attachments}
             usageCompact
+            cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />
         ) : (
           <ConversationEmptySessionState

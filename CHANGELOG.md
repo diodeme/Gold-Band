@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/diodeme/Gold-Band/compare/v0.6.0...v0.7.0) (2026-07-01)
+
+
+### Features
+
+* **acp:** render artifact detail as Markdown with persistent toggle ([4956364](https://github.com/diodeme/Gold-Band/commit/495636448ea9a736d770d94f95df9b3ee5db95b0))
+
+
+### Bug Fixes
+
+* **acp:** correct chevron direction on todo and assets collapsible panels ([b3d97c1](https://github.com/diodeme/Gold-Band/commit/b3d97c1d8940b7ce28f2e8bb889142ce1faf8661))
+* **acp:** isolate chat cache by task uuid ([214cada](https://github.com/diodeme/Gold-Band/commit/214cada25dea9be096c8ec47b7ccb0763dd26b77))
+* **conversation:** retain composer draft across navigation ([f1786fd](https://github.com/diodeme/Gold-Band/commit/f1786fdcf805187e3fc9ac76b15a086b87002df7))
+* **conversation:** 保留首页 composer 草稿跨页面不丢失 ([0bbb58b](https://github.com/diodeme/Gold-Band/commit/0bbb58b635f997d9ca5e1d0e3f7a08d70fc3805c))
+* **conversation:** 保留首页 composer 草稿跨页面不丢失 ([90ebc97](https://github.com/diodeme/Gold-Band/commit/90ebc97963d2a027e592758b9ce8465ad23a16e7))
+* **desktop:** render artifact detail and correct chevron direction ([6ae8447](https://github.com/diodeme/Gold-Band/commit/6ae8447703e9faddc24fa4953d52662831611a8a))
+* **metrics:** 上报隐藏 UUID 字段对齐，修复 taskId/nodeId 回退为业务编号 ([c76c578](https://github.com/diodeme/Gold-Band/commit/c76c578b1690331ad7f6061307650ce9d76aaf8e))
+
 ## [0.6.0](https://github.com/diodeme/Gold-Band/compare/v0.5.0...v0.6.0) (2026-06-29)
 
 

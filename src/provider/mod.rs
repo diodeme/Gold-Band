@@ -10,6 +10,7 @@ use crate::prompts::{
 };
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
@@ -185,6 +186,7 @@ pub struct PromptPredecessorContext {
     pub branch_direction: Option<String>,
     pub output_artifact: Option<PromptArtifactRef>,
     pub branch_reason: Option<String>,
+    pub attachments: Vec<PromptAttachmentRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +194,11 @@ pub struct PromptArtifactRef {
     pub name: String,
     pub path: Utf8PathBuf,
     pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptAttachmentRef {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -921,6 +928,8 @@ struct RuntimePredecessorTemplateContext {
     chain: String,
     reason_lines: String,
     reason_lines_empty: bool,
+    attachment_lines: String,
+    attachment_lines_empty: bool,
 }
 
 #[derive(Serialize)]
@@ -1028,11 +1037,14 @@ fn runtime_predecessor_context(
     ctx: &PromptRuntimeContext,
 ) -> RuntimePredecessorTemplateContext {
     let reason_lines = predecessor_reason_lines(predecessors);
+    let attachment_lines = predecessor_attachment_lines(predecessors);
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
         chain: predecessor_chain_text(predecessors, ctx),
         reason_lines_empty: reason_lines.is_empty(),
         reason_lines,
+        attachment_lines_empty: attachment_lines.is_empty(),
+        attachment_lines,
     }
 }
 
@@ -1102,6 +1114,23 @@ fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String
                 parts.join("；")
             ))
         })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> String {
+    let mut seen = IndexMap::<&String, Vec<String>>::new();
+    for p in predecessors {
+        if p.attachments.is_empty() {
+            continue;
+        }
+        let entry = seen.entry(&p.node_id).or_insert_with(Vec::new);
+        for a in &p.attachments {
+            entry.push(format!("{}/{}", p.attempt_id, a.name));
+        }
+    }
+    seen.iter()
+        .map(|(node_id, files)| format!("- {}: {}", node_id, files.join(", ")))
         .collect::<Vec<_>>()
         .join("\n")
 }

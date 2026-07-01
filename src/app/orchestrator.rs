@@ -7903,6 +7903,7 @@ fn dynamic_predecessor_contexts(
                 preview: None,
             }),
             branch_reason: dependency.finished_at.clone(),
+            attachments: Vec::new(),
         })
         .collect()
 }

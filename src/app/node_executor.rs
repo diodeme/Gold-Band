@@ -10,9 +10,9 @@ use crate::dsl::{
 };
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
-    PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
-    WorkerInvocation,
+    PromptArtifactRef, PromptAttachmentRef, PromptOutputContract, PromptPredecessorContext,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
+    UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -221,6 +221,37 @@ fn output_artifact_for_predecessor(
     })
 }
 
+fn predecessor_attachments(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    trace: &RoundTraceStep,
+) -> Vec<PromptAttachmentRef> {
+    let dir = app.paths.attachments_dir(
+        task_id,
+        run_id,
+        round_id,
+        &trace.node_id,
+        &trace.attempt_id,
+    );
+    let mut refs = std::fs::read_dir(dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = Utf8PathBuf::from_path_buf(entry.path()).ok()?;
+                    let name = path.file_name()?.to_string();
+                    (path.is_file() && !name.starts_with('.'))
+                        .then(|| PromptAttachmentRef { name })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    refs.sort_by(|a, b| a.name.cmp(&b.name));
+    refs
+}
+
 fn build_predecessor_contexts(
     app: &App,
     task_id: &str,
@@ -293,6 +324,13 @@ fn build_predecessor_contexts(
                     node_dsl,
                 ),
                 branch_reason,
+                attachments: predecessor_attachments(
+                    app,
+                    task_id,
+                    run_id,
+                    &trace_ref.round_id,
+                    &trace_ref.step,
+                ),
             })
         })
         .collect()

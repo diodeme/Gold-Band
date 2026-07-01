@@ -27,3 +27,10 @@
 ## Latest predecessor transition reasons
 {{ predecessors.reason_lines }}
 {% endif %}
+
+## Latest predecessor attachments
+{% if predecessors.attachment_lines_empty %}
+无。
+{% else %}
+{{ predecessors.attachment_lines }}
+{% endif %}

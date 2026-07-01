@@ -1,9 +1,9 @@
 use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode};
 use gold_band::provider::{
-    ColdFileRef, PromptArtifactRef, PromptOutputContract, PromptPredecessorContext,
-    PromptRuntimeContext, PromptVisibility, StreamMode, UserPromptRenderMode, WorkerInvocation,
-    render_prompt_bundle,
+    ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptOutputContract,
+    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, StreamMode,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -74,6 +74,7 @@ fn invocation() -> WorkerInvocation {
                 preview: Some("{\"result\":true}".to_string()),
             }),
             branch_reason: None,
+            attachments: Vec::new(),
         }],
         extra_system_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
@@ -199,6 +200,7 @@ fn render_prompt_bundle_marks_new_round_transitions() {
             preview: Some("{\"result\":false}".to_string()),
         }),
         branch_reason: None,
+        attachments: Vec::new(),
     }];
 
     let prompt = render_prompt_bundle(&req).unwrap();
@@ -347,4 +349,175 @@ fn render_prompt_bundle_runtime_repair_sends_repair_prompt_without_hidden_contex
     assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
     assert!(!prompt.user_prompt.contains("# Goal"));
     assert!(!prompt.user_prompt.contains("# Requirement"));
+}
+
+#[test]
+fn render_prompt_bundle_shows_predecessor_attachments() {
+    let mut req = invocation();
+    req.predecessors = vec![PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "dev".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "普通".to_string(),
+        outcome: Some("success".to_string()),
+        branch_direction: Some("success".to_string()),
+        output_artifact: None,
+        branch_reason: None,
+        attachments: vec![PromptAttachmentRef {
+            name: "dev-report.md".to_string(),
+        }],
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("## Latest predecessor attachments"));
+    assert!(prompt.user_prompt.contains("- dev: attempt-001/dev-report.md"));
+}
+
+#[test]
+fn render_prompt_bundle_shows_multi_file_attachments() {
+    let mut req = invocation();
+    req.predecessors = vec![PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "dev".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "普通".to_string(),
+        outcome: Some("success".to_string()),
+        branch_direction: Some("success".to_string()),
+        output_artifact: None,
+        branch_reason: None,
+        attachments: vec![
+            PromptAttachmentRef {
+                name: "a.md".to_string(),
+            },
+            PromptAttachmentRef {
+                name: "b.md".to_string(),
+            },
+        ],
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt
+        .user_prompt
+        .contains("- dev: attempt-001/a.md, attempt-001/b.md"));
+}
+
+#[test]
+fn render_prompt_bundle_shows_reflow_attachments() {
+    let mut req = invocation();
+    req.predecessors = vec![
+        PromptPredecessorContext {
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: "worker".to_string(),
+            branch_kind: "节点输出检查".to_string(),
+            outcome: Some("failure".to_string()),
+            branch_direction: Some("failure".to_string()),
+            output_artifact: None,
+            branch_reason: None,
+            attachments: vec![PromptAttachmentRef {
+                name: "dev-report.md".to_string(),
+            }],
+        },
+        PromptPredecessorContext {
+            round_id: "round-001".to_string(),
+            node_id: "review".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: "worker".to_string(),
+            branch_kind: "节点输出检查".to_string(),
+            outcome: Some("failure".to_string()),
+            branch_direction: Some("failure".to_string()),
+            output_artifact: None,
+            branch_reason: None,
+            attachments: vec![PromptAttachmentRef {
+                name: "review-result.md".to_string(),
+            }],
+        },
+        PromptPredecessorContext {
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-002".to_string(),
+            node_type: "worker".to_string(),
+            branch_kind: "节点输出检查".to_string(),
+            outcome: Some("success".to_string()),
+            branch_direction: Some("success".to_string()),
+            output_artifact: None,
+            branch_reason: None,
+            attachments: vec![PromptAttachmentRef {
+                name: "dev-report.md".to_string(),
+            }],
+        },
+    ];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt
+        .user_prompt
+        .contains("- dev: attempt-001/dev-report.md, attempt-002/dev-report.md"));
+    assert!(prompt
+        .user_prompt
+        .contains("- review: attempt-001/review-result.md"));
+}
+
+#[test]
+fn render_prompt_bundle_shows_empty_attachments() {
+    let mut req = invocation();
+    req.predecessors = vec![PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "plan".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "普通".to_string(),
+        outcome: Some("success".to_string()),
+        branch_direction: Some("success".to_string()),
+        output_artifact: None,
+        branch_reason: None,
+        attachments: Vec::new(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("## Latest predecessor attachments"));
+    assert!(prompt.user_prompt.contains("无。"));
+}
+
+#[test]
+fn render_prompt_bundle_attachment_section_in_hidden_block() {
+    let mut req = invocation();
+    req.predecessors = vec![PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "dev".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "普通".to_string(),
+        outcome: Some("success".to_string()),
+        branch_direction: Some("success".to_string()),
+        output_artifact: None,
+        branch_reason: None,
+        attachments: vec![PromptAttachmentRef {
+            name: "notes.md".to_string(),
+        }],
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    // Verify the attachment section is inside the hidden block
+    let hidden_start = prompt
+        .user_prompt
+        .find("<hidden data-gold-band-hidden=\"true\"")
+        .unwrap();
+    let hidden_end = prompt.user_prompt[hidden_start..].find("</hidden>").unwrap();
+    let hidden_content = &prompt.user_prompt[hidden_start..hidden_start + hidden_end];
+    assert!(
+        hidden_content.contains("## Latest predecessor attachments"),
+        "attachment section should be inside hidden block"
+    );
+    assert!(
+        hidden_content.contains("- dev: attempt-001/notes.md"),
+        "attachment content should be inside hidden block"
+    );
 }

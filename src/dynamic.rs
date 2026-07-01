@@ -743,7 +743,6 @@ pub fn validate_dynamic_group_state(state: &DynamicGroupState) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,7 +765,8 @@ mod tests {
             "workspace": { "mode": "readonly" },
             "sessionMode": "new"
         }"#;
-        let node: DynamicNodeState = serde_json::from_str(json).expect("legacy node must deserialize");
+        let node: DynamicNodeState =
+            serde_json::from_str(json).expect("legacy node must deserialize");
         assert!(node.uuid.is_none());
     }
 

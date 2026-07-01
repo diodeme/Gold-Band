@@ -137,14 +137,25 @@ export type AttachmentStateController = [
   (next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[])) => void,
 ];
 
+export function revokeAttachmentPreviewUrls(attachments: AttachmentItem[]): void {
+  for (const attachment of attachments) {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+  }
+}
+
 export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const { t } = useTranslation();
   const allowedExts = useAttachmentExtensions();
-  const [attachments, setAttachments] = options.attachments ?? useState<AttachmentItem[]>([]);
+  const [internalAttachments, setInternalAttachments] = useState<AttachmentItem[]>([]);
+  const externalAttachments = options.attachments;
+  const attachments = externalAttachments?.[0] ?? internalAttachments;
+  const setAttachments = externalAttachments?.[1] ?? setInternalAttachments;
+  const ownsAttachmentState = !externalAttachments;
   const [fileError, setFileError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<AttachmentItem | null>(null);
   const [textPreview, setTextPreview] = useState<{ name: string; content: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const latestAttachmentsRef = useRef<AttachmentItem[]>(attachments);
   const dropCounterRef = useRef(0);
 
   const maxCount = options.maxCount ?? MAX_ATTACHMENT_COUNT;
@@ -175,9 +186,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
           err = t('conversation.attachmentCountExceeded', { max: maxCount });
           // Truncate to max
           const dropped = next.slice(maxCount);
-          for (const d of dropped) {
-            if (d.previewUrl) URL.revokeObjectURL(d.previewUrl);
-          }
+          revokeAttachmentPreviewUrls(dropped);
           return next.slice(0, maxCount);
         }
 
@@ -297,28 +306,30 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => {
       const removed = prev.find((a) => a.id === id);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removed) revokeAttachmentPreviewUrls([removed]);
       return prev.filter((a) => a.id !== id);
     });
   }, []);
 
   const clearAttachments = useCallback(() => {
     setAttachments((prev) => {
-      for (const a of prev) {
-        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      }
+      revokeAttachmentPreviewUrls(prev);
       return [];
     });
   }, []);
 
-  // Cleanup preview URLs on unmount
   useEffect(() => {
-    return () => {
-      for (const a of attachments) {
-        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      }
-    };
+    latestAttachmentsRef.current = attachments;
   }, [attachments]);
+
+  // Only the component that owns attachment state may release remaining preview URLs.
+  // External controllers, such as the conversation composer draft, survive this hook.
+  useEffect(() => {
+    if (!ownsAttachmentState) return undefined;
+    return () => {
+      revokeAttachmentPreviewUrls(latestAttachmentsRef.current);
+    };
+  }, [ownsAttachmentState]);
 
   const showTransientFileError = useCallback((message: string) => {
     setFileError(message);

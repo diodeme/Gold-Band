@@ -8,6 +8,7 @@ use crate::prompts::{
     RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, prompt_by_language,
     render as render_template,
 };
+use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -224,6 +225,8 @@ pub struct ProviderRunResult {
     pub result_payload: Option<ProviderResultPayload>,
     pub worker_ref_seed: Option<SessionRef>,
     pub stream_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_error: Option<RuntimeErrorInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -720,6 +723,19 @@ impl ProviderAdapter for AcpProvider {
             Some("refusal" | "error") => ProviderRunStatus::Failure,
             _ => ProviderRunStatus::Success,
         };
+        let runtime_error = (status == ProviderRunStatus::Failure)
+            .then(|| {
+                normalize_provider_failure(
+                    run.stop_reason.as_deref(),
+                    run.final_text.clone(),
+                    Some(serde_json::json!({
+                        "adapterId": run.adapter_id,
+                        "adapterDisplayName": run.adapter_display_name,
+                        "stopReason": run.stop_reason,
+                    })),
+                )
+            })
+            .flatten();
         let result_payload = req.output_contract.as_ref().map(|contract| {
             let uses_json_output =
                 contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
@@ -742,6 +758,7 @@ impl ProviderAdapter for AcpProvider {
             result_payload,
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error,
         })
     }
 

@@ -270,7 +270,8 @@ export function ConversationRunPage({
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
-  const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
+  const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
+  const selectedRuntimeErrorMessage = selectedSessionRuntimeError
     ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
     : null;
   const canViewWorkflow = canViewConversationRuntimeWorkflow(run, selectedLeaf);

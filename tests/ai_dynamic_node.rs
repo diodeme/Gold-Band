@@ -171,6 +171,7 @@ impl ProviderAdapter for DynamicProvider {
                 )),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

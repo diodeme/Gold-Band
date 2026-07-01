@@ -5186,6 +5186,7 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
     status,
     sessionStartedAt: first?.startedAt ?? first?.timestamp ?? null,
     sessionUpdatedAt: last?.endedAt ?? last?.timestamp ?? null,
+    sessionElapsedSeconds: calculateSessionElapsedSeconds(events, status),
     restored: false,
     events,
     eventPage: {
@@ -5209,6 +5210,35 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
       errorCount: 0,
     },
   };
+}
+
+function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {
+  let elapsedSeconds = 0;
+  let turnStartedAt: number | null = null;
+  let turnLastEventAt: number | null = null;
+  let sawTurn = false;
+
+  const finishTurn = (active: boolean) => {
+    if (turnStartedAt == null) return 0;
+    const endAt = active ? Date.now() : (turnLastEventAt ?? turnStartedAt);
+    return Math.max(0, Math.floor((endAt - turnStartedAt) / 1000));
+  };
+
+  for (const event of events) {
+    const timestamp = parseAcpTimestamp(event.timestamp);
+    if (isGoldBandUserPrompt(event)) {
+      elapsedSeconds += finishTurn(false);
+      turnStartedAt = timestamp;
+      turnLastEventAt = null;
+      sawTurn = timestamp != null;
+      continue;
+    }
+    if (turnStartedAt == null || timestamp == null) continue;
+    turnLastEventAt = timestamp;
+  }
+
+  if (!sawTurn) return null;
+  return elapsedSeconds + finishTurn(isActiveAcpStatus(status));
 }
 
 function mergeOptimisticSession(

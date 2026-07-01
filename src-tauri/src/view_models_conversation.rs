@@ -488,7 +488,10 @@ fn display_pause_reason_for_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
-    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+    if run_pause_reason.is_some_and(|reason| {
+        normalize_lifecycle_code(reason) == "error-blocked"
+            || is_runtime_continue_pause_reason(Some(reason))
+    }) {
         return run_pause_reason.map(str::to_string);
     }
     let snapshot_path = app
@@ -515,7 +518,10 @@ fn display_pause_reason_for_dynamic_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
-    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+    if run_pause_reason.is_some_and(|reason| {
+        normalize_lifecycle_code(reason) == "error-blocked"
+            || is_runtime_continue_pause_reason(Some(reason))
+    }) {
         return run_pause_reason.map(str::to_string);
     }
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
@@ -910,7 +916,7 @@ fn is_terminal_session_status(status: &str) -> bool {
 fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
     matches!(
         pause_reason.map(normalize_lifecycle_code).as_deref(),
-        Some("process-interrupted")
+        Some("process-interrupted" | "runtime-abnormal")
     )
 }
 
@@ -927,7 +933,7 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted") => Some("input".to_string()),
+        Some("process-interrupted" | "runtime-abnormal") => Some("input".to_string()),
         _ => None,
     }
 }
@@ -1028,7 +1034,18 @@ fn derive_conversation_attempt_lifecycle(
         .filter(|status| !status.is_empty() && !status.eq_ignore_ascii_case("unknown"))
         .map(str::to_string);
     let normalized_runtime_status = normalize_lifecycle_code(runtime_status);
-    let runtime_active = is_active_session_status(runtime_status);
+    let runtime_paused = normalized_runtime_status == "paused";
+    let unexplained_provider_failure = runtime_paused
+        && runtime_outcome.is_none()
+        && pause_reason.is_none()
+        && matches!(
+            session_status
+                .as_deref()
+                .map(normalize_lifecycle_code)
+                .as_deref(),
+            Some("failed" | "failure" | "error")
+        );
+    let runtime_active = is_active_session_status(runtime_status) || unexplained_provider_failure;
     let acp_stopping = session_status
         .as_deref()
         .is_some_and(is_stopping_session_status);
@@ -1054,9 +1071,10 @@ fn derive_conversation_attempt_lifecycle(
         || session_status
             .as_deref()
             .is_some_and(is_terminal_session_status);
-    let runtime_paused = normalize_lifecycle_code(runtime_status) == "paused";
     let runtime_pause_overrides_session = runtime_paused
-        && (manual_check_pending
+        && runtime_outcome.is_none()
+        && (pause_reason.is_none()
+            || manual_check_pending
             || matches!(
                 pause_reason
                     .as_deref()
@@ -1191,15 +1209,17 @@ pub fn conversation_attempt_lifecycle_vm(
         let runtime_status = if run.status == RunStatus::Paused
             && raw_runtime_status == "running"
             && dynamic_node.outcome.is_none()
-            && pause_reason
-                .as_deref()
-                .is_some_and(|reason| normalize_lifecycle_code(reason) == "process-interrupted")
+            && is_runtime_continue_pause_reason(pause_reason.as_deref())
         {
             "paused".to_string()
         } else {
             raw_runtime_status
         };
         let outcome = dynamic_node.outcome.as_ref().map(enum_label);
+        let run_paused_for_current_leaf = run_pause_reason.as_deref().is_some_and(|reason| {
+            normalize_lifecycle_code(reason) == "error-blocked"
+                || is_runtime_continue_pause_reason(Some(reason))
+        });
         let current = run.current_round.as_deref() == Some(round_id)
             && run.current_node.as_deref() == Some(outer_node_id)
             && run.current_attempt.as_deref() == Some(outer_attempt_id)
@@ -1208,20 +1228,12 @@ pub fn conversation_attempt_lifecycle_vm(
                 .current_node_ids
                 .iter()
                 .any(|id| id == node_id)
-                || (run_pause_reason
-                    .as_deref()
-                    .is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked")
+                || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
         let leaf_resumable = runtime_status == "paused"
             && outcome.is_none()
-            && matches!(
-                pause_reason
-                    .as_deref()
-                    .map(normalize_lifecycle_code)
-                    .as_deref(),
-                Some("process-interrupted")
-            );
+            && is_runtime_continue_pause_reason(pause_reason.as_deref());
         return Ok(derive_conversation_attempt_lifecycle(
             session_vm.as_ref().map(|session| session.status.as_str()),
             &runtime_status,
@@ -1453,6 +1465,11 @@ pub fn conversation_run_vm(
 
                             let mut dyn_leafs: Vec<ConversationSessionLeafVm> = Vec::new();
                             let dyn_outcome = dyn_node.outcome.as_ref().map(enum_label);
+                            let run_paused_for_dyn_leaf =
+                                run_pause_reason.as_deref().is_some_and(|reason| {
+                                    normalize_lifecycle_code(reason) == "error-blocked"
+                                        || is_runtime_continue_pause_reason(Some(reason))
+                                });
                             let dyn_current = run.current_round.as_deref() == Some(&round.id)
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
@@ -1462,17 +1479,15 @@ pub fn conversation_run_vm(
                                     .current_node_ids
                                     .iter()
                                     .any(|id| id == &dyn_node.id)
-                                    || (run_pause_reason.as_deref().is_some_and(|reason| {
-                                        normalize_lifecycle_code(reason) == "error-blocked"
-                                    }) && dyn_node.status
-                                        == gold_band::dynamic::DynamicNodeStatus::Paused
+                                    || (run_paused_for_dyn_leaf
+                                        && dyn_node.status
+                                            == gold_band::dynamic::DynamicNodeStatus::Paused
                                         && dyn_node.outcome.is_none()));
                             let dyn_base_status = if run.status == RunStatus::Paused
                                 && dyn_runtime_status == "running"
                                 && dyn_node.outcome.is_none()
-                                && run_pause_reason.as_deref().is_some_and(|reason| {
-                                    normalize_lifecycle_code(reason) == "process-interrupted"
-                                }) {
+                                && is_runtime_continue_pause_reason(run_pause_reason.as_deref())
+                            {
                                 "paused".to_string()
                             } else {
                                 dyn_runtime_status.clone()
@@ -1504,21 +1519,16 @@ pub fn conversation_run_vm(
                                 let dyn_status = if run.status == RunStatus::Paused
                                     && dyn_runtime_status == "running"
                                     && dyn_node.outcome.is_none()
-                                    && dyn_pause_reason.as_deref().is_some_and(|reason| {
-                                        normalize_lifecycle_code(reason) == "process-interrupted"
-                                    }) {
+                                    && is_runtime_continue_pause_reason(dyn_pause_reason.as_deref())
+                                {
                                     "paused".to_string()
                                 } else {
                                     dyn_runtime_status.clone()
                                 };
                                 let dyn_leaf_resumable = dyn_status == "paused"
                                     && dyn_outcome.is_none()
-                                    && matches!(
-                                        dyn_pause_reason
-                                            .as_deref()
-                                            .map(normalize_lifecycle_code)
-                                            .as_deref(),
-                                        Some("process-interrupted")
+                                    && is_runtime_continue_pause_reason(
+                                        dyn_pause_reason.as_deref(),
                                     );
                                 let lifecycle = derive_conversation_attempt_lifecycle(
                                     dyn_session_vm
@@ -2643,6 +2653,70 @@ mod tests {
     }
 
     #[test]
+    fn runtime_abnormal_pause_is_input_continue_even_when_acp_failed() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            true,
+            Some("runtime-abnormal"),
+            true,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert!(lifecycle.runtime.continuable);
+        assert_eq!(
+            lifecycle.runtime.pause_reason.as_deref(),
+            Some("runtime-abnormal")
+        );
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn current_unexplained_paused_provider_failure_stays_runtime_active() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            true,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert!(lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn unexplained_paused_provider_failure_stays_runtime_active_without_current_marker() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            false,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert!(lifecycle.composer.lock_input);
+    }
+
+    #[test]
     fn manual_check_waiting_for_user_input_keeps_acp_prompt_available() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             None,
@@ -2785,6 +2859,94 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+    }
+
+    #[test]
+    fn paused_parent_runtime_abnormal_dynamic_leaf_is_runtime_continue() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("runtime-abnormal"),
+            "paused",
+            Vec::new(),
+        );
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.runtime.status, "paused");
+        assert_eq!(
+            lifecycle.runtime.pause_reason.as_deref(),
+            Some("runtime-abnormal")
+        );
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn dynamic_leaf_provider_failure_does_not_flash_runtime_error_before_pause_reason() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "running",
+            json!(null),
+            "paused",
+            vec!["good-morning"],
+            false,
+        );
+        gold_band::storage::write_json(
+            &app.paths
+                .dynamic_node_attempt_dir(
+                    "task-dyn",
+                    "run-dyn",
+                    "round-001",
+                    "ai-dynamic",
+                    "attempt-001",
+                    "good-morning",
+                    "attempt-001",
+                )
+                .join("acp.session.json"),
+            &json!({
+                "status": "failed",
+                "stopReason": "error",
+                "sessionId": "session-good-morning",
+                "messages": []
+            }),
+        )
+        .unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
     }
 
     #[test]

@@ -58,6 +58,10 @@ use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
     validate_round_state, validate_run_state, validate_worker_ref_state,
 };
+use crate::runtime_error::{
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
+    manual_runtime_error_info, normalize_runtime_error, runtime_error,
+};
 use crate::storage::{append_jsonl, read_json, write_json};
 
 use super::ids::{generate_uuid, next_attempt_id, now_rfc3339_like, reserve_next_run_dir};
@@ -478,6 +482,7 @@ struct DynamicResumeOverride {
     prompt: String,
     prompt_id: Option<String>,
     attachment_paths: Vec<String>,
+    model_override: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -742,6 +747,7 @@ pub(crate) fn run_continue(
     run_id: &str,
     prompt_id: Option<String>,
     prompt: Option<String>,
+    model_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -872,6 +878,7 @@ pub(crate) fn run_continue(
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
         None,
+        model_override,
     )?;
     Ok(run)
 }
@@ -889,6 +896,7 @@ pub(crate) fn run_continue_dynamic_inner(
     prompt_id: Option<String>,
     prompt: String,
     attachment_paths: Vec<String>,
+    model_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -929,6 +937,7 @@ pub(crate) fn run_continue_dynamic_inner(
         prompt: resume_prompt,
         prompt_id,
         attachment_paths,
+        model_override,
     };
     let dispatch = {
         let lock =
@@ -994,6 +1003,7 @@ pub(crate) fn run_continue_dynamic_inner(
         None,
         None,
         Some(resume_override),
+        None,
     );
     if drive_result.is_err() {
         let key =
@@ -1017,6 +1027,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
     prompt_id: Option<String>,
     prompt: String,
     attachment_paths: Vec<String>,
+    model_override: Option<String>,
 ) -> Result<RunState> {
     let mut initial_run = app.run_status(task_id, run_id)?;
     if !(is_run_continuable(&initial_run) || initial_run.status == RunStatus::Running) {
@@ -1060,6 +1071,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
             prompt_id,
             prompt,
             attachment_paths,
+            model_override,
         ) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
@@ -1080,6 +1092,7 @@ pub(crate) fn run_continue_background(
     run_id: &str,
     prompt_id: Option<String>,
     prompt: Option<String>,
+    model_override: Option<String>,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
@@ -1094,10 +1107,12 @@ pub(crate) fn run_continue_background(
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
     let prompt = prompt.clone();
+    let model_override = model_override.clone();
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt) {
+        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt, model_override)
+        {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -3893,20 +3908,26 @@ fn apply_dynamic_execution_message(
         Ok(result) => result,
         Err(error) => {
             let reason = error.to_string();
-            let class = classify_runtime_error(&error);
+            let info = normalize_runtime_error(&error);
             graph.nodes[index].status = DynamicNodeStatus::Paused;
             graph.nodes[index].outcome = None;
             graph.nodes[index].finished_at = Some(now_rfc3339_like());
-            let pause_reason = match class {
-                RuntimeErrorClass::Recoverable => PauseReason::RuntimeAbnormal,
-                RuntimeErrorClass::Blocked => PauseReason::ErrorBlocked,
-            };
+            let pause_reason = info.pause_reason_after_retry_boundary();
+            append_dynamic_event(
+                ctx,
+                "dynamic_runtime_error",
+                serde_json::json!({
+                    "nodeId": message.node_id,
+                    "pauseReason": pause_reason,
+                    "runtimeError": info,
+                }),
+            )?;
             let has_active_leaf =
                 persist_paused_dynamic_leaf_or_graph(ctx, graph, index, pause_reason, &reason)?;
-            return match class {
-                RuntimeErrorClass::Recoverable => Ok(()),
-                RuntimeErrorClass::Blocked if has_active_leaf => Ok(()),
-                RuntimeErrorClass::Blocked => Err(error),
+            return match info.recovery {
+                RecoveryMode::Auto | RecoveryMode::Manual => Ok(()),
+                RecoveryMode::Blocked if has_active_leaf => Ok(()),
+                RecoveryMode::Blocked => Err(error),
             };
         }
     };
@@ -4371,7 +4392,12 @@ fn execute_dynamic_worker(
         .provider
         .as_deref()
         .ok_or_else(|| {
-            blocked_runtime_error(format!("dynamic worker `{}` is missing provider", node.id))
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Config,
+                "config.provider-missing",
+                format!("dynamic worker `{}` is missing provider", node.id),
+                serde_json::json!({ "nodeId": node.id }),
+            ))
         })?
         .to_string();
     let worker_ref_path = ctx.app.paths.dynamic_node_worker_ref_file(
@@ -4885,7 +4911,12 @@ fn execute_dynamic_agent_stage(
         }),
     );
     let provider_id = node.provider.as_deref().ok_or_else(|| {
-        blocked_runtime_error(format!("dynamic stage `{}` is missing provider", node.id))
+        runtime_error(manual_runtime_error_info(
+            RuntimeErrorDomain::Config,
+            "config.provider-missing",
+            format!("dynamic stage `{}` is missing provider", node.id),
+            serde_json::json!({ "nodeId": node.id }),
+        ))
     })?;
     append_dynamic_event(
         ctx,
@@ -5208,6 +5239,9 @@ fn finalize_dynamic_worker_result(
             ),
             &worker_ref,
         )?;
+    }
+    if let Some(info) = result.runtime_error {
+        return Err(runtime_error(info));
     }
     if let Some(payload) = result.result_payload
         && let Some(output_artifact) = payload.output_artifact
@@ -8523,9 +8557,18 @@ fn dynamic_worktree_unavailable_error(
     node_id: &str,
     capability: &DynamicWorkspaceCapability,
 ) -> anyhow::Error {
-    blocked_runtime_error(format!(
-        "workspace.worktree-git-required: dynamic node `{}` requested workspace.mode=worktree but workspace `{}` cannot create git worktrees (reasonCode={}, reason={})",
-        node_id, ctx.app.paths.repo_root, capability.reason_code, capability.reason
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workspace,
+        "workspace.worktree-git-required",
+        format!(
+            "dynamic node `{}` requested workspace.mode=worktree but workspace `{}` cannot create git worktrees (reasonCode={}, reason={})",
+            node_id, ctx.app.paths.repo_root, capability.reason_code, capability.reason
+        ),
+        serde_json::json!({
+            "nodeId": node_id,
+            "workspace": ctx.app.paths.repo_root,
+            "reasonCode": capability.reason_code,
+        }),
     ))
 }
 
@@ -8900,81 +8943,51 @@ fn ensure_dynamic_required_model_catalogs(
                 None,
             );
             let reason = error.message.clone();
-            pause_dynamic_graph(ctx, graph, PauseReason::ErrorBlocked, &reason)?;
-            return Err(blocked_runtime_error(reason));
+            pause_dynamic_graph(ctx, graph, PauseReason::RuntimeAbnormal, &reason)?;
+            return Err(runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Config,
+                "config.catalog-missing",
+                reason,
+                serde_json::json!({ "provider": provider }),
+            )));
         }
     }
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeErrorClass {
-    Recoverable,
-    Blocked,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-struct DynamicRuntimeError {
-    class: RuntimeErrorClass,
-    message: String,
-}
-
 fn blocked_runtime_error(message: impl Into<String>) -> anyhow::Error {
-    anyhow!(DynamicRuntimeError {
-        class: RuntimeErrorClass::Blocked,
-        message: message.into(),
-    })
+    let message = message.into();
+    runtime_error(blocked_runtime_error_info(
+        RuntimeErrorDomain::Dynamic,
+        "dynamic.blocked",
+        message,
+        serde_json::json!({}),
+    ))
 }
 
 fn recoverable_runtime_error(message: impl Into<String>) -> anyhow::Error {
-    anyhow!(DynamicRuntimeError {
-        class: RuntimeErrorClass::Recoverable,
-        message: message.into(),
-    })
+    let message = message.into();
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::RuntimeTransport,
+        "runtime.recoverable",
+        message,
+        serde_json::json!({}),
+    ))
 }
 
-fn classify_runtime_error(error: &anyhow::Error) -> RuntimeErrorClass {
-    if let Some(error) = error.downcast_ref::<DynamicRuntimeError>() {
-        return error.class;
+fn auto_retry_delay_ms(info: &RuntimeErrorInfo, completed_retries: u32) -> Option<u64> {
+    if info.recovery != RecoveryMode::Auto {
+        return None;
     }
-    if error.chain().any(|source| {
-        source
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(io_error_is_recoverable)
-    }) {
-        return RuntimeErrorClass::Recoverable;
+    let policy = info.retry_policy.as_ref()?;
+    if completed_retries >= policy.max_attempts {
+        return None;
     }
-    if runtime_error_text_has_recoverable_signal(error) {
-        return RuntimeErrorClass::Recoverable;
-    }
-    RuntimeErrorClass::Blocked
-}
-
-fn io_error_is_recoverable(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::Interrupted
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionAborted
-            | std::io::ErrorKind::ConnectionReset
-    ) || error.raw_os_error() == Some(1450)
-}
-
-fn runtime_error_text_has_recoverable_signal(error: &anyhow::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    [
-        "os error 1450",
-        "系统资源不足",
-        "adapter transport interrupted",
-        "transport interrupted",
-        "connection closed",
-        "channel closed unexpectedly",
-    ]
-    .iter()
-    .any(|marker| message.contains(marker))
+    policy
+        .backoff_ms
+        .get(completed_retries as usize)
+        .copied()
+        .or_else(|| policy.backoff_ms.last().copied())
 }
 
 fn pause_active_dynamic_leaves(graph: &mut DynamicGraphState) {
@@ -9060,9 +9073,10 @@ fn drive_from_node_with_initial_session(
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
     initial_user_prompt_render_mode: UserPromptRenderMode,
-    mut parent_continue_prompt: Option<String>,
-    mut parent_continue_prompt_id: Option<String>,
-    mut dynamic_resume_override: Option<DynamicResumeOverride>,
+    parent_continue_prompt: Option<String>,
+    parent_continue_prompt_id: Option<String>,
+    dynamic_resume_override: Option<DynamicResumeOverride>,
+    initial_model_override: Option<String>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
     let mut continue_ref = initial_continue_ref;
@@ -9070,6 +9084,7 @@ fn drive_from_node_with_initial_session(
     let mut resume_prompt_id = initial_resume_prompt_id;
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = initial_user_prompt_render_mode;
+    let mut model_override = initial_model_override;
     let mut invalid_output_repair_prompts = 0;
 
     loop {
@@ -9169,38 +9184,97 @@ fn drive_from_node_with_initial_session(
         if matches!(current_node_dsl, NodeDsl::Worker(_)) {
             setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
         }
-        let execution_result = match current_node_dsl {
-            NodeDsl::Worker(_) => {
-                app.validate_workflow_node_agent_options(current_node_dsl)?;
-                execute_ai_node(
+        let mut auto_retry_attempts = 0;
+        let execution_result = loop {
+            let result = match current_node_dsl {
+                NodeDsl::Worker(_) => app
+                    .validate_workflow_node_agent_options(current_node_dsl)
+                    .and_then(|_| {
+                        execute_ai_node(
+                            app,
+                            task_id,
+                            &run.id,
+                            round,
+                            &current_attempt_id,
+                            workflow,
+                            &current_node_id,
+                            node.clone(),
+                            session_mode,
+                            continue_ref.as_ref().cloned(),
+                            resume_prompt.clone(),
+                            resume_prompt_id.clone(),
+                            resume_prompt_visibility,
+                            user_prompt_render_mode,
+                            model_override.take(),
+                        )
+                    }),
+                NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
                     app,
                     task_id,
-                    &run.id,
+                    run,
                     round,
                     &current_attempt_id,
-                    workflow,
-                    &current_node_id,
+                    dynamic,
                     node.clone(),
-                    session_mode,
-                    continue_ref.as_ref().cloned(),
-                    resume_prompt.take(),
-                    resume_prompt_id.take(),
-                    resume_prompt_visibility,
-                    user_prompt_render_mode,
-                )
+                    parent_continue_prompt.clone(),
+                    parent_continue_prompt_id.clone(),
+                    dynamic_resume_override.clone(),
+                ),
+            };
+            match result {
+                Err(err) => {
+                    let info = normalize_runtime_error(&err);
+                    if let Some(delay_ms) = auto_retry_delay_ms(&info, auto_retry_attempts) {
+                        auto_retry_attempts += 1;
+                        let summary = format!(
+                            "auto retry {}/{} after {} at {}/{}/{}: {}",
+                            auto_retry_attempts,
+                            info.retry_policy
+                                .as_ref()
+                                .map(|policy| policy.max_attempts)
+                                .unwrap_or(auto_retry_attempts),
+                            info.code_str(),
+                            round.id,
+                            current_node_id,
+                            current_attempt_id,
+                            err
+                        );
+                        progress(&summary);
+                        write_run_progress_best_effort(
+                            &app.paths,
+                            task_id,
+                            run,
+                            Some(node.node_type),
+                            ProgressStage::CallingProvider,
+                            summary.clone(),
+                        );
+                        let mut event_data = run_event_data(
+                            &ctx,
+                            Some(ProgressStage::CallingProvider),
+                            Some(run.status),
+                            Some(summary),
+                            None,
+                        );
+                        event_data.control_failure = Some(serde_json::json!({
+                            "runtimeError": info,
+                            "retryAttempt": auto_retry_attempts,
+                            "delayMs": delay_ms,
+                        }));
+                        append_run_event_best_effort(
+                            &app.paths,
+                            task_id,
+                            &run.id,
+                            "runtime_auto_retry",
+                            now_rfc3339_like(),
+                            event_data,
+                        );
+                        thread::sleep(Duration::from_millis(delay_ms));
+                        continue;
+                    }
+                    break Err(err);
+                }
+                ok => break ok,
             }
-            NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
-                app,
-                task_id,
-                run,
-                round,
-                &current_attempt_id,
-                dynamic,
-                node.clone(),
-                parent_continue_prompt.take(),
-                parent_continue_prompt_id.take(),
-                dynamic_resume_override.take(),
-            ),
         };
         if !attempt_is_still_current_running(
             app,
@@ -9216,21 +9290,15 @@ fn drive_from_node_with_initial_session(
         node = match execution_result {
             Ok(node) => node,
             Err(err) => {
-                let class = classify_runtime_error(&err);
-                let pause_reason = match class {
-                    RuntimeErrorClass::Recoverable => PauseReason::RuntimeAbnormal,
-                    RuntimeErrorClass::Blocked => PauseReason::ErrorBlocked,
-                };
-                let progress_stage = match class {
-                    RuntimeErrorClass::Recoverable => ProgressStage::Paused,
-                    RuntimeErrorClass::Blocked => ProgressStage::Blocked,
-                };
-                let error_summary = match class {
-                    RuntimeErrorClass::Recoverable => format!(
+                let info = normalize_runtime_error(&err);
+                let pause_reason = info.pause_reason_after_retry_boundary();
+                let progress_stage = info.progress_stage_after_retry_boundary();
+                let error_summary = match info.recovery {
+                    RecoveryMode::Auto | RecoveryMode::Manual => format!(
                         "run {} paused with runtime abnormal at {}/{}/{}: {}",
                         run.id, round.id, current_node_id, current_attempt_id, err
                     ),
-                    RuntimeErrorClass::Blocked => format!(
+                    RecoveryMode::Blocked => format!(
                         "run {} blocked at {}/{}/{}: {}",
                         run.id, round.id, current_node_id, current_attempt_id, err
                     ),
@@ -9252,19 +9320,23 @@ fn drive_from_node_with_initial_session(
                     progress_stage,
                     error_summary.clone(),
                 );
+                let mut event_data = run_event_data(
+                    &ctx,
+                    Some(progress_stage),
+                    Some(run.status),
+                    Some(error_summary.clone()),
+                    run.pause_reason,
+                );
+                event_data.control_failure = Some(serde_json::json!({
+                    "runtimeError": info,
+                }));
                 append_run_event_best_effort(
                     &app.paths,
                     task_id,
                     &run.id,
                     "run_paused",
                     run.updated_at.clone(),
-                    run_event_data(
-                        &ctx,
-                        Some(progress_stage),
-                        Some(run.status),
-                        Some(error_summary),
-                        run.pause_reason,
-                    ),
+                    event_data,
                 );
                 teardown_node_environment_best_effort(
                     app,
@@ -10994,6 +11066,7 @@ mod tests {
                 open_command: None,
             }),
             stream_path: None,
+            runtime_error: None,
         };
 
         finalize_dynamic_worker_result(&ctx, &mut node, &attempt_id, result).unwrap();
@@ -11069,6 +11142,7 @@ mod tests {
             }),
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error: None,
         };
 
         finalize_dynamic_worker_result(&ctx, &mut node, &attempt_id, result).unwrap();

@@ -167,6 +167,8 @@ fn success_result() -> ProviderRunResult {
             open_command: Some("claude -c session-123".to_string()),
         }),
         stream_path: None,
+        runtime_error: None,
+
     }
 }
 
@@ -218,6 +220,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             }),
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -266,6 +269,7 @@ impl ProviderAdapter for InterruptedThenContinueProvider {
                     open_command: Some("claude -c session-123".to_string()),
                 }),
                 stream_path: None,
+                runtime_error: None,
             });
         }
         assert_eq!(session_mode, SessionMode::Continue);
@@ -325,6 +329,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             }),
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -406,6 +411,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
                 open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -473,6 +479,7 @@ impl ProviderAdapter for OneRepairProvider {
                 open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

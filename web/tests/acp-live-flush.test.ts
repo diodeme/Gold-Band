@@ -43,7 +43,7 @@ describe('ACP live event flush policy', () => {
     }).scheduleFlush).toBe(false);
   });
 
-  it('keeps non-coalescable lifecycle events immediate without flushing cached streaming text while paused', () => {
+  it('keeps non-coalescable lifecycle events immediate and flushes cached streaming text while paused', () => {
     expect(decideAcpLiveEventFlush({
       coalescable: false,
       paused: true,
@@ -51,7 +51,7 @@ describe('ACP live event flush policy', () => {
     })).toEqual({
       buffer: false,
       applyImmediately: true,
-      flushPendingBeforeApply: false,
+      flushPendingBeforeApply: true,
       scheduleFlush: false,
       scheduleDelayMs: null,
     });

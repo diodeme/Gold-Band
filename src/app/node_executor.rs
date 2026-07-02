@@ -11,7 +11,8 @@ use crate::dsl::{
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
     PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, WorkerInvocation,
+    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
+    WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -310,6 +311,7 @@ pub(crate) fn build_worker_invocation(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
 ) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
@@ -347,9 +349,12 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
+    let input_attachment_paths = if matches!(session_mode, SessionMode::New) {
+        super::task_input_attachment_paths(app, task_id)
+    } else {
+        Vec::new()
+    };
 
-    // 对标 Zed: 渲染 MCP 工具到 system prompt
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
     let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
@@ -371,6 +376,7 @@ pub(crate) fn build_worker_invocation(
         extra_system_sections: Vec::new(),
         task_instruction,
         session_mode,
+        user_prompt_render_mode,
         permission_mode,
         model,
         continue_ref,
@@ -405,6 +411,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let invocation = build_worker_invocation(
@@ -420,6 +427,7 @@ pub(crate) fn execute_ai_node(
         resume_prompt,
         resume_prompt_id,
         resume_prompt_visibility,
+        user_prompt_render_mode,
     )?;
 
     progress(&format!(

@@ -35,7 +35,7 @@ pub fn decide_next_step(
             ControlDecision::CompleteRun(RunOutcome::Failure)
         }
         Some(crate::domain::NodeOutcome::Killed) => {
-            ControlDecision::CompleteRun(RunOutcome::Killed)
+            ControlDecision::CompleteRun(RunOutcome::Failure)
         }
         None => ControlDecision::PauseRun(PauseReason::ProcessInterrupted),
     }

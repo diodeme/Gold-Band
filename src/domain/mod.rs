@@ -48,6 +48,7 @@ pub enum SessionMode {
 #[serde(rename_all = "kebab-case")]
 pub enum PauseReason {
     ProcessInterrupted,
+    RuntimeAbnormal,
     ErrorBlocked,
     WaitingForUserInput,
     PermissionRequested,

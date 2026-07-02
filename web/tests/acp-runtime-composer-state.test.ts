@@ -12,6 +12,16 @@ const pausedDisplay: RuntimeDisplayVm = {
   blockingError: false,
 };
 
+const runtimeAbnormalDisplay: RuntimeDisplayVm = {
+  code: 'runtime-abnormal',
+  tone: 'danger',
+  icon: 'error',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'runtime-abnormal',
+  blockingError: false,
+};
+
 const runningDisplay: RuntimeDisplayVm = {
   code: 'running',
   tone: 'running',
@@ -182,6 +192,32 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
+  it('routes runtime-abnormal stopped input through runtime continue', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'runtime-abnormal',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'runtime-abnormal',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+    }));
+
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.submitTarget).toBe('runtime-continue');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
   it('does not treat stale ACP cancelled as runtime error after continue starts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -241,6 +277,39 @@ describe('deriveAcpRuntimeComposerState', () => {
       expect(state.inputDisabled).toBe(false);
       expect(state.canStop).toBe(false);
     }
+  });
+
+  it('ignores stale optimistic sending state once ACP has reached terminal paused lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'process-interrupted',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+          phase: 'paused',
+        },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: pausedDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+      waitingForOptimisticPrompt: true,
+      awaitingResponse: true,
+      turnAccepted: false,
+      hasResponseAfterTurn: false,
+    }));
+
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.processingKind).toBe('responding');
+    expect(state.statusActive).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.canSubmit).toBe(true);
   });
 
   it('keeps manual-check waiting state available for regular ACP prompts', () => {
@@ -315,6 +384,50 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.statusActive).toBe(false);
     expect(state.processingKind).toBe('responding');
     expect(state.canStop).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
+  it('shows local turn submission over a terminal ACP snapshot', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      sending: true,
+      awaitingResponse: true,
+      waitingForOptimisticPrompt: true,
+      localTurnInFlight: true,
+      turnAccepted: false,
+      hasResponseAfterTurn: false,
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.mode).toBe('submitting');
+    expect(state.sessionActive).toBe(false);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('sending');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(true);
+  });
+
+  it('shows local turn processing after a terminal ACP snapshot accepts the prompt', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      awaitingResponse: true,
+      localTurnInFlight: true,
+      turnAccepted: true,
+      hasResponseAfterTurn: false,
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.mode).toBe('normal');
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('processing');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canStop).toBe(true);
   });
 
   it('ignores stale ACP running when lifecycle is terminal', () => {

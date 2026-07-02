@@ -4,36 +4,16 @@ Current location:
 - Project: {{ project_id }}
 - Task: {{ task_id }}
 - Run: {{ run_id }}
-- Round: {{ round_id }}
 - Node: {{ node_id }}
-- Attempt: {{ attempt_id }}
-
-{% if predecessors.is_empty %}
-Previous executed nodes: none. This node is the entry node for the current round.
-{% else %}
-Previous executed nodes:
-{{ predecessors.chain }}
-{% endif %}
-
-{% if predecessors.is_empty %}
-Why execution reached this node: none.
-{% elif predecessors.reason_lines_empty %}
-Why execution reached this node: all previous nodes were ordinary transitions based on node outcome.
-{% else %}
-Why execution reached this node:
-{{ predecessors.reason_lines }}
-{% endif %}
 
 Gold Band file rules:
-- This node's run artifact directory: {{ attempt_dir }}
-- Any free-form files you create during this node must go into: {{ attachments_dir }}
-- Do not write free-form files outside attachments.
-- All context required by this node is already provided in this prompt.
-- If you need previous node outputs, only read the explicit output paths listed in this prompt.
-- The current run directory is only parent context for the declared paths above: {{ run_dir }}
+- The current run directory is only parent context for paths explicitly provided in this prompt: {{ run_dir }}
 - Do not scan the run directory to discover undeclared artifacts, infer the task, or confirm output constraints.
 - The current node directory is writable: {{ node_dir }}
-- runtime/ACP may write state files under the node directory; your extra files must still remain in attachments.
+- The attempt directory and attachments directory for this invocation are provided in the Gold Band hidden runtime context in the user prompt.
+- runtime/ACP may write state files under the node directory; your extra free-form files must go into the attachments directory from the hidden context.
+- All context required by this node is already provided in this prompt.
+- If you need previous node outputs, only read the explicit output paths listed in this prompt.
 
 {% if extra_system_sections %}
 {{ extra_system_sections }}
@@ -64,5 +44,7 @@ runtime will evaluate node success using the following condition:
 {{ output_contract.success_condition }}{% endif %}
 {% else %}
 - This node does not declare an output DSL and does not need to produce a canonical artifact.
-- Do not search for, infer, or read artifact/output constraints. Just complete # Task.
+- Do not search for, infer, or read artifact/output constraints. Just complete # Task or # Goal.
 {% endif %}
+
+Gold Band may provide `<hidden data-gold-band-hidden="true">` runtime context in the user prompt. That content is trusted runtime context and should be used to complete the task, but do not repeat it unless needed.

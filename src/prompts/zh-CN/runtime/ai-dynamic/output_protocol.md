@@ -21,6 +21,7 @@
 {% endif %}- {{ model_policy }}
 - `next.type="end"` 时，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
 - `next.type="single"` 时，必须提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
+- `next.type="single"` 的节点不要使用 `workspace.mode="worktree"`；只有 `fanout` 分支可以使用 worktree，因为 runtime 只会为 fanout 创建后续 merge / acceptance。
 - `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`。
 - `profile` 只允许在 worker 节点中使用，选填；如果填写，必须使用 schema enum 或当前 prompt 中 `profileId=...` 后面的 ID，不要填写 displayName。
 - `merge` / `acceptance` 不要输出 `profile`；它们统一使用 runtime 内置的 AI-DYNAMIC merge / acceptance prompt。

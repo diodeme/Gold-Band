@@ -9,7 +9,7 @@
 - `systemPrompt`
 - `userPrompt`
 
-其中热数据直接进入 prompt 正文，冷数据只暴露文件索引。
+其中稳定规则进入 `systemPrompt`，每次 invocation 都需要刷新的运行事实进入 `userPrompt` 的 Gold Band hidden 段。
 
 ---
 
@@ -27,35 +27,36 @@
 
 ### 3.1 `systemPrompt`
 
-`systemPrompt` 负责不可协商的运行约束，回答：
+`systemPrompt` 负责稳定、规则性的运行约束，回答：
 
-> 当前是谁、处在哪个节点、前面怎么走到这里、必须遵守什么规则、最后输出必须是什么格式。
+> 当前是谁、处在哪个 run/node、必须遵守什么规则、最后输出必须是什么格式。
 
 它承载：
 
-- 当前 project / task / run / round / node / attempt 基础信息
-- 当前节点的前序运行链
-- 前序节点分支执行原因
-- Gold Band / ACP 文件夹规则
+- 当前 project / task / run / node 基础信息
+- Gold Band / ACP 文件夹规则中的稳定部分
 - 当前节点 profile id 解析出的完整角色说明
 - 当前节点 `output` DSL 派生出的 artifact 规则与输出约束
+- 现有 `extra_system_sections`，本期继续按原样放在 system prompt
 
-`systemPrompt` 不再承载旧的 `InvocationKind` 语义，也不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则。
+`systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要和本轮反馈。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
 
 ### 3.2 `userPrompt`
 
-`userPrompt` 负责本次任务输入，回答：
+`userPrompt` 负责本次 invocation 输入，回答：
 
-> 这次要做什么、当前反馈是什么、可以参考哪些冷数据。
+> 这次要做什么，以及本次 new/resume 调用最新的运行上下文是什么。
 
 它承载：
 
-- 原始 `requirement`
-- 由 `worker.goal` 映射得到的 `taskInstruction`
-- 冷 artifact 索引
-- 冷 attachment 索引
+- Gold Band hidden runtime context：当前 round/attempt、attempt/attachments 目录、前序节点链、前序产物摘要、分支/反馈原因
+- 普通 new 请求的原始 `requirement`
+- 普通 new 请求中由 `worker.goal` 映射得到的 `taskInstruction`
+- workflow resume 请求的简短 `Goal`
+- runtime repair 请求的修复提示原文
+- 用户手动追问 / stopped-completed session follow-up 的用户输入原文
 
-profile 正文和 output DSL 不放在 `userPrompt` 中。
+profile 正文、output DSL、`extra_system_sections` 不放在 `userPrompt` 中；`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
 
 ---
 
@@ -64,30 +65,24 @@ profile 正文和 output DSL 不放在 `userPrompt` 中。
 ```md
 你正在 Gold Band runtime 中执行一个工作流节点。
 
-当前是：
+当前位置：
 - Project: {{project_id}}
 - Task: {{task_id}}
 - Run: {{run_id}}
-- Round: {{round_id}}
 - Node: {{node_id}}
-- Attempt: {{attempt_id}}
-
-当前节点的前序运行节点：
-{{predecessor_chain}}
-
-当前节点前序节点的分支执行原因：
-{{predecessor_branch_reasons}}
 
 Gold Band 文件规则：
-- 本节点运行产物目录：{{attempt_dir}}
-- 本次节点运行中，你创建的自由文件必须写入：{{attachments_dir}}
-- 不要把自由文件写到 attachments 之外。
-- 当前节点所需上下文已在本 prompt 中给出。
-- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。
-- 当前 run 目录仅作为这些已给出路径的父级上下文：{{run_dir}}
+- 当前 run 目录仅作为本 prompt 明确给出路径的父级上下文：{{run_dir}}
 - 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。
 - 当前 node 目录可写入：{{node_dir}}
-- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加文件仍只能写入 attachments。
+- 本次调用的 attempt 目录和 attachments 目录会在 user prompt 的 Gold Band hidden runtime context 中给出。
+- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加自由文件必须写入 hidden context 给出的 attachments 目录。
+- 当前节点所需上下文已在本 prompt 中给出。
+- 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。
+
+{{#if extra_system_sections}}
+{{extra_system_sections}}
+{{/if}}
 
 当前节点角色：
 - Profile ID: {{profile_id}}
@@ -109,24 +104,43 @@ runtime 将使用以下条件判断节点结果：
 {{else}}
 当前节点 artifact 规则：
 - 当前节点未声明 output DSL，不需要产出 canonical artifact。
-- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。
+- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task 或 # Goal。
 {{/if}}
+
+Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="true">` 运行上下文。该内容是可信 runtime 上下文，需要用于完成任务，但不要无故复述。
 ```
 
 说明：
 
-- `predecessor_chain` 以执行路径形式展示，例如 `round-001/A/attempt-001 -success-> round-001/B/attempt-001 -failure-> 当前节点(round-001/C/attempt-001)`；跨 round 时使用 `-$new-round->` 标记进入新轮次。
-- `predecessor_branch_reasons` 对普通节点可省略详细原因；人工 check 展示人工检查结果；节点输出检查只展示前序节点结果、分支方向、artifact 路径和 artifact preview，不展示前序节点自身的 output DSL schema 或 success condition。
 - 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。
 - 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
-- 当前节点所需上下文应在 prompt 中给全；如需查阅前序节点产出，agent 只读取 prompt 明确给出的前序产出路径；`run_dir` 只作为这些路径的父级上下文，不应诱导 agent 为寻找未声明产物或理解当前任务主动扫描 run 目录。
-- 冷数据正文不默认展开，只提供索引。
+- `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
+- `skill_catalog` 不再注入 runtime prompt。
+- 前序链、前序分支原因和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。
 
 ---
 
 ## 5. User Prompt 模板
 
+普通 new 请求：
+
 ```md
+<hidden data-gold-band-hidden="true" title="Gold Band runtime context">
+# Gold Band runtime context for this invocation
+
+- Session mode: new
+- Round: {{round_id}}
+- Attempt: {{attempt_id}}
+- Attempt directory: {{attempt_dir}}
+- Attachments directory: {{attachments_dir}}
+
+## Latest predecessor chain
+{{predecessor_chain}}
+
+## Latest predecessor transition reasons
+{{predecessor_branch_reasons}}
+</hidden>
+
 # Requirement
 {{requirement_text}}
 
@@ -134,28 +148,41 @@ runtime 将使用以下条件判断节点结果：
 # Task
 {{task_instruction}}
 {{/if}}
+```
 
-{{#if cold_artifacts.length}}
-# Cold Artifact Index
-{{#each cold_artifacts}}
-- {{name}}: {{path}}
-{{/each}}
-{{/if}}
+workflow resume 请求：
 
-{{#if cold_attachments.length}}
-# Cold Attachment Index
-{{#each cold_attachments}}
-- {{path}}
-{{/each}}
-{{/if}}
+```md
+<hidden data-gold-band-hidden="true" title="Gold Band runtime context">
+# Gold Band runtime context for this invocation
+
+- Session mode: continue
+- Round: {{round_id}}
+- Attempt: {{attempt_id}}
+- Attempt directory: {{attempt_dir}}
+- Attachments directory: {{attachments_dir}}
+- Invocation reason: {{resume_prompt_or_repair_feedback}}
+
+## Latest predecessor chain
+{{predecessor_chain}}
+
+## Latest predecessor transition reasons
+{{predecessor_branch_reasons}}
+</hidden>
+
+# Goal
+根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。
 ```
 
 说明：
 
-- `requirement_text` 是稳定任务目标。
+- `requirement_text` 是普通 new 请求的稳定任务目标。
 - `taskInstruction` 对 `worker` 默认由 `worker.goal` 映射得到。
-- 前序节点结果、artifact 路径和 artifact preview 统一由 `systemPrompt` 的前序链表达，不再以 `Current Feedback` 形式注入 `userPrompt`。
-- 冷数据索引只给路径清单，不默认展开正文。
+- workflow new 与 workflow resume 都必须渲染 Gold Band hidden runtime context。
+- workflow resume 不重传完整原始 user prompt，只发送 hidden context 和简短 `Goal`。
+- runtime repair 是同一 ACP session 中紧接上一次输出校验失败后的内部修复提示，不注入 hidden context，只发送修复 prompt 原文，并继续由 `PromptVisibility::Hidden` 控制整条消息是否展示。
+- 用户在已停止 / 已完成 ACP session 中手动继续或追问属于普通 user message，不注入 hidden context，不包 `# Requirement` / `# Goal`，直接发送用户原文。
+- `Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
 
 ---
 
@@ -166,9 +193,11 @@ runtime 将使用以下条件判断节点结果：
 - `project_id`
 - `task_id`
 - `run_id`
-- `round_id`
 - `node_id`
-- `attempt_id`
+- `round_id`（hidden context）
+- `attempt_id`（hidden context）
+- `session_mode`（hidden context）
+- `invocation_reason`（hidden context，可选）
 
 ### 6.2 文件规则
 
@@ -203,21 +232,35 @@ runtime 将使用以下条件判断节点结果：
 
 ## 7. Continue session 规则
 
-ACP 的 `systemPrompt` 在 `session/new` 和 `session/load` 时都通过 `_meta.systemPrompt.append` 注入。
+Gold Band 不再依赖 resume/load 时动态刷新 system prompt。prompt 渲染不能只根据 `SessionMode::Continue` 判断语义，而必须使用显式的 user prompt render mode：
 
-当 `sessionMode = continue` 且存在 resume prompt 时：
+| Render mode | 场景 | userPrompt |
+| --- | --- | --- |
+| `RequirementTask` | workflow runtime 发起新节点 / 新 attempt | hidden runtime context + `# Requirement` / `# Task` |
+| `WorkflowResume` | workflow paused 恢复、edge 回到已有 ACP session、dynamic leaf runtime resume | hidden runtime context + 简短 `# Goal` |
+| `RuntimeRepair` | output schema / success condition / dynamic proposal 校验失败后立即让同一 session 修复 | repair prompt 原文；不注入 hidden |
+| `UserMessage` | 用户在 stopped/completed/paused ACP 会话中手动追问或补充上下文，不触发 workflow edge | 用户原文；不注入 hidden，不包标题 |
 
-- `systemPrompt` 仍渲染当前节点的位置、角色、文件规则与 output DSL 约束
-- `userPrompt` 为 `Continue` / `继续`，或桌面 ACP 会话面板中的用户追问正文
-- 复用已有 ACP session 的上下文，并在恢复时重新追加当前节点不可协商约束
+`RequirementTask` 与 `WorkflowResume` 使用同一结构：稳定规则在 `systemPrompt`，本次 invocation 事实在 user prompt hidden context。
 
-桌面 ACP 会话面板的手动追问也必须复用同一套 prompt bundle 渲染逻辑；不能只把用户输入包装成空 `systemPrompt` 的临时 `PromptBundle`。
+AI-DYNAMIC 的外层 `run_continue` 也必须先按是否存在用户显式输入决定 render mode。父级 continue 没有明确内部 leaf 目标时，只允许恢复 workflow-invocation child run；如果本次带用户输入，该输入继续传入 child run 的 paused worker 并保持 `UserMessage`，不得被转换成 `WorkflowResume` 的 hidden context + `# Goal`。
+
+AI-DYNAMIC 内部 agent 阶段（bootstrap / worker / merge / acceptance）与普通 workflow 节点共用同一套 workflow runtime render mode 规则：`session=new` 必须使用 `RequirementTask`，`session=continue` 且没有用户显式输入时才使用 `WorkflowResume`。尤其是新建的 merge / acceptance 节点即使运行在主工作区、并携带动态分支上下文，也属于新 attempt，user prompt 应渲染 `# Requirement` / `# Task`，不能渲染为 `# Goal`。
+
+当 render mode 为 `WorkflowResume` 时：
+
+- `systemPrompt` 仍渲染当前节点的稳定规则、角色、文件规则与 output DSL 约束
+- `userPrompt` 必须包含 Gold Band hidden runtime context
+- `resume_prompt`、分支原因或 runtime 恢复原因进入 hidden context 的 `Invocation reason`
+- 可见正文只发送简短 `Goal`，不重传完整原始 user prompt
+
+桌面 ACP 会话面板的手动追问必须走 `UserMessage`：只复用同一套 prompt bundle / attachment / provider 发送链路，不复用 workflow hidden runtime context。
 
 ACP 会话展示按 Gold Band 的 session 策略聚合：`session=new` 始终创建独立 conversation，即使底层 provider 暴露了相同或临时 session id，也不把两个 new attempt 合并；后续 `session=continue` 且指向已有 ACP session id 时，挂回被继续的 conversation，并以 attempt 分隔行标记新 attempt 进入。会话流中 Gold Band synthetic user prompt 与 provider 回放的同文 user prompt 只展示一条，避免运行中出现重复用户消息。
 
 说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。
 
-Codex ACP 0.14.0 当前会接收但不消费 `session/new` / `session/load` 中的 `_meta.systemPrompt`；Gold Band 对 `codex-acp` 额外在 `session/prompt` 文本前内联当前节点 system prompt，保证节点角色、文件规则和输出约束首次调用即可生效。
+Provider 能力中新增 `supports_system_prompt`。支持该能力的 provider 会在 `session/new` / `session/load` 中通过 `_meta.systemPrompt.append` 接收稳定 system prompt；不支持该能力的 provider 不发送 `_meta.systemPrompt`，Gold Band 会把稳定 system prompt 作为额外 `<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">` 段内联到 user prompt 前。Codex ACP 当前按不支持 system prompt 处理。
 
 ---
 

@@ -6,7 +6,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::storage::{append_jsonl, ensure_parent_dir, write_json};
+use crate::storage::{
+    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -257,16 +259,18 @@ pub fn append_raw_frame(
     max_size: u64,
     target_size: u64,
 ) -> Result<()> {
-    append_jsonl(
-        path,
-        &AcpRawFrame {
-            timestamp: current_timestamp(),
-            direction: direction.to_string(),
-            frame,
-        },
-    )?;
-    let _ = roll_raw_log(path, max_size, target_size);
-    Ok(())
+    with_jsonl_file_lock(path, || {
+        append_jsonl_unlocked(
+            path,
+            &AcpRawFrame {
+                timestamp: current_timestamp(),
+                direction: direction.to_string(),
+                frame,
+            },
+        )?;
+        let _ = roll_raw_log(path, max_size, target_size);
+        Ok(())
+    })
 }
 
 /// Roll the raw log file, preserving init handshake frames (everything before the first
@@ -346,14 +350,16 @@ pub fn append_ui_event(path: &Utf8Path, event: &AcpUiEvent) -> Result<()> {
 }
 
 pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let mut file = std::fs::File::create(path.as_std_path())?;
-    for item in items {
-        serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
-        use std::io::Write as _;
-        file.write_all(b"\n")?;
-    }
-    Ok(())
+    with_jsonl_file_lock(path, || {
+        ensure_parent_dir(path)?;
+        let mut file = std::fs::File::create(path.as_std_path())?;
+        for item in items {
+            serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+            use std::io::Write as _;
+            file.write_all(b"\n")?;
+        }
+        Ok(())
+    })
 }
 
 pub fn append_timeline_patch(
@@ -375,6 +381,10 @@ pub fn append_timeline_patch(
 }
 
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
+}
+
+fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
@@ -662,9 +672,9 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpUiEvent, append_timeline_patch, extract_usage_fields,
-        kind_to_ui_kind, load_timeline_items, permission_request_event, user_prompt_event,
-        write_timeline_items,
+        AcpSessionMetadata, AcpUiEvent, append_raw_frame, append_timeline_patch,
+        extract_usage_fields, kind_to_ui_kind, load_timeline_items, permission_request_event,
+        user_prompt_event, write_timeline_items,
     };
     use serde_json::json;
 
@@ -965,6 +975,97 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn timeline_overwrite_and_patch_are_same_path_serialized() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut handles = Vec::new();
+
+        for thread_index in 0..8_u64 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for write_index in 0..16_u64 {
+                    let base = test_timeline_event(
+                        &format!("message-{thread_index}-{write_index}"),
+                        thread_index * 100 + write_index,
+                        "base",
+                    );
+                    write_timeline_items(&path, &[base]).unwrap();
+                    let patch = test_timeline_event(
+                        &format!("message-{thread_index}-{write_index}"),
+                        thread_index * 100 + write_index + 1,
+                        "patch",
+                    );
+                    append_timeline_patch(
+                        &path,
+                        format!("message-{thread_index}-{write_index}"),
+                        write_index,
+                        &patch,
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let contents = std::fs::read_to_string(path.as_std_path()).unwrap();
+        for line in contents.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
+        load_timeline_items(&path).unwrap();
+    }
+
+    #[test]
+    fn raw_append_and_roll_are_same_path_serialized() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.raw.jsonl");
+        append_raw_frame(
+            &path,
+            "in",
+            json!({"method": "initialize", "payload": "pinned"}),
+            u64::MAX,
+            u64::MAX,
+        )
+        .unwrap();
+        let mut handles = Vec::new();
+        for thread_index in 0..8_u64 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for write_index in 0..24_u64 {
+                    append_raw_frame(
+                        &path,
+                        "out",
+                        json!({
+                            "method": "session/update",
+                            "thread": thread_index,
+                            "write": write_index,
+                            "payload": "x".repeat(2048),
+                        }),
+                        64 * 1024,
+                        48 * 1024,
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let contents = std::fs::read_to_string(path.as_std_path()).unwrap();
+        for line in contents.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
+        assert!(contents.contains("initialize"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type {
+  AcpSessionVm,
   AgentRegistryVm,
   AppBootstrapVm,
   ContentVm,
@@ -19,6 +20,7 @@ import type {
   WorkflowDsl,
   WorkflowTemplateStore,
   WorkflowVm,
+  ConversationRunVm,
 } from './types';
 
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
@@ -60,7 +62,8 @@ function runtimeDisplay(status?: string | null, outcome?: string | null, current
   if (outcome === 'failure') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
   if (outcome === 'killed') return { code: outcome, tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: true };
   if (status === 'running') return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
-  if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason, blockingError: true };
+  if (status === 'paused' && current && pauseReason === 'error-blocked') return { code: 'error-blocked', tone: 'danger', icon: 'error', terminal: false, resumable: false, reasonCode: pauseReason, blockingError: true };
+  if (status === 'paused' && current && pauseReason === 'runtime-abnormal') return { code: 'runtime-abnormal', tone: 'danger', icon: 'error', terminal: false, resumable: true, reasonCode: pauseReason, blockingError: false };
   if (status === 'paused') return { code: 'paused', tone: 'warning', icon: 'pause', terminal: false, resumable: true, reasonCode: pauseReason ?? null, blockingError: false };
   if (status === 'completed') return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
   return { code: status ?? 'pending', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, reasonCode: pauseReason ?? null, blockingError: false };
@@ -176,6 +179,99 @@ const errorBlockedGraph = {
   edges: [
     { from: 'dev', to: 'accept', label: 'success' },
   ],
+};
+
+const errorBlockedLifecycle = {
+  runtime: { status: 'paused', outcome: null, pauseReason: 'error-blocked', resumable: false, current: true, active: false, continuable: false, phase: 'paused' },
+  acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+  displayStatus: 'paused',
+  runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
+  continueKind: null,
+  composer: { mode: 'runtime-error', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: false, lockInput: true },
+};
+
+export const mockErrorBlockedConversationSession: AcpSessionVm = {
+  sessionId: null,
+  title: 'dev',
+  provider: 'claude-acp',
+  adapterId: 'claude-acp',
+  adapterDisplayName: 'Claude',
+  cwd: null,
+  status: 'cancelled',
+  sessionStartedAt: '2026-05-02 16:08',
+  sessionUpdatedAt: '2026-05-02 16:08',
+  sessionElapsedSeconds: 4,
+  restored: false,
+  stopReason: 'cancelled',
+  systemPromptAppend: null,
+  config: null,
+  events: [],
+  eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
+  pendingPermissions: [],
+  availableCommands: [],
+  usage: null,
+  diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0, lastError: null, lastErrorTimestamp: null },
+};
+
+export const mockErrorBlockedConversationRun: ConversationRunVm = {
+  projectId: 'default',
+  taskId: 'mock-task',
+  runId: 'run-051',
+  title: '错误阻塞预览',
+  autoTitle: true,
+  runMode: 'workflow',
+  workflowTemplateId: 'default',
+  runStatus: 'paused',
+  runOutcome: null,
+  sessionTree: {
+    selectedSessionKey: 'round-001/dev/attempt-001',
+    rounds: [{
+      roundId: 'round-001',
+      index: 1,
+      label: 'round-001',
+      status: 'paused',
+      runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
+      nodes: [{
+        nodeId: 'dev',
+        label: 'dev',
+        nodeType: 'worker',
+        status: 'paused',
+        runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
+        attempts: [{
+          roundId: 'round-001',
+          nodeId: 'dev',
+          attemptId: 'attempt-001',
+          outerNodeId: null,
+          outerAttemptId: null,
+          pathLabel: 'dev/attempt-001',
+          status: 'paused',
+          outcome: null,
+          runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
+          lifecycle: errorBlockedLifecycle,
+          current: true,
+          manualCheckPending: false,
+          startedAt: '2026-05-02 16:08',
+          finishedAt: '2026-05-02 16:08',
+          sessionId: null,
+          artifactCount: 0,
+          attachmentCount: 0,
+        }],
+      }],
+    }],
+  },
+  selectedSession: mockErrorBlockedConversationSession,
+  activeSessions: [],
+  artifacts: [],
+  attachments: [],
+  inputAttachments: [],
+  workflowStatus: 'valid',
+  workflowValid: true,
+  workflowError: null,
+  workflowJson: JSON.stringify(defaultWorkflow, null, 2),
+  workflowGraph: errorBlockedGraph,
+  resumable: false,
+  pauseReason: 'error-blocked',
+  runtimeErrorMessage: 'ACP prompt cancelled',
 };
 
 const mockNodeDetail: NodeDetailVm = {
@@ -408,7 +504,7 @@ export function mockRoundDetail(selection?: RoundSelection, route?: { taskId: st
   const isFailedAcceptanceRound = route?.runId === 'run-024' && route.roundId === 'round-001';
   const isErrorBlockedRound = route?.runId === 'run-051' && route.roundId === 'round-001';
   const routeRun = isErrorBlockedRound
-    ? { ...latestRun, id: 'run-051', status: 'paused', outcome: null, currentRound: 'round-001', currentNode: 'dev', currentAttempt: 'attempt-001', resumable: true, pauseReason: 'error-blocked' }
+    ? { ...latestRun, id: 'run-051', status: 'paused', outcome: null, currentRound: 'round-001', currentNode: 'dev', currentAttempt: 'attempt-001', resumable: false, pauseReason: 'error-blocked' }
     : isFailedAcceptanceRound
       ? { ...latestRun, id: 'run-024', status: 'completed', outcome: 'failure', currentRound: 'round-001', currentNode: 'accept', resumable: true }
       : latestRun;

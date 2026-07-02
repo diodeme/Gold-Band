@@ -64,7 +64,6 @@ pub fn render_run_help() -> String {
         "  /run status <task-id> <run-id>",
         "  /run continue <task-id> <run-id>",
         "  /run retry <task-id> <run-id>",
-        "  /run kill <task-id> <run-id>",
         "  /run open-session <task-id> <run-id> --round <round> --node <node> --attempt <attempt>",
     ]
     .join("\n")

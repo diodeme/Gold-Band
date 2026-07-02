@@ -152,6 +152,7 @@ const resources = {
         failed: "失败",
         error: "错误",
         "error-blocked": "错误阻塞",
+        "runtime-abnormal": "运行异常",
         sending: "发送中",
         cancelling: "正在停止",
         selected: "已选择",
@@ -819,6 +820,9 @@ const resources = {
         send: "发送",
         sending: "发送中",
         sendFailed: "发送失败",
+        hiddenRuntimeContext: "隐藏运行上下文",
+        hiddenStableSystemPrompt: "隐藏系统提示",
+        hiddenPromptCharacters: "{{count}} 字符",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -1086,6 +1090,7 @@ const resources = {
           runtimeSessionFailed: "当前会话运行失败，请查看错误原因",
           runtimeSessionKilled: "当前会话已终止，请查看错误原因",
           pauseReasonProcessInterrupted: "进程已中断",
+          pauseReasonRuntimeAbnormal: "运行异常，可继续处理",
           pauseReasonErrorBlocked: "因错误阻塞，处理后可继续",
           runtimeErrorBlocked: "当前运行因错误阻塞，请查看错误原因",
           pauseReasonWaitingForUserInput: "等待用户输入",
@@ -1305,6 +1310,7 @@ const resources = {
         failed: "Failed",
         error: "Error",
         "error-blocked": "Error Blocked",
+        "runtime-abnormal": "Runtime Abnormal",
         sending: "Sending",
         cancelling: "Stopping",
         selected: "Selected",
@@ -2004,6 +2010,9 @@ const resources = {
         send: "Send",
         sending: "Sending",
         sendFailed: "Send failed",
+        hiddenRuntimeContext: "Hidden runtime context",
+        hiddenStableSystemPrompt: "Hidden system prompt",
+        hiddenPromptCharacters: "{{count}} characters",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:
@@ -2283,6 +2292,7 @@ const resources = {
           runtimeSessionKilled:
             "The current session was stopped. Review the reason.",
           pauseReasonProcessInterrupted: "Process interrupted",
+          pauseReasonRuntimeAbnormal: "Runtime abnormal. You can continue.",
           pauseReasonErrorBlocked: "Error blocked. Resolve it and continue.",
           runtimeErrorBlocked:
             "The current run is blocked by an error. Review the reason.",

@@ -693,15 +693,6 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             !permission_mode.trim().is_empty(),
             "ai-dynamic node `{id}` permissionMode cannot be blank"
         );
-        if matches!(&node.agent_strategy, AiDynamicAgentStrategy::Dynamic { .. }) {
-            ensure!(
-                matches!(
-                    permission_mode.as_str(),
-                    "read_only" | "ask" | "full_access"
-                ),
-                "ai-dynamic node `{id}` permissionMode must be one of: read_only, ask, full_access, got `{permission_mode}`"
-            );
-        }
     }
     ensure!(
         node.control.max_dynamic_nodes > 0,

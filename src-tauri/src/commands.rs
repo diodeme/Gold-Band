@@ -12,9 +12,8 @@ use gold_band::app::{
     WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
-use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
+use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
-use gold_band::provider::supported_modes_from_capabilities;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
@@ -38,9 +37,7 @@ use tracing::info;
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::state::{
-    DesktopContext, DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget,
-};
+use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
@@ -184,6 +181,20 @@ fn lifecycle_for_locator(
     .ok()
 }
 
+fn runtime_continue_started_lifecycle_for_locator(
+    app: &App,
+    locator: &AttemptLocator,
+) -> Option<ConversationAttemptLifecycleVm> {
+    lifecycle_for_locator(app, locator).map(|mut lifecycle| {
+        if lifecycle.runtime.active && lifecycle.runtime.phase == "launching-next-node" {
+            lifecycle.runtime.phase = "provider-running".to_string();
+            lifecycle.composer.processing_kind = "processing".to_string();
+            lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
+        }
+        lifecycle
+    })
+}
+
 fn current_attempt_manual_check_pending(
     app: &App,
     locator: &AttemptLocator,
@@ -233,6 +244,9 @@ fn dynamic_leaf_runtime_continue_required(
     locator: &AttemptLocator,
     run: &RunState,
 ) -> CommandResult<bool> {
+    if run.pause_reason == Some(PauseReason::ErrorBlocked) {
+        return Ok(false);
+    }
     let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     else {
@@ -259,14 +273,14 @@ fn dynamic_leaf_runtime_continue_required(
     if dynamic_node.status == DynamicNodeStatus::Paused && dynamic_node.outcome.is_none() {
         return Ok(true);
     }
-    let stale_resumable_leaf = run.status == RunStatus::Paused
+    let stale_resumable_leaf = (run.status == RunStatus::Paused
+        || dynamic_graph.run.status == DynamicRunStatus::Paused)
         && matches!(
             dynamic_node.status,
             DynamicNodeStatus::Ready | DynamicNodeStatus::Running
         )
         && dynamic_node.outcome.is_none()
-        && (dynamic_graph.run.status == DynamicRunStatus::Paused
-            || acp_attempt_was_cancelled(&locator.attempt_dir(app)));
+        && acp_attempt_was_cancelled(&locator.attempt_dir(app));
     Ok(stale_resumable_leaf)
 }
 
@@ -316,38 +330,25 @@ struct ConversationRunStateUpdatedEventVm {
     node_id: String,
     attempt_id: String,
     status: RunStatus,
-    outcome: RunOutcome,
+    outcome: Option<RunOutcome>,
 }
 
-fn normalize_workspace_project_id(workspace_path: &str) -> String {
-    workspace_path
-        .to_lowercase()
-        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
-}
-
-fn resolve_workspace_app(
-    context: &DesktopContext,
+fn resolve_command_app(
+    state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<(App, String), CommandErrorVm> {
+) -> Result<App, CommandErrorVm> {
     match project_id {
-        None | Some("") => {
-            let pid = normalize_workspace_project_id(context.repo_root.as_str());
-            Ok((context.app(), pid))
-        }
+        None => state.app().map_err(command_error),
         Some(pid) => {
-            let default_pid = normalize_workspace_project_id(context.repo_root.as_str());
-            if pid == default_pid {
-                return Ok((context.app(), default_pid));
-            }
-            let global_app = context.app();
-            let state = global_app.load_state().map_err(command_error)?;
-            for w in &state.conversation_workspaces {
-                if w.project_id == pid {
-                    let app = App::with_config(
-                        Utf8PathBuf::from(&w.workspace_path),
-                        context.config.clone(),
-                    );
-                    return Ok((app, w.project_id.clone()));
+            let global_app = state.app().map_err(command_error)?;
+            let app_state = global_app.load_state().map_err(command_error)?;
+            for workspace in &app_state.conversation_workspaces {
+                if workspace.project_id == pid {
+                    let context = state.context().map_err(command_error)?;
+                    return Ok(global_app.with_repo_root(
+                        Utf8PathBuf::from(&workspace.workspace_path),
+                        context.config,
+                    ));
                 }
             }
             Err(CommandErrorVm::new(
@@ -356,15 +357,6 @@ fn resolve_workspace_app(
             ))
         }
     }
-}
-
-fn resolve_command_app(
-    state: &DesktopState,
-    project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
-    let context = state.context().map_err(command_error)?;
-    let (app, _) = resolve_workspace_app(&context, project_id)?;
-    Ok(app)
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
@@ -383,7 +375,33 @@ fn create_conversation_run_state_subscriber(
     app_handle: AppHandle,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event| {
-        if let RuntimeLifecycleEvent::RunCompleted {
+        if let Some(payload) = conversation_run_state_update_for_event(event) {
+            let _ = app_handle.emit(CONVERSATION_RUN_STATE_EVENT, payload);
+        }
+    })
+}
+
+fn conversation_run_state_update_for_event(
+    event: RuntimeLifecycleEvent,
+) -> Option<ConversationRunStateUpdatedEventVm> {
+    match event {
+        RuntimeLifecycleEvent::RunPaused {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            ..
+        } => Some(ConversationRunStateUpdatedEventVm {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            status: RunStatus::Paused,
+            outcome: None,
+        }),
+        RuntimeLifecycleEvent::RunCompleted {
             task_id,
             run_id,
             round_id,
@@ -391,22 +409,17 @@ fn create_conversation_run_state_subscriber(
             attempt_id,
             outcome,
             ..
-        } = event
-        {
-            let _ = app_handle.emit(
-                CONVERSATION_RUN_STATE_EVENT,
-                ConversationRunStateUpdatedEventVm {
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    status: RunStatus::Completed,
-                    outcome,
-                },
-            );
-        }
-    })
+        } => Some(ConversationRunStateUpdatedEventVm {
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            status: RunStatus::Completed,
+            outcome: Some(outcome),
+        }),
+        _ => None,
+    }
 }
 
 pub(crate) fn acp_live_update_emitter_for_app(
@@ -420,13 +433,12 @@ pub(crate) fn acp_live_update_emitter_for_app(
 
 fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
-    context: &DesktopContext,
+    state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
-    let (base_app, _) = resolve_workspace_app(context, project_id)?;
+    let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
-    let bg_app = base_app.clone_for_background();
-    let app = base_app;
+    let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), pid.clone());
     let app = app
         .with_acp_live_update(live_update)
@@ -1018,16 +1030,12 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
-    let app = app
+    let base_app = state.app().map_err(command_error)?;
+    let bg_app = base_app.clone_for_background();
+    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
+    let app = base_app
         .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            context.app(),
-            None,
-        ));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
@@ -1044,8 +1052,7 @@ pub fn continue_run(
     prompt_id: Option<String>,
     prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1126,8 +1133,7 @@ pub fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
         "failure" => NodeOutcome::Failure,
@@ -1150,34 +1156,16 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), None);
-    let app = app
+    let base_app = state.app().map_err(command_error)?;
+    let bg_app = base_app.clone_for_background();
+    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
+    let app = base_app
         .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            context.app(),
-            None,
-        ));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
     register_lifecycle_subscribers(&app, &app_handle);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
-}
-
-#[tauri::command]
-pub fn kill_run(
-    state: State<'_, DesktopState>,
-    task_id: String,
-    run_id: String,
-) -> CommandResult<RunSummaryVm> {
-    let app = state.app().map_err(command_error)?;
-    let summary = app.run_kill(&task_id, &run_id).map_err(command_error)?;
-    // run ?????? run ??????? dedup key???? EXE ??????? ?8.3??
-    // ???clear_run ????? run?
-    state.notification_dedup().clear_run(&summary.id);
-    Ok(run_summary_vm(summary))
 }
 
 #[tauri::command]
@@ -1562,8 +1550,7 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
         run_id,
@@ -1608,7 +1595,7 @@ pub async fn submit_conversation_prompt(
             kind: "runtime-continue-started".to_string(),
             session: None,
             run: Some(run),
-            lifecycle: lifecycle_for_locator(&app, &locator),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
         });
     }
 
@@ -1652,8 +1639,7 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
-    let context = state.context().map_err(command_error)?;
-    let app = resolve_command_app_with_emitters(&app_handle, &context, project_id.as_deref())?;
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -2669,10 +2655,22 @@ pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
-        NodeDsl::AiDynamic(dynamic) => dynamic
-            .bootstrap_provider()
-            .map(|provider| vec![provider.to_string()])
-            .unwrap_or_default(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                available_agents,
+                ..
+            } => {
+                let mut providers = vec![bootstrap_provider.clone()];
+                for agent_ref in available_agents {
+                    if !providers.contains(&agent_ref.provider) {
+                        providers.push(agent_ref.provider.clone());
+                    }
+                }
+                providers
+            }
+        },
     }
 }
 
@@ -2681,65 +2679,30 @@ fn ensure_workflow_agents_doctor_ready(
     workflow: &WorkflowDsl,
 ) -> CommandResult<()> {
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    let mut providers = BTreeSet::new();
     for node in &workflow.nodes {
         for provider in providers_for_node(node) {
-            providers.insert(provider);
-        }
-    }
-    for provider in providers {
-        let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
-        match diagnostics.get(&agent_type) {
-            Some(diagnostic) if diagnostic.available => {}
-            Some(diagnostic) => {
-                return Err(CommandErrorVm::new(
-                    "workflow.agent-doctor-failed",
-                    serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
-                ));
-            }
-            None => {
-                return Err(CommandErrorVm::new(
-                    "workflow.agent-doctor-required",
-                    serde_json::json!({ "agentType": provider }),
-                ));
+            let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
+            match diagnostics.get(&agent_type) {
+                Some(diagnostic) if diagnostic.available => {}
+                Some(diagnostic) => {
+                    return Err(CommandErrorVm::new(
+                        "workflow.agent-doctor-failed",
+                        serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
+                    ));
+                }
+                None => {
+                    return Err(CommandErrorVm::new(
+                        "workflow.agent-doctor-required",
+                        serde_json::json!({ "agentType": provider }),
+                    ));
+                }
             }
         }
     }
-    for node in &workflow.nodes {
-        let NodeDsl::Worker(worker) = node else {
-            continue;
-        };
-        let Some(provider) = worker.provider.as_deref() else {
-            continue;
-        };
-        let Some(permission_mode) = worker
-            .permission_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let agent_type = ManagedAgentType::from_str(provider).map_err(command_error)?;
-        let diagnostic = diagnostics.get(&agent_type).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workflow.agent-doctor-required",
-                serde_json::json!({ "agentType": provider }),
-            )
-        })?;
-        let supported_modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
-        if !supported_modes.is_empty()
-            && !supported_modes
-                .iter()
-                .any(|mode| mode.id == permission_mode)
-        {
-            return Err(CommandErrorVm::new(
-                "workflow.permission-mode-unsupported",
-                serde_json::json!({ "agentType": provider, "permissionMode": permission_mode }),
-            ));
-        }
-    }
-    Ok(())
+    let app = state.app().map_err(command_error)?;
+    let validated = gold_band::dsl::validate_workflow(workflow.clone()).map_err(command_error)?;
+    app.validate_workflow_agents(&validated)
+        .map_err(command_error)
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
@@ -3663,7 +3626,48 @@ mod tests {
     use gold_band::storage::write_json;
 
     #[test]
-    fn stale_cancelled_dynamic_leaf_requires_runtime_continue() {
+    fn conversation_run_state_update_maps_paused_and_completed_events() {
+        let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
+            event_id: "event-paused".to_string(),
+            occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "plan".to_string(),
+            pause_reason: PauseReason::WaitingForUserInput,
+            task_title: None,
+        })
+        .unwrap();
+        assert_eq!(paused.task_id, "task-001");
+        assert_eq!(paused.run_id, "run-001");
+        assert_eq!(paused.round_id, "round-001");
+        assert_eq!(paused.node_id, "plan");
+        assert_eq!(paused.attempt_id, "attempt-001");
+        assert_eq!(paused.status, RunStatus::Paused);
+        assert_eq!(paused.outcome, None);
+
+        let completed =
+            conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
+                event_id: "event-completed".to_string(),
+                occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                node_label: "plan".to_string(),
+                outcome: RunOutcome::Success,
+                task_title: None,
+            })
+            .unwrap();
+        assert_eq!(completed.status, RunStatus::Completed);
+        assert_eq!(completed.outcome, Some(RunOutcome::Success));
+    }
+
+    #[test]
+    fn paused_stale_cancelled_dynamic_leaf_requires_runtime_continue() {
         let temp = std::env::temp_dir().join(format!(
             "gold-band-stale-dynamic-leaf-test-{}",
             std::process::id()
@@ -3800,7 +3804,215 @@ mod tests {
         );
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        let dynamic_run = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "dynamic-run-001",
+            "parentRunId": run_id,
+            "parentRoundId": round_id,
+            "parentNodeId": outer_node_id,
+            "parentAttemptId": outer_attempt_id,
+            "status": "running",
+            "outcome": null,
+            "pauseReason": null,
+            "startedAt": "2026-06-16T00:00:00Z",
+            "updatedAt": "2026-06-16T00:00:01Z",
+            "control": {},
+            "allowedWorkflowSnapshots": [],
+            "currentNodeIds": [dynamic_node_id]
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": dynamic_run,
+                "nodes": [dynamic_node],
+                "groups": [],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn running_stale_cancelled_dynamic_leaf_does_not_require_runtime_continue() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-running-stale-dynamic-leaf-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let dynamic_node_id = "bootstrap";
+        let dynamic_attempt_id = "attempt-001";
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some(outer_node_id.to_string()),
+            current_attempt: Some(outer_attempt_id.to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+        };
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        let dynamic_node = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": dynamic_node_id,
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Bootstrap",
+            "task": "Bootstrap",
+            "status": "running",
+            "outcome": null,
+            "groupId": null,
+            "chainId": dynamic_node_id,
+            "depth": 0,
+            "dependsOn": [],
+            "workspace": { "mode": "readonly" },
+            "workspacePath": null,
+            "provider": "claude-acp",
+            "profile": null,
+            "permissionMode": null,
+            "model": null,
+            "sessionMode": "new",
+            "continueFromNodeId": null,
+            "workflowId": null,
+            "workflowSnapshotId": null,
+            "childRunId": null,
+            "startedAt": "2026-06-16T00:00:00Z",
+            "finishedAt": null
+        });
+        let dynamic_run = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "dynamic-run-001",
+            "parentRunId": run_id,
+            "parentRoundId": round_id,
+            "parentNodeId": outer_node_id,
+            "parentAttemptId": outer_attempt_id,
+            "status": "running",
+            "outcome": null,
+            "pauseReason": null,
+            "startedAt": "2026-06-16T00:00:00Z",
+            "updatedAt": "2026-06-16T00:00:01Z",
+            "control": {},
+            "allowedWorkflowSnapshots": [],
+            "currentNodeIds": [dynamic_node_id]
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": dynamic_run,
+                "nodes": [dynamic_node.clone()],
+                "groups": [],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.dynamic_node_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+                dynamic_node_id,
+            ),
+            &dynamic_node,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .dynamic_node_attempt_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    dynamic_node_id,
+                    dynamic_attempt_id,
+                )
+                .join("acp.session.json"),
+            &serde_json::json!({
+                "status": "cancelled",
+                "stopReason": "cancelled",
+                "sessionId": "session-bootstrap"
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            dynamic_node_id.to_string(),
+            dynamic_attempt_id.to_string(),
+            Some(outer_node_id.to_string()),
+            Some(outer_attempt_id.to_string()),
+        );
+
+        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn providers_for_ai_dynamic_include_available_agent_providers() {
+        let node = NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+            id: "route".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "claude-acp".to_string(),
+                bootstrap_model: None,
+                acceptance_model: None,
+                routing_prompt: "route by task".to_string(),
+                available_agents: vec![
+                    gold_band::dsl::DynamicAgentRef {
+                        provider: "codex-acp".to_string(),
+                        model: None,
+                    },
+                    gold_band::dsl::DynamicAgentRef {
+                        provider: "claude-acp".to_string(),
+                        model: None,
+                    },
+                ],
+            },
+            permission_mode: None,
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: gold_band::dsl::DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        });
+
+        assert_eq!(
+            providers_for_node(&node),
+            vec!["claude-acp".to_string(), "codex-acp".to_string()]
+        );
     }
 
     #[test]

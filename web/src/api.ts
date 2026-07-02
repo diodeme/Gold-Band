@@ -151,10 +151,6 @@ export function retryRun(taskId: string, runId: string) {
   return getRuntimeApi().retryRun(taskId, runId);
 }
 
-export function killRun(taskId: string, runId: string) {
-  return getRuntimeApi().killRun(taskId, runId);
-}
-
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
   return getRuntimeApi().getLogPage(query);
 }

@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
-import { ConversationAssetsBar } from '@/components/conversation/ConversationAssetsBar';
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
 import { GraphView } from '@/components/GraphView';
@@ -74,6 +73,7 @@ export function ConversationRunPage({
     if (!reason) return t('conversation.runtime.sessionPaused');
     switch (reason) {
       case 'process-interrupted': return t('conversation.runtime.pauseReasonProcessInterrupted');
+      case 'runtime-abnormal': return t('conversation.runtime.pauseReasonRuntimeAbnormal');
       case 'waiting-for-user-input': return t('conversation.runtime.pauseReasonWaitingForUserInput');
       default: return t('conversation.runtime.pauseReasonFallback');
     }
@@ -267,7 +267,7 @@ export function ConversationRunPage({
   const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
   const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
-  const selectedSessionErrorDetails = selectedSession?.diagnostics.lastError ?? null;
+  const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
@@ -378,6 +378,8 @@ export function ConversationRunPage({
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
+            allArtifacts={run.artifacts}
+            allAttachments={run.attachments}
             usageCompact
           />
         ) : (
@@ -387,14 +389,6 @@ export function ConversationRunPage({
           />
         )}
       </div>
-
-      {/* Assets bar — inside flex container so it's visible */}
-      <ConversationAssetsBar
-        artifacts={selectedArtifacts}
-        attachments={selectedAttachments}
-        onOpenArtifact={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
-        onOpenAttachment={(asset) => chatDialogRef.current?.openArtifactsDialog(asset)}
-      />
 
       {/* Rerun confirmation dialog */}
       <AlertDialog open={rerunConfirmOpen} onOpenChange={setRerunConfirmOpen}>

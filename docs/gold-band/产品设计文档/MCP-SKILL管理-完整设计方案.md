@@ -23,12 +23,12 @@ src/
 ├── config/mod.rs           ← 共享数据模型（McpServerState, ToolInfo, SkillMeta 等）
 ├── storage/mod.rs          ← 路径管理（GoldBandPaths: global/project skills dirs）
 ├── app/mod.rs              ← 委托层（App → McpManager / SkillManager）
-├── app/node_executor.rs    ← 运行时集成（WorkerInvocation 构建 + catalog 渲染）
+├── app/node_executor.rs    ← 运行时集成（WorkerInvocation 构建）
 ├── acp/client.rs           ← ACP mcpServers 传递（session/new + session/load）
-├── provider/mod.rs         ← System Prompt 渲染（{{skill_catalog}} / {{mcp_tools}}）
+├── provider/mod.rs         ← System/User Prompt 渲染
 ├── prompts/
-│   ├── {en,zh-CN}/runtime/system.md              ← 含 {{skill_catalog}} {{mcp_tools}}
-│   └── {en,zh-CN}/runtime/skill_catalog_block.md  ← SKILL 目录模板（对标 Zed system_prompt.hbs）
+│   ├── {en,zh-CN}/runtime/system.md              ← 稳定 runtime 规则
+│   └── {en,zh-CN}/runtime/hidden_context.md      ← 每次 invocation 的 hidden runtime context
 └── prompts.rs              ← include_str! 常量
 ```
 

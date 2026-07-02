@@ -523,6 +523,14 @@ pub struct ProjectAppConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDiagnosticSnapshot {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+    pub capabilities: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub log_level: RuntimeLogLevel,
     pub log_prompts: bool,
@@ -546,6 +554,8 @@ pub struct RuntimeConfig {
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
 }
 
 impl Default for RuntimeConfig {
@@ -578,6 +588,7 @@ impl Default for RuntimeConfig {
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             permission_mode_mapping: BTreeMap::new(),
+            provider_diagnostics: BTreeMap::new(),
         };
         base.apply_app_config(embedded_project_app_config())
     }
@@ -649,6 +660,14 @@ impl RuntimeConfig {
         self.desktop_updater_last_checked_at = state.desktop_updater_last_checked_at.clone();
         self.desktop_update_badges = state.desktop_update_badges.clone();
         self.desktop_available_update = state.desktop_available_update.clone();
+        self
+    }
+
+    pub fn with_provider_diagnostics(
+        mut self,
+        provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
+    ) -> Self {
+        self.provider_diagnostics = provider_diagnostics;
         self
     }
 

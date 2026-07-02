@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyConversationBackgroundSessionRuntimeSnapshot,
   applyConversationSelectedSessionSnapshot,
+  conversationSessionKeyFromParts,
   isConversationActiveStatus,
   mergeConversationRunSnapshot,
 } from '@/lib/conversation-run-snapshot';
@@ -34,6 +35,16 @@ const pausedDisplay: RuntimeDisplayVm = {
   terminal: false,
   resumable: true,
   reasonCode: 'process-interrupted',
+  blockingError: false,
+};
+
+const runtimeAbnormalDisplay: RuntimeDisplayVm = {
+  code: 'runtime-abnormal',
+  tone: 'danger',
+  icon: 'error',
+  terminal: false,
+  resumable: true,
+  reasonCode: 'runtime-abnormal',
   blockingError: false,
 };
 
@@ -142,12 +153,52 @@ function withLeaf(base: ConversationRunVm, nextLeaf: ConversationSessionLeafVm):
   };
 }
 
+describe('conversationSessionKeyFromParts', () => {
+  it('builds the selected session key from run-state update identity', () => {
+    expect(conversationSessionKeyFromParts({
+      roundId: 'round-001',
+      nodeId: 'plan',
+      attemptId: 'attempt-001',
+    })).toBe('round-001/plan/attempt-001');
+  });
+});
+
 describe('isConversationActiveStatus', () => {
   it('treats dynamic ready and normalized active statuses as active', () => {
     expect(isConversationActiveStatus('ready')).toBe(true);
     expect(isConversationActiveStatus('in_progress')).toBe(true);
     expect(isConversationActiveStatus('cancel_requested')).toBe(true);
     expect(isConversationActiveStatus('completed')).toBe(false);
+  });
+
+  it('does not treat runtime-abnormal as an active running status', () => {
+    expect(isConversationActiveStatus('runtime-abnormal')).toBe(false);
+  });
+});
+
+describe('runtime-abnormal snapshots', () => {
+  it('removes paused abnormal sessions from active sessions while preserving selected leaf state', () => {
+    const current = run();
+    const abnormalLeaf = leaf('paused', runtimeAbnormalDisplay, { current: true });
+
+    const patched = applyConversationSelectedSessionSnapshot(current, {
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'dev',
+      attemptId: 'attempt-001',
+      lifecycle: {
+        runtime: { status: 'paused', outcome: null, pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
+        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+      },
+    });
+
+    expect(patched?.activeSessions).toEqual([]);
+    expect(patched?.sessionTree.rounds[0].nodes[0].attempts[0].runtimeDisplay).toEqual(abnormalLeaf.runtimeDisplay);
   });
 });
 

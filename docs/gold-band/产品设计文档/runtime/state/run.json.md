@@ -120,11 +120,14 @@
 
 ### `pauseReason`
 - 类型：string | null
-- 枚举建议：`process_interrupted | error_blocked | null`
+- 枚举：`process-interrupted | runtime-abnormal | error-blocked | waiting-for-user-input | permission-requested | null`
 
 说明：
 - 仅当 `status = paused` 时允许为非 null
-- MVP 中不支持用户主动 `pause`，因此 `pauseReason` 只记录系统观测到的挂起原因
+- `process-interrupted` 表示用户停止、关闭或启动恢复等主动中断，可通过 runtime continue 恢复当前 attempt
+- `runtime-abnormal` 表示本地 IO/资源、ACP transport 或 driver 异常造成的异常暂停；它需要以异常视觉提醒用户，但仍可通过 runtime continue 恢复
+- `error-blocked` 表示 provider/model/catalog/workspace/workflow/DSL 等前提或业务配置错误，不提供当前 session 的直接 continue 入口
+- `waiting-for-user-input` 与 `permission-requested` 表示 runtime 等待用户明确决策
 
 ### `lastExecutedNode`
 - 类型：object | null

@@ -129,6 +129,36 @@ describe('ACPChatDialog event cache', () => {
     expect(merged[0]!.content).toBe('new');
   });
 
+  it('mergeAcpEvents keeps stream display seq stable when newer content arrives', () => {
+    const prev = [
+      event({
+        id: 'message-1',
+        seq: 20,
+        timestamp: '20Z',
+        kind: 'textDelta',
+        content: 'hello',
+        endedSeq: 20,
+      }),
+    ];
+    const next = [
+      event({
+        id: 'message-1',
+        seq: 25,
+        timestamp: '25Z',
+        kind: 'textDelta',
+        content: 'hello world',
+        endedSeq: 25,
+      }),
+    ];
+
+    const merged = mergeAcpEvents(prev, next);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.seq).toBe(20);
+    expect(merged[0]!.endedSeq).toBe(25);
+    expect(merged[0]!.content).toBe('hello world');
+    expect(timelineEventKey(buildAcpTimeline(merged)[0]!)).toBe('textDelta-message-1');
+  });
+
   it('limitAcpEvents trims from start when exceeding page size', () => {
     const events = Array.from({ length: 100 }, (_, i) => makeEvent(`e${i}`, `msg ${i}`));
     const limited = limitAcpEvents(events, 'start', 30);

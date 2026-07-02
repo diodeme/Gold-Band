@@ -8,13 +8,13 @@
 2. `session/cancel` 是 notification，没有 response；如果发送后立刻 kill adapter，adapter 可能还没处理 cancel。
 3. kill adapter 不能可靠 kill 底层 provider work，反而会切断 ACP 协议通道。
 4. 当前一 attempt 一 adapter process，无法利用 Claude/Codex adapter 内部已有的 session registry，多并行会话时资源浪费明显。
-5. 旧 UI Run 列表/详情里的“停止 Run”当前走 terminal `killRun`，语义与新 UI ACP Stop 不一致。
+5. 旧 UI Run 列表/详情里的“停止 Run”曾经走 terminal `killRun`，语义与新 UI ACP Stop 不一致；该入口已废弃。
 
 本方案目标：
 
 - 统一 Gold Band 内部所有停止点语义。
 - 用户 Stop 走 `session/cancel`，保持 runtime 立即 `Paused + ProcessInterrupted`。
-- session release / app close / terminal kill run 走 bounded `session/close`。
+- session release / app close 走 bounded `session/close`；`run_kill / kill_run / killRun` 产生链路废弃。
 - 诊断会话 cleanup 走 `session/delete` first，fallback `session/close`。
 - adapter 生命周期从 attempt 级进程改为 `provider_id + workspace_root` 级长连接。
 - `provider.pid` 降级为 adapter process metadata，只用于诊断和 orphan cleanup，不再参与业务状态判断。
@@ -32,7 +32,7 @@
 - 不能通过 response 确认 adapter 已处理。
 - 适合用户点击“停止当前生成”。
 - 正常情况下不释放 ACP session，也不关闭 adapter process。
-- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled，业务层也按完成优先接受。
+- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Paused + RuntimeAbnormal`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled 或 driver 已异常暂停，业务层也按完成优先接受。
 
 Gold Band 使用场景：
 
@@ -54,7 +54,7 @@ Gold Band 使用场景：
 Gold Band 使用场景：
 
 - app close 前释放 active sessions。
-- terminal run kill 前释放相关 active sessions。
+- 重跑、关闭或配置切换前需要释放的 active sessions。
 - 配置保存导致 adapter restart 前释放旧 connection 上的 sessions。
 - pool eviction / connection shutdown。
 - cancel timeout 后由用户或后台恢复策略选择 close session。
@@ -76,7 +76,7 @@ Gold Band 使用场景：
 - `src/acp/adapter.rs`：`spawn_adapter(...)` 负责解析并启动 adapter process。
 - `src/provider/mod.rs`：`AcpProvider::run_worker_with_callbacks(...)` 调用 `client::run_prompt(...)`。
 - `src-tauri/src/commands.rs`：`stop_active_session(...)` / `stop_acp_session(...)` 是新 UI ACP Stop 当前入口。
-- `src/app/mod.rs`：`run_pause(...)`、`run_kill(...)`、`stop_all_running_sessions(...)`、`recover_interrupted_running_sessions(...)` 写 runtime lifecycle。
+- `src/app/mod.rs`：`run_pause(...)`、`stop_all_running_sessions(...)`、`recover_interrupted_running_sessions(...)` 写 runtime interruption lifecycle；`run_kill` 已废弃。
 - `src/app/orchestrator.rs`：当前存在基于 `provider.pid` 的 continue guard，需要替换为 prompt/session lifecycle guard。
 
 ### 3.2 外部 adapter 参考
@@ -105,10 +105,11 @@ Zed 参考：
 | 新 UI ACP Stop | 停止当前 leaf/session；普通 attempt 立即写 `Paused + ProcessInterrupted`，AI-DYNAMIC 内部 leaf 只暂停目标 dynamic node，父 run 由 active leaf 聚合决定 | 对目标 ACP session 发 `session/cancel` | 不 kill；cancel timeout 暴露 stop failed |
 | 旧 UI ACP Stop | 与新 UI leaf stop 一致 | `session/cancel` | 不 kill |
 | 旧 UI / 新 UI 侧边栏 Run Stop | 整个 run 写 `Paused + ProcessInterrupted`，所有 active leaf 一起暂停，已 completed leaf 不被覆盖 | 对当前 attempt 及 AI-DYNAMIC active descendants 的 live sessions 发 `session/cancel` | 不 kill |
-| terminal run kill | 写 `Completed + Killed` | bounded `session/close` | close 失败返回/记录错误，不用 kill 伪装成功 |
+| 历史 killed run | 只读兼容展示，不再由新入口生成 | 不补发协议 | 不参与新的 adapter 操作 |
 | app close | running runs 写 `Paused + ProcessInterrupted` | 对所有 live connections 的 sessions 做 bounded `session/close` | 正常退出 adapter 长连接；close 失败记录/返回，不静默吞掉 |
 | crash recovery | running runs 写 `Paused + ProcessInterrupted` | 无 live connection，不补发协议 | `provider.pid` 仅用于 orphan cleanup |
-| diagnostic cleanup | 不影响业务 runtime | `session/delete` first，fallback close | 释放诊断 session/connection |
+| recoverable runtime abnormal | active attempt 写 `Paused + RuntimeAbnormal`，允许 runtime continue | 继续复用原 sessionId；若 transport 已断开则下次 continue 重新拉起 connection | 不 kill adapter 作为成功兜底 |
+| diagnostic cleanup | 不影响业务 runtime | doctor 成功后删除临时目录；失败时保留有界 raw/timeline/diagnostics bundle | 移除诊断 `provider.pid`，释放诊断 session/connection |
 | 正常 attempt 完成 | success/failure 按现有 workflow | session idle/reusable 或按策略 close | adapter 留在长连接中复用 |
 
 ## 5. 改动点总览
@@ -218,25 +219,24 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - 普通 run 停止应走 `Paused + ProcessInterrupted`。
    - 对 run 当前 active session 及 AI-DYNAMIC active descendants 的 live ACP sessions 发 `session/cancel`，不改写已 completed leaf 的 terminal ACP snapshot。
    - 与 `stop_active_session` 共享先 runtime control、再 live session registry 兜底的 cancel 逻辑；命中 runtime control 时仍要同时尝试 live registry 直发 `session/cancel`，避免 run 级停止只写本地状态但真实 session 继续输出。
-   - 不走 terminal `run_kill()`。
+   - 不调用已废弃的 `run_kill()`。
 
 3. 并行 leaf 聚合生命周期：
    - `stop_active_session` 的作用域是当前 leaf attempt/session，不是整个 graph；AI-DYNAMIC 内部 leaf stop 只暂停目标 dynamic node。
    - graph scheduler 继续处理其他 `Ready | Running` leaf；只有没有 active leaf 后，graph / outer node / run 才自动收敛为 `Paused + ProcessInterrupted`。
    - 该规则按 leaf attempt/session、graph scheduler、run aggregate 三层设计，后续普通固定工作流支持并行节点时复用同一模型。
-   - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
+   - 停止/完成竞态按业务 artifact 收敛：provider 返回 `Interrupted/cancelled` 或 driver 因可恢复本地/transport 异常暂停，但 AI-DYNAMIC worker 已落盘完整合法 `dynamic-node-completion` 时，dynamic node 进入 `Completed + Success` 并继续 graph；无 artifact、半截 JSON、schema/DSL invalid 或 proposal rejected 时保持 paused，不进入 repair prompt。
    - 详细落地见 `docs/gold-band/开发计划/生命周期整理/并行节点通用停止继续语义与AI-DYNAMIC落地方案.md`。
-   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前扫描同一 dynamic graph：凡是 `Ready | Running`、`outcome=null` 且 ACP snapshot/session 已 `cancelled` 的 stale active leaf，都先与 per-node 文件一起收敛为 `Paused + ProcessInterrupted` 并移出 `currentNodeIds`，再只恢复本次目标 leaf，避免 sibling 长时间停留在 `running + ACP cancelled` / “拉起下一节点中”。
+   - 对历史已落盘的分裂状态，继续入口必须在 re-arm 目标 leaf 前先检查目标 leaf 是否已有完整合法 `dynamic-node-completion`，有则先接受完成。ACP snapshot/session 的 `cancelled` 只作为传输历史，live running graph 中不得全图扫描并把 `Ready | Running` sibling 改成 paused；只有父级 run 或 dynamic graph 已 `Paused` 的 legacy 场景，才允许把 `Ready | Running + outcome=null + ACP cancelled` 收敛为 `Paused + ProcessInterrupted`，最后只恢复本次目标 leaf。
    - 没有明确 inner leaf override 的父 run continue 不得批量恢复普通 paused worker leaf；只允许恢复代表暂停 child run 的 `workflow-invocation` leaf，让其继续 child run。
    - AI-DYNAMIC 内部 leaf 完成、暂停或被聚合暂停后，后端必须发出该 leaf 的 session/lifecycle update，前端据此刷新完整 run VM；前端不能靠 ACP terminal snapshot 自行推断 workflow runtime 是否完成或暂停。
    - dynamic graph 中任何 leaf 变为 `Ready | Running` 或创建新的 graph 后继 leaf 后，也必须在持久化后发出 lifecycle update；该更新可以没有完整 ACP session payload，前端仍应把它当成 runtime snapshot 处理。
    - 刷新完整 run VM 不等于自动抢焦点：只有 session auto-follow 仍处于 auto/pending 且用户没有手动切到历史 session 时，新 active child session 才能成为选中 session；用户查看历史后必须重新选择最新 active/current leaf 并回到底部才恢复 auto-follow。
    - run 终态刷新由 runtime lifecycle 驱动：`RuntimeLifecycleEvent::RunCompleted` 在 `RunState/RoundState/NodeState` 已持久化后桥接为前端事件，进入会话页统一 `getConversationRun + getConversationSidebar` 刷新入口；ACP terminal update 继续处理 session/graph 实时状态，但不再作为 run completed 的唯一依据。
 
-4. `run_kill(...)`：
-   - 保持唯一 terminal killed 路径。
-   - 对相关 active ACP sessions 发 bounded `session/close`。
-   - close 失败返回/记录错误，不用 kill adapter 伪装成功。
+4. `run_kill / kill_run / killRun`：
+   - 产生链路废弃，桌面命令、CLI、console 与前端 API 都不再暴露该入口。
+   - 历史已落盘的 `Killed` outcome 只作为只读兼容状态展示；新停止、重跑前停止旧 run、关闭客户端与崩溃恢复都必须写 `Paused + ProcessInterrupted`。
 
 4. app close：
    - 先让所有 running runs 递归写 `Paused + ProcessInterrupted`，包含当前 node、AI-DYNAMIC graph/node 与 child run。
@@ -316,8 +316,8 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 2. 前端不暴露 cancel/close/delete 协议概念。
 3. `stopCommandPending` 只表示 Tauri command pending，不表示 cancel 成功。
 4. stopping / active / continue 只由 backend lifecycle、ACP facet、local transient state 推导。
-5. 旧 UI `WorkflowPage` / `RunDetailPage` 普通“停止 Run”不再调用 terminal `killRun`。
-6. 如果保留 terminal kill 入口，必须改名为“终止/强制终止”等明确文案。
+5. 旧 UI `WorkflowPage` / `RunDetailPage` 普通“停止 Run”不再调用 `killRun`。
+6. 会话页重跑前停止旧 run 也必须走 pause/interrupted 语义，不再产生 `killed`。
 
 ## 6. 推荐实现阶段
 
@@ -335,7 +335,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 6. `run_pause` / 旧 UI Run Stop 已改为 pause/interrupted 语义，普通停止不再按 `provider.pid` kill adapter。
 7. `session/prompt` 正常返回 `stopReason=cancelled/canceled/interrupted` 时，ACP session metadata 保持 `cancelled`，不会被写成 `completed`。
 
-第二轮已继续落地 Phase B-D 的主链路：JSON-RPC transport 已拆为 `src/acp/connection.rs`，普通 ACP worker 改为通过 `provider_id + workspace_root` 级 connection manager 复用 adapter process；`session/update` 与 permission request 通过 `sessionId` 路由回对应 attempt，request/response 通过 pending request id 路由；普通 runtime release 不再无条件 kill adapter。`run_kill` 与 app close 已接入 bounded `session/close`，agent/provider/MCP 配置保存作为 connection restart boundary；普通 workspace 切换不关闭旧 workspace connection，以支持新 UI 多 workspace 并存。配置保存遇到 active prompt 会先阻断并提示用户停止会话；停止后仍保留原 ACP `sessionId`，continue 必须用原 `sessionId` 恢复同一业务会话。`orchestrator` 的 `provider.pid exists => wait` continue guard 已删除，`provider.pid` 只保留为 adapter process metadata / orphan cleanup 线索。
+第二轮已继续落地 Phase B-D 的主链路：JSON-RPC transport 已拆为 `src/acp/connection.rs`，普通 ACP worker 改为通过 `provider_id + workspace_root` 级 connection manager 复用 adapter process；`session/update` 与 permission request 通过 `sessionId` 路由回对应 attempt，request/response 通过 pending request id 路由；普通 runtime release 不再无条件 kill adapter。app close 已接入 bounded `session/close`，`run_kill / kill_run / killRun` 产生链路已废弃，agent/provider/MCP 配置保存作为 connection restart boundary；普通 workspace 切换不关闭旧 workspace connection，以支持新 UI 多 workspace 并存。配置保存遇到 active prompt 会先阻断并提示用户停止会话；停止后仍保留原 ACP `sessionId`，continue 必须用原 `sessionId` 恢复同一业务会话。`orchestrator` 的 `provider.pid exists => wait` continue guard 已删除，`provider.pid` 只保留为 adapter process metadata / orphan cleanup 线索。
 
 ### Phase B：抽出 JSON-RPC transport
 
@@ -355,7 +355,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 目标：一个 provider/workspace adapter process 承载多个 sessions。
 
-已落地：`AdapterConnectionManager` 以 `provider_id + workspace_root` 为 key 缓存 connection；`client::run_prompt(...)` 获取同 key connection 后创建 / load ACP session，同一 adapter process 可承载多个 session route 与 active prompt，普通 prompt 完成只 release attempt-local runtime，不关闭 adapter process。stdout 断开、写入失败、request route 断开或 adapter process exit 都会被映射为 recoverable interruption，runtime 收敛为 `Paused + ProcessInterrupted`，后续 continue 重新拉起 connection 并使用原 ACP `sessionId`。
+已落地：`AdapterConnectionManager` 以 `provider_id + workspace_root` 为 key 缓存 connection；`client::run_prompt(...)` 获取同 key connection 后创建 / load ACP session，同一 adapter process 可承载多个 session route 与 active prompt，普通 prompt 完成只 release attempt-local runtime，不关闭 adapter process。stdout 断开、写入失败、request route 断开、adapter process exit 或本地 IO/资源异常都会被按 typed/source-first 分类为可恢复异常，runtime 收敛为 `Paused + RuntimeAbnormal` 或等价可继续暂停，后续 continue 重新拉起 connection 并使用原 ACP `sessionId`。
 
 改动：
 
@@ -369,7 +369,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 目标：完成长连接生命周期闭环。
 
-已落地：`run_kill` 与 dynamic terminal kill 对 live attempt session 发 bounded `session/close`；app close close 当前 workspace 的 live connections，并把 running runs 收敛为 `Paused + ProcessInterrupted`；agent/provider 配置、MCP 配置在保存前检查 active prompt，无 active prompt 时 close 旧 connection，有 active prompt 时返回结构化错误并提示先停止会话；普通 workspace 切换只切换当前视图/上下文，不关闭旧 workspace connection；startup recovery 仍只依据 persisted runtime/session lifecycle 收敛业务状态，不补发协议；`provider.pid` 不再阻塞 continue。
+已落地：app close 会关闭 live sessions/connections，并把 running runs 收敛为 `Paused + ProcessInterrupted`；`run_kill / kill_run / killRun` 与旧 dynamic killed 写入链路已废弃，不再作为新 runtime 路径；agent/provider 配置、MCP 配置在保存前检查 active prompt，无 active prompt 时 close 旧 connection，有 active prompt 时返回结构化错误并提示先停止会话；普通 workspace 切换只切换当前视图/上下文，不关闭旧 workspace connection；startup recovery 仍只依据 persisted runtime/session lifecycle 收敛业务状态，不补发协议；`provider.pid` 不再阻塞 continue。
 
 改动：
 
@@ -398,12 +398,13 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 2. `close_session_bounded` timeout 后返回明确错误。
 3. app close / run kill / session release 使用 close，不走 cancel。
 4. diagnostic cleanup 先 `session/delete`，delete 失败 fallback `session/close`。
-5. delete 和 close 都失败时，diagnostics 中记录错误。
+5. doctor 成功后删除临时 `doctor/acp` 目录，失败时移除 `provider.pid` 并只保留有界 raw/timeline/diagnostics JSONL bundle。
+6. delete 和 close 都失败时，diagnostics 中记录错误。
 
 ### 7.3 Rust：runtime invariant
 
 1. 普通 stop / pause / app close / crash recovery 都写 `Paused + ProcessInterrupted`。
-2. `run_kill` 是唯一写 `Completed + Killed` 的路径。
+2. `run_kill / kill_run / killRun` 产生链路已废弃；新代码不得写 `Completed + Killed`。
 3. dynamic inner attempt 停止时，outer node / dynamic graph / inner node 都保持 paused/interrupted，不写 killed。
 4. stopped attempt 的 provider success 不能 transition 到下一节点。
 5. run continue 不再因 `provider.pid` 存在而阻塞。
@@ -435,8 +436,8 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 3. paused/interrupted lifecycle 后 composer 进入 continue input。
 4. terminal/cancelled ACP snapshot 不显示 killed/error 文案。
 5. stopping 状态不依赖 pid。
-6. `WorkflowPage` / `RunDetailPage` 普通“停止 Run”调用 pause/interrupted 语义 API，不再调用 terminal `killRun`。
-7. terminal kill 如果保留，文案与普通停止区分。
+6. `WorkflowPage` / `RunDetailPage` 普通“停止 Run”调用 pause/interrupted 语义 API，不再调用 `killRun`。
+7. 重跑前停止旧 run 也调用 pause/interrupted 语义 API，不再产生 `killed` 历史会话。
 
 ## 8. 人工验证案例
 

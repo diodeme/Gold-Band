@@ -998,6 +998,7 @@ export interface ConversationRunVm {
   workflowGraph: GraphVm;
   resumable: boolean;
   pauseReason?: string | null;
+  runtimeErrorMessage?: string | null;
 }
 
 export interface ConversationSessionSwitchVm {

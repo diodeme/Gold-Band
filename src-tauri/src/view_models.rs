@@ -439,6 +439,9 @@ pub fn runtime_display_vm(
             Some("paused") if current && reason_code.as_deref() == Some("error-blocked") => {
                 ("error-blocked", "danger", "error", false)
             }
+            Some("paused") if current && reason_code.as_deref() == Some("runtime-abnormal") => {
+                ("runtime-abnormal", "danger", "error", false)
+            }
             Some("paused") => ("paused", "warning", "pause", false),
             Some("pending") | Some("ready") => ("pending", "neutral", "dot", false),
             Some("completed") | Some("complete") => ("completed", "neutral", "dot", true),
@@ -464,7 +467,7 @@ pub fn runtime_display_vm(
         tone: tone.to_string(),
         icon: icon.to_string(),
         terminal,
-        resumable: (code == "paused" || code == "error-blocked") && resumable,
+        resumable: matches!(code.as_ref(), "paused" | "runtime-abnormal") && resumable,
         reason_code,
         blocking_error,
     }
@@ -474,6 +477,7 @@ fn normalize_status_code(value: &str) -> String {
     match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
         "errorblocked" => "error-blocked".to_string(),
         "processinterrupted" => "process-interrupted".to_string(),
+        "runtimeabnormal" => "runtime-abnormal".to_string(),
         "waitingforuserinput" => "waiting-for-user-input".to_string(),
         "permissionrequested" => "permission-requested".to_string(),
         other => other.to_string(),
@@ -5822,11 +5826,18 @@ mod tests {
         let failure = runtime_display_vm(Some("completed"), Some("failure"), false, None, false);
         let error_blocked =
             runtime_display_vm(Some("paused"), None, true, Some("error-blocked"), true);
+        let runtime_abnormal =
+            runtime_display_vm(Some("paused"), None, true, Some("runtime-abnormal"), true);
         let killed = runtime_display_vm(Some("completed"), Some("killed"), false, None, false);
 
         assert_eq!(failure.tone, "danger");
         assert!(!failure.blocking_error);
         assert!(error_blocked.blocking_error);
+        assert!(!error_blocked.resumable);
+        assert_eq!(runtime_abnormal.code, "runtime-abnormal");
+        assert_eq!(runtime_abnormal.tone, "danger");
+        assert!(!runtime_abnormal.blocking_error);
+        assert!(runtime_abnormal.resumable);
         assert!(killed.blocking_error);
     }
 

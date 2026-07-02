@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::{App, NotificationDedup};
-use gold_band::config::{ManagedAgentType, RuntimeConfig, SettingsConfig, StateConfig};
+use gold_band::config::{
+    ManagedAgentType, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig, StateConfig,
+};
 use gold_band::process::kill_process_tree;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
@@ -61,13 +63,7 @@ impl DesktopContext {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentDiagnosticState {
-    pub available: bool,
-    pub reason: Option<String>,
-    pub checked_at: String,
-    pub capabilities: Option<serde_json::Value>,
-}
+pub type AgentDiagnosticState = ProviderDiagnosticSnapshot;
 
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateBadgeSeenTarget {
@@ -173,7 +169,7 @@ impl NotificationAttentionState {
 
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
-    agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>,
+    agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
     notification_attention: Mutex<NotificationAttentionState>,
@@ -187,7 +183,7 @@ impl DesktopState {
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
-            agent_diagnostics: Mutex::new(persisted_diagnostics),
+            agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
@@ -220,11 +216,38 @@ impl DesktopState {
     }
 
     pub fn app(&self) -> Result<App> {
-        Ok(self
+        let context = self
             .context
             .lock()
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-            .app())
+            .clone();
+        let diagnostics = self.agent_diagnostics.clone();
+        Ok(
+            App::with_config(context.repo_root, context.config).with_provider_diagnostics_source(
+                Arc::new(move || {
+                    Ok(diagnostics
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+                        .iter()
+                        .map(|(agent_type, diagnostic)| {
+                            (agent_type.as_str().to_string(), diagnostic.clone())
+                        })
+                        .collect())
+                }),
+            ),
+        )
+    }
+
+    pub fn provider_diagnostic_snapshots(
+        &self,
+    ) -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> {
+        Ok(self
+            .agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .iter()
+            .map(|(agent_type, diagnostic)| (agent_type.as_str().to_string(), diagnostic.clone()))
+            .collect())
     }
 
     pub fn context(&self) -> Result<DesktopContext> {
@@ -478,7 +501,7 @@ impl DesktopState {
 }
 
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
-    AgentDiagnosticState {
+    ProviderDiagnosticSnapshot {
         available: result.available,
         reason: result.reason,
         checked_at: current_timestamp(),

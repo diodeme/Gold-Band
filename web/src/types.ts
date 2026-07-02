@@ -596,6 +596,7 @@ export interface AcpSessionVm {
   sessionStartedAt?: string | null;
   sessionUpdatedAt?: string | null;
   sessionElapsedSeconds?: number | null;
+  timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
   systemPromptAppend?: string | null;
@@ -659,7 +660,25 @@ export interface AcpUiEventVm {
   endedSeq?: number | null;
   startedAt?: string | null;
   endedAt?: string | null;
+  timing?: AcpTimingPatchVm | null;
   raw?: unknown;
+}
+
+export interface AcpTimingPatchVm {
+  sessionElapsedSeconds: number;
+  activeTurnStartedAt?: string | null;
+  activeTurnLastActivityAt?: string | null;
+  permissionWaitStartedAt?: string | null;
+  paused: boolean;
+  reason?: string | null;
+}
+
+export interface AcpSessionTimingVm {
+  sessionElapsedSeconds: number;
+  activeTurnStartedAt?: string | null;
+  activeTurnLastActivityAt?: string | null;
+  permissionWaitStartedAt?: string | null;
+  paused: boolean;
 }
 
 export interface AcpPermissionRequestVm {

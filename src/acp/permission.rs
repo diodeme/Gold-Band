@@ -306,6 +306,7 @@ fn cancelled_permission_event(
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw: Some(raw),
     }
 }
@@ -346,6 +347,7 @@ fn selected_permission_event(
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw: Some(raw),
     }
 }

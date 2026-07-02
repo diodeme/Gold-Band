@@ -234,6 +234,17 @@ impl ManagedAgentType {
             },
         }
     }
+    /// 返回该 agent 的 skills 目录名（硬编码默认值）
+    /// 参考 cc-switch get_app_skills_dir 混合方案：默认值 + ManagedAgentConfig::skills_dir_override 可选覆盖
+    pub fn skills_dir_name(self) -> &'static str {
+        match self {
+            Self::ClaudeAcp => ".claude",
+            Self::CodexAcp => ".codex",
+            Self::Cursor => ".cursor",
+            Self::Gemini => ".gemini",
+            Self::OpenCode => ".opencode",
+        }
+    }
 }
 
 impl FromStr for ManagedAgentType {
@@ -299,11 +310,25 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
+    /// 可选覆盖 agent skills 目录名（如 ".claude"、"custom-dir"）
+    /// 未设置时使用 ManagedAgentType::skills_dir_name() 硬编码默认值
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_dir_override: Option<String>,
 }
 
 impl ManagedAgentConfig {
     pub fn new(adapter: AcpAdapterConfig) -> Self {
-        Self { adapter }
+        Self {
+            adapter,
+            skills_dir_override: None,
+        }
+    }
+
+    /// 解析 agent 的 skills 目录名：override 优先，否则使用硬编码默认值
+    pub fn skills_dir_name(&self, agent_type: ManagedAgentType) -> &str {
+        self.skills_dir_override
+            .as_deref()
+            .unwrap_or_else(|| agent_type.skills_dir_name())
     }
 }
 
@@ -428,7 +453,8 @@ pub struct SkillMeta {
     pub description: String,
     pub source: SkillSource,
     pub directory_path: String,
-    pub disable_model_invocation: bool,
+    /// SKILL 来源目录标识：".agents" 为 Gold-Band 自身管理，".claude"/".codex" 等为对应 agent 目录
+    pub agent_source: String,
     pub load_warnings: Vec<String>,
 }
 
@@ -947,6 +973,33 @@ mod tests {
                 .as_ref()
                 .map(|u| u.version.as_str()),
             Some("1.2.3")
+        );
+    }
+
+    #[test]
+    fn managed_agent_type_skills_dir_name_returns_correct_dirs() {
+        use super::ManagedAgentType;
+        assert_eq!(ManagedAgentType::ClaudeAcp.skills_dir_name(), ".claude");
+        assert_eq!(ManagedAgentType::CodexAcp.skills_dir_name(), ".codex");
+        assert_eq!(ManagedAgentType::Cursor.skills_dir_name(), ".cursor");
+        assert_eq!(ManagedAgentType::Gemini.skills_dir_name(), ".gemini");
+        assert_eq!(ManagedAgentType::OpenCode.skills_dir_name(), ".opencode");
+    }
+
+    #[test]
+    fn managed_agent_config_skills_dir_name_uses_override_when_set() {
+        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+        let mut config = ManagedAgentConfig::new(AcpAdapterConfig::default());
+        // 未设置 override，使用硬编码默认值
+        assert_eq!(
+            config.skills_dir_name(ManagedAgentType::ClaudeAcp),
+            ".claude"
+        );
+        // 设置 override，优先使用 override
+        config.skills_dir_override = Some("custom-claude".to_string());
+        assert_eq!(
+            config.skills_dir_name(ManagedAgentType::ClaudeAcp),
+            "custom-claude"
         );
     }
 }

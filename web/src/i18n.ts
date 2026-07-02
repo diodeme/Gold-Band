@@ -84,6 +84,10 @@ const resources = {
           "task-join-failed": "后台任务执行失败。",
           unexpected: "操作失败，请重试。{{message}}",
         },
+        skill: {
+          "already-exists": "SKILL {{skillName}} 已存在于 {{directoryPath}}。",
+          "sync-conflict": "SKILL {{skillName}} 同步冲突：{{conflicts}}",
+        },
         profile: {
           "readonly-built-in": "内置角色不可直接修改或删除，请另存为新角色。",
           "built-in-scope-unsupported": "不能直接创建或保存为内置角色。",
@@ -303,7 +307,15 @@ const resources = {
           name: "名称",
           description: "描述",
           body: "正文 (Markdown)",
-          disableModelInvocation: "禁用自动调用",
+          syncTargets: "同步到",
+          syncClaude: "Claude",
+          syncCodex: "Codex",
+          syncCursor: "Cursor",
+          syncGemini: "Gemini",
+          syncOpenCode: "OpenCode",
+          nameConflictTitle: "名称冲突",
+          nameConflictDescription:
+            "同名 SKILL 已存在于 {{location}}。创建后 .agents 版本将优先显示。",
           globalTab: "全局 SKILL",
           projectTab: "项目 SKILL",
           emptySkills: "暂无 SKILL",
@@ -1214,12 +1226,14 @@ const resources = {
         acp: {
           "missing-provider":
             "The current node is missing provider configuration.",
-          "active-prompt-blocks-config-save":
-            "A session is currently running. Stop it before saving configuration.",
         },
         app: {
           "task-join-failed": "Background task failed.",
           unexpected: "The operation failed. Please try again. {{message}}",
+        },
+        skill: {
+          "already-exists": "SKILL {{skillName}} already exists at {{directoryPath}}.",
+          "sync-conflict": "SKILL {{skillName}} sync conflict: {{conflicts}}",
         },
         profile: {
           "readonly-built-in":
@@ -1452,7 +1466,15 @@ const resources = {
           name: "Name",
           description: "Description",
           body: "Body (Markdown)",
-          disableModelInvocation: "Disable model invocation",
+          syncTargets: "Sync to",
+          syncClaude: "Claude",
+          syncCodex: "Codex",
+          syncCursor: "Cursor",
+          syncGemini: "Gemini",
+          syncOpenCode: "OpenCode",
+          nameConflictTitle: "Name Conflict",
+          nameConflictDescription:
+            "A SKILL named {{location}} already exists. The .agents version will take priority after creation.",
           globalTab: "Global SKILLs",
           projectTab: "Project SKILLs",
           emptySkills: "No SKILLs found",

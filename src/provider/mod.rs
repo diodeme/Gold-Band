@@ -128,8 +128,6 @@ pub struct WorkerInvocation {
     pub input_attachment_paths: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub skill_catalog: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -843,8 +841,6 @@ struct RuntimePromptTemplateContext {
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
-    #[serde(default)]
-    skill_catalog: String,
 }
 
 #[derive(Serialize)]
@@ -908,7 +904,6 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
             .output_contract
             .as_ref()
             .map(runtime_output_contract_context),
-        skill_catalog: req.skill_catalog.clone(),
     }
 }
 
@@ -1178,7 +1173,6 @@ mod tests {
             cold_attachments: Vec::new(),
             input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
-            skill_catalog: String::new(),
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

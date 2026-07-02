@@ -398,14 +398,50 @@ export function listProjectSkills(workspacePath: string) {
   return getRuntimeApi().listProjectSkills(workspacePath);
 }
 
-export function readSkill(name: string, source: string, workspacePath?: string | null) {
-  return getRuntimeApi().readSkill(name, source, workspacePath);
+export function readSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null) {
+  return getRuntimeApi().readSkill(name, source, workspacePath, directoryPath);
 }
 
-export function writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
-  return getRuntimeApi().writeSkill(name, source, content, workspacePath, oldName);
+export function writeSkill(
+  name: string,
+  source: string,
+  content: string,
+  workspacePath?: string | null,
+  oldName?: string | null,
+  directoryPath?: string | null,
+  syncTargets?: string[] | null,
+) {
+  return getRuntimeApi().writeSkill(
+    name,
+    source,
+    content,
+    workspacePath,
+    oldName,
+    directoryPath,
+    syncTargets,
+  );
 }
 
-export function deleteSkill(name: string, source: string, workspacePath?: string | null) {
-  return getRuntimeApi().deleteSkill(name, source, workspacePath);
+export function deleteSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null) {
+  return getRuntimeApi().deleteSkill(name, source, workspacePath, directoryPath);
+}
+
+export function getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null) {
+  return getRuntimeApi().getSkillSyncStatus(name, directoryPath, workspacePath);
+}
+
+export function checkSkillNameConflict(
+  name: string,
+  source: string,
+  workspacePath?: string | null,
+  directoryPath?: string | null,
+  syncTargets?: string[] | null,
+) {
+  return getRuntimeApi().checkSkillNameConflict(
+    name,
+    source,
+    workspacePath,
+    directoryPath,
+    syncTargets,
+  );
 }

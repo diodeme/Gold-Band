@@ -65,10 +65,6 @@ enum RunCommands {
         task_id: String,
         run_id: String,
     },
-    Kill {
-        task_id: String,
-        run_id: String,
-    },
     OpenSession {
         task_id: String,
         run_id: String,
@@ -168,7 +164,6 @@ fn map_run_command(command: RunCommands) -> Result<RunCommand> {
         RunCommands::Status { task_id, run_id } => RunCommand::Status { task_id, run_id },
         RunCommands::Continue { task_id, run_id } => RunCommand::Continue { task_id, run_id },
         RunCommands::Retry { task_id, run_id } => RunCommand::Retry { task_id, run_id },
-        RunCommands::Kill { task_id, run_id } => RunCommand::Kill { task_id, run_id },
         RunCommands::OpenSession {
             task_id,
             run_id,

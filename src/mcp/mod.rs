@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ use crate::config::{
     McpServerConfig, McpServerHealthResult, McpServerState, McpTransportConfig, OAuthClientConfig,
     SettingsConfig,
 };
+use crate::process::background_command;
 use crate::storage::write_json;
 
 const MCP_PROTOCOL_VERSION: u64 = 1;
@@ -411,7 +412,7 @@ fn verify_stdio_server(
     args: &[String],
     env: &BTreeMap<String, String>,
 ) -> Result<McpServerHealthResult> {
-    let mut cmd = Command::new(command);
+    let mut cmd = background_command(command);
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);

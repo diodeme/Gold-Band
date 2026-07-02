@@ -18,6 +18,11 @@ pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md")
 pub const PROFILE_CLEAN_EN: &str = include_str!("prompts/en/profile/clean.md");
 pub const RUNTIME_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/system.md");
 pub const RUNTIME_SYSTEM_EN: &str = include_str!("prompts/en/runtime/system.md");
+pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/hidden_context.md");
+pub const RUNTIME_HIDDEN_CONTEXT_EN: &str = include_str!("prompts/en/runtime/hidden_context.md");
+pub const RUNTIME_USER_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/user.md");
+pub const RUNTIME_USER_EN: &str = include_str!("prompts/en/runtime/user.md");
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/invalid_output_repair.md");
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str =

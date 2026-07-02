@@ -24,14 +24,14 @@
 本轮已按破坏式收敛方向完成第一阶段落地：
 
 - `ConversationAttemptLifecycleVm` 已新增 `runtime.phase` 与 `composer` 决策层，`launching-next-node`、停止中、暂停输入继续、暂停按钮继续等状态都由后端派生。
-- 会话态输入统一走 `submit_conversation_prompt`，前端不再在 `sendAcpPrompt` 与 `continueRun` 之间自行分叉；`process-interrupted/error-blocked` 的文本输入继续与 `waiting-for-user-input` 的按钮继续都指向 `runtime-continue`。
+- 会话态输入统一走 `submit_conversation_prompt`，前端不再在 `sendAcpPrompt` 与 `continueRun` 之间自行分叉；`process-interrupted` 的文本输入继续与 `waiting-for-user-input` 的按钮继续都指向 `runtime-continue`，`error-blocked` 作为不可重试错误进入 `runtime-error`。
 - AI-DYNAMIC 内部节点继续发送已改为 runtime 恢复：后端根据 outer locator + inner locator 校验 paused dynamic graph，只 re-arm 目标 dynamic node，并让它回到 `drive_dynamic_graph` 的 completion 解析、proposal 校验、materialize 和外层 workflow 后续推进链路。
 - `WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 兼容别名已删除，metrics 代码直接使用 `RuntimeLifecycleEvent` 命名；`App.intervention_notifier` 专用回调已删除。
 - 前端 composer 状态映射已改为消费后端 `lifecycle.composer`，只保留发送中、停止命令待确认、乐观消息等短暂本地 overlay；会话态的旧 `onContinue` 分支已删除。
-- `stop_active_session` 已收敛为单一停止语义：先落 `paused + process-interrupted`，再通过 per-attempt provider control 请求 prompt cancel；活跃 ACP runtime 发送 `session/cancel` 后继续 drain 当前 `session/prompt`，等待 cancelled/interrupted 或 cancel deadline。停止仍保持可继续暂停态，不走 terminal killed，也不把 adapter kill 当作成功兜底。
-- `run_pause`、窗口关闭与启动 crash recovery 已统一为 interruption 路径：常规 node、AI-DYNAMIC graph/node、child run 都写 `paused + process-interrupted`，不再复用会把 descendants 写成 killed 的 terminal kill helper；普通 pause 不再用 `provider.pid` 杀 adapter。
+- `stop_active_session` 已收敛为单一停止语义：先落 `paused + process-interrupted`，再通过 per-attempt provider control 请求 prompt cancel；活跃 ACP runtime 发送 `session/cancel` 后继续 drain 当前 `session/prompt`，等待 cancelled/interrupted 或 cancel deadline。停止仍保持可继续暂停态，不写新的 `Killed`，也不把 adapter kill 当作成功兜底。
+- `run_pause`、窗口关闭与启动 crash recovery 已统一为 interruption 路径：常规 node、AI-DYNAMIC graph/node、child run 都写 `paused + process-interrupted`，不再复用旧的 killed 写入 helper；普通 pause 不再用 `provider.pid` 杀 adapter。
 - ACP adapter lifecycle 已从 attempt-local process 迁移为 `provider_id + workspace_root` 长连接：`AdapterConnectionManager` 复用同 provider/workspace adapter process，JSON-RPC response 按 request id 路由，`session/update` 与 permission request 按 `sessionId` 路由到 attempt timeline；不同 workspace 的 connection 可以在新 UI 中并存，普通 workspace 切换不关闭旧 connection。
-- terminal `run_kill` 与 app close 已接入 bounded `session/close`；app close 先递归暂停所有 running run，再关闭 manager 中所有 live provider/workspace connections，避免多 workspace 并存时只关闭当前 workspace。单个 session close 失败不再短路其他 session close，完成遍历后清理 Gold Band 持有的 adapter connection，并记录/返回 close 错误。agent/provider 配置保存和 MCP 配置保存作为 connection restart boundary：无 active prompt 时 close 旧 connection，有 active prompt 时返回结构化错误并提示先停止会话。adapter crash、stdout 断开或 transport closed 按可恢复中断处理，active runtime 收敛为 `paused + process-interrupted`；startup recovery 只依据 persisted runtime lifecycle 收敛状态，不补发协议。
+- `run_kill / kill_run / killRun` 产生链路已废弃；app close 先递归暂停所有 running run，再关闭 manager 中所有 live provider/workspace connections，避免多 workspace 并存时只关闭当前 workspace。单个 session close 失败不再短路其他 session close，完成遍历后清理 Gold Band 持有的 adapter connection，并记录/返回 close 错误。agent/provider 配置保存和 MCP 配置保存作为 connection restart boundary：无 active prompt 时 close 旧 connection，有 active prompt 时返回结构化错误并提示先停止会话。adapter crash、stdout 断开或 transport closed 按可恢复中断处理，active runtime 收敛为 `paused + process-interrupted`；startup recovery 只依据 persisted runtime lifecycle 收敛状态，不补发协议。
 - `orchestrator` 的 `provider.pid exists => wait for provider shutdown before continuing` guard 已删除；`provider.pid` 降级为 adapter process metadata / orphan cleanup 线索，不再阻塞 continue 或推导 UI 状态。
 - ACP provider 迟到成功结果已增加三层防线：ACP client 在成功 response 前检查 cancel，node executor 在 finalize 前确认当前 attempt 仍 running/current，orchestrator 在推进下一节点前再次确认 run 未被外部 stop/pause 改写。
 - 后端 command 层已抽出 `AttemptLocator`，统一表达顶层 attempt 与 AI-DYNAMIC 内部 attempt，并集中处理 attempt dir、runtime current 匹配、dynamic outer/inner locator 等路径判断。
@@ -46,6 +46,9 @@
 - 任务完成通知：`ControlDecision::CompleteRun(outcome)` 后新增 `emit_run_completed_lifecycle_event`，经 `RuntimeLifecycleEvent::RunCompleted` → 通知 subscriber 触发 `InterventionNotification::run_completed`。
 - 桌面注意力门禁：前端 `App.tsx` 监听窗口聚焦/最小化/可见性及当前选中 session leaf，通过 `update_notification_attention` Tauri 命令同步到后端 `NotificationAttentionState`；通知 subscriber 发送前调用 `should_send_notification`，窗口聚焦且当前页面匹配对应 task/run/session 时抑制通知。
 - `src-tauri/src/state.rs` 新增 `NotificationAttentionInput`、`NotificationAttentionState`、`NotificationAttentionTarget` 及单元测试；前端 `web/src/types.ts` 与 `web/src/api/*` 同步新增对应类型与 API 端点。
+- `RunPaused` 与 `RunCompleted` 现在都会通过 `gold-band://conversation-run-state-updated` 触发前端刷新当前 run 与 sidebar；人工 check 从 `launching-next-node` 中间态收敛到 `manual_check_pending` 等待态依赖后端第二帧权威通知，不在前端按 manual check 写补丁判断。
+- `RuntimeStopProbe` 在 attempt-level paused/outcome=null 判断中排除 `manual_check_pending=true`，避免人工 check 判定门被误认为用户停止，普通 ACP 追问可继续发送给 agent，同时 runtime 仍保持 paused 等待成功/失败判定。
+- ACP completed 后继续追问被定义为通用 same-session 新 turn：旧 terminal snapshot 不能压掉当前本地 turn 的发送中/处理中/计时状态；submit 返回 rejected、空 session 或 terminal 且未接受 prompt 时必须显式收敛 optimistic 状态，不能永久卡在“发送中”。
 
 ## 最终架构
 
@@ -66,7 +69,7 @@
 
 - runtime active 优先于已 completed 的 ACP 会话；如果 runtime 仍 active 且 ACP 已 terminal，则 composer 显示 `launching-next-node`。
 - runtime terminal 时，抑制 stale ACP active。
-- `paused + process-interrupted/error-blocked + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`。
+- `paused + process-interrupted + resumable` 表示允许文本输入，但提交目标是 `runtime-continue`；`paused + error-blocked` 表示不可重试阻塞，composer 进入 `runtime-error` 且 submit target 为 `none`，错误面板优先展示后端从 run-progress 阻塞摘要提取的 `runtimeErrorMessage`。
 - `paused + waiting-for-user-input + manual_check_pending` 表示人工 check 判定门，不再使用继续按钮；composer 保持可输入，普通文本提交目标是 `acp-prompt`，只有成功 / 失败按钮触发 `submit_manual_check` 并恢复 edge 流转。
 - 人工 check 判定门从当前 attempt 的 `NodeState.manual_check_pending` 持久化恢复；关闭应用再打开后仍必须恢复判定按钮、输入框和后续 submit_manual_check 能力。
 - ACP lifecycle facet 为 `stopping`、本地 stop 命令未返回，或 ACP session metadata 明确为 `cancelling / cancel-requested` 时进入 `stopping`；`provider.pid` 只作为 kill/cleanup/诊断事实，不能反推 composer 停止中。
@@ -252,7 +255,7 @@ RuntimeLifecycleBus
 本轮新增的回归验收重点：
 
 - 常规 worker run 调用 `run_pause(..., ProcessInterrupted)` 后，run/round/node 必须全部保持 `Paused`，node outcome 为 `None`，不能写 `Killed`。
-- AI-DYNAMIC 外层停止或关闭时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`，显式 `run_kill` 才允许写 `Killed`。
+- AI-DYNAMIC 外层停止、重跑前停止旧 run 或关闭客户端时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`；`run_kill / kill_run / killRun` 产生链路已废弃，不允许再写新的 `Killed` 状态。
 - provider 已被调用但 stop 已落盘时，即使 provider 迟到返回 success，也不能写 success artifact，不能完成 run，不能进入下一节点。
 - stop / crash recovery 写入的历史 `cancelled` ACP snapshot/session 不能取消后续 runtime continue；继续入口必须只以当前 runtime lifecycle 和 provider control 为准，不能被历史 ACP cancelled metadata 阻断。
 - `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control；活跃 runtime 必须发送一次 `session/cancel` notification 取消底层会话，并继续 drain 当前 prompt response，直到 cancelled/interrupted 或 cancel deadline 到期。普通停止不按 `provider.pid` 清理 adapter，不把 kill adapter 当作 cancel 成功兜底。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后按后端 lifecycle 和最终快照收敛。

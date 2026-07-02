@@ -33,7 +33,7 @@
 - `provider` 是 fan-out agent 的 provider，用于 bootstrap internal worker；fan-out agent 的角色与目标由 runtime 内置 prompt 提供，不在 DSL 中配置。
 - `agentStrategy` 中 agent 对应的 `model` 是可选字段。固定 Agent 策略下 proposal 不输出 `provider`，runtime 会为 worker / merge / acceptance 注入固定 provider；若固定 provider 未配置模型且 provider 暴露可选模型列表，runtime 会在 prompt 中要求 proposal 为 worker / merge / acceptance 输出 `model`，否则不输出 `model`。动态 Agent 策略下 proposal 必须为 worker / merge / acceptance 输出 provider；若 agent / 模型决策指南非空，普通 worker 仍必须输出 `model`，但已配置模型的 Agent 仍由 runtime 固定使用配置模型。
 - 动态 Agent 策略新增可选字段 `acceptanceModel`。配置后，它只作用于 fanout 配套的 `merge` / `acceptance`：runtime 会固定使用该模型，这两个 spec 的 schema 和提示词都不再要求也不再暴露 `model` 字段；普通 worker 的 `model` 规则保持不变。
-- `permissionMode` 复用普通 worker 节点的权限模式选择；作者态 DSL 中该字段仍表达统一的规范权限级别，runtime 会在 materialize bootstrap、派生 worker、merge 和 acceptance 等内部节点时按各自 provider 解析成真实 mode id 后再落盘，并在 provider 能力已知时提前校验兼容性。
+- `permissionMode` 复用普通 worker 节点的权限模式选择；作者态 DSL 中该字段可以是产品侧虚拟权限级别，也可以是当前 Agent doctor 返回的真实 ACP mode id。runtime 会在 materialize bootstrap、派生 worker、merge 和 acceptance 等内部节点时按各自 provider 解析成真实 mode id 后再落盘，并在 provider 能力已知时提前校验兼容性。
 - `control` 是 runtime validation 的硬限制，不只是 prompt 提示。
 - `allowedWorkflows.workflowId` 引用 workflow DSL 内的 `workflow.id`，不是模板外层 `template.id`；run start 时冻结为 allowed workflow snapshots。
 - `allowedWorkflows` 引用的模板必须满足模板库级唯一性约束：若某个模板的 `workflow.id` 与其他模板重复，则任何包含该模板引用的 AI-DYNAMIC 工作流都不能保存，用户需手动修改模板 JSON 中的 `workflow.id` 后再试。
@@ -41,6 +41,7 @@
 - `maxGroupDepth` 限制 fanout group 的嵌套深度；底层状态通过 `parentGroupId` 记录父子 group，子 group closed 后把自己的 acceptance 节点挂入父 group terminal，父 group 必须等所有 root chain 都到达 terminal boundary 后才会 merge。
 - 外层 `ai-dynamic` DSL 不再配置 `merge` 或 `acceptance`。当内部节点输出 `next.type=fanout` 时，proposal 中必须同时给出该 group 的 `merge` 与 `acceptance` 可执行 spec；fixed 策略下 provider 由 runtime 注入，dynamic 策略下 provider 由 proposal 明确给出。merge / acceptance 不接受 proposal profile，角色提示词统一由 `src/prompts/<lang>/runtime/ai-dynamic/merge.md` 与 `src/prompts/<lang>/runtime/ai-dynamic/acceptance.md` 提供；若动态策略已配置 `acceptanceModel`，merge / acceptance 也不再输出 `model`，直接由 runtime 固定注入该模型。
 - fanout 中会修改代码、测试、配置、文档或资源的并行分支应使用 `workspace.mode=worktree`，runtime 为每个分支创建独立 git worktree 与稳定 branch；worktree 目录放在目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>` 下，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 长路径 checkout 失败并保证同一 run 内不冲突；分析、审查、方案类分支使用 `readonly`；`main` 只用于 merge / acceptance / cleanup。merge 节点在 main workspace 中合并当前 group 的 terminal 分支，runtime 会把每个分支的 workspace path、branch、head、mergeBase 与 dirty status 注入 prompt，merge agent 基于这些信息解决冲突并验证结果。
+- `next.type=single` 的后继节点不能使用 `workspace.mode=worktree`。单节点链路不会自动创建 merge / acceptance，使用 worktree 会留下无人合并的隔离分支；需要隔离写入时应改为 `next.type=fanout` 并提供 merge / acceptance，或使用 `main` 串行执行。
 - runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），并将能力信息注入 system prompt 与 proposal repair reference。当 `supportsWorktree: false`（非 git 目录、无 HEAD 提交或 git 不可用）时，fanout prompt 会约束模型不输出 `workspace.mode=worktree`，proposal 校验层会对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议使用 `readonly`/`main`；若 proposal 在 repair 耗尽后仍未改正，外层 AI-DYNAMIC 进入 `paused/error-blocked`。即使在 proposal 校验通过后，`ensure_dynamic_workspace` 仍会在创建 worktree 前再做一次能力检查；创建前会清理同名 stale branch 与不完整目录，若 Git 命令失败则把 stdout/stderr 写入 error-blocked 摘要，避免只留下泛化失败信息。
 - 内部 worker / workflow-invocation 只能提交 `dynamic-node-completion` proposal；子线程负责执行并产出 proposal，主线程负责校验、记录 accepted/rejected proposal，并作为 graph 的唯一写入者执行 materialize。同一 dynamic run 的 run/graph/node/group/proposal 状态快照读写必须通过 run 级状态锁串行化，JSON 状态文件采用同目录临时文件原子替换写入，避免调度线程在 graph 更新中途读到半写入或新旧内容混合导致 `trailing characters` 一类解析错误。
 - runtime 通过通用 output contract 机制把 artifact 名称、类型以及完整的 AI-DYNAMIC 输出协议文本注入 prompt；`dynamic-node-completion` 基础 schema 由 Rust 数据结构通过 `schemars` 生成，runtime 再按当前 Agent 策略、provider/model 需求、可用 worker profile、allowed workflow snapshot 与 `maxFanout` 收窄为本次运行的有效 JSON Schema。这份有效 schema 同时进入 provider output contract、`src/prompts/<lang>/runtime/ai-dynamic/output_protocol.md` 和 runtime validator，避免 prompt、解析与修复规则分叉。
@@ -50,7 +51,7 @@
 - rejected proposal 不再只保存字符串错误，而是保存结构化错误对象：至少包含 `code`、`message`、`params`，并可携带 `path / actual / expected / allowedValues / suggestion`。其中 `code` 用于稳定识别错误类型，`path` 指向 proposal JSON 路径，`params` 提供 nodeId / field / profile / provider / limit / actual 等上下文字段，便于后续 UI、日志和 prompt 复用。
 - 外层 edge 仍然只消费 `ai-dynamic` 的最终 `success / failure / killed` outcome；若内部 dynamic worker、merge/acceptance 节点或 `workflow-invocation` child run 进入暂停，外层 `ai-dynamic` node 也以复合节点形式暂停，并在继续时由 runtime 委托内部 paused node 或 `childRunId` 从自身断点恢复。会话态和 Round 详情对内部节点的继续发送必须走 `submit_conversation_prompt -> run_continue_dynamic_inner_background`，由 runtime 校验 outer locator 与 inner locator，只 re-arm 目标 internal node 并回到 `drive_dynamic_graph`；不得直接对 dynamic inner ACP session 调 `send_acp_prompt` 绕过 completion 解析和 graph materialize。`send_acp_prompt` 若命中 paused/resumable/current dynamic inner attempt，必须拒绝并要求统一 submit 入口。
 - Round 详情运行态主图内联展示 AI-DYNAMIC 内部节点时，外层 workflow 的后续边仍按 `ai-dynamic` 最终 outcome 前进，但可视化连接端点必须落到内部 dynamic graph 的出口节点，而不是复合节点占位。出口节点按内部图真实边语义计算：显式 `dependsOn`、`sessionMode=continue` 和 runtime 由 `chainId/depth` 派生的隐式成功边都会让上游节点不再视为出口；当前 V1 常见为单出口，后续允许多个无下游出口同时连接到外层后继节点。
-- 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 killed；应用关闭则递归把这些活跃资源收敛到 `ProcessInterrupted` paused，供后续 continue 恢复。
+- 外层 run stop 时需要递归停止 AI-DYNAMIC 内部并行节点与 child workflow run，并把可达 dynamic 状态一并收敛到 `ProcessInterrupted` paused；应用关闭或启动恢复同样递归收敛为可继续暂停。可恢复本地 IO/资源、ACP transport 或 driver 异常收敛为 `RuntimeAbnormal` paused，供后续 continue 恢复；新停止链路不再把普通停止写成 killed。
 
 ## 4. 内部控制 artifact
 内部 worker 必须输出 canonical artifact：
@@ -72,4 +73,4 @@ workflow invocation 节点完成 child run 后由 runtime 包装 `dynamic-node-c
 - 不支持 nested `ai-dynamic`，除非后续显式打开 `allowNestedDynamic`。
 - 不引入 direct mode、route-decision、triage-result 或 replan artifact。
 - 内部状态保存在外层节点 attempt 的 `dynamic/` 目录下，不写入外层 round trace。
-- invalid proposal、internal node failure、merge failure 会让外层 run 进入 error-blocked pause。
+- invalid proposal、provider/model/catalog/workspace/workflow/DSL 前提错误、不可恢复 internal node failure 或 merge failure 会让外层 run 进入 `error-blocked` pause；本地 IO/资源、ACP transport、driver interruption 等可恢复运行异常进入 `runtime-abnormal` pause，保留 runtime continue 入口。

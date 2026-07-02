@@ -93,12 +93,6 @@ pub fn parse_console_command(input: &str) -> Result<ParsedConsoleCommand> {
                 run_id: (*run_id).to_string(),
             },
         ))),
-        ["/run", "kill", task_id, run_id] => Ok(ParsedConsoleCommand::Runtime(Command::Run(
-            RunCommand::Kill {
-                task_id: (*task_id).to_string(),
-                run_id: (*run_id).to_string(),
-            },
-        ))),
         [
             "/run",
             "open-session",

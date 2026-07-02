@@ -2,7 +2,8 @@ use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode};
 use gold_band::provider::{
     ColdFileRef, PromptArtifactRef, PromptOutputContract, PromptPredecessorContext,
-    PromptRuntimeContext, PromptVisibility, StreamMode, WorkerInvocation, render_prompt_bundle,
+    PromptRuntimeContext, PromptVisibility, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -77,6 +78,7 @@ fn invocation() -> WorkerInvocation {
         extra_system_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
         session_mode: SessionMode::New,
+        user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
         model: None,
         continue_ref: None,
@@ -125,9 +127,12 @@ fn render_prompt_bundle_uses_runtime_context_without_old_invocation_labels() {
     );
     assert!(prompt.system_prompt.contains("Task: task-001"));
     assert!(prompt.system_prompt.contains("Run: run-001"));
-    assert!(prompt.system_prompt.contains("Round: round-001"));
     assert!(prompt.system_prompt.contains("Node: dev"));
-    assert!(prompt.system_prompt.contains("Attempt: attempt-001"));
+    assert!(!prompt.system_prompt.contains("Round: round-001"));
+    assert!(!prompt.system_prompt.contains("Attempt: attempt-001"));
+    assert!(prompt.user_prompt.contains("Session mode: new"));
+    assert!(prompt.user_prompt.contains("- Round: round-001"));
+    assert!(prompt.user_prompt.contains("- Attempt: attempt-001"));
     assert!(!prompt.system_prompt.contains("Invocation kind"));
     assert!(!prompt.system_prompt.contains("WorkerGeneric"));
 }
@@ -163,7 +168,7 @@ fn render_prompt_bundle_guides_nodes_without_artifacts() {
     assert!(
         prompt
             .system_prompt
-            .contains("当前 run 目录仅作为这些已给出路径的父级上下文")
+            .contains("当前 run 目录仅作为本 prompt 明确给出路径的父级上下文")
     );
     assert!(
         prompt
@@ -198,11 +203,35 @@ fn render_prompt_bundle_marks_new_round_transitions() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt.system_prompt.contains(
+    assert!(prompt.user_prompt.contains(
         "round-001/accept/attempt-001 -$new-round-> 当前节点(round-002/plan/attempt-001)"
     ));
-    assert!(prompt.system_prompt.contains("输出 artifact=accept-result"));
-    assert!(prompt.system_prompt.contains("输出预览={\"result\":false}"));
+    assert!(prompt.user_prompt.contains("输出 artifact=accept-result"));
+    assert!(prompt.user_prompt.contains("输出预览={\"result\":false}"));
+    assert!(!prompt.system_prompt.contains("输出 artifact=accept-result"));
+}
+
+#[test]
+fn render_prompt_bundle_removes_skill_catalog_and_cold_indexes() {
+    let prompt = render_prompt_bundle(&invocation()).unwrap();
+
+    assert!(!prompt.system_prompt.contains("skill_catalog"));
+    assert!(!prompt.system_prompt.contains("Agent Skills"));
+    assert!(!prompt.user_prompt.contains("Cold Artifact Index"));
+    assert!(!prompt.user_prompt.contains("Cold Attachment Index"));
+    assert!(!prompt.user_prompt.contains("review-result"));
+    assert!(!prompt.user_prompt.contains("report.md"));
+}
+
+#[test]
+fn render_prompt_bundle_keeps_extra_system_sections_in_system_prompt() {
+    let mut req = invocation();
+    req.extra_system_sections = vec!["AI dynamic rule".to_string()];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.system_prompt.contains("AI dynamic rule"));
+    assert!(!prompt.user_prompt.contains("AI dynamic rule"));
 }
 
 #[test]
@@ -227,11 +256,12 @@ fn render_prompt_bundle_renders_predecessor_chain_and_output_dsl() {
 
     assert!(
         prompt
-            .system_prompt
+            .user_prompt
             .contains("round-001/plan/attempt-001 -success-> 当前节点(round-001/dev/attempt-001)")
     );
-    assert!(prompt.system_prompt.contains("节点输出检查"));
-    assert!(prompt.system_prompt.contains("plan-result"));
+    assert!(prompt.user_prompt.contains("节点输出检查"));
+    assert!(prompt.user_prompt.contains("plan-result"));
+    assert!(!prompt.system_prompt.contains("plan-result"));
     assert!(
         prompt
             .system_prompt
@@ -247,9 +277,10 @@ fn render_prompt_bundle_renders_predecessor_chain_and_output_dsl() {
 }
 
 #[test]
-fn render_prompt_bundle_continue_reuses_node_system_prompt() {
+fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     let mut req = invocation();
     req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::WorkflowResume;
     req.resume_prompt = Some("继续".to_string());
     req.resume_prompt_id = Some("resume-001".to_string());
 
@@ -270,6 +301,50 @@ fn render_prompt_bundle_continue_reuses_node_system_prompt() {
             .system_prompt
             .contains("JSON field `$.result` equals `true`")
     );
-    assert_eq!(prompt.user_prompt, "继续");
+    assert!(
+        prompt.user_prompt.contains(
+            "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band runtime context\">"
+        )
+    );
+    assert!(prompt.user_prompt.contains("Session mode: continue"));
+    assert!(prompt.user_prompt.contains("Invocation reason"));
+    assert!(prompt.user_prompt.contains("继续"));
+    assert!(prompt.user_prompt.contains("# Goal"));
+    assert!(prompt.user_prompt.contains("根据最新反馈进行调整"));
+    assert!(!prompt.user_prompt.contains("# Requirement"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-001"));
+}
+
+#[test]
+fn render_prompt_bundle_user_message_sends_user_text_without_hidden_context() {
+    let mut req = invocation();
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    req.resume_prompt = Some("请继续检查这个会话".to_string());
+    req.resume_prompt_id = Some("resume-user-001".to_string());
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.user_prompt, "请继续检查这个会话");
+    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert!(!prompt.user_prompt.contains("# Goal"));
+    assert!(!prompt.user_prompt.contains("# Requirement"));
+    assert_eq!(prompt.prompt_id.as_deref(), Some("resume-user-001"));
+}
+
+#[test]
+fn render_prompt_bundle_runtime_repair_sends_repair_prompt_without_hidden_context() {
+    let mut req = invocation();
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+    req.resume_prompt = Some("请修复刚才输出的 JSON。".to_string());
+    req.resume_prompt_visibility = PromptVisibility::Hidden;
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.user_prompt, "请修复刚才输出的 JSON。");
+    assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert!(!prompt.user_prompt.contains("# Goal"));
+    assert!(!prompt.user_prompt.contains("# Requirement"));
 }

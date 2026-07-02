@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
-use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
     DynamicCompletionSchemaPolicy, DynamicGraphState, DynamicGroupStatus, DynamicNodeKind,
@@ -10,7 +10,7 @@ use gold_band::dynamic::{
 use gold_band::provider::{
     AcpContentBlock, DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
-    WorkerInvocation, render_prompt_bundle,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ enum DynamicScenario {
     WorktreeFanout,
     NestedFanout,
     InvalidWorkflowInvocation,
+    SingleWorktreeRepair,
     FanoutRepair,
     MultiValidationRepair,
     MergeAcceptanceProfileRepair,
@@ -60,6 +61,10 @@ impl DynamicProvider {
 
     fn invalid_workflow_invocation() -> Self {
         Self::new(DynamicScenario::InvalidWorkflowInvocation)
+    }
+
+    fn single_worktree_repair() -> Self {
+        Self::new(DynamicScenario::SingleWorktreeRepair)
     }
 
     fn fanout_repair() -> Self {
@@ -103,6 +108,7 @@ impl ProviderAdapter for DynamicProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -210,6 +216,16 @@ impl DynamicProvider {
             }
             (DynamicScenario::InvalidWorkflowInvocation, "bootstrap") => {
                 Some(invalid_workflow_invocation_completion(profile))
+            }
+            (DynamicScenario::SingleWorktreeRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(single_worktree_completion())
+                }
+            }
+            (DynamicScenario::SingleWorktreeRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
             }
             (DynamicScenario::FanoutRepair, "bootstrap") => {
                 if req.session_mode == SessionMode::Continue {
@@ -690,6 +706,28 @@ fn session_continue_single_completion() -> String {
     .to_string()
 }
 
+fn single_worktree_completion() -> String {
+    r#"{
+            "version": "0.1",
+            "kind": "dynamic-node-completion",
+            "status": "success",
+            "summary": "create one writable node",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "single-write",
+                    "kind": "worker",
+                    "title": "Single Write",
+                    "task": "Write one change in an isolated worktree",
+                    "profile": "pf-builtin-dev",
+                    "workspace": { "mode": "worktree" },
+                    "dependsOn": ["bootstrap"]
+                }
+            }
+        }"#
+    .to_string()
+}
+
 fn invalid_session_continue_completion() -> String {
     r#"{
             "version": "0.1",
@@ -994,6 +1032,52 @@ fn ai_dynamic_rejects_worktree_fanout_in_non_git_workspace() {
 }
 
 #[test]
+fn ai_dynamic_rejects_single_worktree_even_when_git_supports_worktree() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+    std::fs::create_dir_all(&repo_root).unwrap();
+    init_git_repo(&repo_root);
+    let task_id = "task-ai-dynamic-single-worktree";
+    let provider = DynamicProvider::single_worktree_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(
+        graph.proposals[0].validation_status,
+        DynamicProposalValidationStatus::Rejected
+    );
+    let error = graph.proposals[0]
+        .validation_errors
+        .iter()
+        .find(|error| error.code == "dynamic.node.workspace.single-worktree-unsupported")
+        .expect("single worktree proposal should be rejected");
+    assert_eq!(
+        error.path.as_deref(),
+        Some("next.nodes[id=single-write].workspace.mode")
+    );
+    assert_eq!(error.actual.as_deref(), Some("worktree"));
+    assert!(graph.proposals.iter().any(|proposal| {
+        proposal.validation_status == DynamicProposalValidationStatus::Accepted
+    }));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.contains("[dynamic.node.workspace.single-worktree-unsupported]"));
+    assert!(resume_prompt.contains("path: next.nodes[id=single-write].workspace.mode"));
+}
+
+#[test]
 fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -1030,6 +1114,14 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         .find(|invocation| invocation.runtime_context.node_id == "group-core-merge")
         .unwrap();
     let merge = render_prompt_bundle(merge_invocation).unwrap();
+    assert_eq!(merge_invocation.session_mode, SessionMode::New);
+    assert_eq!(
+        merge_invocation.user_prompt_render_mode,
+        UserPromptRenderMode::RequirementTask
+    );
+    assert!(merge.user_prompt.contains("# Requirement"));
+    assert!(merge.user_prompt.contains("# Task"));
+    assert!(!merge.user_prompt.contains("# Goal"));
     assert!(merge.system_prompt.contains("branch workspaces"));
     let branch_lines = merge
         .system_prompt
@@ -1042,8 +1134,20 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     assert!(merge.system_prompt.contains("mergeBase="));
     assert!(merge.system_prompt.contains("status=?? branch-a.txt"));
     assert!(merge.system_prompt.contains("status=?? branch-b.txt"));
-    assert!(merge.user_prompt.contains("Main workspace:"));
-    assert!(merge.user_prompt.contains(repo_root.as_str()));
+    assert!(
+        merge_invocation
+            .task_instruction
+            .as_deref()
+            .unwrap()
+            .contains("Main workspace:")
+    );
+    assert!(
+        merge_invocation
+            .task_instruction
+            .as_deref()
+            .unwrap()
+            .contains(repo_root.as_str())
+    );
 }
 
 #[test]
@@ -1608,6 +1712,42 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
 }
 
 #[test]
+fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-prompt-id";
+    let provider = DynamicProvider::session_continue_prompt();
+    let app = App::with_provider(repo_root, Box::new(provider));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let graph = dynamic_graph(&app, task_id);
+    assert!(graph.nodes.iter().any(|node| node.id == "branch-b"));
+    let continue_ref = serde_json::json!({ "sessionId": "branch-b-attempt-001" });
+    let prompt = app
+        .dynamic_acp_prompt_bundle_for_attempt(
+            task_id,
+            "run-001",
+            "round-001",
+            "router",
+            "attempt-001",
+            "branch-b",
+            "attempt-001",
+            "继续".to_string(),
+            Some("acp-prompt-test".to_string()),
+            Some(continue_ref),
+        )
+        .unwrap();
+
+    assert_eq!(prompt.user_prompt, "继续");
+    assert_eq!(prompt.prompt_id.as_deref(), Some("acp-prompt-test"));
+}
+
+#[test]
 fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -1629,75 +1769,6 @@ fn ai_dynamic_rejects_continue_target_outside_resumable_range() {
             .iter()
             .any(|error| error.code == "dynamic.node.session.workflow-invocation-disallowed")
     }));
-}
-
-#[test]
-fn ai_dynamic_run_kill_recursively_marks_child_run_and_dynamic_nodes_killed() {
-    let temp = tempdir().unwrap();
-    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let task_id = "task-ai-dynamic-kill-child";
-    let workflow_id = Arc::new(Mutex::new(String::new()));
-    let provider = DynamicProvider::workflow_invocation(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
-    let profile = first_profile_id(&app);
-
-    let store = app
-        .save_workflow_template(
-            "Child Flow".to_string(),
-            serde_json::from_str(&format!(
-                r#"{{
-                    "version": "0.1",
-                    "id": "child-flow",
-                    "entry": "child",
-                    "nodes": [
-                        {{
-                            "id": "child",
-                            "type": "worker",
-                            "provider": "claude-acp",
-                            "profile": "pf-builtin-dev",
-                            "goal": "Run child work"
-                        }}
-                    ],
-                    "edges": [
-                        {{ "from": "child", "to": "$end", "on": "success" }}
-                    ]
-                }}"#
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-    let child_template = store
-        .templates
-        .iter()
-        .find(|template| template.name == "Child Flow")
-        .unwrap();
-    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
-
-    write_task_file(&app, task_id);
-    write_dynamic_workflow(
-        &app,
-        task_id,
-        &profile,
-        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
-    );
-
-    let run = app.run_start(task_id, None).unwrap();
-    assert_eq!(run.outcome, Some(RunOutcome::Success));
-
-    let killed = app.run_kill(task_id, "run-001").unwrap();
-    assert_eq!(killed.outcome, Some(RunOutcome::Killed));
-
-    let graph = dynamic_graph(&app, task_id);
-    assert_eq!(graph.run.outcome, Some(RunOutcome::Killed));
-    let child_node = graph
-        .nodes
-        .iter()
-        .find(|node| node.id == "child-flow-node")
-        .unwrap();
-    assert_eq!(child_node.outcome, Some(NodeOutcome::Killed));
-    let child_run: gold_band::runtime::RunState =
-        gold_band::storage::read_json(&app.paths.run_file(task_id, "run-002")).unwrap();
-    assert_eq!(child_run.outcome, Some(RunOutcome::Killed));
 }
 
 #[test]
@@ -1792,6 +1863,95 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
             && invocation.runtime_context.node_id == "child"
             && invocation.session_mode == SessionMode::Continue
     }));
+}
+
+#[test]
+fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-child-pause-user-message";
+    let workflow_id = Arc::new(Mutex::new(String::new()));
+    let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+
+    let store = app
+        .save_workflow_template(
+            "Child Flow".to_string(),
+            serde_json::from_str(&format!(
+                r#"{{
+                    "version": "0.1",
+                    "id": "child-flow",
+                    "entry": "child",
+                    "nodes": [
+                        {{
+                            "id": "child",
+                            "type": "worker",
+                            "provider": "claude-acp",
+                            "profile": "pf-builtin-dev",
+                            "goal": "Run child work"
+                        }}
+                    ],
+                    "edges": [
+                        {{ "from": "child", "to": "$end", "on": "success" }}
+                    ]
+                }}"#
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let child_template = store
+        .templates
+        .iter()
+        .find(|template| template.name == "Child Flow")
+        .unwrap();
+    *workflow_id.lock().unwrap() = child_template.workflow.id.clone();
+
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(
+        &app,
+        task_id,
+        &profile,
+        &format!(r#"[{{ "workflowId": "{}" }}]"#, child_template.workflow.id),
+    );
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let resumed = app
+        .run_continue(
+            task_id,
+            "run-001",
+            Some("prompt-continue-001".to_string()),
+            Some("请继续检查这个会话".to_string()),
+        )
+        .unwrap();
+
+    assert_eq!(resumed.status, RunStatus::Completed);
+    assert_eq!(resumed.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let child_continue = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.run_id == "run-002"
+                && invocation.runtime_context.node_id == "child"
+                && invocation.session_mode == SessionMode::Continue
+        })
+        .unwrap();
+    assert_eq!(
+        child_continue.user_prompt_render_mode,
+        UserPromptRenderMode::UserMessage
+    );
+    assert_eq!(
+        child_continue.resume_prompt.as_deref(),
+        Some("请继续检查这个会话")
+    );
+    assert_eq!(
+        child_continue.resume_prompt_id.as_deref(),
+        Some("prompt-continue-001")
+    );
 }
 
 #[test]

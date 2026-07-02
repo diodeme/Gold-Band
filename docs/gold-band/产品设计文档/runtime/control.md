@@ -62,15 +62,26 @@ edge target 规则：
 
 `manual_check_pending` 必须持久化在当前 attempt 的 `node.json` 中。应用关闭后再次打开，只要 run / round / node 仍处于上述暂停态且 `manual_check_pending=true`，会话面板仍应恢复判定按钮和可用输入区，点击成功或失败后继续推进 runtime。
 
-## 8. 错误阻塞
-以下情况进入 `paused + error_blocked`：
+## 8. 可恢复运行异常
+以下情况进入 `paused + runtime-abnormal`：
+
+- 本地 IO、系统资源或临时文件写入异常，例如 Windows `os error 1450`。
+- ACP transport 断开、adapter stdout 断开、driver 线程提前退出等会话仍可能继续的运行期异常。
+- 事件、timeline、raw frame 等观察性写入失败，且不会改变 workflow 前提条件。
+
+`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地或协议层问题。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许用字符串特征作为最后兜底。
+
+## 9. 错误阻塞
+以下情况进入 `paused + error-blocked`：
 
 - edge 缺失导致无法决定下一步。
-- provider 调用失败且无法恢复。
+- provider、model、catalog、workspace 或 workflow/DSL 前提缺失，继续当前 session 无法改变结果。
 - AI 输出验证声明了产物但产物缺失。
 - 输出结构或成功条件路径不满足 DSL 声明。
 
-## 9. 状态一致性
+`error-blocked` 表示不可直接恢复的前提/配置/业务阻塞；UI 可以展示错误横幅或修复入口，但不能把它当成普通 runtime continue 输入。
+
+## 10. 状态一致性
 每次节点进入、完成、暂停、跳转或打开新 round 时，runtime 必须同步更新：
 
 - `run.json`
@@ -78,3 +89,5 @@ edge target 规则：
 - `node.json`
 - round trace
 - progress snapshot / run events
+
+runtime 落盘完成后，前端可见状态必须继续通过 lifecycle/run-state 事件刷新：`RunCompleted` 和 `RunPaused` 都需要发出 run-state 更新事件，前端收到后重新拉取后端 Conversation VM。人工 check 的 `waiting-for-user-input`、运行异常、用户停止等暂停态都不应由前端本地猜测或按 `manual_check_pending` 打补丁修正；前端只消费刷新后的后端 lifecycle/composer 事实。

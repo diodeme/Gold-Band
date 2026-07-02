@@ -3,7 +3,8 @@ use gold_band::app::{App, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, UserPromptRenderMode,
+    WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
 use std::sync::{Arc, Barrier, Mutex};
@@ -22,6 +23,7 @@ impl ProviderAdapter for RecordingProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -181,6 +183,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -294,6 +297,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -349,6 +353,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -724,6 +729,50 @@ fn run_continue_ignores_stale_provider_pid_metadata() {
 }
 
 #[test]
+fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-user-message";
+    let provider = InterruptedThenContinueProvider::default();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    write_dev_only_workflow(&app, task_id);
+    let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
+    std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
+    let input_path = inputs_dir.join("测试需求.txt");
+    std::fs::write(input_path.as_std_path(), "attached task input").unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let continued = app
+        .run_continue(
+            task_id,
+            "run-001",
+            Some("resume-user-001".to_string()),
+            Some("请继续检查这个会话".to_string()),
+        )
+        .unwrap();
+
+    assert_eq!(continued.status, RunStatus::Completed);
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(
+        invocations[1].user_prompt_render_mode,
+        UserPromptRenderMode::UserMessage
+    );
+    assert_eq!(
+        invocations[1].resume_prompt.as_deref(),
+        Some("请继续检查这个会话")
+    );
+    assert_eq!(
+        invocations[1].resume_prompt_id.as_deref(),
+        Some("resume-user-001")
+    );
+}
+
+#[test]
 fn run_start_background_allocates_from_max_run_id_under_concurrency() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -924,6 +973,10 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     let invocations = provider.invocations.lock().unwrap();
     assert_eq!(invocations.len(), 2);
     assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(
+        invocations[1].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
     assert_eq!(invocations[1].resume_prompt.as_deref(), Some("继续"));
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
@@ -1202,7 +1255,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
 }
 
 #[test]
-fn error_blocked_run_is_continuable() {
+fn error_blocked_run_is_not_continuable() {
     let run = RunState {
         version: VERSION.to_string(),
         id: "run-001".to_string(),
@@ -1222,5 +1275,5 @@ fn error_blocked_run_is_continuable() {
         last_executed_node: None,
     };
 
-    assert!(is_run_continuable(&run));
+    assert!(!is_run_continuable(&run));
 }

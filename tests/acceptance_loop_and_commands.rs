@@ -20,6 +20,7 @@ impl ProviderAdapter for LoopingProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: true,
                 supports_raw_stream: false,
             },
             is_default: false,
@@ -192,7 +193,4 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
         .unwrap()
         .contains("accepted")
     );
-
-    let killed = app.run_kill(task_id, "run-001").unwrap();
-    assert_eq!(killed.outcome, Some(gold_band::domain::RunOutcome::Killed));
 }

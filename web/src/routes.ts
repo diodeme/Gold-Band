@@ -18,8 +18,8 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
-    if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[7]) {
-      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[7] } };
+    if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
+      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[6] } };
     }
     return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: conversationHomePage };
   }

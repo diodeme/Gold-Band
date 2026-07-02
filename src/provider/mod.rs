@@ -4,7 +4,9 @@ use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
-    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, prompt_by_language, render as render_template,
+    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, prompt_by_language,
+    render as render_template,
 };
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -64,6 +66,7 @@ pub struct ProviderInfo {
 pub struct ProviderCapabilities {
     pub supports_open_session: bool,
     pub supports_continue_session: bool,
+    pub supports_system_prompt: bool,
     pub supports_raw_stream: bool,
 }
 
@@ -91,6 +94,21 @@ impl DoctorResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UserPromptRenderMode {
+    RequirementTask,
+    WorkflowResume,
+    RuntimeRepair,
+    UserMessage,
+}
+
+impl Default for UserPromptRenderMode {
+    fn default() -> Self {
+        Self::RequirementTask
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
@@ -108,6 +126,8 @@ pub struct WorkerInvocation {
     pub extra_system_sections: Vec<String>,
     pub task_instruction: Option<String>,
     pub session_mode: SessionMode,
+    #[serde(default)]
+    pub user_prompt_render_mode: UserPromptRenderMode,
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
@@ -599,6 +619,7 @@ impl ProviderAdapter for AcpProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
+                supports_system_prompt: self.provider_id == "claude-acp",
                 supports_raw_stream: false,
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
@@ -737,59 +758,26 @@ impl ProviderAdapter for AcpProvider {
 }
 
 pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
-    if matches!(req.session_mode, SessionMode::Continue) {
-        if let Some(resume_prompt) = req.resume_prompt.as_ref() {
-            return Ok(PromptBundle {
-                system_prompt: render_system_prompt(req),
-                user_prompt: resume_prompt.clone(),
-                prompt_id: req.resume_prompt_id.clone(),
-                visibility: req.resume_prompt_visibility,
-                attachment_metas: Vec::new(),
-                content_blocks: Vec::new(),
-            });
+    let requirement_text = match req.user_prompt_render_mode {
+        UserPromptRenderMode::RequirementTask => {
+            ensure!(
+                req.requirement_path.is_some() || req.requirement_text.is_some(),
+                "worker invocation requires requirementPath or requirementText"
+            );
+            match (&req.requirement_text, &req.requirement_path) {
+                (Some(text), _) => text.clone(),
+                (None, Some(path)) => std::fs::read_to_string(path)?,
+                (None, None) => unreachable!(),
+            }
         }
-    }
-
-    ensure!(
-        req.requirement_path.is_some() || req.requirement_text.is_some(),
-        "worker invocation requires requirementPath or requirementText"
-    );
-
-    let requirement_text = match (&req.requirement_text, &req.requirement_path) {
-        (Some(text), _) => text.clone(),
-        (None, Some(path)) => std::fs::read_to_string(path)?,
-        (None, None) => unreachable!(),
+        UserPromptRenderMode::WorkflowResume
+        | UserPromptRenderMode::RuntimeRepair
+        | UserPromptRenderMode::UserMessage => String::new(),
     };
 
     let system_prompt = render_system_prompt(req);
-    let mut user_sections = vec![format!("# Requirement\n{}", requirement_text.trim())];
-
-    if let Some(task_instruction) = &req.task_instruction {
-        user_sections.push(format!("# Task\n{}", task_instruction.trim()));
-    }
-
-    if !req.cold_artifacts.is_empty() {
-        let index = req
-            .cold_artifacts
-            .iter()
-            .map(|entry| match &entry.name {
-                Some(name) => format!("- {name}: {}", entry.path),
-                None => format!("- {}", entry.path),
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        user_sections.push(format!("# Cold Artifact Index\n{}", index));
-    }
-
-    if !req.cold_attachments.is_empty() {
-        let index = req
-            .cold_attachments
-            .iter()
-            .map(|entry| format!("- {}", entry.path))
-            .collect::<Vec<_>>()
-            .join("\n");
-        user_sections.push(format!("# Cold Attachment Index\n{}", index));
-    }
+    let user_prompt = render_user_prompt(req, &requirement_text);
+    let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     // Resolve task input attachments
     let mut attachment_metas = Vec::new();
@@ -805,9 +793,17 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
 
     Ok(PromptBundle {
         system_prompt,
-        user_prompt: user_sections.join("\n\n"),
-        prompt_id: None,
-        visibility: PromptVisibility::Visible,
+        user_prompt,
+        prompt_id: if is_continue {
+            req.resume_prompt_id.clone()
+        } else {
+            None
+        },
+        visibility: if is_continue {
+            req.resume_prompt_visibility
+        } else {
+            PromptVisibility::Visible
+        },
         attachment_metas,
         content_blocks,
     })
@@ -825,22 +821,98 @@ fn render_system_prompt(req: &WorkerInvocation) -> String {
     .expect("prompt template renders")
 }
 
+fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
+    match req.user_prompt_render_mode {
+        UserPromptRenderMode::UserMessage | UserPromptRenderMode::RuntimeRepair => req
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        UserPromptRenderMode::WorkflowResume | UserPromptRenderMode::RequirementTask => {
+            let hidden_context = render_hidden_context(req);
+            let continue_goal = matches!(req.user_prompt_render_mode, UserPromptRenderMode::WorkflowResume).then(|| {
+                match req.runtime_context.language {
+                    crate::config::DesktopLanguage::ZhCn => "根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。".to_string(),
+                    crate::config::DesktopLanguage::En => "Adjust according to the latest feedback and ensure downstream nodes can succeed. If this node has output format requirements, still strictly follow the output contract in the system prompt.".to_string(),
+                }
+            });
+
+            render_template(
+                prompt_by_language(
+                    req.runtime_context.language,
+                    RUNTIME_USER_ZH_CN,
+                    RUNTIME_USER_EN,
+                ),
+                RuntimeUserTemplateContext {
+                    hidden_context,
+                    requirement: requirement_text.trim().to_string(),
+                    task: req
+                        .task_instruction
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    continue_goal,
+                },
+            )
+            .expect("prompt template renders")
+        }
+    }
+}
+
+fn render_hidden_context(req: &WorkerInvocation) -> String {
+    let content = render_template(
+        prompt_by_language(
+            req.runtime_context.language,
+            RUNTIME_HIDDEN_CONTEXT_ZH_CN,
+            RUNTIME_HIDDEN_CONTEXT_EN,
+        ),
+        runtime_hidden_context(req),
+    )
+    .expect("prompt template renders");
+    gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+pub(crate) fn gold_band_hidden_block(title: &str, content: &str) -> String {
+    let escaped = content.replace("</hidden>", "<\\/hidden>");
+    format!(
+        "<hidden data-gold-band-hidden=\"true\" title=\"{}\">\n{}\n</hidden>",
+        title,
+        escaped.trim()
+    )
+}
+
 #[derive(Serialize)]
 struct RuntimePromptTemplateContext {
     project_id: String,
     task_id: String,
     run_id: String,
-    round_id: String,
     node_id: String,
-    attempt_id: String,
-    attempt_dir: String,
-    attachments_dir: String,
     run_dir: String,
     node_dir: String,
-    predecessors: RuntimePredecessorTemplateContext,
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
+}
+
+#[derive(Serialize)]
+struct RuntimeHiddenContextTemplateContext {
+    session_mode: String,
+    round_id: String,
+    attempt_id: String,
+    attempt_dir: String,
+    attachments_dir: String,
+    invocation_reason: Option<String>,
+    predecessors: RuntimePredecessorTemplateContext,
+}
+
+#[derive(Serialize)]
+struct RuntimeUserTemplateContext {
+    hidden_context: String,
+    requirement: String,
+    task: Option<String>,
+    continue_goal: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -870,27 +942,10 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
         project_id: req.runtime_context.project_id.clone(),
         task_id: req.runtime_context.task_id.clone(),
         run_id: req.runtime_context.run_id.clone(),
-        round_id: req.runtime_context.round_id.clone(),
         node_id: req.runtime_context.node_id.clone(),
-        attempt_id: req.runtime_context.attempt_id.clone(),
-        attempt_dir: req.runtime_context.attempt_dir.to_string(),
-        attachments_dir: req.runtime_context.attachments_dir.to_string(),
         run_dir: req.runtime_context.run_dir.to_string(),
         node_dir: req.runtime_context.node_dir.to_string(),
-        predecessors: runtime_predecessor_context(&req.predecessors, &req.runtime_context),
-        extra_system_sections: {
-            let sections = req
-                .extra_system_sections
-                .iter()
-                .filter(|section| !section.trim().is_empty())
-                .cloned()
-                .collect::<Vec<_>>();
-            if sections.is_empty() {
-                None
-            } else {
-                Some(sections.join("\n\n"))
-            }
-        },
+        extra_system_sections: joined_extra_system_sections(req),
         profile: RuntimeProfileTemplateContext {
             id: req.profile.clone(),
             content: req
@@ -904,6 +959,60 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
             .output_contract
             .as_ref()
             .map(runtime_output_contract_context),
+    }
+}
+
+fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplateContext {
+    RuntimeHiddenContextTemplateContext {
+        session_mode: match req.session_mode {
+            SessionMode::New => "new".to_string(),
+            SessionMode::Continue => "continue".to_string(),
+        },
+        round_id: req.runtime_context.round_id.clone(),
+        attempt_id: req.runtime_context.attempt_id.clone(),
+        attempt_dir: req.runtime_context.attempt_dir.to_string(),
+        attachments_dir: req.runtime_context.attachments_dir.to_string(),
+        invocation_reason: runtime_invocation_reason(req),
+        predecessors: runtime_predecessor_context(&req.predecessors, &req.runtime_context),
+    }
+}
+
+fn joined_extra_system_sections(req: &WorkerInvocation) -> Option<String> {
+    let sections = req
+        .extra_system_sections
+        .iter()
+        .filter_map(|section| {
+            let trimmed = section.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .collect::<Vec<_>>();
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
+fn runtime_invocation_reason(req: &WorkerInvocation) -> Option<String> {
+    let mut parts = Vec::new();
+    if matches!(req.session_mode, SessionMode::Continue) {
+        parts.push(match req.runtime_context.language {
+            crate::config::DesktopLanguage::ZhCn => "继续已有 ACP session".to_string(),
+            crate::config::DesktopLanguage::En => "Continue an existing ACP session".to_string(),
+        });
+    }
+    if let Some(resume_prompt) = req
+        .resume_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(resume_prompt.to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
     }
 }
 
@@ -1067,6 +1176,10 @@ pub fn supports_continue_session(provider_id: &str) -> Result<bool> {
     Ok(provider_capabilities(provider_id)?.supports_continue_session)
 }
 
+pub fn supports_system_prompt(provider_id: &str) -> Result<bool> {
+    Ok(provider_capabilities(provider_id)?.supports_system_prompt)
+}
+
 pub fn provider_from_agent(
     agent_type: ManagedAgentType,
     config: &ManagedAgentConfig,
@@ -1159,6 +1272,7 @@ mod tests {
             extra_system_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),
             session_mode: SessionMode::New,
+            user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
             model: None,
             continue_ref: None,
@@ -1184,6 +1298,14 @@ mod tests {
         let info = default_provider().describe_provider();
         assert_eq!(info.provider_id, "claude-acp");
         assert!(info.capabilities.supports_continue_session);
+        assert!(info.capabilities.supports_system_prompt);
         assert!(!info.capabilities.supports_raw_stream);
+    }
+
+    #[test]
+    fn codex_provider_does_not_support_system_prompt() {
+        let capabilities = provider_capabilities("codex-acp").unwrap();
+        assert!(capabilities.supports_continue_session);
+        assert!(!capabilities.supports_system_prompt);
     }
 }

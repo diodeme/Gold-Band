@@ -1064,7 +1064,7 @@ impl App {
     // ── SKILL (delegates to skill::SkillManager) ──
 
     pub fn skill_manager(&self) -> crate::skill::SkillManager {
-        crate::skill::SkillManager::new(self.paths.clone())
+        crate::skill::SkillManager::new(self.paths.clone(), self.config.agents.clone())
     }
 
     pub fn list_skills(&self) -> Result<crate::skill::SkillListResult> {
@@ -1087,36 +1087,58 @@ impl App {
         self.skill_manager().delete(name, source)
     }
 
-    /// 同步 SKILL symlink 到 .claude/skills/（保存/删除时自动调用）
+    /// 同步 SKILL symlink 到已配置 agent 的 skills 目录（保存/删除时自动调用）
     /// workspace_path 用于指定项目级 SKILL 的实际工作空间目录
-    pub fn sync_skill_symlinks(&self, workspace_path: Option<&str>) {
-        use crate::config::{AGENTS_DIR_NAME, SKILLS_DIR_NAME, SkillSource};
-        use crate::skill::scan_skills_dir;
+    /// sync_target_types: 限定同步目标 agent（如 ["claude-acp", "codex-acp"]），None 表示同步到所有已配置 agent
+    pub fn sync_skill_instance(
+        &self,
+        skill_name: &str,
+        source_directory_path: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        sync_target_types: Option<&[String]>,
+    ) -> Result<()> {
+        self.skill_manager().sync_skill_instance(
+            skill_name,
+            source_directory_path,
+            source,
+            workspace_path,
+            sync_target_types,
+        )
+    }
 
-        let global_dir = crate::storage::GoldBandPaths::global_skills_dir();
-        let global = scan_skills_dir(&global_dir, SkillSource::Global);
-        let global: Vec<_> = global
-            .into_iter()
-            .filter(|s| !s.disable_model_invocation)
-            .collect();
+    pub fn reconcile_skill_instance_links(
+        &self,
+        skill_name: &str,
+        source_directory_path: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        sync_target_types: Option<&[String]>,
+    ) -> Result<()> {
+        self.skill_manager().reconcile_skill_instance_links(
+            skill_name,
+            source_directory_path,
+            source,
+            workspace_path,
+            sync_target_types,
+        )
+    }
 
-        // 全局 SKILL → 始终同步到 ~/.claude/skills/
-        // 不需要 workspace 路径：直接用空路径 + 仅 global skills
-        crate::skill::symlink::sync_all(std::path::Path::new(""), &global, &[]);
-
-        // 项目 SKILL → 仅在有 workspace_path 时同步到 <workspace>/.claude/skills/
-        if let Some(ws) = workspace_path {
-            let p = std::path::Path::new(ws);
-            let project_dir =
-                camino::Utf8PathBuf::from_path_buf(p.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME))
-                    .unwrap_or_default();
-            let project = scan_skills_dir(&project_dir, SkillSource::Project);
-            let project: Vec<_> = project
-                .into_iter()
-                .filter(|s| !s.disable_model_invocation)
-                .collect();
-            crate::skill::symlink::sync_all(p, &global, &project);
-        }
+    pub fn cleanup_skill_instance_links(
+        &self,
+        skill_name: &str,
+        source_directory_path: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        sync_target_types: Option<&[String]>,
+    ) {
+        self.skill_manager().cleanup_skill_instance_links(
+            skill_name,
+            source_directory_path,
+            source,
+            workspace_path,
+            sync_target_types,
+        );
     }
 
     pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {

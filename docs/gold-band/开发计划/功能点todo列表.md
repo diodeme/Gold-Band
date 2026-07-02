@@ -1,6 +1,7 @@
 # Gold Band 功能点 Todo 列表
 
 | 状态 | 概要 | 说明 | 方案链接 |
+| 完成 | SKILL 多 Agent 实例级管理 | 已实现按 `directoryPath` 区分同名原生 skill；同步目标以全局已配置 agent 为准，并按目标集合对账支持取消同步；同目录重名与同步目标原生同名都会直接阻止；管理页补齐删除链路与来源 agent 图标展示。 | `docs/需求/Gold-Band-SKILL-多Agent管理改进-任务文档.md`; `docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md` |
 |---|---|---|---|
 | 完成 | CLI 顶层命令骨架 | 已实现 `task / run / artifact` 三类顶层命令与统一 `RuntimeConfig` 注入，满足 CLI-first MVP 主入口。 | `docs/gold-band/产品设计文档/interaction/cli.md:31-52, 54-128` |
 | 完成 | `task show` | 已支持按 task id 读取并输出 `task.json`。 | `docs/gold-band/产品设计文档/interaction/cli.md:54-60` |

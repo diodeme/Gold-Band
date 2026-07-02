@@ -97,6 +97,7 @@ export interface ManagedAgentVm {
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
+  skillsDirName: string;
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
@@ -136,6 +137,7 @@ export interface SupportedAgentTypeVm {
   agentType: string;
   label: string;
   iconKey: string;
+  skillsDirName: string;
   supported: boolean;
   configured: boolean;
   defaultDisplayName: string;
@@ -1113,8 +1115,13 @@ export interface SkillMetaVm {
   description: string;
   source: 'built-in' | 'global' | 'project';
   directoryPath: string;
-  disableModelInvocation: boolean;
+  agentSource: string;
   loadWarnings: string[];
+}
+
+export interface SyncStatusEntryVm {
+  agentType: string;
+  isSynced: boolean;
 }
 
 export interface SkillListVm {

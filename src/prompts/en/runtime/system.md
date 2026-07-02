@@ -66,5 +66,3 @@ runtime will evaluate node success using the following condition:
 - This node does not declare an output DSL and does not need to produce a canonical artifact.
 - Do not search for, infer, or read artifact/output constraints. Just complete # Task.
 {% endif %}
-
-{{skill_catalog}}

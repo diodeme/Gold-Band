@@ -338,13 +338,39 @@ export const desktopApi: RuntimeApi = {
   listProjectSkills(workspacePath: string) {
     return invokeCommand('list_project_skills', { workspacePath });
   },
-  readSkill(name: string, source: string, workspacePath?: string | null) {
-    return invokeCommand('read_skill', { name, source, workspacePath });
+  readSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null) {
+    return invokeCommand('read_skill', { name, source, workspacePath, directoryPath });
   },
-  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null) {
-    return invokeCommand('write_skill', { name, source, content, workspacePath, oldName });
+  writeSkill(
+    name: string,
+    source: string,
+    content: string,
+    workspacePath?: string | null,
+    oldName?: string | null,
+    directoryPath?: string | null,
+    syncTargets?: string[] | null,
+  ) {
+    return invokeCommand('write_skill', { name, source, content, workspacePath, oldName, directoryPath, syncTargets });
   },
-  deleteSkill(name: string, source: string, workspacePath?: string | null) {
-    return invokeCommand('delete_skill', { name, source, workspacePath });
+  deleteSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null) {
+    return invokeCommand('delete_skill', { name, source, workspacePath, directoryPath });
+  },
+  getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null) {
+    return invokeCommand<import('../types').SyncStatusEntryVm[]>('get_skill_sync_status', { name, directoryPath, workspacePath });
+  },
+  checkSkillNameConflict(
+    name: string,
+    source: string,
+    workspacePath?: string | null,
+    directoryPath?: string | null,
+    syncTargets?: string[] | null,
+  ) {
+    return invokeCommand<string[]>('check_skill_name_conflict', {
+      name,
+      source,
+      workspacePath,
+      directoryPath,
+      syncTargets,
+    });
   },
 };

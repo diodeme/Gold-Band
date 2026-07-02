@@ -66,5 +66,3 @@ runtime 将使用以下条件判断节点结果：
 - 当前节点未声明 output DSL，不需要产出 canonical artifact。
 - 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task。
 {% endif %}
-
-{{skill_catalog}}

@@ -203,9 +203,25 @@ export interface RuntimeApi {
   checkMcpServerHealth(id: string): Promise<import('../types').McpServerHealthResult>;
   listSkills(): Promise<SkillListVm>;
   listProjectSkills(workspacePath: string): Promise<import('../types').SkillMetaVm[]>;
-  readSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillContentVm>;
-  writeSkill(name: string, source: string, content: string, workspacePath?: string | null, oldName?: string | null): Promise<SkillListVm>;
-  deleteSkill(name: string, source: string, workspacePath?: string | null): Promise<SkillListVm>;
+  readSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null): Promise<SkillContentVm>;
+  writeSkill(
+    name: string,
+    source: string,
+    content: string,
+    workspacePath?: string | null,
+    oldName?: string | null,
+    directoryPath?: string | null,
+    syncTargets?: string[] | null,
+  ): Promise<SkillListVm>;
+  deleteSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null): Promise<SkillListVm>;
+  getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null): Promise<import('../types').SyncStatusEntryVm[]>;
+  checkSkillNameConflict(
+    name: string,
+    source: string,
+    workspacePath?: string | null,
+    directoryPath?: string | null,
+    syncTargets?: string[] | null,
+  ): Promise<string[]>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

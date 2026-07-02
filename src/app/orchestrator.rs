@@ -6807,7 +6807,6 @@ fn build_dynamic_worker_invocation(
         cold_attachments: Vec::new(),
         input_attachment_paths,
         mcp_servers: Vec::new(),
-        skill_catalog: String::new(),
     };
     dynamic_invocation_build_step_end(
         ctx,

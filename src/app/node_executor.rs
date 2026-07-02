@@ -349,22 +349,12 @@ pub(crate) fn build_worker_invocation(
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let input_attachment_paths = super::task_input_attachment_paths(app, task_id);
 
-    // 对标 Zed: 渲染 MCP 工具和 SKILL 目录到 system prompt
+    // 对标 Zed: 渲染 MCP 工具到 system prompt
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
     let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
     });
-    let skill_mgr = crate::skill::SkillManager::new(app.paths.clone());
-    let skill_catalog = skill_mgr
-        .render_skill_catalog_for_workspace(
-            app.config.desktop_language,
-            Some(app.paths.repo_root.as_str()),
-        )
-        .unwrap_or_else(|e| {
-            warn!(%e, "failed to render SKILL catalog, falling back to empty catalog");
-            String::new()
-        });
 
     Ok(WorkerInvocation {
         invocation_kind,
@@ -398,7 +388,6 @@ pub(crate) fn build_worker_invocation(
         cold_attachments,
         input_attachment_paths,
         mcp_servers,
-        skill_catalog,
     })
 }
 

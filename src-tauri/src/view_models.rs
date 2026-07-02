@@ -101,6 +101,7 @@ pub struct ManagedAgentVm {
     pub args: Vec<String>,
     pub env: Vec<AgentEnvEntryVm>,
     pub icon_key: String,
+    pub skills_dir_name: String,
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
@@ -149,7 +150,7 @@ pub struct SkillMetaVm {
     pub description: String,
     pub source: String,
     pub directory_path: String,
-    pub disable_model_invocation: bool,
+    pub agent_source: String,
     pub load_warnings: Vec<String>,
 }
 
@@ -182,6 +183,7 @@ pub struct SupportedAgentTypeVm {
     pub agent_type: String,
     pub label: String,
     pub icon_key: String,
+    pub skills_dir_name: String,
     pub supported: bool,
     pub configured: bool,
     pub default_display_name: String,
@@ -974,6 +976,11 @@ pub fn agent_registry_vm(
                 agent_type: agent_type.as_str().to_string(),
                 label: supported_agent_label(agent_type).to_string(),
                 icon_key: agent_icon_key(agent_type).to_string(),
+                skills_dir_name: app
+                    .managed_agents()
+                    .get(&agent_type)
+                    .map(|config| config.skills_dir_name(agent_type).to_string())
+                    .unwrap_or_else(|| agent_type.skills_dir_name().to_string()),
                 supported: agent_type.is_supported(),
                 configured: app.managed_agents().contains_key(&agent_type),
                 default_display_name: default_config.display_name,
@@ -1013,6 +1020,7 @@ fn managed_agent_vm(
             })
             .collect(),
         icon_key: agent_icon_key(agent_type).to_string(),
+        skills_dir_name: config.skills_dir_name(agent_type).to_string(),
         supported: agent_type.is_supported(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {
@@ -5457,7 +5465,7 @@ pub fn skill_meta_vm(meta: &gold_band::config::SkillMeta) -> SkillMetaVm {
         description: meta.description.clone(),
         source: skill_source_str(meta.source),
         directory_path: meta.directory_path.clone(),
-        disable_model_invocation: meta.disable_model_invocation,
+        agent_source: meta.agent_source.clone(),
         load_warnings: meta.load_warnings.clone(),
     }
 }
@@ -5468,6 +5476,15 @@ fn skill_source_str(source: gold_band::config::SkillSource) -> String {
         gold_band::config::SkillSource::Global => "global".to_string(),
         gold_band::config::SkillSource::Project => "project".to_string(),
     }
+}
+
+// ── SKILL Sync Status ──
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusEntryVm {
+    pub agent_type: String,
+    pub is_synced: bool,
 }
 
 #[cfg(test)]

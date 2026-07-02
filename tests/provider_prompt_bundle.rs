@@ -103,7 +103,6 @@ fn invocation() -> WorkerInvocation {
         }],
         input_attachment_paths: Vec::new(),
         mcp_servers: Vec::new(),
-        skill_catalog: String::new(),
     }
 }
 

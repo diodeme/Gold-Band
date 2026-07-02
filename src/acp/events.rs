@@ -187,14 +187,15 @@ impl AcpTimingState {
     }
 
     pub fn patch_at(&self, now: u64, reason: impl Into<String>) -> Option<AcpTimingPatch> {
-        self.snapshot_at(true, Some(now)).map(|snapshot| AcpTimingPatch {
-            session_elapsed_seconds: snapshot.session_elapsed_seconds,
-            active_turn_started_at: snapshot.active_turn_started_at,
-            active_turn_last_activity_at: snapshot.active_turn_last_activity_at,
-            permission_wait_started_at: snapshot.permission_wait_started_at,
-            paused: snapshot.paused,
-            reason: Some(reason.into()),
-        })
+        self.snapshot_at(true, Some(now))
+            .map(|snapshot| AcpTimingPatch {
+                session_elapsed_seconds: snapshot.session_elapsed_seconds,
+                active_turn_started_at: snapshot.active_turn_started_at,
+                active_turn_last_activity_at: snapshot.active_turn_last_activity_at,
+                permission_wait_started_at: snapshot.permission_wait_started_at,
+                paused: snapshot.paused,
+                reason: Some(reason.into()),
+            })
     }
 
     pub fn snapshot(&self, session_active: bool) -> Option<AcpSessionTiming> {
@@ -217,13 +218,11 @@ impl AcpTimingState {
         } else {
             None
         };
-        let session_elapsed_seconds = self.elapsed_seconds.saturating_add(
-            if session_active {
-                self.finish_current_turn(true, anchor)
-            } else {
-                self.finish_current_turn(false, None)
-            },
-        );
+        let session_elapsed_seconds = self.elapsed_seconds.saturating_add(if session_active {
+            self.finish_current_turn(true, anchor)
+        } else {
+            self.finish_current_turn(false, None)
+        });
         Some(AcpSessionTiming {
             session_elapsed_seconds,
             active_turn_started_at: session_active

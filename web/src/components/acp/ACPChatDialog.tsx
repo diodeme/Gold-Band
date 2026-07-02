@@ -112,6 +112,14 @@ import {
   originalSeqFromAcpEvent,
 } from "@/lib/acp-event-normalization";
 import {
+  acpEventKey,
+  acpSessionEventsSignature,
+  mergeAcpEventSnapshots,
+  mergeAcpEventWindows,
+  mergeRawObject,
+  permissionRequestIdFromEvent,
+} from "@/lib/acp-event-reducer";
+import {
   deriveAcpRuntimeComposerState,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
@@ -1538,6 +1546,7 @@ export const ACPChatDialog = forwardRef<
         setLoadingInitialSession(false);
     })();
     return () => {
+      flushPendingLiveEvents("sync");
       active = false;
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
@@ -1552,6 +1561,7 @@ export const ACPChatDialog = forwardRef<
     enqueueLiveEventUpdate,
     eventWindowKey,
     effectiveEventPageSize,
+    flushPendingLiveEvents,
     flushOrSchedulePendingLiveEvents,
     nodeId,
     outerAttemptId,
@@ -4634,16 +4644,6 @@ function findPlanInterventionOption(request: AcpPermissionRequestVm) {
   );
 }
 
-export function permissionRequestIdFromEvent(event: AcpUiEventVm) {
-  return canonicalPermissionRequestId(
-    stringValue(rawObject(event.raw)?.requestId) ?? event.id,
-  );
-}
-
-function canonicalPermissionRequestId(value: string) {
-  return value.replace(/^(permission-)+/, "");
-}
-
 export function pendingPermissionFromEvents(
   events: AcpUiEventVm[],
   dismissedIds: Set<string>,
@@ -4896,7 +4896,7 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       isMergeableDelta(event.kind) &&
       isSameDeltaStream(previous, event)
     ) {
-      const merged = mergeAcpLiveStreamEvent(previous, event, mergeRaw);
+      const merged = mergeAcpEventSnapshots(previous, event);
       previous.content = merged.content;
       previous.seq = merged.seq ?? event.seq;
       previous.endedSeq = merged.endedSeq ?? event.endedSeq ?? originalSeqFromAcpEvent(event);
@@ -5095,83 +5095,11 @@ function formatAttachmentSize(bytes: number): string {
 }
 
 function mergeRaw(previous: unknown, next: unknown) {
-  const previousObject = rawObject(previous);
-  const nextObject = rawObject(next);
-  if (!previousObject || !nextObject) return next ?? previous;
-  const previousMeta = rawObject(previousObject._meta);
-  const nextMeta = rawObject(nextObject._meta);
-  const previousClaudeCode = rawObject(previousMeta?.claudeCode);
-  const nextClaudeCode = rawObject(nextMeta?.claudeCode);
-  const merged = { ...previousObject, ...nextObject };
-  if (previousMeta || nextMeta) {
-    merged._meta = { ...previousMeta, ...nextMeta };
-    if (previousClaudeCode || nextClaudeCode) {
-      (merged._meta as Record<string, unknown>).claudeCode = {
-        ...previousClaudeCode,
-        ...nextClaudeCode,
-      };
-    }
-  }
-  return merged;
+  return mergeRawObject(previous, next);
 }
 
 export function mergeAcpEvents(previous: AcpUiEventVm[], next: AcpUiEventVm[]) {
-  if (next.length === 0) return previous;
-  const replacementByKey = new Map<string, AcpUiEventVm>();
-  for (const event of next) {
-    const key = acpEventKey(event);
-    const existing = replacementByKey.get(key);
-    replacementByKey.set(key, existing ? mergeAcpEventForKey(existing, event) : event);
-  }
-  let allUpdatesReplaceExistingEvents = replacementByKey.size > 0;
-  for (const key of replacementByKey.keys()) {
-    if (!previous.some((event) => acpEventKey(event) === key)) {
-      allUpdatesReplaceExistingEvents = false;
-      break;
-    }
-  }
-  if (allUpdatesReplaceExistingEvents) {
-    let changed = false;
-    const merged = previous.map((event) => {
-      const replacement = replacementByKey.get(acpEventKey(event));
-      if (!replacement) return event;
-      changed = true;
-      return mergeAcpEventForKey(event, replacement);
-    });
-    return changed ? merged : previous;
-  }
-
-  const previousByKey = new Map<string, AcpUiEventVm>();
-  const byKey = new Map<string, AcpUiEventVm>();
-  for (const event of previous) {
-    const key = acpEventKey(event);
-    previousByKey.set(key, event);
-    byKey.set(key, event);
-  }
-  for (const event of replacementByKey.values()) {
-    const key = acpEventKey(event);
-    const existing = previousByKey.get(key);
-    byKey.set(
-      key,
-      existing
-        ? mergeAcpEventForKey(existing, event)
-        : { ...event, seq: alignAcpDisplaySeq(event, previous) },
-    );
-  }
-  return [...byKey.values()].sort((left, right) => left.seq - right.seq);
-}
-
-function mergeAcpEventForKey(existing: AcpUiEventVm, incoming: AcpUiEventVm) {
-  if (
-    isAcpTextStreamEventKind(existing.kind) &&
-    isAcpTextStreamEventKind(incoming.kind) &&
-    existing.kind === incoming.kind &&
-    existing.id === incoming.id
-  ) {
-    const merged = mergeAcpLiveStreamEvent(existing, incoming, mergeRaw);
-    return { ...merged, seq: existing.seq };
-  }
-  return { ...incoming, seq: existing.seq };
+  return mergeAcpEventWindows(previous, next, alignAcpDisplaySeq);
 }
 
 function alignAcpDisplaySeq(event: AcpUiEventVm, previous: AcpUiEventVm[]) {
@@ -5204,13 +5132,6 @@ export function limitAcpEvents(
   return trim === "start"
     ? events.slice(events.length - eventPageSize)
     : events.slice(0, eventPageSize);
-}
-
-function acpEventKey(event: AcpUiEventVm) {
-  if (event.kind === "permissionRequest")
-    return `permission:${permissionRequestIdFromEvent(event)}`;
-  const attemptId = attemptIdFromAcpEvent(event) ?? event.sessionId ?? "";
-  return `${attemptId}:${event.kind}:${event.id}`;
 }
 
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
@@ -5337,18 +5258,7 @@ function sessionsEquivalent(
   if (acpSessionTimingSignature(previous) !== acpSessionTimingSignature(next)) return false;
   if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
   if (acpSessionMetadataSignature(previous) !== acpSessionMetadataSignature(next)) return false;
-  if (previous.events.length !== next.events.length) return false;
-  const previousLast = previous.events.at(-1);
-  const nextLast = next.events.at(-1);
-  if (!previousLast || !nextLast) return previousLast === nextLast;
-  return (
-    previousLast.id === nextLast.id &&
-    previousLast.seq === nextLast.seq &&
-    previousLast.status === nextLast.status &&
-    previousLast.content === nextLast.content &&
-    previous.eventPage.hasOlder === next.eventPage.hasOlder &&
-    previous.eventPage.hasNewer === next.eventPage.hasNewer
-  );
+  return acpSessionEventsSignature(previous) === acpSessionEventsSignature(next);
 }
 
 function acpSessionTimingSignature(session: AcpSessionVm) {

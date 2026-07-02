@@ -2021,7 +2021,9 @@ impl<'a> AcpRuntime<'a> {
             cached_read_tokens: self.cached_read_tokens,
             cached_write_tokens: self.cached_write_tokens,
             total_tokens: self.total_tokens,
-            timing: self.timing_state.snapshot(is_runtime_session_active(status)),
+            timing: self
+                .timing_state
+                .snapshot(is_runtime_session_active(status)),
             created_at,
             updated_at: now,
         }
@@ -2133,6 +2135,11 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if is_streaming_timeline_update(&item) {
+            if let Some(pending) =
+                take_pending_live_update_for_stream_switch(&mut self.pending_live_update, &item)
+            {
+                self.emit_live_update_now(&pending, Instant::now())?;
+            }
             let now = Instant::now();
             let should_emit = self
                 .last_live_update_at
@@ -2434,6 +2441,19 @@ fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool 
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
 }
 
+fn take_pending_live_update_for_stream_switch(
+    pending: &mut Option<crate::acp::events::AcpUiEvent>,
+    item: &crate::acp::events::AcpUiEvent,
+) -> Option<crate::acp::events::AcpUiEvent> {
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.id != item.id)
+    {
+        return pending.take();
+    }
+    None
+}
+
 fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
     if paths.timeline.exists() || !paths.events.exists() {
         latest_timeline_source_seq(&paths.timeline)
@@ -2624,11 +2644,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility,
+        RuntimeStopProbe, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
         permission_decision_timeline_event, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
-        session_prompt_params, session_prompt_text,
+        session_prompt_params, session_prompt_text, take_pending_live_update_for_stream_switch,
     };
     use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
@@ -2637,6 +2657,148 @@ mod tests {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
+    }
+
+    #[test]
+    fn streaming_delta_accumulates_content_and_sequence_bounds() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "event-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("hello".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-message-1",
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut second = AcpUiEvent {
+            id: "event-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(" world".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-message-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(first.id, "assistant-message-1");
+        assert_eq!(first.content.as_deref(), Some("hello"));
+        assert_eq!(first.started_seq, Some(10));
+        assert_eq!(first.ended_seq, Some(10));
+        assert_eq!(second.id, "assistant-message-1");
+        assert_eq!(second.content.as_deref(), Some("hello world"));
+        assert_eq!(second.started_seq, Some(10));
+        assert_eq!(second.ended_seq, Some(11));
+        assert_eq!(second.started_at.as_deref(), Some("10Z"));
+        assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn stream_switch_takes_pending_live_update_before_overwrite() {
+        let mut pending = Some(AcpUiEvent {
+            id: "assistant-message-1".to_string(),
+            seq: 20,
+            timestamp: "20Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("完整文本快照".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(10),
+            ended_seq: Some(20),
+            started_at: Some("10Z".to_string()),
+            ended_at: Some("20Z".to_string()),
+            timing: None,
+            raw: None,
+        });
+        let next_stream = AcpUiEvent {
+            id: "session-plan-1".to_string(),
+            seq: 21,
+            timestamp: "21Z".to_string(),
+            kind: "plan".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(String::new()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(21),
+            ended_seq: Some(21),
+            started_at: Some("21Z".to_string()),
+            ended_at: Some("21Z".to_string()),
+            timing: None,
+            raw: None,
+        };
+
+        let flushed =
+            take_pending_live_update_for_stream_switch(&mut pending, &next_stream).unwrap();
+
+        assert_eq!(flushed.id, "assistant-message-1");
+        assert_eq!(flushed.content.as_deref(), Some("完整文本快照"));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn same_stream_keeps_pending_live_update_buffered() {
+        let mut pending = Some(AcpUiEvent {
+            id: "assistant-message-1".to_string(),
+            seq: 20,
+            timestamp: "20Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("partial".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(10),
+            ended_seq: Some(20),
+            started_at: Some("10Z".to_string()),
+            ended_at: Some("20Z".to_string()),
+            timing: None,
+            raw: None,
+        });
+        let same_stream = pending.as_ref().unwrap().clone();
+
+        let flushed = take_pending_live_update_for_stream_switch(&mut pending, &same_stream);
+
+        assert!(flushed.is_none());
+        assert_eq!(
+            pending.and_then(|event| event.content),
+            Some("partial".to_string())
+        );
     }
 
     #[test]

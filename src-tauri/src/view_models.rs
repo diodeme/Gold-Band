@@ -6455,6 +6455,30 @@ mod tests {
         path
     }
 
+    fn write_timeline_patch_file(
+        dir: &Utf8PathBuf,
+        name: &str,
+        patches: &[(u64, &str, AcpUiEventVm)],
+    ) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for (revision, item_id, item) in patches {
+            content.push_str(
+                &serde_json::to_string(&json!({
+                    "patchType": "timelinePatch",
+                    "itemId": item_id,
+                    "revision": revision,
+                    "op": "upsert",
+                    "item": item,
+                }))
+                .unwrap(),
+            );
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
     fn write_events_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
         let path = dir.join(name);
         let mut content = String::new();
@@ -6524,6 +6548,42 @@ mod tests {
         assert_eq!(count, 50);
         assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
         assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_timeline_file_uses_latest_patch_for_stable_stream_item() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-patch-latest-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut first = text_event_at(1_000);
+        first.id = "assistant-message-1".to_string();
+        first.content = Some("partial".to_string());
+        first.started_seq = Some(10);
+        first.ended_seq = Some(10);
+        let mut latest = first.clone();
+        latest.content = Some("partial complete".to_string());
+        latest.seq = 20;
+        latest.timestamp = "1020Z".to_string();
+        latest.ended_seq = Some(20);
+        latest.ended_at = Some("1020Z".to_string());
+        let path = write_timeline_patch_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                (1, "assistant-message-1", first),
+                (2, "assistant-message-1", latest),
+            ],
+        );
+
+        let (events, count, _, _, _, _) = parse_timeline_file(&path, true).unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "assistant-message-1");
+        assert_eq!(events[0].content.as_deref(), Some("partial complete"));
+        assert_eq!(events[0].ended_seq, Some(20));
 
         fs::remove_dir_all(dir).unwrap();
     }

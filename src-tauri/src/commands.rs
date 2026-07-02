@@ -4060,6 +4060,7 @@ mod tests {
                 ended_seq: None,
                 started_at: Some("1Z".to_string()),
                 ended_at: None,
+                timing: None,
                 raw: None,
             },
         );
@@ -4109,6 +4110,7 @@ mod tests {
                 ended_seq: None,
                 started_at: Some("1Z".to_string()),
                 ended_at: Some("2Z".to_string()),
+                timing: None,
                 raw: None,
             },
         );

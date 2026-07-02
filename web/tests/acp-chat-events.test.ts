@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  latestSessionTimingFromEvents,
   mergeAcpEvents,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
@@ -24,6 +25,7 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
     startedAt: partial.startedAt,
     endedAt: partial.endedAt,
     raw: partial.raw,
+    timing: partial.timing,
   };
 }
 
@@ -231,6 +233,44 @@ describe('ACP chat event handling', () => {
 
     expect(timeline).toHaveLength(3);
     expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual(['继续', '继续', '继续']);
+  });
+
+  it('uses the latest live timing patch as session timing', () => {
+    const timing = latestSessionTimingFromEvents([
+      event({
+        seq: 1,
+        kind: 'userTextDelta',
+        raw: { source: 'goldBandPrompt' },
+        timing: {
+          sessionElapsedSeconds: 0,
+          activeTurnStartedAt: '100Z',
+          activeTurnLastActivityAt: '100Z',
+          permissionWaitStartedAt: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+      event({
+        seq: 2,
+        kind: 'textDelta',
+        timing: {
+          sessionElapsedSeconds: 12,
+          activeTurnStartedAt: '100Z',
+          activeTurnLastActivityAt: '112Z',
+          permissionWaitStartedAt: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+    ]);
+
+    expect(timing).toEqual({
+      sessionElapsedSeconds: 12,
+      activeTurnStartedAt: '100Z',
+      activeTurnLastActivityAt: '112Z',
+      permissionWaitStartedAt: null,
+      paused: false,
+    });
   });
 
   it('deduplicates repeated Gold Band user prompt snapshots with the same prompt id', () => {

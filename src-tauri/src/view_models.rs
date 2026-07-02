@@ -621,6 +621,7 @@ pub struct AcpSessionVm {
     pub session_started_at: Option<String>,
     pub session_updated_at: Option<String>,
     pub session_elapsed_seconds: Option<u64>,
+    pub timing: Option<AcpSessionTimingVm>,
     pub restored: bool,
     pub stop_reason: Option<String>,
     pub system_prompt_append: Option<String>,
@@ -687,7 +688,29 @@ pub struct AcpUiEventVm {
     pub ended_seq: Option<u64>,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    pub timing: Option<AcpTimingPatchVm>,
     pub raw: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimingPatchVm {
+    pub session_elapsed_seconds: u64,
+    pub active_turn_started_at: Option<String>,
+    pub active_turn_last_activity_at: Option<String>,
+    pub permission_wait_started_at: Option<String>,
+    pub paused: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSessionTimingVm {
+    pub session_elapsed_seconds: u64,
+    pub active_turn_started_at: Option<String>,
+    pub active_turn_last_activity_at: Option<String>,
+    pub permission_wait_started_at: Option<String>,
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3272,6 +3295,9 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let session_timing = acp_session_timing_from_snapshot(&session)
+        .or_else(|| event_scan.session_timing.clone())
+        .or_else(|| legacy_session_timing(event_scan.session_elapsed_seconds));
     let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -3309,6 +3335,7 @@ pub fn dynamic_acp_session_vm(
             .and_then(|value| value.as_str())
             .map(str::to_string),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        timing: session_timing,
         restored: session
             .get("restored")
             .and_then(|value| value.as_bool())
@@ -3513,6 +3540,9 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let session_timing = acp_session_timing_from_snapshot(&session)
+        .or_else(|| event_scan.session_timing.clone())
+        .or_else(|| legacy_session_timing(event_scan.session_elapsed_seconds));
 
     let result = AcpSessionVm {
         session_id: continue_ref
@@ -3551,6 +3581,7 @@ pub fn acp_session_vm(
             .and_then(|value| value.as_str())
             .map(str::to_string),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        timing: session_timing,
         restored: session
             .get("restored")
             .and_then(|value| value.as_bool())
@@ -3613,6 +3644,7 @@ struct AcpEventScan {
     event_page: AcpEventPageVm,
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
+    session_timing: Option<AcpSessionTimingVm>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
@@ -3952,6 +3984,7 @@ fn paginate_timeline(
     limit: usize,
 ) -> Result<AcpEventScan> {
     let total = all_events.len();
+    let session_timing = latest_session_timing_from_events(all_events);
     let filtered = if let Some(cursor) = after_seq {
         all_events
             .iter()
@@ -4018,9 +4051,39 @@ fn paginate_timeline(
         event_page,
         event_count,
         session_elapsed_seconds,
+        session_timing,
         latest_permission_events: latest_permission_events.clone(),
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
+    })
+}
+
+fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
+    all_events.iter().rev().find_map(|event| {
+        event.timing.as_ref().map(|timing| AcpSessionTimingVm {
+            session_elapsed_seconds: timing.session_elapsed_seconds,
+            active_turn_started_at: timing.active_turn_started_at.clone(),
+            active_turn_last_activity_at: timing.active_turn_last_activity_at.clone(),
+            permission_wait_started_at: timing.permission_wait_started_at.clone(),
+            paused: timing.paused,
+        })
+    })
+}
+
+fn acp_session_timing_from_snapshot(session: &serde_json::Value) -> Option<AcpSessionTimingVm> {
+    session
+        .get("timing")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<AcpSessionTimingVm>(value).ok())
+}
+
+fn legacy_session_timing(session_elapsed_seconds: Option<u64>) -> Option<AcpSessionTimingVm> {
+    session_elapsed_seconds.map(|seconds| AcpSessionTimingVm {
+        session_elapsed_seconds: seconds,
+        active_turn_started_at: None,
+        active_turn_last_activity_at: None,
+        permission_wait_started_at: None,
+        paused: true,
     })
 }
 
@@ -5566,6 +5629,7 @@ mod tests {
             ended_seq: None,
             started_at: None,
             ended_at: None,
+            timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
     }
@@ -5591,6 +5655,7 @@ mod tests {
             ended_seq: None,
             started_at: None,
             ended_at: None,
+            timing: None,
             raw,
         }
     }
@@ -6417,6 +6482,7 @@ mod tests {
                 ended_seq: Some(i as u64 + 1),
                 started_at: Some(format!("{}Z", base_ts + i as u64)),
                 ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                timing: None,
                 raw: None,
             })
             .collect()
@@ -6438,6 +6504,7 @@ mod tests {
                 ended_seq: Some(i as u64 + 1),
                 started_at: Some(format!("{}Z", base_ts + i as u64)),
                 ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                timing: None,
                 raw: None,
             })
             .collect()
@@ -6514,6 +6581,7 @@ mod tests {
                 ended_seq: None,
                 started_at: None,
                 ended_at: None,
+                timing: None,
                 raw: None,
             },
             AcpUiEventVm {
@@ -6530,6 +6598,7 @@ mod tests {
                 ended_seq: None,
                 started_at: None,
                 ended_at: None,
+                timing: None,
                 raw: None,
             },
         ];

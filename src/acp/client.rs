@@ -25,10 +25,11 @@ use crate::acp::elicitation::{
     upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
-    append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
-    latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-    permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
+    AcpAttemptPaths, AcpSessionMetadata, AcpTimingState, AcpUiEvent, append_diagnostic,
+    append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
+    initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
+    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    write_timeline_items,
 };
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
@@ -344,6 +345,7 @@ struct AcpRuntime<'a> {
     active_text_stream: Option<AcpTimelineStreamState>,
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
+    timing_state: AcpTimingState,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     pending_live_update: Option<AcpUiEvent>,
     last_live_update_at: Option<Instant>,
@@ -681,6 +683,40 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
         })
 }
 
+fn is_runtime_session_active(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "running" | "active" | "pending" | "permission_requested" | "permission-requested"
+    )
+}
+
+fn parse_event_epoch_seconds(value: &str) -> Option<u64> {
+    value.trim_end_matches('Z').parse::<u64>().ok()
+}
+
+fn timing_patch_reason(event: &AcpUiEvent) -> &'static str {
+    if event.kind == "permissionRequest"
+        && event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+    {
+        return "permission-wait";
+    }
+    let session_update = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(Value::as_str);
+    if matches!(
+        session_update,
+        Some("available_commands_update" | "current_mode_update" | "session_info_update")
+    ) {
+        return "metadata";
+    }
+    "active"
+}
+
 impl<'a> AcpRuntime<'a> {
     fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
         cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
@@ -817,7 +853,9 @@ impl<'a> AcpRuntime<'a> {
         )?;
         let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
-        let timeline_items = load_timeline_items(&paths.timeline)?
+        let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
+        let timing_state = AcpTimingState::from_timeline_items(loaded_timeline_items.clone());
+        let timeline_items = loaded_timeline_items
             .into_iter()
             .map(|item| (item.id.clone(), item))
             .collect::<HashMap<_, _>>();
@@ -852,6 +890,7 @@ impl<'a> AcpRuntime<'a> {
             active_text_stream: None,
             active_thought_stream: None,
             active_plan_stream: None,
+            timing_state,
             live_update,
             pending_live_update: None,
             last_live_update_at: None,
@@ -1982,6 +2021,7 @@ impl<'a> AcpRuntime<'a> {
             cached_read_tokens: self.cached_read_tokens,
             cached_write_tokens: self.cached_write_tokens,
             total_tokens: self.total_tokens,
+            timing: self.timing_state.snapshot(is_runtime_session_active(status)),
             created_at,
             updated_at: now,
         }
@@ -2006,7 +2046,13 @@ impl<'a> AcpRuntime<'a> {
         if should_write_legacy_events(&self.paths) {
             append_ui_event(&self.paths.events, event)?;
         }
-        let timeline_item = self.timeline_item_for_event(event);
+        let mut timeline_item = self.timeline_item_for_event(event);
+        self.timing_state.observe_event(&timeline_item);
+        if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
+            timeline_item.timing = self
+                .timing_state
+                .patch_at(timestamp, timing_patch_reason(&timeline_item));
+        }
         self.timeline_items
             .insert(timeline_item.id.clone(), timeline_item.clone());
         self.timeline_revision = self.timeline_revision.saturating_add(1);
@@ -2568,6 +2614,7 @@ fn permission_decision_timeline_event(
         ended_seq: None,
         started_at: existing.and_then(|event| event.started_at.clone()),
         ended_at: None,
+        timing: None,
         raw: Some(raw),
     }
 }
@@ -2608,6 +2655,7 @@ mod tests {
             ended_seq: Some(10),
             started_at: Some("1Z".to_string()),
             ended_at: Some("1Z".to_string()),
+            timing: None,
             raw: Some(json!({
                 "requestId": "0",
                 "options": [{ "optionId": "allow", "name": "Allow" }]

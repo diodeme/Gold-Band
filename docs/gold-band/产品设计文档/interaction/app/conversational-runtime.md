@@ -127,6 +127,7 @@ ElicitationCard 属于高频表单卡片，不使用宽松的营销式留白。�
 ## 流式渲染性能
 
 - ACP 会话继续保持 `raw + timeline` 双层设计：`acp.raw.jsonl` 只作为协议排障事实源，主消息流只消费后端聚合后的 timeline item。
+- ACP 会话累计耗时属于会话级实时指标，不由前端从当前分页窗口临时重算。后端 ACP runtime 维护 `AcpTimingState`，在普通 `AcpUiEvent` live update 上携带轻量 `timing` patch，并在 `AcpSessionVm.timing` / `acp.snapshot.json.timing` 中保存刷新恢复锚点；前端 compact 用量栏优先消费该 timing anchor 并只做本地平滑显示。权限等待、用户空闲和 `available_commands_update` / `current_mode_update` / `session_info_update` 等 metadata update 不计入净处理耗时，缺少 timing 的旧会话才回退 `sessionElapsedSeconds`。
 - 活跃会话 live update 不应按 token 级别驱动完整 React 渲染；文本、thought、plan 等高频更新需要在前端或后端合并为短时间窗口内的最新 item，tool、permission、error、terminal 状态仍需即时反馈。
 - 后端 `acp.timeline.jsonl` 对 streaming timeline item 的 patch 写入也应短窗口合并，非 streaming item、session 写入、shutdown 和 runtime drop 前必须 flush pending patch，避免长输出时把每个 chunk 都落为一条 patch。
 - 后端对 completed ACP timeline/events 的读取缓存必须绑定文件签名（至少文件长度与修改时间）。会话 snapshot 进入 terminal/completed 后仍可能存在最后一批 timeline flush 或 compact 写入，缓存不得仅以路径命中，否则会把缺尾部消息的中间状态长期返回给前端。

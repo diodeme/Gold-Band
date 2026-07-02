@@ -148,6 +148,7 @@ import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
   AcpRawFrameVm,
+  AcpSessionTimingVm,
   AcpSessionVm,
   AcpUiEventVm,
   AcpUsageVm,
@@ -1003,7 +1004,11 @@ export const ACPChatDialog = forwardRef<
   const composerLocked = composerState.composerLocked;
   const composerInputDisabled = composerState.inputDisabled;
   const composerStatusActive = composerState.statusActive;
-  const composerSessionSeconds = effective?.sessionElapsedSeconds ?? null;
+  const composerSessionSeconds = useSessionTimingSeconds(
+    effective?.timing,
+    effective?.sessionElapsedSeconds ?? null,
+    sessionActive && !effectiveSessionTerminal,
+  );
   const composerProcessingKind: AcpProcessingKind = composerState.processingKind;
   const showComposerStatus = composerState.showStatus || composerSessionSeconds != null;
   const composerStatusStartAt =
@@ -1213,6 +1218,18 @@ export const ACPChatDialog = forwardRef<
         );
       });
     if (normalizedUpdates.length === 0) return;
+    const latestTiming = latestSessionTimingFromEvents(normalizedUpdates);
+    if (latestTiming) {
+      setCurrentSession((current) =>
+        current
+          ? {
+              ...current,
+              timing: latestTiming,
+              sessionElapsedSeconds: latestTiming.sessionElapsedSeconds,
+            }
+          : current,
+      );
+    }
     setLoadedEvents((events) => {
       setHasNewerEvents(false);
       const merged = mergeAcpEvents(events, normalizedUpdates);
@@ -4402,6 +4419,25 @@ function useElapsedSeconds(
   return Math.max(0, Math.floor(((active ? now : endMs) - startMs) / 1000));
 }
 
+function useSessionTimingSeconds(
+  timing: AcpSessionTimingVm | null | undefined,
+  fallbackSeconds: number | null,
+  active: boolean,
+) {
+  const anchorActive = Boolean(
+    timing &&
+      active &&
+      !timing.paused &&
+      timing.activeTurnLastActivityAt,
+  );
+  const anchorSeconds = useElapsedSeconds(
+    anchorActive,
+    timing?.activeTurnLastActivityAt,
+  );
+  if (!timing) return fallbackSeconds;
+  return timing.sessionElapsedSeconds + (anchorActive ? anchorSeconds : 0);
+}
+
 function firstResponseTimestampAfter(
   events: AcpUiEventVm[],
   start: number,
@@ -5180,13 +5216,15 @@ function acpEventKey(event: AcpUiEventVm) {
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
+  const timing = latestSessionTimingFromEvents(events);
   return {
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
     provider: "acp",
     status,
     sessionStartedAt: first?.startedAt ?? first?.timestamp ?? null,
     sessionUpdatedAt: last?.endedAt ?? last?.timestamp ?? null,
-    sessionElapsedSeconds: calculateSessionElapsedSeconds(events, status),
+    sessionElapsedSeconds: timing?.sessionElapsedSeconds ?? calculateSessionElapsedSeconds(events, status),
+    timing,
     restored: false,
     events,
     eventPage: {
@@ -5210,6 +5248,21 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
       errorCount: 0,
     },
   };
+}
+
+function latestSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTimingVm | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const timing = events[index]?.timing;
+    if (!timing) continue;
+    return {
+      sessionElapsedSeconds: timing.sessionElapsedSeconds,
+      activeTurnStartedAt: timing.activeTurnStartedAt ?? null,
+      activeTurnLastActivityAt: timing.activeTurnLastActivityAt ?? null,
+      permissionWaitStartedAt: timing.permissionWaitStartedAt ?? null,
+      paused: timing.paused,
+    };
+  }
+  return null;
 }
 
 function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {
@@ -5281,6 +5334,7 @@ function sessionsEquivalent(
   if (previous.status !== next.status) return false;
   if (previous.sessionUpdatedAt !== next.sessionUpdatedAt) return false;
   if (previous.sessionElapsedSeconds !== next.sessionElapsedSeconds) return false;
+  if (acpSessionTimingSignature(previous) !== acpSessionTimingSignature(next)) return false;
   if (previous.systemPromptAppend !== next.systemPromptAppend) return false;
   if (acpSessionMetadataSignature(previous) !== acpSessionMetadataSignature(next)) return false;
   if (previous.events.length !== next.events.length) return false;
@@ -5295,6 +5349,10 @@ function sessionsEquivalent(
     previous.eventPage.hasOlder === next.eventPage.hasOlder &&
     previous.eventPage.hasNewer === next.eventPage.hasNewer
   );
+}
+
+function acpSessionTimingSignature(session: AcpSessionVm) {
+  return JSON.stringify(session.timing ?? null);
 }
 
 function acpSessionMetadataSignature(session: AcpSessionVm) {
@@ -5312,6 +5370,7 @@ export {
   timelineEventKey,
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  latestSessionTimingFromEvents,
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,

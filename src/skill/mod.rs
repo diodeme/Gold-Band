@@ -9,7 +9,7 @@ use camino::Utf8PathBuf;
 use tracing::debug;
 
 use crate::config::{
-    AGENTS_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, ManagedAgentConfig, ManagedAgentType,
+    GOLD_BAND_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, ManagedAgentConfig, ManagedAgentType,
     SKILL_FILE_NAME, SKILLS_DIR_NAME, SkillMeta, SkillSource,
 };
 use crate::storage::GoldBandPaths;
@@ -81,12 +81,13 @@ pub fn configured_agent_skills_dirs(
     agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
 ) -> Vec<AgentSkillDir> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    configured_agent_skills_dirs_at_root(&home, agents)
+    configured_agent_skills_dirs_at_root(&home, agents, false)
 }
 
 fn configured_agent_skills_dirs_at_root(
     root: &Path,
     agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    include_missing: bool,
 ) -> Vec<AgentSkillDir> {
     let mut dirs = Vec::new();
     for (agent_type, config) in agents {
@@ -94,7 +95,9 @@ fn configured_agent_skills_dirs_at_root(
         let agent_root = resolve_agent_root(root, &dir_name);
         let skills_dir =
             Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
-        if skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir() {
+        if include_missing
+            || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
+        {
             dirs.push(AgentSkillDir {
                 agent_type: *agent_type,
                 dir_name,
@@ -123,7 +126,7 @@ impl SkillManager {
 
     pub fn workspace_skills_dir(workspace_path: &str) -> Utf8PathBuf {
         Utf8PathBuf::from(workspace_path)
-            .join(AGENTS_DIR_NAME)
+            .join(GOLD_BAND_DIR_NAME)
             .join(SKILLS_DIR_NAME)
     }
 
@@ -131,12 +134,12 @@ impl SkillManager {
         let mut global = scan_skills_dir(
             &GoldBandPaths::global_skills_dir(),
             SkillSource::Global,
-            ".agents",
+            ".gold-band",
         );
-        let project = scan_skills_dir(
+        let mut project = scan_skills_dir(
             &self.paths.project_skills_dir(),
             SkillSource::Project,
-            ".agents",
+            ".gold-band",
         );
 
         let agent_dirs = configured_agent_skills_dirs(&self.agents_config);
@@ -159,13 +162,31 @@ impl SkillManager {
             global.extend(agent_skills);
         }
 
+        let project_agent_dirs = configured_agent_skills_dirs_at_root(
+            self.paths.repo_root.as_std_path(),
+            &self.agents_config,
+            false,
+        );
+        for agent_dir in &project_agent_dirs {
+            let agent_skills = scan_skills_dir(
+                &agent_dir.skills_dir,
+                SkillSource::Project,
+                agent_dir.dir_name.as_str(),
+            );
+            project.extend(agent_skills);
+        }
+
+        populate_synced_agent_types(&mut global, &self.agents_config, SkillSource::Global, None);
+        populate_synced_agent_types(
+            &mut project,
+            &self.agents_config,
+            SkillSource::Project,
+            Some(self.paths.repo_root.as_str()),
+        );
+
         global.sort_by(skill_sort_key);
-        let mut project_sorted = project;
-        project_sorted.sort_by(skill_sort_key);
-        Ok(SkillListResult {
-            global,
-            project: project_sorted,
-        })
+        project.sort_by(skill_sort_key);
+        Ok(SkillListResult { global, project })
     }
 
     pub fn list_by_workspace(&self, workspace_path: &str) -> Result<Vec<SkillMeta>> {
@@ -173,10 +194,13 @@ impl SkillManager {
         let mut skills = scan_skills_dir(
             &Self::workspace_skills_dir(workspace_path),
             SkillSource::Project,
-            ".agents",
+            ".gold-band",
         );
-        let agent_dirs =
-            configured_agent_skills_dirs_at_root(workspace_root.as_std_path(), &self.agents_config);
+        let agent_dirs = configured_agent_skills_dirs_at_root(
+            workspace_root.as_std_path(),
+            &self.agents_config,
+            false,
+        );
         for agent_dir in &agent_dirs {
             let agent_skills = scan_skills_dir(
                 &agent_dir.skills_dir,
@@ -185,6 +209,12 @@ impl SkillManager {
             );
             skills.extend(agent_skills);
         }
+        populate_synced_agent_types(
+            &mut skills,
+            &self.agents_config,
+            SkillSource::Project,
+            Some(workspace_path),
+        );
         skills.sort_by(skill_sort_key);
         Ok(skills)
     }
@@ -192,7 +222,7 @@ impl SkillManager {
     pub fn read(&self, name: &str, source: SkillSource) -> Result<SkillContent> {
         let dir = skills_dir_for_source(source, &self.paths)?;
         let skill_path = dir.join(name).join(SKILL_FILE_NAME);
-        self.read_at_path(&skill_path, name, source, ".agents")
+        self.read_at_path(&skill_path, name, source, ".gold-band")
     }
 
     pub fn read_by_path(
@@ -239,7 +269,7 @@ impl SkillManager {
         fs::create_dir_all(skill_dir.as_std_path())?;
         let skill_path = skill_dir.join(SKILL_FILE_NAME);
         fs::write(skill_path.as_std_path(), content)?;
-        let (meta, _) = parse_skill_md(content, name, source, skill_dir.as_str(), ".agents")?;
+        let (meta, _) = parse_skill_md(content, name, source, skill_dir.as_str(), ".gold-band")?;
         Ok(meta)
     }
 
@@ -266,7 +296,7 @@ impl SkillManager {
             name,
             SkillSource::Project,
             skill_dir.as_str(),
-            ".agents",
+            ".gold-band",
         )?;
         Ok(meta)
     }
@@ -278,33 +308,11 @@ impl SkillManager {
         source: SkillSource,
         content: &str,
     ) -> Result<SkillMeta> {
-        let current_name = skill_dir
-            .file_name()
-            .map(str::to_string)
-            .unwrap_or_else(|| name.to_string());
-        let target_dir = if current_name == name {
-            skill_dir.clone()
-        } else {
-            let parent = skill_dir
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {:?}", skill_dir))?;
-            let renamed = parent.join(name);
-            if renamed.exists() {
-                return Err(SkillCommandError::AlreadyExists {
-                    skill_name: name.to_string(),
-                    directory_path: renamed.as_str().to_string(),
-                }
-                .into());
-            }
-            fs::rename(skill_dir.as_std_path(), renamed.as_std_path())?;
-            renamed
-        };
-
-        fs::create_dir_all(target_dir.as_std_path())?;
-        let skill_path = target_dir.join(SKILL_FILE_NAME);
+        fs::create_dir_all(skill_dir.as_std_path())?;
+        let skill_path = skill_dir.join(SKILL_FILE_NAME);
         fs::write(skill_path.as_std_path(), content)?;
-        let agent_source = infer_agent_source(target_dir.as_std_path());
-        let (meta, _) = parse_skill_md(content, name, source, target_dir.as_str(), &agent_source)?;
+        let agent_source = infer_agent_source(skill_dir.as_std_path());
+        let (meta, _) = parse_skill_md(content, name, source, skill_dir.as_str(), &agent_source)?;
         Ok(meta)
     }
 
@@ -332,7 +340,13 @@ impl SkillManager {
         workspace_path: Option<&str>,
         sync_targets: Option<&[String]>,
     ) -> Vec<AgentSkillDir> {
-        resolve_skill_dirs(&self.agents_config, source, workspace_path, sync_targets)
+        resolve_skill_dirs(
+            &self.agents_config,
+            source,
+            workspace_path,
+            sync_targets,
+            true,
+        )
     }
 
     pub fn check_name_conflict(
@@ -345,10 +359,13 @@ impl SkillManager {
     ) -> Vec<String> {
         let current_canonical =
             current_directory_path.map(|value| canonicalize_lossy(Path::new(value)));
+        let target_dir_name = current_directory_path
+            .and_then(skill_dir_name_from_str)
+            .unwrap_or(name);
         self.configured_agent_dirs_for_scope(source, workspace_path, sync_targets)
             .into_iter()
             .filter_map(|agent_dir| {
-                let skill_dir = agent_dir.skills_dir.join(name);
+                let skill_dir = agent_dir.skills_dir.join(target_dir_name);
                 if !skill_dir.exists() {
                     return None;
                 }
@@ -373,14 +390,16 @@ impl SkillManager {
 
     pub fn sync_skill_instance(
         &self,
-        skill_name: &str,
+        _skill_name: &str,
         source_directory_path: &str,
         source: SkillSource,
         workspace_path: Option<&str>,
         sync_targets: Option<&[String]>,
     ) -> Result<()> {
+        let skill_dir_name = skill_dir_name_from_str(source_directory_path)
+            .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {source_directory_path}"))?;
         let conflicts = self.check_name_conflict(
-            skill_name,
+            skill_dir_name,
             source,
             workspace_path,
             sync_targets,
@@ -388,7 +407,7 @@ impl SkillManager {
         );
         if !conflicts.is_empty() {
             return Err(SkillCommandError::SyncConflict {
-                skill_name: skill_name.to_string(),
+                skill_name: skill_dir_name.to_string(),
                 conflicts,
             }
             .into());
@@ -401,7 +420,7 @@ impl SkillManager {
             if fs::create_dir_all(agent_dir.skills_dir.as_std_path()).is_err() {
                 continue;
             }
-            let target_skill_dir = agent_dir.skills_dir.join(skill_name);
+            let target_skill_dir = agent_dir.skills_dir.join(skill_dir_name);
             if target_skill_dir.exists() {
                 let target_canonical = canonicalize_lossy(target_skill_dir.as_std_path());
                 if target_canonical == source_canonical {
@@ -463,15 +482,18 @@ impl SkillManager {
 
     pub fn cleanup_skill_instance_links(
         &self,
-        skill_name: &str,
+        _skill_name: &str,
         source_directory_path: &str,
         source: SkillSource,
         workspace_path: Option<&str>,
         sync_targets: Option<&[String]>,
     ) {
+        let Some(skill_dir_name) = skill_dir_name_from_str(source_directory_path) else {
+            return;
+        };
         for agent_dir in self.configured_agent_dirs_for_scope(source, workspace_path, sync_targets)
         {
-            let target_skill_dir = agent_dir.skills_dir.join(skill_name);
+            let target_skill_dir = agent_dir.skills_dir.join(skill_dir_name);
             symlink::remove_link_if_points_to(
                 target_skill_dir.as_std_path(),
                 Path::new(source_directory_path),
@@ -542,6 +564,7 @@ pub fn parse_skill_md_public(
                 directory_path: dir_path.to_string(),
                 agent_source: agent_source.to_string(),
                 load_warnings: vec![],
+                synced_agent_types: Vec::new(),
             },
             raw.to_string(),
         )
@@ -597,9 +620,38 @@ fn parse_skill_md(
             directory_path: dir_path.to_string(),
             agent_source: agent_source.to_string(),
             load_warnings,
+            synced_agent_types: Vec::new(),
         },
         body,
     ))
+}
+
+fn populate_synced_agent_types(
+    skills: &mut [SkillMeta],
+    agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    source: SkillSource,
+    workspace_path: Option<&str>,
+) {
+    let agent_dirs = resolve_skill_dirs(agents, source, workspace_path, None, false);
+    if agent_dirs.is_empty() {
+        return;
+    }
+
+    for skill in skills.iter_mut() {
+        let canonical_source = canonicalize_lossy(Path::new(&skill.directory_path));
+        let Some(skill_dir_name) = skill_dir_name_from_str(&skill.directory_path) else {
+            skill.synced_agent_types.clear();
+            continue;
+        };
+        skill.synced_agent_types = agent_dirs
+            .iter()
+            .filter_map(|agent_dir| {
+                let candidate = agent_dir.skills_dir.join(skill_dir_name);
+                is_link_pointing_to(candidate.as_std_path(), &canonical_source)
+                    .then(|| agent_dir.agent_type.as_str().to_string())
+            })
+            .collect();
+    }
 }
 
 fn resolve_skill_dirs(
@@ -607,6 +659,7 @@ fn resolve_skill_dirs(
     source: SkillSource,
     workspace_path: Option<&str>,
     sync_targets: Option<&[String]>,
+    include_missing: bool,
 ) -> Vec<AgentSkillDir> {
     let root = match source {
         SkillSource::Global => Some(dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))),
@@ -628,7 +681,9 @@ fn resolve_skill_dirs(
         let agent_root = resolve_agent_root(&root, &dir_name);
         let skills_dir =
             Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
-        if skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir() {
+        if include_missing
+            || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
+        {
             dirs.push(AgentSkillDir {
                 agent_type: *agent_type,
                 dir_name,
@@ -648,6 +703,16 @@ fn resolve_agent_root(root: &Path, dir_name: &str) -> PathBuf {
     }
 }
 
+fn is_link_pointing_to(link_path: &Path, expected: &Path) -> bool {
+    if !link_path.exists() {
+        return false;
+    }
+    let Ok(target) = link_path.read_link() else {
+        return false;
+    };
+    canonicalize_lossy(&target) == expected
+}
+
 fn infer_agent_source(skill_dir: &Path) -> String {
     skill_dir
         .parent()
@@ -655,7 +720,11 @@ fn infer_agent_source(skill_dir: &Path) -> String {
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
         .map(|value| value.to_string())
-        .unwrap_or_else(|| ".agents".to_string())
+        .unwrap_or_else(|| ".gold-band".to_string())
+}
+
+pub fn skill_dir_name_from_str(path: &str) -> Option<&str> {
+    Path::new(path).file_name().and_then(|name| name.to_str())
 }
 
 fn canonicalize_lossy(path: &Path) -> PathBuf {
@@ -743,7 +812,7 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("gb-list-workspace-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        tmp_skill_dir(&tmp.join(".agents").join("skills"), "shared-skill");
+        tmp_skill_dir(&tmp.join(".gold-band").join("skills"), "shared-skill");
         tmp_skill_dir(&tmp.join(".claude").join("skills"), "shared-skill");
 
         let mut agents = BTreeMap::new();
@@ -770,17 +839,17 @@ mod tests {
 
         let manager = SkillManager::new(GoldBandPaths::new(repo_root), BTreeMap::new());
         manager
-            .write(
+            .write_to_workspace(
                 "duplicate-skill",
-                SkillSource::Global,
+                manager.paths.repo_root.as_str(),
                 "---\nname: duplicate-skill\ndescription: test\n---\ncontent",
             )
             .unwrap();
 
         let error = manager
-            .write(
+            .write_to_workspace(
                 "duplicate-skill",
-                SkillSource::Global,
+                manager.paths.repo_root.as_str(),
                 "---\nname: duplicate-skill\ndescription: test\n---\ncontent",
             )
             .unwrap_err();
@@ -801,7 +870,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
         fs::create_dir_all(repo_root.as_std_path()).unwrap();
 
-        let source_dir = tmp.join(".agents").join("skills").join("my-skill");
+        let source_dir = tmp.join(".gold-band").join("skills").join("my-skill");
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(
             source_dir.join("SKILL.md"),
@@ -844,6 +913,156 @@ mod tests {
 
         assert!(tmp.join(".claude").join("skills").join("my-skill").exists());
         assert!(!tmp.join(".codex").join("skills").join("my-skill").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_sync_creates_missing_configured_agent_dirs() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gb-project-sync-create-missing-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let source_dir = repo_root.join(".gold-band").join("skills").join("my-skill");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\ncontent",
+        )
+        .unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        agents.insert(
+            ManagedAgentType::CodexAcp,
+            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
+        );
+
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+        manager
+            .sync_skill_instance(
+                "my-skill",
+                source_dir.as_str(),
+                SkillSource::Project,
+                Some(repo_root.as_str()),
+                Some(&["claude-acp".to_string(), "codex-acp".to_string()]),
+            )
+            .unwrap();
+
+        assert!(
+            repo_root
+                .join(".claude")
+                .join("skills")
+                .join("my-skill")
+                .exists()
+        );
+        assert!(
+            repo_root
+                .join(".codex")
+                .join("skills")
+                .join("my-skill")
+                .exists()
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn list_by_workspace_reports_synced_agent_types() {
+        let tmp =
+            std::env::temp_dir().join(format!("gb-list-synced-agents-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let source_dir = repo_root.join(".gold-band").join("skills").join("my-skill");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\ncontent",
+        )
+        .unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        agents.insert(
+            ManagedAgentType::CodexAcp,
+            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
+        );
+
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+        manager
+            .sync_skill_instance(
+                "my-skill",
+                source_dir.as_str(),
+                SkillSource::Project,
+                Some(repo_root.as_str()),
+                Some(&["claude-acp".to_string(), "codex-acp".to_string()]),
+            )
+            .unwrap();
+
+        let skills = manager.list_by_workspace(repo_root.as_str()).unwrap();
+        let skill = skills
+            .iter()
+            .find(|skill| skill.directory_path == source_dir.as_str())
+            .unwrap();
+        assert_eq!(
+            skill.synced_agent_types,
+            vec!["claude-acp".to_string(), "codex-acp".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_uses_directory_name_instead_of_frontmatter_name() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gb-sync-directory-name-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let source_dir = repo_root.join(".claude").join("skills").join("ckm-design");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("SKILL.md"),
+            "---\nname: ckm:design\ndescription: test\n---\ncontent",
+        )
+        .unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        let mut codex_config =
+            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config());
+        codex_config.skills_dir_override = Some(tmp.join(".codex").to_string_lossy().to_string());
+        agents.insert(ManagedAgentType::CodexAcp, codex_config);
+
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+        manager
+            .sync_skill_instance(
+                "ckm:design",
+                source_dir.as_str(),
+                SkillSource::Project,
+                Some(repo_root.as_str()),
+                Some(&["codex-acp".to_string()]),
+            )
+            .unwrap();
+
+        assert!(tmp.join(".codex").join("skills").join("ckm-design").exists());
+        assert!(!tmp.join(".codex").join("skills").join("ckm:design").exists());
+
+        let skills = manager.list_by_workspace(repo_root.as_str()).unwrap();
+        let skill = skills
+            .iter()
+            .find(|skill| skill.directory_path == source_dir.as_str())
+            .unwrap();
+        assert_eq!(skill.synced_agent_types, vec!["codex-acp".to_string()]);
 
         let _ = fs::remove_dir_all(&tmp);
     }

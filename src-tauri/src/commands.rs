@@ -3342,7 +3342,7 @@ pub fn read_skill(
             .parent() // <home>/<agent_dir>/skills/
             .and_then(|p| p.parent()) // <home>/<agent_dir>/
             .and_then(|p| p.file_name()) // "<agent_dir>"
-            .unwrap_or(".agents");
+            .unwrap_or(".gold-band");
         let result = app
             .skill_manager()
             .read_by_path(&dir, &name, skill_source, agent_source);
@@ -3360,7 +3360,7 @@ pub fn read_skill(
                 &name,
                 skill_source,
                 skill_path.as_str(),
-                ".agents",
+                ".gold-band",
             );
             return Ok(skill_content_vm(&gold_band::skill::SkillContent {
                 meta,
@@ -3386,21 +3386,13 @@ pub fn write_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    let original_directory_path = directory_path.clone();
 
     let sync_skill_dir = if let Some(ref dir_path) = directory_path {
         let skill_dir = Utf8PathBuf::from(dir_path);
         app.skill_manager()
             .write_at_path(&skill_dir, &name, skill_source, &content)
             .map_err(command_error)?;
-        if skill_dir.file_name() == Some(name.as_str()) {
-            skill_dir
-        } else {
-            let parent = skill_dir.parent().ok_or_else(|| {
-                command_error(anyhow::anyhow!("invalid skill directory: {dir_path}"))
-            })?;
-            parent.join(&name)
-        }
+        skill_dir
     } else if let Some(ref ws_path) = workspace_path {
         if skill_source == gold_band::config::SkillSource::Project {
             app.skill_manager()
@@ -3442,18 +3434,6 @@ pub fn write_skill(
                     let _ = app.delete_skill(&old, skill_source);
                 }
             }
-        }
-    } else if let (Some(old), Some(dir_path)) =
-        (old_name.as_ref(), original_directory_path.as_deref())
-    {
-        if old != &name {
-            app.cleanup_skill_instance_links(
-                old,
-                dir_path,
-                skill_source,
-                workspace_path.as_deref(),
-                None,
-            );
         }
     }
 
@@ -3534,7 +3514,7 @@ pub fn delete_skill(
 #[tauri::command]
 pub fn get_skill_sync_status(
     state: State<'_, DesktopState>,
-    name: String,
+    _name: String,
     directory_path: String,
     workspace_path: Option<String>,
 ) -> CommandResult<Vec<SyncStatusEntryVm>> {
@@ -3547,13 +3527,15 @@ pub fn get_skill_sync_status(
     let src_path = std::path::Path::new(&directory_path);
     // ??????????????junction ???????????
     let canonical_src = std::fs::canonicalize(src_path).unwrap_or_else(|_| src_path.to_path_buf());
+    let skill_dir_name = gold_band::skill::skill_dir_name_from_str(&directory_path)
+        .ok_or_else(|| command_error(anyhow::anyhow!("invalid skill directory: {directory_path}")))?;
     let mut statuses = Vec::new();
 
     for (agent_type, config) in &app.config.agents {
         let dir_name = config.skills_dir_name(*agent_type);
 
         // 检查全局 agent 目录
-        let global_link = home.join(dir_name).join("skills").join(&name);
+        let global_link = home.join(dir_name).join("skills").join(skill_dir_name);
         let global_synced = is_link_pointing_to(&global_link, &canonical_src);
 
         // ????? agent ?????? workspace_path?
@@ -3561,7 +3543,7 @@ pub fn get_skill_sync_status(
             let project_link = std::path::Path::new(ws)
                 .join(dir_name)
                 .join("skills")
-                .join(&name);
+                .join(skill_dir_name);
             is_link_pointing_to(&project_link, &canonical_src)
         });
 

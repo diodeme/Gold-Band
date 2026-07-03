@@ -8,6 +8,11 @@
 - 查询与同步以全局已配置 agent 为准；保存时按目标集合对账，允许“只保存不同步”以及取消既有软链同步。
 - 软链副本不单独展示；同步遇到目标目录已有同名原生 skill，或同目录发生同名创建/重命名时，均直接阻止并提示冲突。
 - 管理页卡片左下角展示来源 agent 图标；同步目标仅展示全局已配置 agent。
+- 编辑已有 skill 时，抽屉中的保存位置提示必须按真实 `directoryPath` 展示；项目内原生 agent skill 显示为 `<project>/<agent-dir>/skills/...`，不再一律回退成 `<project>/.gold-band/...`。
+- 原生 agent skill 的文件系统身份以真实目录名为准，而不是 frontmatter `name:`；同步、冲突检测、同步状态识别都基于 `directoryPath` 的最后一级目录处理。
+- 管理页支持按“当前 agent 可用 skill”筛选；过滤选项仅来自全局已配置 agent。
+- SKILL 卡片左下角图标改为“来源 agent + 已同步目标 agent”的并集展示；`.gold-band` 自建 skill 固定展示 Gold Band 图标。
+- 编辑原生 agent skill 时，同步目标列表排除其自身 agent，不再允许出现“`.claude` skill 再同步到 `.claude`”这类自相矛盾操作。
 
 
 ---
@@ -213,7 +218,7 @@ pub fn invalidate_health(&self, id: &str);
 
 | # | 决策 | 结论 | 对标 Zed |
 |---|------|------|----------|
-| 1 | 存储模型 | `.agents/skills/` 文件系统（全局 + 项目级） | ✅ |
+| 1 | 存储模型 | `.gold-band/skills/` 文件系统（全局 + 项目级） | ✅ |
 | 2 | Scope 选择 | 创建时 Dropdown 显式选择 Global / Project | ✅ |
 | 3 | 默认 Scope | 有 workspace 时默认 Project，无时默认 Global | ✅ |
 | 4 | 编辑限制 | 编辑时 Scope 锁定 | ✅ |
@@ -242,8 +247,8 @@ pub struct SkillMeta {
 
 pub enum SkillSource {
     BuiltIn,  // 内置（暂未实现）
-    Global,   // ~/.agents/skills/
-    Project,  // <workspace>/.agents/skills/
+    Global,   // ~/.gold-band/skills/
+    Project,  // <workspace>/.gold-band/skills/
 }
 
 // ── 优先级（对标 Zed SkillSource::precedence） ──
@@ -259,10 +264,10 @@ fn precedence(source: SkillSource) -> u8 {
 ### 3.3 文件系统布局
 
 ```
-~/.agents/skills/                    ← 全局 SKILL（所有项目可用）
+~/.gold-band/skills/                 ← 全局 SKILL（所有项目可用）
   └── <name>/SKILL.md
 
-<workspace>/.agents/skills/           ← 项目级 SKILL（仅当前 project）
+<workspace>/.gold-band/skills/        ← 项目级 SKILL（仅当前 project）
   └── <name>/SKILL.md
 ```
 
@@ -437,10 +442,10 @@ interface ToolInfo {
 ├── settings.json          ← MCP 配置（context_servers 字段）
 │                            + 信任列表（trusted_workspaces 字段）
 
-~/.agents/skills/          ← 全局 SKILL
+~/.gold-band/skills/       ← 全局 SKILL
   └── <name>/SKILL.md
 
-<workspace>/.agents/skills/ ← 项目级 SKILL（每 workspace 独立）
+<workspace>/.gold-band/skills/ ← 项目级 SKILL（每 workspace 独立）
   └── <name>/SKILL.md
 ```
 
@@ -501,7 +506,7 @@ settings.json
 ### 7.2 SKILL 运行时数据流
 
 ```
-磁盘 (.agents/skills/<name>/SKILL.md)
+磁盘 (.gold-band/skills/<name>/SKILL.md)
   → scan_skills_dir()                           [扫描目录 + 解析前置元数据]
     → SkillManager::list()                      [global + project 分离]
       → catalog_skills_for_agent_workspace()    [按 workspace 过滤]

@@ -1118,6 +1118,7 @@ export interface SkillMetaVm {
   directoryPath: string;
   agentSource: string;
   loadWarnings: string[];
+  syncedAgentTypes: string[];
 }
 
 export interface SyncStatusEntryVm {

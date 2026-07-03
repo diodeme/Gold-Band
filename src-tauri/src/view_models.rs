@@ -152,6 +152,7 @@ pub struct SkillMetaVm {
     pub directory_path: String,
     pub agent_source: String,
     pub load_warnings: Vec<String>,
+    pub synced_agent_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5471,6 +5472,7 @@ pub fn skill_meta_vm(meta: &gold_band::config::SkillMeta) -> SkillMetaVm {
         directory_path: meta.directory_path.clone(),
         agent_source: meta.agent_source.clone(),
         load_warnings: meta.load_warnings.clone(),
+        synced_agent_types: meta.synced_agent_types.clone(),
     }
 }
 

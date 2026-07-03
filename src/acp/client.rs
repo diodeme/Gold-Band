@@ -25,8 +25,8 @@ use crate::acp::elicitation::{
     upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpSessionMetadata, AcpTimingState, AcpUiEvent, append_diagnostic,
-    append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
+    AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
+    append_diagnostic, append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
     initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
     normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
     write_timeline_items,
@@ -46,6 +46,7 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, wr
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
+const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
@@ -349,6 +350,8 @@ struct AcpRuntime<'a> {
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     pending_live_update: Option<AcpUiEvent>,
     last_live_update_at: Option<Instant>,
+    last_live_timing_update_at: Option<Instant>,
+    last_live_timing: Option<crate::acp::events::AcpTimingPatch>,
     pending_timeline_patch: Option<(u64, AcpUiEvent)>,
     last_timeline_patch_at: Option<Instant>,
     raw_max_size: u64,
@@ -703,6 +706,14 @@ fn timing_patch_reason(event: &AcpUiEvent) -> &'static str {
     {
         return "permission-wait";
     }
+    if event.kind == "elicitationRequest"
+        && event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+    {
+        return "elicitation-wait";
+    }
     let session_update = event
         .raw
         .as_ref()
@@ -715,6 +726,49 @@ fn timing_patch_reason(event: &AcpUiEvent) -> &'static str {
         return "metadata";
     }
     "active"
+}
+
+fn should_sync_timing_state_from_timeline(event: &AcpUiEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "permissionRequest" | "elicitationRequest" | "elicitationResponse"
+    )
+}
+
+fn is_pending_user_wait_event(event: &AcpUiEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "permissionRequest" | "elicitationRequest"
+    ) && event
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+}
+
+fn timing_state_from_timeline_items_with_replacement(
+    timeline_items: &HashMap<String, AcpUiEvent>,
+    replacement: &AcpUiEvent,
+) -> AcpTimingState {
+    let mut items = timeline_items
+        .values()
+        .filter(|item| item.id != replacement.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(replacement.clone());
+    AcpTimingState::from_timeline_items(items)
+}
+
+fn timing_patch_display_values_equal(
+    left: &crate::acp::events::AcpTimingPatch,
+    right: &crate::acp::events::AcpTimingPatch,
+) -> bool {
+    left.session_elapsed_seconds == right.session_elapsed_seconds
+        && left.active_turn_started_at == right.active_turn_started_at
+        && left.active_turn_last_activity_at == right.active_turn_last_activity_at
+        && left.permission_wait_started_at == right.permission_wait_started_at
+        && left.user_wait_started_at == right.user_wait_started_at
+        && left.wait_reason == right.wait_reason
+        && left.paused == right.paused
 }
 
 impl<'a> AcpRuntime<'a> {
@@ -894,6 +948,8 @@ impl<'a> AcpRuntime<'a> {
             live_update,
             pending_live_update: None,
             last_live_update_at: None,
+            last_live_timing_update_at: None,
+            last_live_timing: None,
             pending_timeline_patch: None,
             last_timeline_patch_at: None,
             raw_max_size,
@@ -1567,10 +1623,12 @@ impl<'a> AcpRuntime<'a> {
                     .map(|remaining| remaining.min(STOP_CHECK_INTERVAL))
                     .unwrap_or(STOP_CHECK_INTERVAL);
                 self.drain_available_inbound()?;
+                self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                 match request.recv_timeout(wait_for) {
                     Ok(value) => {
                         self.append_inbound_frame(&value)?;
                         self.drain_available_inbound()?;
+                        self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if let Some(error) = value.get("error") {
                             if cancel_started_at.is_some() {
                                 break Err(anyhow!(AcpCancelled));
@@ -1588,6 +1646,7 @@ impl<'a> AcpRuntime<'a> {
                             &title_refresh,
                             &mut last_title_refresh_at,
                         );
+                        self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if cancel_started_at
                             .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
                         {
@@ -2021,12 +2080,33 @@ impl<'a> AcpRuntime<'a> {
             cached_read_tokens: self.cached_read_tokens,
             cached_write_tokens: self.cached_write_tokens,
             total_tokens: self.total_tokens,
-            timing: self
-                .timing_state
-                .snapshot(is_runtime_session_active(status)),
+            timing: self.session_timing_snapshot(status, &now),
             created_at,
             updated_at: now,
         }
+    }
+
+    fn session_timing_snapshot(&self, status: &str, observed_at: &str) -> Option<AcpSessionTiming> {
+        let observed_epoch = parse_event_epoch_seconds(observed_at);
+        let revision = Some(self.next_timing_revision());
+        if is_runtime_session_active(status) {
+            self.timing_state.snapshot_at_with_revision(
+                true,
+                observed_epoch,
+                revision,
+                Some(observed_at.to_string()),
+            )
+        } else {
+            self.timing_state.terminal_snapshot_at_with_revision(
+                observed_epoch,
+                revision,
+                Some(observed_at.to_string()),
+            )
+        }
+    }
+
+    fn next_timing_revision(&self) -> u64 {
+        self.seq.saturating_add(1)
     }
 
     fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
@@ -2049,7 +2129,14 @@ impl<'a> AcpRuntime<'a> {
             append_ui_event(&self.paths.events, event)?;
         }
         let mut timeline_item = self.timeline_item_for_event(event);
-        self.timing_state.observe_event(&timeline_item);
+        if should_sync_timing_state_from_timeline(&timeline_item) {
+            self.timing_state = timing_state_from_timeline_items_with_replacement(
+                &self.timeline_items,
+                &timeline_item,
+            );
+        } else {
+            self.timing_state.observe_event(&timeline_item);
+        }
         if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
             timeline_item.timing = self
                 .timing_state
@@ -2164,6 +2251,69 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    fn maybe_emit_live_timing_update(&mut self, now: Instant, reason: &'static str) -> Result<()> {
+        if self.live_update.is_none() {
+            return Ok(());
+        }
+        if self
+            .last_live_timing_update_at
+            .is_some_and(|last| now.duration_since(last) < LIVE_TIMING_UPDATE_INTERVAL)
+        {
+            return Ok(());
+        }
+        if self.timeline_has_pending_user_wait() {
+            self.timing_state = AcpTimingState::from_timeline_items(
+                self.timeline_items.values().cloned().collect::<Vec<_>>(),
+            );
+        }
+        let timestamp = current_timestamp();
+        let Some(epoch_seconds) = parse_event_epoch_seconds(&timestamp) else {
+            return Ok(());
+        };
+        let Some(timing) = self.timing_state.patch_at_with_revision(
+            epoch_seconds,
+            reason,
+            Some(self.next_timing_revision()),
+            Some(timestamp.clone()),
+        ) else {
+            return Ok(());
+        };
+        if self
+            .last_live_timing
+            .as_ref()
+            .is_some_and(|last| timing_patch_display_values_equal(last, &timing))
+        {
+            self.last_live_timing_update_at = Some(now);
+            return Ok(());
+        }
+        let event = AcpUiEvent {
+            id: format!("acp-timing-{}-{epoch_seconds}", self.seq),
+            seq: self.seq,
+            timestamp,
+            kind: "timingUpdate".to_string(),
+            session_id: self.session_id.clone(),
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: Some("active".to_string()),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: Some(timing),
+            raw: Some(json!({
+                "source": "acpTiming",
+                "reason": reason,
+            })),
+        };
+        self.flush_pending_live_update()?;
+        self.emit_live_update_now(&event, now)
+    }
+
+    fn timeline_has_pending_user_wait(&self) -> bool {
+        self.timeline_items.values().any(is_pending_user_wait_event)
+    }
+
     fn emit_live_update_now(
         &mut self,
         item: &crate::acp::events::AcpUiEvent,
@@ -2172,6 +2322,10 @@ impl<'a> AcpRuntime<'a> {
         if let Some(live_update) = self.live_update {
             live_update(item)?;
             self.last_live_update_at = Some(now);
+            if let Some(timing) = item.timing.as_ref() {
+                self.last_live_timing_update_at = Some(now);
+                self.last_live_timing = Some(timing.clone());
+            }
         }
         Ok(())
     }
@@ -2641,6 +2795,8 @@ fn permission_decision_timeline_event(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde_json::{Value, json};
 
     use super::{
@@ -2649,6 +2805,7 @@ mod tests {
         permission_decision_timeline_event, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
         session_prompt_params, session_prompt_text, take_pending_live_update_for_stream_switch,
+        timing_state_from_timeline_items_with_replacement,
     };
     use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
@@ -2856,6 +3013,109 @@ mod tests {
                 .and_then(Value::as_str),
             Some("allow")
         );
+    }
+
+    #[test]
+    fn timing_rebuild_with_permission_decision_excludes_wait_interval() {
+        let prompt_1 = AcpUiEvent {
+            id: "gold-band-user-prompt-1".to_string(),
+            seq: 1,
+            timestamp: "100Z".to_string(),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("first".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(1),
+            ended_seq: Some(1),
+            started_at: Some("100Z".to_string()),
+            ended_at: Some("100Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "source": "goldBandPrompt" })),
+        };
+        let usage_1 = AcpUiEvent {
+            id: "acp-event-2".to_string(),
+            seq: 2,
+            timestamp: "130Z".to_string(),
+            kind: "usageUpdate".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(2),
+            ended_seq: Some(2),
+            started_at: Some("130Z".to_string()),
+            ended_at: Some("130Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "sessionUpdate": "usage_update" })),
+        };
+        let prompt_2 = AcpUiEvent {
+            id: "gold-band-user-prompt-3".to_string(),
+            seq: 3,
+            timestamp: "200Z".to_string(),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("second".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(3),
+            ended_seq: Some(3),
+            started_at: Some("200Z".to_string()),
+            ended_at: Some("200Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "source": "goldBandPrompt" })),
+        };
+        let pending_permission = AcpUiEvent {
+            id: "permission-1".to_string(),
+            seq: 4,
+            timestamp: "214Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(4),
+            ended_seq: Some(4),
+            started_at: Some("214Z".to_string()),
+            ended_at: Some("214Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "requestId": "1" })),
+        };
+        let selected_permission = AcpUiEvent {
+            id: "permission-1".to_string(),
+            seq: 5,
+            timestamp: "230Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("selected".to_string()),
+            started_seq: Some(4),
+            ended_seq: Some(5),
+            started_at: Some("214Z".to_string()),
+            ended_at: Some("230Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "requestId": "1", "optionId": "allow" })),
+        };
+        let timeline_items = HashMap::from([
+            (prompt_1.id.clone(), prompt_1),
+            (usage_1.id.clone(), usage_1),
+            (prompt_2.id.clone(), prompt_2),
+            (pending_permission.id.clone(), pending_permission),
+        ]);
+
+        let timing_state = timing_state_from_timeline_items_with_replacement(
+            &timeline_items,
+            &selected_permission,
+        );
+        let snapshot = timing_state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 44);
     }
 
     #[test]

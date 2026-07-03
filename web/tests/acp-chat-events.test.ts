@@ -2,12 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  createLiveAcpSessionShell,
+  createVisibleAcpSession,
+  latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
+  liveTimelineUpdatesFromEvents,
   mergeAcpEvents,
+  partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
+  stabilizeAcpSessionTimingForDisplay,
+  stabilizeAcpSessionTimingPatchForDisplay,
+  useSessionTimingSeconds,
 } from '../src/components/acp/ACPChatDialog';
-import type { AcpUiEventVm } from '../src/types';
+import type { AcpSessionVm, AcpUiEventVm } from '../src/types';
 
 function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
   return {
@@ -26,6 +34,31 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
     endedAt: partial.endedAt,
     raw: partial.raw,
     timing: partial.timing,
+  };
+}
+
+function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
+  return {
+    sessionId: partial.sessionId ?? 'session-1',
+    provider: partial.provider ?? 'claude-acp',
+    status: partial.status ?? 'running',
+    sessionUpdatedAt: partial.sessionUpdatedAt,
+    sessionElapsedSeconds: partial.sessionElapsedSeconds,
+    timing: partial.timing,
+    restored: partial.restored ?? false,
+    events: partial.events ?? [],
+    eventPage: partial.eventPage ?? {
+      loadedCount: 0,
+      total: 0,
+      hasOlder: false,
+      hasNewer: false,
+    },
+    pendingPermissions: partial.pendingPermissions ?? [],
+    diagnostics: partial.diagnostics ?? {
+      rawFrameCount: 0,
+      eventCount: 0,
+      errorCount: 0,
+    },
   };
 }
 
@@ -235,7 +268,7 @@ describe('ACP chat event handling', () => {
     expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual(['继续', '继续', '继续']);
   });
 
-  it('uses the latest live timing patch as session timing', () => {
+  it('extracts the latest timing patch from an event window', () => {
     const timing = latestSessionTimingFromEvents([
       event({
         seq: 1,
@@ -266,11 +299,391 @@ describe('ACP chat event handling', () => {
 
     expect(timing).toEqual({
       sessionElapsedSeconds: 12,
+      revision: null,
+      observedAt: null,
       activeTurnStartedAt: '100Z',
       activeTurnLastActivityAt: '112Z',
       permissionWaitStartedAt: null,
+      userWaitStartedAt: null,
+      waitReason: null,
       paused: false,
     });
+  });
+
+  it('keeps live-only timing updates out of the timeline event merge', () => {
+    const updates = [
+      event({
+        seq: 3,
+        kind: 'timingUpdate',
+        timing: {
+          sessionElapsedSeconds: 13,
+          activeTurnStartedAt: '100Z',
+          activeTurnLastActivityAt: '113Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'tick',
+        },
+      }),
+      event({ seq: 4, kind: 'textDelta', content: 'hello' }),
+    ];
+
+    expect(latestSessionTimingFromEvents(updates)?.sessionElapsedSeconds).toBe(13);
+    expect(liveTimelineUpdatesFromEvents(updates).map((update) => update.kind)).toEqual([
+      'textDelta',
+    ]);
+  });
+
+  it('separates live timing updates from deferred timeline rendering work', () => {
+    const timingUpdate = event({
+      seq: 3,
+      kind: 'timingUpdate',
+      timing: {
+        sessionElapsedSeconds: 38,
+        activeTurnStartedAt: '100Z',
+        activeTurnLastActivityAt: '138Z',
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: false,
+        reason: 'tick',
+      },
+    });
+    const textUpdate = event({ seq: 4, kind: 'textDelta', content: 'streaming text' });
+
+    const partitioned = partitionAcpLiveTimingUpdates([textUpdate, timingUpdate]);
+
+    expect(partitioned.timingUpdates).toEqual([timingUpdate]);
+    expect(partitioned.timelineUpdates).toEqual([textUpdate]);
+  });
+
+  it('does not treat historical event timing as the live session timing source', () => {
+    const updates = [
+      event({
+        seq: 240,
+        kind: 'usageUpdate',
+        timing: {
+          sessionElapsedSeconds: 20,
+          activeTurnStartedAt: '1782980435Z',
+          activeTurnLastActivityAt: '1782980455Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+      event({
+        seq: 819,
+        kind: 'permissionRequest',
+        status: 'selected',
+        timing: {
+          sessionElapsedSeconds: 69,
+          activeTurnStartedAt: '1782980458Z',
+          activeTurnLastActivityAt: '1782980531Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+    ];
+
+    expect(latestSessionTimingFromEvents(updates)?.sessionElapsedSeconds).toBe(69);
+    expect(latestLiveSessionTimingFromEvents(updates)).toBeNull();
+  });
+
+  it('uses timingUpdate as the live session timing source even with older historical events present', () => {
+    const updates = [
+      event({
+        seq: 240,
+        kind: 'usageUpdate',
+        timing: {
+          sessionElapsedSeconds: 20,
+          activeTurnStartedAt: '1782980435Z',
+          activeTurnLastActivityAt: '1782980455Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+      event({
+        seq: 910,
+        kind: 'timingUpdate',
+        timing: {
+          sessionElapsedSeconds: 85,
+          activeTurnStartedAt: '1782980458Z',
+          activeTurnLastActivityAt: '1782980555Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'tick',
+        },
+      }),
+    ];
+
+    expect(latestLiveSessionTimingFromEvents(updates)?.sessionElapsedSeconds).toBe(85);
+  });
+
+  it('uses event timing for event-only live session shells while waiting for a session payload', () => {
+    const shell = createLiveAcpSessionShell([
+      event({
+        seq: 248,
+        kind: 'thoughtDelta',
+        timing: {
+          sessionElapsedSeconds: 27,
+          activeTurnStartedAt: '1782981381Z',
+          activeTurnLastActivityAt: '1782981408Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+          reason: 'active',
+        },
+      }),
+    ], 'running');
+
+    expect(shell.timing?.sessionElapsedSeconds).toBe(27);
+    expect(shell.sessionElapsedSeconds).toBe(27);
+  });
+
+  it('keeps snapshot prompt events visible while live events are still catching up', () => {
+    const prompt = event({
+      id: 'gold-band-user-prompt-1',
+      seq: 1,
+      kind: 'userTextDelta',
+      content: 'Build the feature',
+      status: 'completed',
+      raw: { source: 'goldBandPrompt', synthetic: true },
+    });
+    const assistant = event({
+      id: 'assistant-message-1',
+      seq: 12,
+      kind: 'textDelta',
+      content: 'Working on it',
+    });
+
+    const visible = createVisibleAcpSession(
+      session({
+        events: [prompt],
+        eventPage: {
+          loadedCount: 1,
+          total: 1,
+          oldestSeq: 1,
+          newestSeq: 1,
+          hasOlder: false,
+          hasNewer: false,
+        },
+      }),
+      [assistant],
+      100,
+    );
+
+    expect(visible.events.map((item) => item.id)).toEqual([
+      'gold-band-user-prompt-1',
+      'assistant-message-1',
+    ]);
+    expect(visible.eventPage.loadedCount).toBe(2);
+  });
+
+  it('uses backend timing as the session elapsed source of truth', () => {
+    expect(
+      useSessionTimingSeconds(
+        {
+          sessionElapsedSeconds: 12,
+          activeTurnStartedAt: '100Z',
+          activeTurnLastActivityAt: '112Z',
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: false,
+        },
+        null,
+        true,
+      ),
+    ).toBe(12);
+  });
+
+  it('keeps session timing monotonic when stale terminal payloads arrive out of order', () => {
+    const current = session({
+      status: 'cancelled',
+      sessionUpdatedAt: '1782986478Z',
+      sessionElapsedSeconds: 61,
+      timing: {
+        sessionElapsedSeconds: 61,
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+    });
+    const stale = session({
+      status: 'cancelled',
+      sessionUpdatedAt: '1782986478Z',
+      sessionElapsedSeconds: 47,
+      timing: {
+        sessionElapsedSeconds: 47,
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+    });
+
+    const stabilized = stabilizeAcpSessionTimingForDisplay(current, stale);
+
+    expect(stabilized?.timing?.sessionElapsedSeconds).toBe(61);
+    expect(stabilized?.sessionElapsedSeconds).toBe(61);
+    expect(stabilized?.status).toBe('cancelled');
+  });
+
+  it('rejects stale session timing by revision even when status payload arrives later', () => {
+    const current = session({
+      status: 'cancelled',
+      sessionUpdatedAt: '1782986478Z',
+      timing: {
+        sessionElapsedSeconds: 61,
+        revision: 830,
+        observedAt: '1782986478Z',
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+    });
+    const stale = session({
+      status: 'cancelled',
+      sessionUpdatedAt: '1782986478Z',
+      timing: {
+        sessionElapsedSeconds: 47,
+        revision: 678,
+        observedAt: '1782986453Z',
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+      events: [
+        event({
+          seq: 900,
+          kind: 'textDelta',
+          content: 'late event metadata still applies',
+        }),
+      ],
+    });
+
+    const stabilized = stabilizeAcpSessionTimingForDisplay(current, stale);
+
+    expect(stabilized?.timing?.sessionElapsedSeconds).toBe(61);
+    expect(stabilized?.timing?.revision).toBe(830);
+    expect(stabilized?.events).toHaveLength(1);
+  });
+
+  it('accepts newer session timing by revision even if the elapsed value is lower', () => {
+    const current = session({
+      timing: {
+        sessionElapsedSeconds: 61,
+        revision: 830,
+        observedAt: '1782986478Z',
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+    });
+    const next = session({
+      timing: {
+        sessionElapsedSeconds: 2,
+        revision: 831,
+        observedAt: '1782986479Z',
+        activeTurnStartedAt: '1782986479Z',
+        activeTurnLastActivityAt: '1782986481Z',
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: false,
+      },
+    });
+
+    expect(stabilizeAcpSessionTimingForDisplay(current, next)?.timing?.sessionElapsedSeconds).toBe(2);
+  });
+
+  it('routes live timing patches through the same revision guard', () => {
+    const current = session({
+      timing: {
+        sessionElapsedSeconds: 83,
+        revision: 340,
+        observedAt: '1782987741Z',
+        activeTurnStartedAt: '1782987649Z',
+        activeTurnLastActivityAt: '1782987741Z',
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: false,
+      },
+    });
+    const staleLiveTiming = {
+      sessionElapsedSeconds: 68,
+      revision: 333,
+      observedAt: '1782987715Z',
+      activeTurnStartedAt: '1782987649Z',
+      activeTurnLastActivityAt: '1782987715Z',
+      permissionWaitStartedAt: null,
+      userWaitStartedAt: null,
+      waitReason: null,
+      paused: false,
+    };
+
+    const stabilized = stabilizeAcpSessionTimingPatchForDisplay(current, staleLiveTiming);
+
+    expect(stabilized?.timing?.sessionElapsedSeconds).toBe(83);
+    expect(stabilized?.timing?.revision).toBe(340);
+  });
+
+  it('does not carry timing across different ACP sessions', () => {
+    const previous = session({
+      sessionId: 'session-1',
+      sessionElapsedSeconds: 61,
+      timing: {
+        sessionElapsedSeconds: 61,
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: true,
+      },
+    });
+    const next = session({
+      sessionId: 'session-2',
+      sessionElapsedSeconds: 3,
+      timing: {
+        sessionElapsedSeconds: 3,
+        activeTurnStartedAt: '1Z',
+        activeTurnLastActivityAt: '4Z',
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: false,
+      },
+    });
+
+    expect(stabilizeAcpSessionTimingForDisplay(previous, next)?.timing?.sessionElapsedSeconds).toBe(3);
   });
 
   it('deduplicates repeated Gold Band user prompt snapshots with the same prompt id', () => {

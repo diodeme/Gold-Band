@@ -273,6 +273,7 @@ const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
+const METADATA_HYDRATION_COOLDOWN_MS = 2_000;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -308,6 +309,7 @@ const hiddenEventKinds = new Set([
   "permissionRequest",
   "elicitationRequest",
   "elicitationResponse",
+  "timingUpdate",
   "rawDiagnostic",
   "runtimeError",
 ]);
@@ -621,6 +623,8 @@ export const ACPChatDialog = forwardRef<
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
   const hydratedSessionKeysRef = useRef(new Set<string>());
+  const metadataHydrationRequestedAtRef = useRef<Map<string, number>>(new Map());
+  const metadataHydrationRetryTimerRef = useRef<number | null>(null);
   const hydrationInflightRef = useRef(false);
   const liveUpdatesPaused = Boolean(
     externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
@@ -657,7 +661,13 @@ export const ACPChatDialog = forwardRef<
   }, [runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {
-    setCurrentSession(session ?? null);
+    debugAcpTiming("prop-session", sessionIdentity, session ?? null);
+    debugAcpMetadata("prop-session", sessionIdentity, session ?? null);
+    setCurrentSession((previous) => {
+      const next = stabilizeAcpSessionTimingForDisplay(previous, session ?? null);
+      latestSessionRef.current = next;
+      return next;
+    });
     if (session) setLoadingInitialSession(false);
     if (!session) {
       const restored = restoreAcpLoadedEvents(
@@ -691,7 +701,7 @@ export const ACPChatDialog = forwardRef<
     });
     setHasOlderEvents((current) => current || session.eventPage.hasOlder);
     setHasNewerEvents((current) => current || session.eventPage.hasNewer);
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session, sessionIdentity]);
 
   useEffect(() => {
     const storedOptimisticEvents =
@@ -704,7 +714,13 @@ export const ACPChatDialog = forwardRef<
     const storedPromptEvent = latestSendingOptimisticEvent(
       storedOptimisticEvents,
     );
-    setCurrentSession(session ?? null);
+    debugAcpTiming("identity-session", sessionIdentity, session ?? null);
+    debugAcpMetadata("identity-session", sessionIdentity, session ?? null);
+    setCurrentSession((previous) => {
+      const next = stabilizeAcpSessionTimingForDisplay(previous, session ?? null);
+      latestSessionRef.current = next;
+      return next;
+    });
     setLoadingInitialSession(!session && isTauriRuntime());
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
@@ -738,12 +754,16 @@ export const ACPChatDialog = forwardRef<
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
     terminalSessionNotifiedRef.current = false;
-    latestSessionRef.current = session ?? null;
     sessionRefreshSeqRef.current += 1;
     hydratedSessionKeysRef.current.clear();
+    metadataHydrationRequestedAtRef.current.clear();
+    if (metadataHydrationRetryTimerRef.current !== null) {
+      window.clearTimeout(metadataHydrationRetryTimerRef.current);
+      metadataHydrationRetryTimerRef.current = null;
+    }
     hydrationInflightRef.current = false;
     setCanvasMode("chat");
-  }, [effectiveLoadedEventBufferLimit, sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, session, sessionIdentity]);
 
   useEffect(() => {
     loadedEventsRef.current = loadedEvents;
@@ -773,8 +793,19 @@ export const ACPChatDialog = forwardRef<
   );
   const visibleSession = useMemo(
     () =>
-      baseSession ? { ...baseSession, events: loadedEvents } : liveSessionShell,
-    [baseSession, liveSessionShell, loadedEvents],
+      baseSession
+        ? createVisibleAcpSession(
+            baseSession,
+            loadedEvents,
+            effectiveLoadedEventBufferLimit,
+          )
+        : liveSessionShell,
+    [
+      baseSession,
+      effectiveLoadedEventBufferLimit,
+      liveSessionShell,
+      loadedEvents,
+    ],
   );
   const pendingOptimisticPrompt = latestSendingOptimisticEvent(
     optimisticEvents.filter(
@@ -1019,18 +1050,6 @@ export const ACPChatDialog = forwardRef<
   );
   const composerProcessingKind: AcpProcessingKind = composerState.processingKind;
   const showComposerStatus = composerState.showStatus || composerSessionSeconds != null;
-  const composerStatusStartAt =
-    composerState.mode === "submitting" ||
-    composerState.mode === "stopping" ||
-    (activeAwaitingResponse && turnAccepted && !hasTurnResponse)
-      ? activeTurnStartedAt
-      : (composerLatestEvent?.startedAt ??
-        composerLatestEvent?.timestamp ??
-        activeTurnStartedAt);
-  const usageStepSeconds = useElapsedSeconds(
-    composerStatusActive && composerProcessingKind !== "sending",
-    composerStatusStartAt,
-  );
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
   const composerInputHint = composerHintText(
     composerState,
@@ -1059,9 +1078,15 @@ export const ACPChatDialog = forwardRef<
     [eventIdPrefix],
   );
 
-  const applySessionUpdate = useCallback((updated: AcpSessionVm | null) => {
-    const normalized = normalizeSessionUpdate(updated);
+  const applySessionUpdate = useCallback((updated: AcpSessionVm | null, source = "session-update") => {
+    const incoming = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
+    const normalized = stabilizeAcpSessionTimingForDisplay(previous, incoming);
+    if (incoming !== normalized) {
+      debugAcpTiming(`${source}:rejected-timing`, sessionIdentity, incoming);
+    }
+    debugAcpTiming(source, sessionIdentity, normalized);
+    debugAcpMetadata(source, sessionIdentity, normalized);
     const equivalent = sessionsEquivalent(previous, normalized);
     if (equivalent) return;
     latestSessionRef.current = normalized;
@@ -1081,7 +1106,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate]);
+  }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate, sessionIdentity]);
 
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
     if (!lifecycle) return;
@@ -1149,7 +1174,7 @@ export const ACPChatDialog = forwardRef<
       .then((updated) => {
         if (updated) {
           configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-          applySessionUpdate(updated);
+          applySessionUpdate(updated, "set-model-response");
         }
       })
       .catch((error) => {
@@ -1194,7 +1219,7 @@ export const ACPChatDialog = forwardRef<
       .then((updated) => {
         if (updated) {
           configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-          applySessionUpdate(updated);
+          applySessionUpdate(updated, "set-mode-response");
         }
       })
       .catch((error) => {
@@ -1214,30 +1239,24 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
-    const normalizedUpdates = updates
+    const normalizedEvents = updates
       .map((event) => normalizeEventUpdate(event))
-      .filter((event): event is AcpUiEventVm => {
-        if (!event) return false;
-        return (
-          isRenderableEvent(event) ||
-          event.kind === "permissionRequest" ||
-          event.kind === "elicitationRequest" ||
-          event.kind === "elicitationResponse"
-        );
-      });
-    if (normalizedUpdates.length === 0) return;
-    const latestTiming = latestSessionTimingFromEvents(normalizedUpdates);
+      .filter((event): event is AcpUiEventVm => Boolean(event));
+    if (normalizedEvents.length === 0) return;
+    const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     if (latestTiming) {
-      setCurrentSession((current) =>
-        current
-          ? {
-              ...current,
-              timing: latestTiming,
-              sessionElapsedSeconds: latestTiming.sessionElapsedSeconds,
-            }
-          : current,
-      );
+      debugAcpTiming("live-timing-update", sessionIdentity, {
+        sessionElapsedSeconds: latestTiming.sessionElapsedSeconds,
+        timing: latestTiming,
+      });
+      setCurrentSession((current) => {
+        const updated = stabilizeAcpSessionTimingPatchForDisplay(current, latestTiming);
+        latestSessionRef.current = updated;
+        return updated;
+      });
     }
+    const normalizedUpdates = liveTimelineUpdatesFromEvents(normalizedEvents);
+    if (normalizedUpdates.length === 0) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(false);
       const merged = mergeAcpEvents(events, normalizedUpdates);
@@ -1250,7 +1269,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
+  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate, sessionIdentity]);
 
   const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
     if (!event) return;
@@ -1269,7 +1288,11 @@ export const ACPChatDialog = forwardRef<
       applyEventUpdates(updates);
       return;
     }
-    startTransition(() => applyEventUpdates(updates));
+    const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
+    if (timingUpdates.length > 0) applyEventUpdates(timingUpdates);
+    if (timelineUpdates.length > 0) {
+      startTransition(() => applyEventUpdates(timelineUpdates));
+    }
   }, [applyEventUpdates]);
 
   const liveFlushDeferRemainingMs = useCallback(() => (
@@ -1331,6 +1354,10 @@ export const ACPChatDialog = forwardRef<
 
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
+      if (event.kind === "timingUpdate") {
+        applyEventUpdate(event);
+        return;
+      }
       const decision = decideAcpLiveEventFlush({
         coalescable: isCoalescableAcpLiveEvent(event),
         paused: liveUpdatesPausedRef.current,
@@ -1450,6 +1477,70 @@ export const ACPChatDialog = forwardRef<
       (event.outerAttemptId ?? null) === (outerAttemptId ?? null);
     void (async () => {
       const sessionKey = `${taskId}/${runId}/${roundId}/${nodeId}/${attemptId}/${outerNodeId ?? ""}/${outerAttemptId ?? ""}`;
+      const clearMetadataRetryTimer = () => {
+        if (metadataHydrationRetryTimerRef.current === null) return;
+        window.clearTimeout(metadataHydrationRetryTimerRef.current);
+        metadataHydrationRetryTimerRef.current = null;
+      };
+      const requestMetadataHydration = (source: string) => {
+        if (
+          hydratedSessionKeysRef.current.has(sessionKey) ||
+          hydrationInflightRef.current
+        ) {
+          return;
+        }
+        const now = Date.now();
+        const lastRequestedAt = metadataHydrationRequestedAtRef.current.get(sessionKey) ?? 0;
+        if (now - lastRequestedAt < METADATA_HYDRATION_COOLDOWN_MS) return;
+        metadataHydrationRequestedAtRef.current.set(sessionKey, now);
+        clearMetadataRetryTimer();
+        const latest = latestSessionRef.current;
+        debugAcpMetadata(source, sessionIdentity, latest ?? null);
+        hydrationInflightRef.current = true;
+        getAcpSession(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          {
+            pageSize: effectiveEventPageSize,
+            eventLimit: effectiveEventPageSize,
+          },
+          latest,
+          outerNodeId,
+          outerAttemptId,
+        )
+          .then((updated) => {
+            if (!active) return;
+            debugAcpMetadata("metadata-hydration-response", sessionIdentity, updated);
+            applySessionUpdate(updated, "metadata-hydration-response");
+            if (updated && isAcpInitialSessionReady(updated)) {
+              hydratedSessionKeysRef.current.add(sessionKey);
+              return;
+            }
+            if (!updated || (!isSessionTerminalStatus(updated.status) && runtimeActiveFromContext)) {
+              metadataHydrationRetryTimerRef.current = window.setTimeout(() => {
+                metadataHydrationRetryTimerRef.current = null;
+                requestMetadataHydration("metadata-hydration-retry");
+              }, METADATA_HYDRATION_COOLDOWN_MS);
+            }
+          })
+          .catch((error) => {
+            if (!active) return;
+            debugAcpMetadataError("metadata-hydration-error", sessionIdentity, error);
+            if (runtimeActiveFromContext) {
+              metadataHydrationRetryTimerRef.current = window.setTimeout(() => {
+                metadataHydrationRetryTimerRef.current = null;
+                requestMetadataHydration("metadata-hydration-retry");
+              }, METADATA_HYDRATION_COOLDOWN_MS);
+            }
+          })
+          .finally(() => {
+            hydrationInflightRef.current = false;
+          });
+      };
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
         if (event.event) {
@@ -1465,37 +1556,9 @@ export const ACPChatDialog = forwardRef<
           );
           if (
             missingMetadata &&
-            !hydratedSessionKeysRef.current.has(sessionKey) &&
-            !hydrationInflightRef.current
+            !hydratedSessionKeysRef.current.has(sessionKey)
           ) {
-            hydrationInflightRef.current = true;
-            getAcpSession(
-              projectId,
-              taskId,
-              runId,
-              roundId,
-              nodeId,
-              attemptId,
-              {
-                pageSize: effectiveEventPageSize,
-                eventLimit: effectiveEventPageSize,
-              },
-              latestSessionRef.current,
-              outerNodeId,
-              outerAttemptId,
-            )
-              .then((updated) => {
-                if (active && sessionRefreshSeqRef.current === refreshSeq) {
-                  applySessionUpdate(updated);
-                  if (updated && isAcpInitialSessionReady(updated)) {
-                    hydratedSessionKeysRef.current.add(sessionKey);
-                  }
-                }
-              })
-              .catch(() => {})
-              .finally(() => {
-                hydrationInflightRef.current = false;
-              });
+            requestMetadataHydration("metadata-hydration-request");
           }
         } else {
           flushOrSchedulePendingLiveEvents("sync");
@@ -1507,7 +1570,7 @@ export const ACPChatDialog = forwardRef<
               incoming.config = { ...incoming.config, currentModelId: cfg.currentModelId, currentModelName: cfg.currentModelName, currentModeId: cfg.currentModeId, currentModeName: cfg.currentModeName };
             }
           }
-          applySessionUpdate(incoming ?? null);
+          applySessionUpdate(incoming ?? null, "subscription-session");
         }
       });
       let retryAttempt = 0;
@@ -1529,7 +1592,7 @@ export const ACPChatDialog = forwardRef<
             outerAttemptId,
           );
           if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
-            applySessionUpdate(updated);
+            applySessionUpdate(updated, "initial-fetch");
             if (isAcpInitialSessionReady(updated) || isSessionTerminalStatus(updated.status)) {
               break;
             }
@@ -1548,6 +1611,10 @@ export const ACPChatDialog = forwardRef<
     return () => {
       flushPendingLiveEvents("sync");
       active = false;
+      if (metadataHydrationRetryTimerRef.current !== null) {
+        window.clearTimeout(metadataHydrationRetryTimerRef.current);
+        metadataHydrationRetryTimerRef.current = null;
+      }
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
         window.clearTimeout(liveEventFlushTimerRef.current);
@@ -1568,6 +1635,7 @@ export const ACPChatDialog = forwardRef<
     outerNodeId,
     roundId,
     runId,
+    runtimeActiveFromContext,
     taskId,
   ]);
 
@@ -1794,7 +1862,7 @@ export const ACPChatDialog = forwardRef<
         attPaths.length > 0 ? attPaths : undefined,
       );
       const updated = result.session ?? null;
-      if (updated) applySessionUpdate(updated);
+      if (updated) applySessionUpdate(updated, "submit-response");
       if (result.lifecycle) {
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
@@ -1937,7 +2005,7 @@ export const ACPChatDialog = forwardRef<
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      applySessionUpdate(result.session ?? null);
+      applySessionUpdate(result.session ?? null, "stop-response");
       flushPendingLiveEvents("sync");
       const finalSession = await getAcpSession(
         projectId,
@@ -1954,7 +2022,7 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(finalSession);
+      applySessionUpdate(finalSession, "stop-final-refresh");
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -2015,7 +2083,7 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(updated);
+      applySessionUpdate(updated, "permission-response");
     } catch (error) {
       setDismissedPermissionIds((current) => {
         const next = new Set(current);
@@ -2329,13 +2397,6 @@ export const ACPChatDialog = forwardRef<
               processingLabel={
                 usageCompact && composerStatusActive ? composerStatusLabel : null
               }
-              stepSeconds={
-                usageCompact
-                  ? composerStatusActive
-                    ? usageStepSeconds
-                    : null
-                  : null
-              }
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
@@ -2395,7 +2456,6 @@ export const ACPChatDialog = forwardRef<
                         <AcpComposerStatus
                           kind={composerProcessingKind}
                           active={composerStatusActive}
-                          startAt={composerStatusStartAt}
                           sessionSeconds={composerSessionSeconds}
                         />
                       ) : null}
@@ -3657,32 +3717,13 @@ const AssistantTimelineRow = memo(function AssistantTimelineRow({
 const AcpComposerStatus = memo(function AcpComposerStatus({
   kind,
   active,
-  startAt,
   sessionSeconds,
 }: {
   kind: AcpProcessingKind;
   active: boolean;
-  startAt?: string | null;
   sessionSeconds?: number | null;
 }) {
   const { t } = useTranslation();
-  const [stepStartAt, setStepStartAt] = useState<string | null>(
-    startAt ?? null,
-  );
-  const previousKind = useRef(kind);
-
-  useEffect(() => {
-    if (!active) return;
-    if (previousKind.current !== kind || !stepStartAt) {
-      previousKind.current = kind;
-      setStepStartAt(startAt ?? new Date().toISOString());
-    }
-  }, [active, kind, startAt, stepStartAt]);
-
-  const stepSeconds = useElapsedSeconds(
-    active && kind !== "sending",
-    stepStartAt ?? startAt,
-  );
   const label = processingLabel(t, kind);
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
@@ -3695,16 +3736,7 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
           <span className="font-medium text-foreground">{label}</span>
           {kind === "sending" ? (
             <AnimatedEllipsis />
-          ) : (
-            <span className="flex items-center gap-1.5">
-              <span className="text-muted-foreground/80">
-                {t("acp.timingStep")}
-              </span>
-              <span className="tabular-nums text-foreground/80">
-                {formatElapsedDuration(stepSeconds)}
-              </span>
-            </span>
-          )}
+          ) : null}
         </>
       ) : null}
       {sessionSeconds != null ? (
@@ -4409,43 +4441,13 @@ const RawFrameRow = memo(function RawFrameRow({
   );
 });
 
-function useElapsedSeconds(
-  active: boolean,
-  startAt?: string | null,
-  endAt?: string | null,
-) {
-  const fallbackStart = useRef(Date.now());
-  const startMs = parseAcpTimestamp(startAt) ?? fallbackStart.current;
-  const endMs = parseAcpTimestamp(endAt) ?? Date.now();
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active, startMs]);
-
-  return Math.max(0, Math.floor(((active ? now : endMs) - startMs) / 1000));
-}
-
 function useSessionTimingSeconds(
   timing: AcpSessionTimingVm | null | undefined,
   fallbackSeconds: number | null,
-  active: boolean,
+  _active: boolean,
 ) {
-  const anchorActive = Boolean(
-    timing &&
-      active &&
-      !timing.paused &&
-      timing.activeTurnLastActivityAt,
-  );
-  const anchorSeconds = useElapsedSeconds(
-    anchorActive,
-    timing?.activeTurnLastActivityAt,
-  );
   if (!timing) return fallbackSeconds;
-  return timing.sessionElapsedSeconds + (anchorActive ? anchorSeconds : 0);
+  return timing.sessionElapsedSeconds;
 }
 
 function firstResponseTimestampAfter(
@@ -5171,19 +5173,195 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
   };
 }
 
+function createVisibleAcpSession(
+  session: AcpSessionVm,
+  liveEvents: AcpUiEventVm[],
+  eventPageSize: number,
+): AcpSessionVm {
+  const mergedEvents = mergeAcpEvents(session.events, liveEvents);
+  const limitedEvents = limitAcpEvents(mergedEvents, "start", eventPageSize);
+  const first = limitedEvents[0] ?? null;
+  const last = limitedEvents.at(-1) ?? first;
+  return {
+    ...session,
+    events: limitedEvents,
+    eventPage: {
+      ...session.eventPage,
+      loadedCount: limitedEvents.length,
+      total: Math.max(session.eventPage.total, mergedEvents.length),
+      oldestSeq: first ? originalSeqFromAcpEvent(first) : session.eventPage.oldestSeq,
+      newestSeq: last ? originalSeqFromAcpEvent(last) : session.eventPage.newestSeq,
+      hasOlder: session.eventPage.hasOlder || limitedEvents.length < mergedEvents.length,
+      oldestCursor: first
+        ? formatTimelineCursor(originalSeqFromAcpEvent(first))
+        : session.eventPage.oldestCursor,
+      newestCursor: last
+        ? formatTimelineCursor(originalSeqFromAcpEvent(last))
+        : session.eventPage.newestCursor,
+    },
+  };
+}
+
+function debugAcpTiming(
+  source: string,
+  sessionIdentity: string,
+  value:
+    | (Partial<Pick<
+        AcpSessionVm,
+        "sessionElapsedSeconds" | "timing" | "status" | "sessionUpdatedAt" | "events"
+      >> | null)
+    | undefined,
+) {
+  if (!isAcpTimingDebugEnabled()) return;
+  const timing = value?.timing ?? null;
+  console.debug("[GoldBand][ACP timing]", {
+    source,
+    sessionIdentity,
+    seconds: timing?.sessionElapsedSeconds ?? value?.sessionElapsedSeconds ?? null,
+    status: value?.status ?? null,
+    sessionUpdatedAt: value?.sessionUpdatedAt ?? null,
+    eventCount: value?.events?.length ?? null,
+    revision: timing?.revision ?? null,
+    observedAt: timing?.observedAt ?? null,
+    paused: timing?.paused ?? null,
+    waitReason: timing?.waitReason ?? null,
+    timing,
+  });
+}
+
+function isAcpTimingDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("goldBand.debug.acpTiming") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function debugAcpMetadata(
+  source: string,
+  sessionIdentity: string,
+  session: Partial<
+    Pick<AcpSessionVm, "systemPromptAppend" | "config" | "events" | "status" | "sessionUpdatedAt">
+  > | null | undefined,
+) {
+  if (!isAcpMetadataDebugEnabled()) return;
+  const config = session?.config ?? null;
+  console.debug("[GoldBand][ACP metadata]", {
+    source,
+    sessionIdentity,
+    status: session?.status ?? null,
+    sessionUpdatedAt: session?.sessionUpdatedAt ?? null,
+    hasMetadata: hasAcpSessionMetadata({
+      systemPromptAppend: session?.systemPromptAppend,
+      config,
+    }),
+    hasSystemPromptAppend: Boolean(session?.systemPromptAppend?.trim()),
+    systemPromptLength: session?.systemPromptAppend?.length ?? null,
+    currentModelId: config?.currentModelId ?? null,
+    currentModelName: config?.currentModelName ?? null,
+    currentModeId: config?.currentModeId ?? null,
+    currentModeName: config?.currentModeName ?? null,
+    modelChoiceCount:
+      countAcpConfigChoices(config?.models, "availableModels") ??
+      countSelectConfigChoices(config?.configOptions, "model"),
+    modeChoiceCount:
+      countAcpConfigChoices(config?.modes, "availableModes") ??
+      countSelectConfigChoices(config?.configOptions, "mode"),
+    configOptionCount: Array.isArray(config?.configOptions)
+      ? config.configOptions.length
+      : null,
+    eventCount: session?.events?.length ?? null,
+    hasGoldBandUserPrompt: session?.events?.some(isGoldBandUserPrompt) ?? null,
+  });
+}
+
+function debugAcpMetadataError(
+  source: string,
+  sessionIdentity: string,
+  error: unknown,
+) {
+  if (!isAcpMetadataDebugEnabled()) return;
+  console.warn("[GoldBand][ACP metadata]", {
+    source,
+    sessionIdentity,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function isAcpMetadataDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    return (
+      window.localStorage.getItem("goldBand.debug.acpTiming") === "1" ||
+      window.localStorage.getItem("goldBand.debug.acpMetadata") === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function countAcpConfigChoices(value: unknown, key: string): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const choices = (value as Record<string, unknown>)[key];
+  return Array.isArray(choices) ? choices.length : null;
+}
+
+function countSelectConfigChoices(value: unknown, category: string): number | null {
+  if (!Array.isArray(value)) return null;
+  const option = value.find((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const configOption = item as Record<string, unknown>;
+    return configOption.id === category || configOption.category === category;
+  });
+  if (!option || typeof option !== "object" || Array.isArray(option)) return null;
+  const choices = (option as Record<string, unknown>).options;
+  return Array.isArray(choices) ? choices.length : null;
+}
+
 function latestSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTimingVm | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const timing = events[index]?.timing;
     if (!timing) continue;
     return {
       sessionElapsedSeconds: timing.sessionElapsedSeconds,
+      revision: timing.revision ?? null,
+      observedAt: timing.observedAt ?? null,
       activeTurnStartedAt: timing.activeTurnStartedAt ?? null,
       activeTurnLastActivityAt: timing.activeTurnLastActivityAt ?? null,
       permissionWaitStartedAt: timing.permissionWaitStartedAt ?? null,
+      userWaitStartedAt: timing.userWaitStartedAt ?? null,
+      waitReason: timing.waitReason ?? null,
       paused: timing.paused,
     };
   }
   return null;
+}
+
+function latestLiveSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTimingVm | null {
+  return latestSessionTimingFromEvents(
+    events.filter((event) => event.kind === "timingUpdate"),
+  );
+}
+
+function partitionAcpLiveTimingUpdates(events: AcpUiEventVm[]) {
+  const timingUpdates: AcpUiEventVm[] = [];
+  const timelineUpdates: AcpUiEventVm[] = [];
+  for (const event of events) {
+    if (event.kind === "timingUpdate") timingUpdates.push(event);
+    else timelineUpdates.push(event);
+  }
+  return { timingUpdates, timelineUpdates };
+}
+
+function liveTimelineUpdatesFromEvents(events: AcpUiEventVm[]) {
+  return events.filter(
+    (event) =>
+      isRenderableEvent(event) ||
+      event.kind === "permissionRequest" ||
+      event.kind === "elicitationRequest" ||
+      event.kind === "elicitationResponse",
+  );
 }
 
 function calculateSessionElapsedSeconds(events: AcpUiEventVm[], status: string) {
@@ -5238,6 +5416,104 @@ function mergeOptimisticSession(
   return { ...session, events: [...session.events, ...pending] };
 }
 
+function stabilizeAcpSessionTimingForDisplay(
+  previous: AcpSessionVm | null | undefined,
+  next: AcpSessionVm | null | undefined,
+): AcpSessionVm | null {
+  if (!next) return next ?? null;
+  if (!previous || !isSameAcpSessionForTiming(previous, next)) return next;
+  const previousSeconds = acpSessionDisplaySeconds(previous);
+  const nextSeconds = acpSessionDisplaySeconds(next);
+  if (shouldAcceptAcpSessionTiming(previous.timing, next.timing)) {
+    return next;
+  }
+  if (
+    hasVersionedAcpSessionTiming(previous.timing) ||
+    hasVersionedAcpSessionTiming(next.timing)
+  ) {
+    return mergeAcpSessionWithPreviousTiming(previous, next);
+  }
+  if (previousSeconds == null || nextSeconds == null || nextSeconds >= previousSeconds) {
+    return next;
+  }
+  return mergeAcpSessionWithPreviousTiming(previous, next);
+}
+
+function stabilizeAcpSessionTimingPatchForDisplay(
+  previous: AcpSessionVm | null | undefined,
+  timing: AcpSessionTimingVm,
+): AcpSessionVm | null {
+  if (!previous) return previous ?? null;
+  return stabilizeAcpSessionTimingForDisplay(previous, {
+    ...previous,
+    sessionElapsedSeconds: timing.sessionElapsedSeconds,
+    timing,
+  });
+}
+
+function mergeAcpSessionWithPreviousTiming(previous: AcpSessionVm, next: AcpSessionVm) {
+  const previousSeconds = acpSessionDisplaySeconds(previous);
+  const nextSeconds = acpSessionDisplaySeconds(next);
+  const stableSeconds = Math.max(
+    previousSeconds ?? 0,
+    nextSeconds ?? 0,
+    next.sessionElapsedSeconds ?? 0,
+  );
+  return {
+    ...next,
+    sessionElapsedSeconds: stableSeconds,
+    timing: next.timing
+      ? {
+          ...next.timing,
+          ...(previous.timing ?? {}),
+          sessionElapsedSeconds: stableSeconds,
+        }
+      : previous.timing
+        ? {
+            ...previous.timing,
+            sessionElapsedSeconds: stableSeconds,
+          }
+        : null,
+  };
+}
+
+function shouldAcceptAcpSessionTiming(
+  previous: AcpSessionTimingVm | null | undefined,
+  next: AcpSessionTimingVm | null | undefined,
+) {
+  if (!next || !previous) return true;
+  const previousRevision = previous.revision ?? null;
+  const nextRevision = next.revision ?? null;
+  if (previousRevision != null && nextRevision != null) {
+    if (nextRevision !== previousRevision) return nextRevision > previousRevision;
+    const previousObservedAt = parseAcpTimestamp(previous.observedAt);
+    const nextObservedAt = parseAcpTimestamp(next.observedAt);
+    if (previousObservedAt != null && nextObservedAt != null) {
+      return nextObservedAt >= previousObservedAt;
+    }
+    return true;
+  }
+  if (previousRevision != null && nextRevision == null) return false;
+  const previousSeconds = previous.sessionElapsedSeconds;
+  const nextSeconds = next.sessionElapsedSeconds;
+  return previousSeconds == null || nextSeconds == null || nextSeconds >= previousSeconds;
+}
+
+function hasVersionedAcpSessionTiming(timing: AcpSessionTimingVm | null | undefined) {
+  return timing?.revision != null;
+}
+
+function isSameAcpSessionForTiming(previous: AcpSessionVm, next: AcpSessionVm) {
+  if (previous.sessionId && next.sessionId) {
+    return previous.sessionId === next.sessionId;
+  }
+  return true;
+}
+
+function acpSessionDisplaySeconds(session: Pick<AcpSessionVm, "timing" | "sessionElapsedSeconds">) {
+  return session.timing?.sessionElapsedSeconds ?? session.sessionElapsedSeconds ?? null;
+}
+
 function isAcpInitialSessionReady(session: AcpSessionVm) {
   return (
     hasAcpSessionMetadata({
@@ -5280,10 +5556,18 @@ export {
   timelineEventKey,
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  createLiveAcpSessionShell,
+  createVisibleAcpSession,
+  latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
+  liveTimelineUpdatesFromEvents,
+  partitionAcpLiveTimingUpdates,
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,
+  stabilizeAcpSessionTimingForDisplay,
+  stabilizeAcpSessionTimingPatchForDisplay,
+  useSessionTimingSeconds,
 };
 
 export function createAcpPromptId() {

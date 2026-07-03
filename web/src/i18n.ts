@@ -836,7 +836,6 @@ const resources = {
         responding: "回复生成中",
         stepElapsed: "当前 {{duration}}",
         sessionElapsed: "会话累计 {{duration}}",
-        timingStep: "当前用时",
         timingSession: "会话累计",
         sessionFailed: "ACP 会话失败",
         missingSessionReason:
@@ -2031,7 +2030,6 @@ const resources = {
         responding: "Generating response",
         stepElapsed: "Current {{duration}}",
         sessionElapsed: "Session {{duration}}",
-        timingStep: "Step",
         timingSession: "Session",
         sessionFailed: "ACP session failed",
         missingSessionReason:

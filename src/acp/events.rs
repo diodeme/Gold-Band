@@ -116,11 +116,19 @@ pub struct AcpUiEvent {
 pub struct AcpTimingPatch {
     pub session_elapsed_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn_started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn_last_activity_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_reason: Option<String>,
     pub paused: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -131,11 +139,19 @@ pub struct AcpTimingPatch {
 pub struct AcpSessionTiming {
     pub session_elapsed_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn_started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_turn_last_activity_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_reason: Option<String>,
     pub paused: bool,
 }
 
@@ -144,10 +160,12 @@ pub struct AcpTimingState {
     elapsed_seconds: u64,
     active_turn_started_at: Option<u64>,
     active_turn_last_activity_at: Option<u64>,
+    revision: Option<u64>,
     saw_turn: bool,
     pending_permission_ids: HashSet<String>,
-    permission_wait_started_at: Option<u64>,
-    permission_wait_seconds: u64,
+    pending_elicitation_ids: HashSet<String>,
+    user_wait_started_at: Option<u64>,
+    user_wait_seconds: u64,
 }
 
 impl AcpTimingState {
@@ -162,6 +180,11 @@ impl AcpTimingState {
     }
 
     pub fn observe_event(&mut self, event: &AcpUiEvent) {
+        self.revision = Some(
+            self.revision
+                .unwrap_or_default()
+                .max(timing_revision_for_event(event)),
+        );
         if is_gold_band_user_prompt_event(event) {
             self.elapsed_seconds = self
                 .elapsed_seconds
@@ -169,8 +192,9 @@ impl AcpTimingState {
             self.active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
             self.active_turn_last_activity_at = None;
             self.pending_permission_ids.clear();
-            self.permission_wait_started_at = None;
-            self.permission_wait_seconds = 0;
+            self.pending_elicitation_ids.clear();
+            self.user_wait_started_at = None;
+            self.user_wait_seconds = 0;
             self.saw_turn = self.active_turn_started_at.is_some();
             return;
         }
@@ -181,18 +205,38 @@ impl AcpTimingState {
             return;
         };
         self.observe_permission_event(event, timestamp);
+        self.observe_elicitation_event(event, timestamp);
         if is_session_elapsed_progress_event(event) {
             self.active_turn_last_activity_at = Some(timestamp);
         }
     }
 
     pub fn patch_at(&self, now: u64, reason: impl Into<String>) -> Option<AcpTimingPatch> {
-        self.snapshot_at(true, Some(now))
+        self.patch_at_with_revision(
+            now,
+            reason,
+            self.revision,
+            Some(format_epoch_timestamp(now)),
+        )
+    }
+
+    pub fn patch_at_with_revision(
+        &self,
+        now: u64,
+        reason: impl Into<String>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpTimingPatch> {
+        self.snapshot_at_with_revision(true, Some(now), revision, observed_at)
             .map(|snapshot| AcpTimingPatch {
                 session_elapsed_seconds: snapshot.session_elapsed_seconds,
+                revision: snapshot.revision,
+                observed_at: snapshot.observed_at,
                 active_turn_started_at: snapshot.active_turn_started_at,
                 active_turn_last_activity_at: snapshot.active_turn_last_activity_at,
                 permission_wait_started_at: snapshot.permission_wait_started_at,
+                user_wait_started_at: snapshot.user_wait_started_at,
+                wait_reason: snapshot.wait_reason,
                 paused: snapshot.paused,
                 reason: Some(reason.into()),
             })
@@ -202,14 +246,33 @@ impl AcpTimingState {
         self.snapshot_at(session_active, None)
     }
 
+    pub fn terminal_snapshot(&self) -> Option<AcpSessionTiming> {
+        self.terminal_snapshot_at(None)
+    }
+
     pub fn snapshot_at(&self, session_active: bool, now: Option<u64>) -> Option<AcpSessionTiming> {
+        self.snapshot_at_with_revision(
+            session_active,
+            now,
+            self.revision,
+            now.map(format_epoch_timestamp),
+        )
+    }
+
+    pub fn snapshot_at_with_revision(
+        &self,
+        session_active: bool,
+        now: Option<u64>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpSessionTiming> {
         if !self.saw_turn {
             return None;
         }
-        let paused = self.permission_wait_started_at.is_some();
+        let paused = self.user_wait_started_at.is_some();
         let anchor = if session_active {
             if paused {
-                self.permission_wait_started_at
+                self.user_wait_started_at
                     .or(self.active_turn_last_activity_at)
                     .or(self.active_turn_started_at)
             } else {
@@ -218,21 +281,51 @@ impl AcpTimingState {
         } else {
             None
         };
-        let session_elapsed_seconds = self.elapsed_seconds.saturating_add(if session_active {
+        let current_turn_elapsed_seconds = if session_active {
             self.finish_current_turn(true, anchor)
         } else {
             self.finish_current_turn(false, None)
-        });
+        };
+        let session_elapsed_seconds = self
+            .elapsed_seconds
+            .saturating_add(current_turn_elapsed_seconds);
         Some(AcpSessionTiming {
             session_elapsed_seconds,
+            revision,
+            observed_at,
             active_turn_started_at: session_active
                 .then_some(self.active_turn_started_at)
                 .flatten()
                 .map(format_epoch_timestamp),
             active_turn_last_activity_at: anchor.map(format_epoch_timestamp),
-            permission_wait_started_at: self.permission_wait_started_at.map(format_epoch_timestamp),
+            permission_wait_started_at: self
+                .user_wait_started_at
+                .filter(|_| !self.pending_permission_ids.is_empty())
+                .map(format_epoch_timestamp),
+            user_wait_started_at: self.user_wait_started_at.map(format_epoch_timestamp),
+            wait_reason: self.wait_reason().map(str::to_string),
             paused: paused || !session_active,
         })
+    }
+
+    pub fn terminal_snapshot_at(&self, now: Option<u64>) -> Option<AcpSessionTiming> {
+        self.terminal_snapshot_at_with_revision(now, self.revision, now.map(format_epoch_timestamp))
+    }
+
+    pub fn terminal_snapshot_at_with_revision(
+        &self,
+        now: Option<u64>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpSessionTiming> {
+        let mut snapshot = self.snapshot_at_with_revision(true, now, revision, observed_at)?;
+        snapshot.active_turn_started_at = None;
+        snapshot.active_turn_last_activity_at = None;
+        snapshot.permission_wait_started_at = None;
+        snapshot.user_wait_started_at = None;
+        snapshot.wait_reason = None;
+        snapshot.paused = true;
+        Some(snapshot)
     }
 
     fn finish_current_turn(&self, session_active: bool, now: Option<u64>) -> u64 {
@@ -246,13 +339,13 @@ impl AcpTimingState {
         };
         let base_elapsed = end_at.saturating_sub(started_at);
         base_elapsed.saturating_sub(
-            self.permission_wait_seconds
-                .saturating_add(self.open_permission_wait(end_at)),
+            self.user_wait_seconds
+                .saturating_add(self.open_user_wait(end_at)),
         )
     }
 
-    fn open_permission_wait(&self, end_at: u64) -> u64 {
-        self.permission_wait_started_at
+    fn open_user_wait(&self, end_at: u64) -> u64 {
+        self.user_wait_started_at
             .map(|started_at| end_at.saturating_sub(started_at))
             .unwrap_or_default()
     }
@@ -267,23 +360,105 @@ impl AcpTimingState {
             .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
         let request_id = canonical_permission_request_id(event);
         if is_pending {
-            let was_empty = self.pending_permission_ids.is_empty();
-            if self.pending_permission_ids.insert(request_id) && was_empty {
-                self.permission_wait_started_at = Some(timestamp);
+            let was_waiting = self.is_waiting_for_user();
+            if self.pending_permission_ids.insert(request_id) && !was_waiting {
+                self.user_wait_started_at = Some(timestamp);
             }
             return;
         }
         if !self.pending_permission_ids.remove(&request_id) {
+            if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                self.add_closed_user_wait(started_at, timestamp);
+            }
             return;
         }
-        if self.pending_permission_ids.is_empty() {
-            if let Some(started_at) = self.permission_wait_started_at.take() {
-                self.permission_wait_seconds = self
-                    .permission_wait_seconds
-                    .saturating_add(timestamp.saturating_sub(started_at));
+        self.close_user_wait_if_idle(timestamp);
+    }
+
+    fn observe_elicitation_event(&mut self, event: &AcpUiEvent, timestamp: u64) {
+        match event.kind.as_str() {
+            "elicitationRequest"
+                if event
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("pending")) =>
+            {
+                let was_waiting = self.is_waiting_for_user();
+                if self.pending_elicitation_ids.insert(event.id.clone()) && !was_waiting {
+                    self.user_wait_started_at = Some(timestamp);
+                }
             }
+            "elicitationResponse" => {
+                let raw_id = event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| event.id.trim_end_matches("-response").to_string());
+                if self.pending_elicitation_ids.remove(&raw_id) {
+                    self.close_user_wait_if_idle(timestamp);
+                } else if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            "elicitationRequest" => {
+                if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            _ => {}
         }
     }
+
+    fn is_waiting_for_user(&self) -> bool {
+        !self.pending_permission_ids.is_empty() || !self.pending_elicitation_ids.is_empty()
+    }
+
+    fn close_user_wait_if_idle(&mut self, timestamp: u64) {
+        if self.is_waiting_for_user() {
+            return;
+        }
+        if let Some(started_at) = self.user_wait_started_at.take() {
+            self.user_wait_seconds = self
+                .user_wait_seconds
+                .saturating_add(timestamp.saturating_sub(started_at));
+        }
+    }
+
+    fn add_closed_user_wait(&mut self, started_at: u64, ended_at: u64) {
+        if ended_at <= started_at {
+            return;
+        }
+        let effective_end = self
+            .user_wait_started_at
+            .map(|open_started_at| ended_at.min(open_started_at))
+            .unwrap_or(ended_at);
+        if effective_end <= started_at {
+            return;
+        }
+        self.user_wait_seconds = self
+            .user_wait_seconds
+            .saturating_add(effective_end.saturating_sub(started_at));
+    }
+
+    fn wait_reason(&self) -> Option<&'static str> {
+        if !self.pending_permission_ids.is_empty() {
+            Some("permission")
+        } else if !self.pending_elicitation_ids.is_empty() {
+            Some("elicitation")
+        } else {
+            None
+        }
+    }
+}
+
+fn compacted_wait_started_at(event: &AcpUiEvent, ended_at: u64) -> Option<u64> {
+    let started_at = event
+        .started_at
+        .as_deref()
+        .and_then(parse_epoch_timestamp)?;
+    (started_at < ended_at).then_some(started_at)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +510,14 @@ fn parse_epoch_timestamp(value: &str) -> Option<u64> {
 
 fn format_epoch_timestamp(value: u64) -> String {
     format!("{value}Z")
+}
+
+fn timing_revision_for_event(event: &AcpUiEvent) -> u64 {
+    event
+        .ended_seq
+        .or(event.started_seq)
+        .unwrap_or(event.seq)
+        .max(event.seq)
 }
 
 fn current_epoch_seconds() -> u64 {
@@ -964,8 +1147,9 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, append_raw_frame, append_timeline_patch,
-        extract_usage_fields, kind_to_ui_kind, load_timeline_items, permission_request_event,
-        user_prompt_event, write_timeline_items,
+        elicitation_request_event, elicitation_response_event, extract_usage_fields,
+        kind_to_ui_kind, load_timeline_items, permission_request_event, user_prompt_event,
+        write_timeline_items,
     };
     use serde_json::json;
 
@@ -1273,6 +1457,28 @@ mod tests {
         event
     }
 
+    fn elicitation_request_event_at(seq: u64, elicitation_id: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = elicitation_request_event(
+            seq,
+            elicitation_id.to_string(),
+            "Choose".to_string(),
+            json!({ "type": "object" }),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event
+    }
+
+    fn elicitation_response_event_at(seq: u64, elicitation_id: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = elicitation_response_event(
+            seq,
+            elicitation_id.to_string(),
+            "accept".to_string(),
+            Some(json!({})),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event
+    }
+
     #[test]
     fn acp_timing_patch_uses_last_activity_anchor() {
         let mut state = AcpTimingState::default();
@@ -1282,6 +1488,8 @@ mod tests {
         let patch = state.patch_at(112, "active").unwrap();
 
         assert_eq!(patch.session_elapsed_seconds, 12);
+        assert_eq!(patch.revision, Some(2));
+        assert_eq!(patch.observed_at.as_deref(), Some("112Z"));
         assert_eq!(patch.active_turn_started_at.as_deref(), Some("100Z"));
         assert_eq!(patch.active_turn_last_activity_at.as_deref(), Some("112Z"));
         assert!(!patch.paused);
@@ -1300,6 +1508,53 @@ mod tests {
     }
 
     #[test]
+    fn acp_timing_terminal_snapshot_counts_prompt_with_only_live_ticks() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&prompt_event_at(3, 139));
+
+        let snapshot = state.terminal_snapshot_at(Some(148)).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 19);
+        assert_eq!(snapshot.revision, Some(3));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("148Z"));
+        assert!(snapshot.paused);
+        assert!(snapshot.active_turn_started_at.is_none());
+        assert!(snapshot.active_turn_last_activity_at.is_none());
+    }
+
+    #[test]
+    fn acp_timing_terminal_snapshot_accepts_synthetic_revision() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+
+        let snapshot = state
+            .terminal_snapshot_at_with_revision(Some(120), Some(99), Some("120Z".to_string()))
+            .unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 20);
+        assert_eq!(snapshot.revision, Some(99));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("120Z"));
+    }
+
+    #[test]
+    fn acp_timing_terminal_snapshot_excludes_open_user_wait() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&permission_event_at(2, "permission-1", "pending", 105));
+
+        let snapshot = state.terminal_snapshot_at(Some(150)).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 5);
+        assert_eq!(snapshot.revision, Some(2));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("150Z"));
+        assert!(snapshot.paused);
+        assert!(snapshot.user_wait_started_at.is_none());
+        assert!(snapshot.wait_reason.is_none());
+    }
+
+    #[test]
     fn acp_timing_permission_wait_pauses_and_is_excluded() {
         let mut state = AcpTimingState::default();
         state.observe_event(&prompt_event_at(1, 100));
@@ -1309,8 +1564,45 @@ mod tests {
         let waiting = state.patch_at(120, "permission-wait").unwrap();
         assert_eq!(waiting.session_elapsed_seconds, 20);
         assert!(waiting.paused);
+        assert_eq!(waiting.wait_reason.as_deref(), Some("permission"));
 
         state.observe_event(&permission_event_at(4, "permission-1", "selected", 170));
+        state.observe_event(&session_update_event_at(5, "agent_message_chunk", 180));
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 30);
+    }
+
+    #[test]
+    fn acp_timing_reconstructs_compacted_permission_wait() {
+        let mut selected = permission_event_at(3, "permission-1", "selected", 170);
+        selected.started_at = Some("120Z".to_string());
+        selected.ended_at = Some("170Z".to_string());
+
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&selected);
+        state.observe_event(&session_update_event_at(4, "agent_message_chunk", 180));
+
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 30);
+    }
+
+    #[test]
+    fn acp_timing_elicitation_wait_pauses_and_is_excluded() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&elicitation_request_event_at(3, "elicit-1", 120));
+
+        let waiting = state.patch_at(150, "tick").unwrap();
+        assert_eq!(waiting.session_elapsed_seconds, 20);
+        assert!(waiting.paused);
+        assert_eq!(waiting.wait_reason.as_deref(), Some("elicitation"));
+
+        state.observe_event(&elicitation_response_event_at(4, "elicit-1", 170));
         state.observe_event(&session_update_event_at(5, "agent_message_chunk", 180));
         let snapshot = state.snapshot_at(false, None).unwrap();
 

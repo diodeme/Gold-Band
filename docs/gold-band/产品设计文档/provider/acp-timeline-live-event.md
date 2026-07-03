@@ -35,9 +35,12 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 空 `content` 只能作为初始化态，不得清空已有非空内容。
 - 非流式事件到达前，必须先 flush pending stream buffer，保证事件顺序和可见内容一致。
 - session 等价判断必须覆盖整个事件窗口，不能只比较最后一条事件。
+- 完整 `AcpSessionVm` 快照到达后，`systemPromptAppend`、`config/models/modes/configOptions` 和 snapshot 中的 timeline events 是当前会话展示的事实来源；实时 `loadedEvents` 只能与 snapshot events 合并，不能覆盖或清空 snapshot events。`createLiveAcpSessionShell` 只允许作为没有 base session 时的临时壳。
+- Gold Band synthetic user prompt 允许由 session-ready snapshot 送达而不单独发送 live event。前端可见事件窗口必须合并 snapshot prompt 与后续 live event，避免实时阶段缺用户消息、停止/刷新后才补齐。
 
 ## 验收标准
 
 - 实时流式会话中，文本气泡和 thought 内容持续补齐。
+- 实时流式会话中，首个 Gold Band 用户消息、系统提示词入口和模型/权限配置在 session-ready 快照到达后立即可见。
 - 停止会话前后，同一消息内容一致。
 - 强刷后从磁盘恢复的会话内容与实时可见内容一致。

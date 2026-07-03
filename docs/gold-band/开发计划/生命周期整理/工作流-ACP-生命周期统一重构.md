@@ -38,7 +38,9 @@
 - 新旧 UI 的工作流 attempt composer / Round 详情继续发送已统一收敛到 `submit_conversation_prompt`；`send_acp_prompt` 保留为非 runtime 生命周期的窄入口，并在 paused/resumable/current workflow attempt 命中时拒绝直接 ACP prompt，防止绕过 runtime。
 - `stop_active_session` 返回体与 ACP session update event 已附带最新 `lifecycle`，前端收到停止响应或 session update 时可立即更新 composer 和 session tree，不再只等待下一轮完整 run snapshot 收敛。
 - 会话页的 lifecycle-only patch 已同步覆盖 `workflowGraph`：继续/停止命令即使只返回 lifecycle、不返回新 session payload，也会立即更新工作流查看抽屉中的 graph node/attempt 状态，避免 composer 已恢复运行但抽屉节点仍显示暂停。
-- compact 用量栏已统一按 composer lifecycle active 展示运行态：`launching-next-node` 这类 ACP 已 terminal、runtime 仍 active 的阶段也显示旋转状态、当前用时、会话累计与 token 信息。
+- compact 用量栏已统一按 composer lifecycle active 展示运行态：`launching-next-node` 这类 ACP 已 terminal、runtime 仍 active 的阶段也显示旋转状态、会话累计与 token 信息。
+- 活跃 ACP session 的会话累计以 `getAcpSession` 后端 VM 扫描出的当前净累计为权威值，不再让 stale snapshot timing 在切换会话、权限响应或刷新恢复时短暂覆盖实时累计；终态 session 继续使用 snapshot timing，但 terminal snapshot 写入按 prompt 结束 / cancel 当前时刻结算当前 turn，避免只有 live-only tick 的运行片段在停止后丢失。
+- 同一 ACP session 的 stop response、subscription session、final refresh 与 live-only `timingUpdate` 可能乱序到达；后端 timing 携带 `revision` / `observedAt`，前端 session reducer 接受 status/events/metadata 更新，但只接受较新 revision 的 timing，缺少 revision 的旧历史数据才使用秒数单调保护。后端重放 compacted permission / elicitation 事件时使用 `startedAt -> endedAt(timestamp)` 扣除已闭合用户等待，避免权限申请被压缩成 selected 单事件后把等待时间重新算进会话累计。
 - 生命周期别名清理：`WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 已从 `src/app/mod.rs` 与 `src/app/observability.rs` 删除，`metrics.rs` 直接使用 `RuntimeLifecycleEvent` 命名。
 - 系统通知事件收敛：通知 subscriber 不再直接消费 `RunPaused`，改为消费语义事件 `InterventionRequested` 与 `RunCompleted`；新增 `RuntimeInterventionKind` 枚举区分人工确认、权限请求、错误阻塞、进程中断四种干预类型。
 - ACP 权限请求通知旁路移除：`commands.rs` 中的 `maybe_emit_permission_intervention` 不再直接调用 OS toast，改为通过 lifecycle bus 发布 `InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。

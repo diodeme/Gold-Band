@@ -25,15 +25,12 @@ describe("AcpUsagePanel", () => {
         isRunning: true,
         compact: true,
         processingLabel: "拉起下一节点中",
-        stepSeconds: 40,
         sessionSeconds: 141,
       }),
     );
 
     expect(html).toContain("animate-spin");
     expect(html).toContain("拉起下一节点中");
-    expect(html).toContain("acp.timingStep");
-    expect(html).toContain("40s");
     expect(html).toContain("acp.timingSession");
     expect(html).toContain("2m 21s");
     expect(html).toContain("32.0K / 1.0M");

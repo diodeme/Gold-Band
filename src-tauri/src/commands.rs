@@ -1523,6 +1523,26 @@ fn emit_acp_update(
     );
 }
 
+fn acp_live_event_context(
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> gold_band::app::AcpLiveEventContext {
+    gold_band::app::AcpLiveEventContext {
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id,
+        outer_attempt_id,
+    }
+}
+
 #[tauri::command]
 pub fn get_acp_session(
     state: State<'_, DesktopState>,
@@ -1812,6 +1832,15 @@ pub async fn send_acp_prompt(
                 project_id_for_spawn.clone(),
                 Some(app.lifecycle_bus.clone()),
             );
+            let session_update = app.acp_session_update_for(acp_live_event_context(
+                &task_id_for_live,
+                &run_id_for_live,
+                &round_id_for_live,
+                &node_id_for_live,
+                &attempt_id_for_live,
+                outer_node_id_for_live.clone(),
+                outer_attempt_id_for_live.clone(),
+            ));
             client::run_prompt(
                 provider,
                 &agent_config.adapter,
@@ -1829,15 +1858,15 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_target_size_bytes,
                 Some(&|event| {
                     live_update(
-                        gold_band::app::AcpLiveEventContext {
-                            task_id: task_id_for_live.clone(),
-                            run_id: run_id_for_live.clone(),
-                            round_id: round_id_for_live.clone(),
-                            node_id: node_id_for_live.clone(),
-                            attempt_id: attempt_id_for_live.clone(),
-                            outer_node_id: outer_node_id_for_live.clone(),
-                            outer_attempt_id: outer_attempt_id_for_live.clone(),
-                        },
+                        acp_live_event_context(
+                            &task_id_for_live,
+                            &run_id_for_live,
+                            &round_id_for_live,
+                            &node_id_for_live,
+                            &attempt_id_for_live,
+                            outer_node_id_for_live.clone(),
+                            outer_attempt_id_for_live.clone(),
+                        ),
                         event.clone(),
                     )
                 }),
@@ -1845,7 +1874,7 @@ pub async fn send_acp_prompt(
                     eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
                     Vec::new()
                 }),
-                None, // session_update
+                session_update.as_ref().map(|callback| callback as _),
                 Some(client::RuntimeStopProbe {
                     run_file: app.paths.run_file(&task_id, &run_id),
                     round_id: round_id.clone(),
@@ -1947,6 +1976,15 @@ pub async fn send_acp_prompt(
             project_id_for_spawn.clone(),
             Some(app.lifecycle_bus.clone()),
         );
+        let session_update = app.acp_session_update_for(acp_live_event_context(
+            &task_id_for_live,
+            &run_id_for_live,
+            &round_id_for_live,
+            &node_id_for_live,
+            &attempt_id_for_live,
+            None,
+            None,
+        ));
         let model = current_acp_session_model(&attempt_dir);
         client::run_prompt(
             provider,
@@ -1965,15 +2003,15 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_target_size_bytes,
             Some(&|event| {
                 live_update(
-                    gold_band::app::AcpLiveEventContext {
-                        task_id: task_id_for_live.clone(),
-                        run_id: run_id_for_live.clone(),
-                        round_id: round_id_for_live.clone(),
-                        node_id: node_id_for_live.clone(),
-                        attempt_id: attempt_id_for_live.clone(),
-                        outer_node_id: None,
-                        outer_attempt_id: None,
-                    },
+                    acp_live_event_context(
+                        &task_id_for_live,
+                        &run_id_for_live,
+                        &round_id_for_live,
+                        &node_id_for_live,
+                        &attempt_id_for_live,
+                        None,
+                        None,
+                    ),
                     event.clone(),
                 )
             }),
@@ -1981,7 +2019,7 @@ pub async fn send_acp_prompt(
                 eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
                 Vec::new()
             }),
-            None, // session_update
+            session_update.as_ref().map(|callback| callback as _),
             Some(client::RuntimeStopProbe {
                 run_file: app.paths.run_file(&task_id, &run_id),
                 round_id: round_id.clone(),
@@ -3609,6 +3647,45 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn acp_live_event_context_preserves_standard_attempt_locator() {
+        let context = acp_live_event_context(
+            "task-001",
+            "run-001",
+            "round-001",
+            "dev",
+            "attempt-001",
+            None,
+            None,
+        );
+
+        assert_eq!(context.task_id, "task-001");
+        assert_eq!(context.run_id, "run-001");
+        assert_eq!(context.round_id, "round-001");
+        assert_eq!(context.node_id, "dev");
+        assert_eq!(context.attempt_id, "attempt-001");
+        assert_eq!(context.outer_node_id, None);
+        assert_eq!(context.outer_attempt_id, None);
+    }
+
+    #[test]
+    fn acp_live_event_context_preserves_dynamic_attempt_locator() {
+        let context = acp_live_event_context(
+            "task-001",
+            "run-001",
+            "round-001",
+            "bootstrap",
+            "attempt-002",
+            Some("ai-dynamic".to_string()),
+            Some("attempt-001".to_string()),
+        );
+
+        assert_eq!(context.node_id, "bootstrap");
+        assert_eq!(context.attempt_id, "attempt-002");
+        assert_eq!(context.outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(context.outer_attempt_id.as_deref(), Some("attempt-001"));
+    }
 
     #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {

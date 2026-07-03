@@ -666,18 +666,26 @@ export interface AcpUiEventVm {
 
 export interface AcpTimingPatchVm {
   sessionElapsedSeconds: number;
+  revision?: number | null;
+  observedAt?: string | null;
   activeTurnStartedAt?: string | null;
   activeTurnLastActivityAt?: string | null;
   permissionWaitStartedAt?: string | null;
+  userWaitStartedAt?: string | null;
+  waitReason?: string | null;
   paused: boolean;
   reason?: string | null;
 }
 
 export interface AcpSessionTimingVm {
   sessionElapsedSeconds: number;
+  revision?: number | null;
+  observedAt?: string | null;
   activeTurnStartedAt?: string | null;
   activeTurnLastActivityAt?: string | null;
   permissionWaitStartedAt?: string | null;
+  userWaitStartedAt?: string | null;
+  waitReason?: string | null;
   paused: boolean;
 }
 

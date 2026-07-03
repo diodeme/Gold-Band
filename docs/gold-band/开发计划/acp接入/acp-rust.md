@@ -38,9 +38,10 @@ Rust 层职责边界（当前实现对应 `src/acp/*` 与 `src/provider/mod.rs`�
 - `run_prompt` 的启动顺序固定为：`setup_session` → `write_worker_ref` → 持久化 synthetic `goldBandPrompt` 用户消息（有 `session_update` 时不单独发 live event）→ `write_session("running")` → `session_update` → 真实 `session/prompt`。
 - `AcpSessionMetadata` 直接保存 `systemPromptAppend`；`view_models` 优先读 snapshot 字段，旧历史 session 才 fallback 到 raw frame 的 `_meta.systemPrompt.append`。
 - 动态节点调用同样传入 `outerNodeId / outerAttemptId`，由 `acp_session_update_emitter` 自动选择 `dynamic_acp_session_vm`。
-- 用户手动发送 prompt 路径继续在完成后发送 session snapshot，不在此阶段重复。
+- 用户手动发送 same-session ACP prompt 路径也必须传入 `session_update` callback：`session/prompt` 前先发送包含 synthetic user prompt、system prompt 和 model/mode/configOptions 的 running session-ready snapshot，prompt 完成或停止后再发送 terminal snapshot。不能只在完成后发送 session snapshot，否则实时阶段会退回 event-only shell。
 - ACP session 终态（completed / cancelled / failed）写入 `acp.snapshot.json` 后立即发送一次 `session_update`，确保前端即使错过 running 阶段的 update 也能拿到最终的 session 状态、用量和事件列表。
-- 前端兜底：live event 到达时若 base session 缺元数据或缺首个 Gold Band 用户消息，触发 `getAcpSession` hydration；session 等价判断需比较 config + adapter 元数据签名。模型/权限配置是否可展示以 options 是否存在为准，不强依赖 current id。
+- 前端兜底：live event 到达时若 base session 缺元数据或缺首个 Gold Band 用户消息，触发 `getAcpSession` hydration，并在 runtime active 时按有界间隔持续重试；session 等价判断需比较 config + adapter 元数据签名。模型/权限配置是否可展示以 options 是否存在为准，不强依赖 current id。hydration command error 必须进入调试日志，不能静默吞掉。
+- 前端可见消息窗口必须由完整 `AcpSessionVm.events` 与实时 `loadedEvents` 合并而来；`loadedEvents` 不能直接替换 snapshot events。因为启动阶段 synthetic `goldBandPrompt` 在有 session-ready callback 时只写 timeline、不单独发 live event，实时窗口必须保留 snapshot prompt 并继续合并后续 live event。
 
 ---
 

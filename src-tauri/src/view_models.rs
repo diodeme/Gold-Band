@@ -696,9 +696,13 @@ pub struct AcpUiEventVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpTimingPatchVm {
     pub session_elapsed_seconds: u64,
+    pub revision: Option<u64>,
+    pub observed_at: Option<String>,
     pub active_turn_started_at: Option<String>,
     pub active_turn_last_activity_at: Option<String>,
     pub permission_wait_started_at: Option<String>,
+    pub user_wait_started_at: Option<String>,
+    pub wait_reason: Option<String>,
     pub paused: bool,
     pub reason: Option<String>,
 }
@@ -707,9 +711,13 @@ pub struct AcpTimingPatchVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionTimingVm {
     pub session_elapsed_seconds: u64,
+    pub revision: Option<u64>,
+    pub observed_at: Option<String>,
     pub active_turn_started_at: Option<String>,
     pub active_turn_last_activity_at: Option<String>,
     pub permission_wait_started_at: Option<String>,
+    pub user_wait_started_at: Option<String>,
+    pub wait_reason: Option<String>,
     pub paused: bool,
 }
 
@@ -3295,9 +3303,12 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let session_timing = acp_session_timing_from_snapshot(&session)
-        .or_else(|| event_scan.session_timing.clone())
-        .or_else(|| legacy_session_timing(event_scan.session_elapsed_seconds));
+    let session_timing = resolve_acp_session_timing(
+        &status,
+        acp_session_timing_from_snapshot(&session),
+        event_scan.session_timing.clone(),
+        event_scan.session_elapsed_seconds,
+    );
     let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -3540,9 +3551,12 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let session_timing = acp_session_timing_from_snapshot(&session)
-        .or_else(|| event_scan.session_timing.clone())
-        .or_else(|| legacy_session_timing(event_scan.session_elapsed_seconds));
+    let session_timing = resolve_acp_session_timing(
+        &status,
+        acp_session_timing_from_snapshot(&session),
+        event_scan.session_timing.clone(),
+        event_scan.session_elapsed_seconds,
+    );
 
     let result = AcpSessionVm {
         session_id: continue_ref
@@ -4062,9 +4076,13 @@ fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpS
     all_events.iter().rev().find_map(|event| {
         event.timing.as_ref().map(|timing| AcpSessionTimingVm {
             session_elapsed_seconds: timing.session_elapsed_seconds,
+            revision: timing.revision,
+            observed_at: timing.observed_at.clone(),
             active_turn_started_at: timing.active_turn_started_at.clone(),
             active_turn_last_activity_at: timing.active_turn_last_activity_at.clone(),
             permission_wait_started_at: timing.permission_wait_started_at.clone(),
+            user_wait_started_at: timing.user_wait_started_at.clone(),
+            wait_reason: timing.wait_reason.clone(),
             paused: timing.paused,
         })
     })
@@ -4077,12 +4095,54 @@ fn acp_session_timing_from_snapshot(session: &serde_json::Value) -> Option<AcpSe
         .and_then(|value| serde_json::from_value::<AcpSessionTimingVm>(value).ok())
 }
 
-fn legacy_session_timing(session_elapsed_seconds: Option<u64>) -> Option<AcpSessionTimingVm> {
-    session_elapsed_seconds.map(|seconds| AcpSessionTimingVm {
+fn resolve_acp_session_timing(
+    status: &str,
+    snapshot_timing: Option<AcpSessionTimingVm>,
+    event_timing: Option<AcpSessionTimingVm>,
+    session_elapsed_seconds: Option<u64>,
+) -> Option<AcpSessionTimingVm> {
+    if is_acp_session_active_status(status) {
+        return active_session_timing(event_timing, session_elapsed_seconds).or(snapshot_timing);
+    }
+    snapshot_timing
+        .or(event_timing)
+        .or_else(|| legacy_session_timing(session_elapsed_seconds))
+}
+
+fn active_session_timing(
+    event_timing: Option<AcpSessionTimingVm>,
+    session_elapsed_seconds: Option<u64>,
+) -> Option<AcpSessionTimingVm> {
+    let Some(seconds) = session_elapsed_seconds else {
+        return event_timing;
+    };
+    if let Some(mut timing) = event_timing {
+        timing.session_elapsed_seconds = seconds;
+        return Some(timing);
+    }
+    Some(AcpSessionTimingVm {
         session_elapsed_seconds: seconds,
+        revision: None,
+        observed_at: None,
         active_turn_started_at: None,
         active_turn_last_activity_at: None,
         permission_wait_started_at: None,
+        user_wait_started_at: None,
+        wait_reason: None,
+        paused: false,
+    })
+}
+
+fn legacy_session_timing(session_elapsed_seconds: Option<u64>) -> Option<AcpSessionTimingVm> {
+    session_elapsed_seconds.map(|seconds| AcpSessionTimingVm {
+        session_elapsed_seconds: seconds,
+        revision: None,
+        observed_at: None,
+        active_turn_started_at: None,
+        active_turn_last_activity_at: None,
+        permission_wait_started_at: None,
+        user_wait_started_at: None,
+        wait_reason: None,
         paused: true,
     })
 }
@@ -4406,8 +4466,9 @@ struct AcpSessionElapsedState {
     active_turn_last_event_at: Option<u64>,
     saw_turn: bool,
     pending_permission_ids: HashSet<String>,
-    permission_wait_started_at: Option<u64>,
-    permission_wait_seconds: u64,
+    pending_elicitation_ids: HashSet<String>,
+    user_wait_started_at: Option<u64>,
+    user_wait_seconds: u64,
 }
 
 impl AcpSessionElapsedState {
@@ -4419,8 +4480,9 @@ impl AcpSessionElapsedState {
             self.active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
             self.active_turn_last_event_at = None;
             self.pending_permission_ids.clear();
-            self.permission_wait_started_at = None;
-            self.permission_wait_seconds = 0;
+            self.pending_elicitation_ids.clear();
+            self.user_wait_started_at = None;
+            self.user_wait_seconds = 0;
             self.saw_turn = true;
             return;
         }
@@ -4431,6 +4493,7 @@ impl AcpSessionElapsedState {
             return;
         };
         self.observe_permission_event(event, timestamp);
+        self.observe_elicitation_event(event, timestamp);
         if is_session_elapsed_progress_event(event) {
             self.active_turn_last_event_at = Some(timestamp);
         }
@@ -4458,13 +4521,13 @@ impl AcpSessionElapsedState {
         };
         let base_elapsed = end_at.saturating_sub(started_at);
         base_elapsed.saturating_sub(
-            self.permission_wait_seconds
-                .saturating_add(self.open_permission_wait(end_at)),
+            self.user_wait_seconds
+                .saturating_add(self.open_user_wait(end_at)),
         )
     }
 
-    fn open_permission_wait(&self, end_at: u64) -> u64 {
-        self.permission_wait_started_at
+    fn open_user_wait(&self, end_at: u64) -> u64 {
+        self.user_wait_started_at
             .map(|started_at| end_at.saturating_sub(started_at))
             .unwrap_or_default()
     }
@@ -4479,24 +4542,96 @@ impl AcpSessionElapsedState {
             .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
         if is_pending {
             let request_id = permission_request_id_from_event(event);
-            let was_empty = self.pending_permission_ids.is_empty();
-            if self.pending_permission_ids.insert(request_id) && was_empty {
-                self.permission_wait_started_at = Some(timestamp);
+            let was_waiting = self.is_waiting_for_user();
+            if self.pending_permission_ids.insert(request_id) && !was_waiting {
+                self.user_wait_started_at = Some(timestamp);
             }
             return;
         }
         let request_id = permission_request_id_from_event(event);
         if !self.pending_permission_ids.remove(&request_id) {
+            if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                self.add_closed_user_wait(started_at, timestamp);
+            }
             return;
         }
-        if self.pending_permission_ids.is_empty() {
-            if let Some(started_at) = self.permission_wait_started_at.take() {
-                self.permission_wait_seconds = self
-                    .permission_wait_seconds
-                    .saturating_add(timestamp.saturating_sub(started_at));
+        self.close_user_wait_if_idle(timestamp);
+    }
+
+    fn observe_elicitation_event(&mut self, event: &AcpUiEventVm, timestamp: u64) {
+        match event.kind.as_str() {
+            "elicitationRequest"
+                if event
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("pending")) =>
+            {
+                let was_waiting = self.is_waiting_for_user();
+                if self.pending_elicitation_ids.insert(event.id.clone()) && !was_waiting {
+                    self.user_wait_started_at = Some(timestamp);
+                }
             }
+            "elicitationResponse" => {
+                let elicitation_id = event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| event.id.trim_end_matches("-response").to_string());
+                if self.pending_elicitation_ids.remove(&elicitation_id) {
+                    self.close_user_wait_if_idle(timestamp);
+                } else if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            "elicitationRequest" => {
+                if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            _ => {}
         }
     }
+
+    fn is_waiting_for_user(&self) -> bool {
+        !self.pending_permission_ids.is_empty() || !self.pending_elicitation_ids.is_empty()
+    }
+
+    fn close_user_wait_if_idle(&mut self, timestamp: u64) {
+        if self.is_waiting_for_user() {
+            return;
+        }
+        if let Some(started_at) = self.user_wait_started_at.take() {
+            self.user_wait_seconds = self
+                .user_wait_seconds
+                .saturating_add(timestamp.saturating_sub(started_at));
+        }
+    }
+
+    fn add_closed_user_wait(&mut self, started_at: u64, ended_at: u64) {
+        if ended_at <= started_at {
+            return;
+        }
+        let effective_end = self
+            .user_wait_started_at
+            .map(|open_started_at| ended_at.min(open_started_at))
+            .unwrap_or(ended_at);
+        if effective_end <= started_at {
+            return;
+        }
+        self.user_wait_seconds = self
+            .user_wait_seconds
+            .saturating_add(effective_end.saturating_sub(started_at));
+    }
+}
+
+fn compacted_wait_started_at(event: &AcpUiEventVm, ended_at: u64) -> Option<u64> {
+    let started_at = event
+        .started_at
+        .as_deref()
+        .and_then(parse_epoch_timestamp)?;
+    (started_at < ended_at).then_some(started_at)
 }
 
 fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
@@ -5722,6 +5857,26 @@ mod tests {
         )
     }
 
+    fn elicitation_request_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            elicitation_id,
+            "elicitationRequest",
+            Some("pending"),
+            timestamp,
+            Some(json!({ "type": "object" })),
+        )
+    }
+
+    fn elicitation_response_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("{elicitation_id}-response"),
+            "elicitationResponse",
+            Some("completed"),
+            timestamp,
+            Some(json!({ "elicitationId": elicitation_id, "action": "accept" })),
+        )
+    }
+
     fn elapsed_for(
         events: Vec<AcpUiEventVm>,
         session_active: bool,
@@ -6103,6 +6258,75 @@ mod tests {
     }
 
     #[test]
+    fn active_session_timing_prefers_scanned_elapsed_over_stale_snapshot() {
+        let snapshot = AcpSessionTimingVm {
+            session_elapsed_seconds: 22,
+            revision: Some(220),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: Some("1782985079Z".to_string()),
+            active_turn_last_activity_at: Some("1782985079Z".to_string()),
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+        let event_timing = AcpSessionTimingVm {
+            session_elapsed_seconds: 22,
+            revision: Some(221),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: Some("1782985079Z".to_string()),
+            active_turn_last_activity_at: Some("1782985079Z".to_string()),
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+
+        let resolved =
+            resolve_acp_session_timing("running", Some(snapshot), Some(event_timing), Some(32))
+                .unwrap();
+
+        assert_eq!(resolved.session_elapsed_seconds, 32);
+        assert_eq!(
+            resolved.active_turn_started_at.as_deref(),
+            Some("1782985079Z")
+        );
+    }
+
+    #[test]
+    fn terminal_session_timing_keeps_snapshot_as_persisted_truth() {
+        let snapshot = AcpSessionTimingVm {
+            session_elapsed_seconds: 37,
+            revision: Some(348),
+            observed_at: Some("1782985094Z".to_string()),
+            active_turn_started_at: None,
+            active_turn_last_activity_at: None,
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: true,
+        };
+        let event_timing = AcpSessionTimingVm {
+            session_elapsed_seconds: 32,
+            revision: Some(221),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: None,
+            active_turn_last_activity_at: None,
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+
+        let resolved =
+            resolve_acp_session_timing("cancelled", Some(snapshot), Some(event_timing), Some(32))
+                .unwrap();
+
+        assert_eq!(resolved.session_elapsed_seconds, 37);
+        assert!(resolved.paused);
+    }
+
+    #[test]
     fn acp_session_config_preserves_options_without_current_values() {
         let config = acp_session_config_vm(&json!({
             "configOptions": [
@@ -6237,6 +6461,42 @@ mod tests {
         );
 
         assert_eq!(elapsed, Some(20));
+    }
+
+    #[test]
+    fn session_elapsed_reconstructs_compacted_permission_wait() {
+        let mut selected = permission_event_at("permission-1", "selected", 170);
+        selected.started_at = Some("120Z".to_string());
+        selected.ended_at = Some("170Z".to_string());
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(110),
+                selected,
+                text_event_at(180),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(30));
+    }
+
+    #[test]
+    fn session_elapsed_excludes_elicitation_wait() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(105),
+                elicitation_request_event_at("elicit-1", 110),
+                elicitation_response_event_at("elicit-1", 160),
+                text_event_at(190),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(40));
     }
 
     #[test]

@@ -11,12 +11,11 @@ export interface AcpUsagePanelProps {
   isRunning: boolean;
   compact?: boolean;
   processingLabel?: string | null;
-  stepSeconds?: number | null;
   sessionSeconds?: number | null;
   className?: string;
 }
 
-export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, stepSeconds, sessionSeconds, className }: AcpUsagePanelProps) {
+export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sessionSeconds, className }: AcpUsagePanelProps) {
   const { t } = useTranslation();
 
   const hasData = useMemo(() => {
@@ -24,7 +23,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, step
   }, [usage]);
 
   const showProcessing = compact && isRunning && processingLabel;
-  const showTiming = compact && (stepSeconds != null || sessionSeconds != null);
+  const showTiming = compact && sessionSeconds != null;
 
   if (!hasData && !showProcessing && !showTiming) return null;
 
@@ -46,20 +45,10 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, step
         </span>
       ) : null}
       {showTiming ? (
-        <>
-          {stepSeconds != null ? (
-            <span className="flex items-center gap-1.5">
-              <span className="text-muted-foreground/80">{t('acp.timingStep')}</span>
-              <span className="tabular-nums text-foreground/80">{formatElapsed(stepSeconds)}</span>
-            </span>
-          ) : null}
-          {sessionSeconds != null ? (
-            <span className="flex items-center gap-1.5">
-              <span className="text-muted-foreground/80">{t('acp.timingSession')}</span>
-              <span className="tabular-nums text-foreground/80">{formatElapsed(sessionSeconds)}</span>
-            </span>
-          ) : null}
-        </>
+        <span className="flex items-center gap-1.5">
+          <span className="text-muted-foreground/80">{t('acp.timingSession')}</span>
+          <span className="tabular-nums text-foreground/80">{formatElapsed(sessionSeconds)}</span>
+        </span>
       ) : null}
 
       {hasData ? (

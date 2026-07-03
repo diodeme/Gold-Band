@@ -440,7 +440,7 @@ pub struct ToolInfo {
     pub input_schema: Option<serde_json::Value>,
 }
 
-pub const AGENTS_DIR_NAME: &str = ".agents";
+pub const GOLD_BAND_DIR_NAME: &str = ".gold-band";
 pub const SKILLS_DIR_NAME: &str = "skills";
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
@@ -453,9 +453,11 @@ pub struct SkillMeta {
     pub description: String,
     pub source: SkillSource,
     pub directory_path: String,
-    /// SKILL 来源目录标识：".agents" 为 Gold-Band 自身管理，".claude"/".codex" 等为对应 agent 目录
+    /// SKILL 来源目录标识：".gold-band" 为 Gold-Band 自身管理，".claude"/".codex" 等为对应 agent 目录
     pub agent_source: String,
     pub load_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synced_agent_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

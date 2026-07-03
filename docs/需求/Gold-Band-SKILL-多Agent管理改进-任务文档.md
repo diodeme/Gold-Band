@@ -57,7 +57,7 @@
 
 **具体步骤**:
 1. `SkillMeta` 新增 `agent_source: String` 字段（必填）
-   - Gold-Band 自行创建/管理的 SKILL 标注为 `".agents"`
+   - Gold-Band 自行创建/管理的 SKILL 标注为 `".gold-band"`
    - 其他 agent 目录扫描到的标注为 `".claude"`、`".codex"` 等
 2. 删除 `SkillMeta.disable_model_invocation` 字段
 3. 同步更新 `SkillMetaVm`（view model）
@@ -73,7 +73,7 @@
 
 ### 任务 3: SkillManager 重构 — 多 Agent 目录扫描
 
-**目标**: `list()` 扫描 `.agents/skills/` + 所有已配置 agent 的 skills 目录
+**目标**: `list()` 扫描 `.gold-band/skills/` + 所有已配置 agent 的 skills 目录
 
 **变更文件**:
 - `src/skill/mod.rs`
@@ -83,10 +83,10 @@
 1. 新增辅助函数 `get_configured_agent_dirs(settings, home, workspace)` — 从 `SettingsConfig.agents` 推导 agent skills 目录列表
 2. 重构 `scan_skills_dir()` → 接受 `agent_source: &str` 参数
 3. 重构 `SkillManager::list()`:
-   - 扫描 `.agents/skills/` → 标记 `agent_source = ".agents"`
+   - 扫描 `.gold-band/skills/` → 标记 `agent_source = ".gold-band"`
    - 遍历已配置 agent → 扫描各 agent skills 目录 → 标记对应 `agent_source`
    - 严格过滤：agent 在 settings 中已配置 **AND** 目录实际存在
-4. **双来源去重**: `.agents` 管理的 SKILL 与 agent 目录扫描结果取并集，`.agents` 优先（按目录路径前缀判断）
+4. **双来源去重**: `.gold-band` 管理的 SKILL 与 agent 目录扫描结果取并集，`.gold-band` 优先（按目录路径前缀判断）
 5. 同样更新 `list_by_workspace()` 支持项目级多 agent 扫描
 6. 删除以下函数：
    - `catalog_skills()` / `catalog_skills_for_workspace()`
@@ -96,9 +96,9 @@
 7. 删除 `parse_skill_md()` 中 `disable_model_invocation` 解析逻辑
 
 **验收标准**:
-- [ ] `list()` 返回包含 `.agents` + 所有已配置 agent 的 SKILL 列表
+- [ ] `list()` 返回包含 `.gold-band` + 所有已配置 agent 的 SKILL 列表
 - [ ] 严格过滤：未配置 agent 的目录不被扫描
-- [ ] 同名 SKILL：`.agents` 版本保留，agent 版本丢弃
+- [ ] 同名 SKILL：`.gold-band` 版本保留，agent 版本丢弃
 - [ ] agent 目录不存在时不报错（静默跳过）
 - [ ] catalog 相关函数全部删除，`cargo check` 无引用
 
@@ -210,21 +210,21 @@
 
 ### 任务 8: 前端 SKILL 卡片展示更新
 
-**目标**: 卡片展示 agent 来源徽章 + 同名冲突时 `.agents` 优先
+**目标**: 卡片展示 agent 来源徽章 + 同步到哪些 agent 的图标集合；同名冲突时 `.gold-band` 优先
 
 **变更文件**:
 - `web/src/pages/ContextManagementPage.tsx`
 - `web/src/i18n.ts`
 
 **具体步骤**:
-1. SKILL 卡片新增 agent 来源徽章（Badge），显示 `agent_source` 值（如 "`.agents`"、"`.claude`"、"`.codex`"）
+1. SKILL 卡片新增 agent 来源徽章（Badge），显示 `agent_source` 值（如 "`.gold-band`"、"`.claude`"、"`.codex`"）
 2. 双来源去重已由后端处理（任务 3），前端直接渲染
 3. 删除 `disableModelInvocation` 相关 Badge
 4. 删除 SKILL Sheet 中的 `disableModelInvocation` toggle
 
 **验收标准**:
 - [ ] 每个 SKILL 卡片右下角显示来源 agent 徽章
-- [ ] `.agents` 来源的 SKILL 优先展示
+- [ ] `.gold-band` 来源的 SKILL 优先展示
 - [ ] 不再显示 "manual only" Badge
 
 ---

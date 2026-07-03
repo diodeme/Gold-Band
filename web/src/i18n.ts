@@ -316,13 +316,13 @@ const resources = {
           syncOpenCode: "OpenCode",
           nameConflictTitle: "名称冲突",
           nameConflictDescription:
-            "同名 SKILL 已存在于 {{location}}。创建后 .agents 版本将优先显示。",
+            "同名 SKILL 已存在于 {{location}}。创建后 .gold-band 版本将优先显示。",
           globalTab: "全局 SKILL",
           projectTab: "项目 SKILL",
           emptySkills: "暂无 SKILL",
-          globalHint: "所有项目可用。保存到 ~/.agents/skills/<name>/SKILL.md",
+          globalHint: "所有项目可用。保存到 ~/.gold-band/skills/<name>/SKILL.md",
           projectHint:
-            "仅当前项目可用。保存到 <project>/.agents/skills/<name>/SKILL.md",
+            "仅当前项目可用。保存到 <project>/.gold-band/skills/<name>/SKILL.md",
         },
       },
       taskList: {
@@ -1480,14 +1480,14 @@ const resources = {
           syncOpenCode: "OpenCode",
           nameConflictTitle: "Name Conflict",
           nameConflictDescription:
-            "A SKILL named {{location}} already exists. The .agents version will take priority after creation.",
+            "A SKILL named {{location}} already exists. The .gold-band version will take priority after creation.",
           globalTab: "Global SKILLs",
           projectTab: "Project SKILLs",
           emptySkills: "No SKILLs found",
           globalHint:
-            "Available across every project. Saved to ~/.agents/skills/<name>/SKILL.md",
+            "Available across every project. Saved to ~/.gold-band/skills/<name>/SKILL.md",
           projectHint:
-            "Only available when this project is open. Saved to <project>/.agents/skills/<name>/SKILL.md",
+            "Only available when this project is open. Saved to <project>/.gold-band/skills/<name>/SKILL.md",
         },
       },
       taskList: {

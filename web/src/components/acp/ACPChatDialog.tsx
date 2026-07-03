@@ -273,7 +273,6 @@ const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
-const METADATA_HYDRATION_COOLDOWN_MS = 2_000;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -501,6 +500,8 @@ export const ACPChatDialog = forwardRef<
   );
   const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${eventIdPrefix ?? ""}`;
   const sessionIdentity = eventWindowKey;
+  const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
+  const componentInstanceId = componentInstanceIdRef.current;
   const restoredOptimisticEvents =
     controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
   const restoredLoadedEvents = restoreAcpLoadedEvents(
@@ -622,10 +623,9 @@ export const ACPChatDialog = forwardRef<
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
-  const hydratedSessionKeysRef = useRef(new Set<string>());
-  const metadataHydrationRequestedAtRef = useRef<Map<string, number>>(new Map());
-  const metadataHydrationRetryTimerRef = useRef<number | null>(null);
-  const hydrationInflightRef = useRef(false);
+  const liveBeforeReadyLogCountRef = useRef(0);
+  const sessionPropSyncIdentityRef = useRef(eventWindowKey);
+  const sessionResetIdentityRef = useRef(eventWindowKey);
   const liveUpdatesPaused = Boolean(
     externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
   );
@@ -638,6 +638,17 @@ export const ACPChatDialog = forwardRef<
     setOptimisticEvents(next);
     onOptimisticEventsChange?.(next);
   };
+
+  useEffect(() => {
+    logAcpSessionReadyLifecycle("component-mount", componentInstanceId, sessionIdentity);
+    return () => {
+      logAcpSessionReadyLifecycle("component-unmount", componentInstanceId, sessionIdentity);
+    };
+  }, []);
+
+  useEffect(() => {
+    logAcpSessionReadyLifecycle("identity-change", componentInstanceId, sessionIdentity);
+  }, [componentInstanceId, sessionIdentity]);
 
   useEffect(() => {
     if (controlledOptimisticEvents)
@@ -661,15 +672,22 @@ export const ACPChatDialog = forwardRef<
   }, [runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {
-    debugAcpTiming("prop-session", sessionIdentity, session ?? null);
-    debugAcpMetadata("prop-session", sessionIdentity, session ?? null);
+    const identityChanged = sessionPropSyncIdentityRef.current !== eventWindowKey;
+    sessionPropSyncIdentityRef.current = eventWindowKey;
     setCurrentSession((previous) => {
-      const next = stabilizeAcpSessionTimingForDisplay(previous, session ?? null);
+      if (!identityChanged && !session && previous) {
+        latestSessionRef.current = previous;
+        return previous;
+      }
+      const next = reconcileAcpSessionForDisplay(
+        identityChanged ? null : previous,
+        session ?? null,
+      );
       latestSessionRef.current = next;
       return next;
     });
     if (session) setLoadingInitialSession(false);
-    if (!session) {
+    if (!session && identityChanged) {
       const restored = restoreAcpLoadedEvents(
         eventWindowKey,
         [],
@@ -681,6 +699,7 @@ export const ACPChatDialog = forwardRef<
       setHasNewerEvents(false);
       return;
     }
+    if (!session) return;
     setLoadedEvents((events) => {
       const currentEvents =
         events.length === 0
@@ -701,9 +720,11 @@ export const ACPChatDialog = forwardRef<
     });
     setHasOlderEvents((current) => current || session.eventPage.hasOlder);
     setHasNewerEvents((current) => current || session.eventPage.hasNewer);
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session, sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
 
   useEffect(() => {
+    const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
+    sessionResetIdentityRef.current = eventWindowKey;
     const storedOptimisticEvents =
       controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
     const storedLoadedEvents = restoreAcpLoadedEvents(
@@ -714,10 +735,15 @@ export const ACPChatDialog = forwardRef<
     const storedPromptEvent = latestSendingOptimisticEvent(
       storedOptimisticEvents,
     );
-    debugAcpTiming("identity-session", sessionIdentity, session ?? null);
-    debugAcpMetadata("identity-session", sessionIdentity, session ?? null);
     setCurrentSession((previous) => {
-      const next = stabilizeAcpSessionTimingForDisplay(previous, session ?? null);
+      if (!identityChanged && !session && previous) {
+        latestSessionRef.current = previous;
+        return previous;
+      }
+      const next = reconcileAcpSessionForDisplay(
+        identityChanged ? null : previous,
+        session ?? null,
+      );
       latestSessionRef.current = next;
       return next;
     });
@@ -755,15 +781,9 @@ export const ACPChatDialog = forwardRef<
     awaitTerminalStopRef.current = false;
     terminalSessionNotifiedRef.current = false;
     sessionRefreshSeqRef.current += 1;
-    hydratedSessionKeysRef.current.clear();
-    metadataHydrationRequestedAtRef.current.clear();
-    if (metadataHydrationRetryTimerRef.current !== null) {
-      window.clearTimeout(metadataHydrationRetryTimerRef.current);
-      metadataHydrationRetryTimerRef.current = null;
-    }
-    hydrationInflightRef.current = false;
+    liveBeforeReadyLogCountRef.current = 0;
     setCanvasMode("chat");
-  }, [effectiveLoadedEventBufferLimit, session, sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session, sessionKey]);
 
   useEffect(() => {
     loadedEventsRef.current = loadedEvents;
@@ -1081,16 +1101,17 @@ export const ACPChatDialog = forwardRef<
   const applySessionUpdate = useCallback((updated: AcpSessionVm | null, source = "session-update") => {
     const incoming = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
-    const normalized = stabilizeAcpSessionTimingForDisplay(previous, incoming);
-    if (incoming !== normalized) {
-      debugAcpTiming(`${source}:rejected-timing`, sessionIdentity, incoming);
-    }
-    debugAcpTiming(source, sessionIdentity, normalized);
-    debugAcpMetadata(source, sessionIdentity, normalized);
-    const equivalent = sessionsEquivalent(previous, normalized);
-    if (equivalent) return;
+    const normalized = reconcileAcpSessionForDisplay(previous, incoming);
+    const refEquivalent = sessionsEquivalent(previous, normalized);
+    logAcpSessionReady(source, componentInstanceId, sessionIdentity, normalized, {
+      refEquivalent,
+      previousReady: previous ? isAcpInitialSessionReady(previous) : false,
+      incomingHadTimingRejected: incoming !== normalized,
+    });
     latestSessionRef.current = normalized;
-    setCurrentSession(normalized);
+    setCurrentSession((current) =>
+      sessionsEquivalent(current, normalized) ? current : normalized,
+    );
     if (!normalized) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(normalized.eventPage.hasNewer);
@@ -1106,7 +1127,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [effectiveLoadedEventBufferLimit, normalizeSessionUpdate, sessionIdentity]);
+  }, [componentInstanceId, effectiveLoadedEventBufferLimit, normalizeSessionUpdate, sessionIdentity]);
 
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
     if (!lifecycle) return;
@@ -1174,7 +1195,7 @@ export const ACPChatDialog = forwardRef<
       .then((updated) => {
         if (updated) {
           configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-          applySessionUpdate(updated, "set-model-response");
+          applySessionUpdate(updated);
         }
       })
       .catch((error) => {
@@ -1219,7 +1240,7 @@ export const ACPChatDialog = forwardRef<
       .then((updated) => {
         if (updated) {
           configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
-          applySessionUpdate(updated, "set-mode-response");
+          applySessionUpdate(updated);
         }
       })
       .catch((error) => {
@@ -1245,14 +1266,16 @@ export const ACPChatDialog = forwardRef<
     if (normalizedEvents.length === 0) return;
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     if (latestTiming) {
-      debugAcpTiming("live-timing-update", sessionIdentity, {
-        sessionElapsedSeconds: latestTiming.sessionElapsedSeconds,
-        timing: latestTiming,
-      });
       setCurrentSession((current) => {
-        const updated = stabilizeAcpSessionTimingPatchForDisplay(current, latestTiming);
-        latestSessionRef.current = updated;
-        return updated;
+        const latest = latestSessionRef.current;
+        const base =
+          latest && (!current || shouldPreferAcpSessionMetadata(latest, current))
+            ? latest
+            : (current ?? latest);
+        const updated = stabilizeAcpSessionTimingPatchForDisplay(base, latestTiming);
+        const reconciled = reconcileAcpSessionForDisplay(latest, updated);
+        latestSessionRef.current = reconciled;
+        return reconciled;
       });
     }
     const normalizedUpdates = liveTimelineUpdatesFromEvents(normalizedEvents);
@@ -1269,7 +1292,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate, sessionIdentity]);
+  }, [effectiveLoadedEventBufferLimit, normalizeEventUpdate]);
 
   const applyEventUpdate = useCallback((event: AcpUiEventVm | null | undefined) => {
     if (!event) return;
@@ -1405,10 +1428,6 @@ export const ACPChatDialog = forwardRef<
   }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
 
   useEffect(() => {
-    latestSessionRef.current = effective ?? currentSession ?? session ?? null;
-  }, [currentSession, effective, session]);
-
-  useEffect(() => {
     const scroller = scrollerElementRef.current;
     if (!scroller) return;
     const anchor = prependAnchorRef.current;
@@ -1459,6 +1478,9 @@ export const ACPChatDialog = forwardRef<
     if (!subscribe) return;
     const refreshSeq = sessionRefreshSeqRef.current + 1;
     sessionRefreshSeqRef.current = refreshSeq;
+    logAcpSessionReadyLifecycle("effect-start", componentInstanceId, sessionIdentity, {
+      refreshSeq,
+    });
     const matchesSessionEvent = (event: {
       taskId: string;
       runId: string;
@@ -1476,94 +1498,31 @@ export const ACPChatDialog = forwardRef<
       (event.outerNodeId ?? null) === (outerNodeId ?? null) &&
       (event.outerAttemptId ?? null) === (outerAttemptId ?? null);
     void (async () => {
-      const sessionKey = `${taskId}/${runId}/${roundId}/${nodeId}/${attemptId}/${outerNodeId ?? ""}/${outerAttemptId ?? ""}`;
-      const clearMetadataRetryTimer = () => {
-        if (metadataHydrationRetryTimerRef.current === null) return;
-        window.clearTimeout(metadataHydrationRetryTimerRef.current);
-        metadataHydrationRetryTimerRef.current = null;
-      };
-      const requestMetadataHydration = (source: string) => {
-        if (
-          hydratedSessionKeysRef.current.has(sessionKey) ||
-          hydrationInflightRef.current
-        ) {
-          return;
-        }
-        const now = Date.now();
-        const lastRequestedAt = metadataHydrationRequestedAtRef.current.get(sessionKey) ?? 0;
-        if (now - lastRequestedAt < METADATA_HYDRATION_COOLDOWN_MS) return;
-        metadataHydrationRequestedAtRef.current.set(sessionKey, now);
-        clearMetadataRetryTimer();
-        const latest = latestSessionRef.current;
-        debugAcpMetadata(source, sessionIdentity, latest ?? null);
-        hydrationInflightRef.current = true;
-        getAcpSession(
-          projectId,
-          taskId,
-          runId,
-          roundId,
-          nodeId,
-          attemptId,
-          {
-            pageSize: effectiveEventPageSize,
-            eventLimit: effectiveEventPageSize,
-          },
-          latest,
-          outerNodeId,
-          outerAttemptId,
-        )
-          .then((updated) => {
-            if (!active) return;
-            debugAcpMetadata("metadata-hydration-response", sessionIdentity, updated);
-            applySessionUpdate(updated, "metadata-hydration-response");
-            if (updated && isAcpInitialSessionReady(updated)) {
-              hydratedSessionKeysRef.current.add(sessionKey);
-              return;
-            }
-            if (!updated || (!isSessionTerminalStatus(updated.status) && runtimeActiveFromContext)) {
-              metadataHydrationRetryTimerRef.current = window.setTimeout(() => {
-                metadataHydrationRetryTimerRef.current = null;
-                requestMetadataHydration("metadata-hydration-retry");
-              }, METADATA_HYDRATION_COOLDOWN_MS);
-            }
-          })
-          .catch((error) => {
-            if (!active) return;
-            debugAcpMetadataError("metadata-hydration-error", sessionIdentity, error);
-            if (runtimeActiveFromContext) {
-              metadataHydrationRetryTimerRef.current = window.setTimeout(() => {
-                metadataHydrationRetryTimerRef.current = null;
-                requestMetadataHydration("metadata-hydration-retry");
-              }, METADATA_HYDRATION_COOLDOWN_MS);
-            }
-          })
-          .finally(() => {
-            hydrationInflightRef.current = false;
-          });
-      };
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
         if (event.event) {
-          enqueueLiveEventUpdate(event.event);
           const latest = latestSessionRef.current;
-          const missingMetadata = !hasAcpSessionMetadata(
-            latest
-              ? {
-                  systemPromptAppend: latest.systemPromptAppend,
-                  config: latest.config,
-                }
-              : null,
-          );
           if (
-            missingMetadata &&
-            !hydratedSessionKeysRef.current.has(sessionKey)
+            (!latest || !isAcpInitialSessionReady(latest)) &&
+            liveBeforeReadyLogCountRef.current < 12
           ) {
-            requestMetadataHydration("metadata-hydration-request");
+            liveBeforeReadyLogCountRef.current += 1;
+            logAcpSessionReadyLifecycle("live-event-before-ready", componentInstanceId, sessionIdentity, {
+              liveLogIndex: liveBeforeReadyLogCountRef.current,
+              eventKind: event.event.kind,
+              eventId: event.event.id,
+              eventSeq: event.event.seq,
+              current: summarizeAcpSessionReady(latest),
+            });
           }
+          enqueueLiveEventUpdate(event.event);
         } else {
           flushOrSchedulePendingLiveEvents("sync");
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
+          logAcpSessionReady("subscription-session:incoming", componentInstanceId, sessionIdentity, incoming ?? null, {
+            hasPendingLocalConfigChange: configGenerationRef.current > 0,
+          });
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
             const cfg = latestSessionRef.current.config;
             if (incoming.config) {
@@ -1573,8 +1532,11 @@ export const ACPChatDialog = forwardRef<
           applySessionUpdate(incoming ?? null, "subscription-session");
         }
       });
+      logAcpSessionReadyLifecycle("subscription-listening", componentInstanceId, sessionIdentity, {
+        refreshSeq,
+      });
       let retryAttempt = 0;
-      while (true) {
+      while (active && sessionRefreshSeqRef.current === refreshSeq) {
         try {
           const updated = await getAcpSession(
             projectId,
@@ -1591,6 +1553,13 @@ export const ACPChatDialog = forwardRef<
             outerNodeId,
             outerAttemptId,
           );
+          if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
+          logAcpSessionReady("initial-fetch:response", componentInstanceId, sessionIdentity, updated, {
+            retryAttempt,
+            refreshSeq,
+            active,
+            currentRefreshSeq: sessionRefreshSeqRef.current,
+          });
           if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
             applySessionUpdate(updated, "initial-fetch");
             if (isAcpInitialSessionReady(updated) || isSessionTerminalStatus(updated.status)) {
@@ -1598,6 +1567,7 @@ export const ACPChatDialog = forwardRef<
             }
           }
         } catch {
+          if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
           // provider resolution / IO error — retry may not help but we try once more
         }
         const delay = missingAcpSessionRetryDelay(retryAttempt);
@@ -1609,12 +1579,12 @@ export const ACPChatDialog = forwardRef<
         setLoadingInitialSession(false);
     })();
     return () => {
+      logAcpSessionReadyLifecycle("effect-cleanup", componentInstanceId, sessionIdentity, {
+        refreshSeq,
+        hadStopListening: Boolean(stopListening),
+      });
       flushPendingLiveEvents("sync");
       active = false;
-      if (metadataHydrationRetryTimerRef.current !== null) {
-        window.clearTimeout(metadataHydrationRetryTimerRef.current);
-        metadataHydrationRetryTimerRef.current = null;
-      }
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
         window.clearTimeout(liveEventFlushTimerRef.current);
@@ -1635,7 +1605,6 @@ export const ACPChatDialog = forwardRef<
     outerNodeId,
     roundId,
     runId,
-    runtimeActiveFromContext,
     taskId,
   ]);
 
@@ -1755,7 +1724,9 @@ export const ACPChatDialog = forwardRef<
         "end",
         effectiveLoadedEventBufferLimit,
       );
-      setCurrentSession(updated);
+      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
+      latestSessionRef.current = reconciled;
+      setCurrentSession(reconciled);
       setHasOlderEvents(updated.eventPage.hasOlder);
       setHasNewerEvents(
         updated.eventPage.hasNewer || limited.length < merged.length,
@@ -1802,7 +1773,9 @@ export const ACPChatDialog = forwardRef<
         ),
       );
       if (!updated) return;
-      setCurrentSession(updated);
+      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
+      latestSessionRef.current = reconciled;
+      setCurrentSession(reconciled);
       setHasNewerEvents(updated.eventPage.hasNewer);
       setLoadedEvents((events) => {
         const merged = mergeAcpEvents(events, updated.events);
@@ -1862,7 +1835,7 @@ export const ACPChatDialog = forwardRef<
         attPaths.length > 0 ? attPaths : undefined,
       );
       const updated = result.session ?? null;
-      if (updated) applySessionUpdate(updated, "submit-response");
+      if (updated) applySessionUpdate(updated);
       if (result.lifecycle) {
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
@@ -2005,7 +1978,7 @@ export const ACPChatDialog = forwardRef<
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      applySessionUpdate(result.session ?? null, "stop-response");
+      applySessionUpdate(result.session ?? null);
       flushPendingLiveEvents("sync");
       const finalSession = await getAcpSession(
         projectId,
@@ -2022,7 +1995,7 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(finalSession, "stop-final-refresh");
+      applySessionUpdate(finalSession);
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -2083,7 +2056,7 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(updated, "permission-response");
+      applySessionUpdate(updated);
     } catch (error) {
       setDismissedPermissionIds((current) => {
         const next = new Set(current);
@@ -5202,123 +5175,6 @@ function createVisibleAcpSession(
   };
 }
 
-function debugAcpTiming(
-  source: string,
-  sessionIdentity: string,
-  value:
-    | (Partial<Pick<
-        AcpSessionVm,
-        "sessionElapsedSeconds" | "timing" | "status" | "sessionUpdatedAt" | "events"
-      >> | null)
-    | undefined,
-) {
-  if (!isAcpTimingDebugEnabled()) return;
-  const timing = value?.timing ?? null;
-  console.debug("[GoldBand][ACP timing]", {
-    source,
-    sessionIdentity,
-    seconds: timing?.sessionElapsedSeconds ?? value?.sessionElapsedSeconds ?? null,
-    status: value?.status ?? null,
-    sessionUpdatedAt: value?.sessionUpdatedAt ?? null,
-    eventCount: value?.events?.length ?? null,
-    revision: timing?.revision ?? null,
-    observedAt: timing?.observedAt ?? null,
-    paused: timing?.paused ?? null,
-    waitReason: timing?.waitReason ?? null,
-    timing,
-  });
-}
-
-function isAcpTimingDebugEnabled() {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem("goldBand.debug.acpTiming") === "1";
-  } catch {
-    return false;
-  }
-}
-
-function debugAcpMetadata(
-  source: string,
-  sessionIdentity: string,
-  session: Partial<
-    Pick<AcpSessionVm, "systemPromptAppend" | "config" | "events" | "status" | "sessionUpdatedAt">
-  > | null | undefined,
-) {
-  if (!isAcpMetadataDebugEnabled()) return;
-  const config = session?.config ?? null;
-  console.debug("[GoldBand][ACP metadata]", {
-    source,
-    sessionIdentity,
-    status: session?.status ?? null,
-    sessionUpdatedAt: session?.sessionUpdatedAt ?? null,
-    hasMetadata: hasAcpSessionMetadata({
-      systemPromptAppend: session?.systemPromptAppend,
-      config,
-    }),
-    hasSystemPromptAppend: Boolean(session?.systemPromptAppend?.trim()),
-    systemPromptLength: session?.systemPromptAppend?.length ?? null,
-    currentModelId: config?.currentModelId ?? null,
-    currentModelName: config?.currentModelName ?? null,
-    currentModeId: config?.currentModeId ?? null,
-    currentModeName: config?.currentModeName ?? null,
-    modelChoiceCount:
-      countAcpConfigChoices(config?.models, "availableModels") ??
-      countSelectConfigChoices(config?.configOptions, "model"),
-    modeChoiceCount:
-      countAcpConfigChoices(config?.modes, "availableModes") ??
-      countSelectConfigChoices(config?.configOptions, "mode"),
-    configOptionCount: Array.isArray(config?.configOptions)
-      ? config.configOptions.length
-      : null,
-    eventCount: session?.events?.length ?? null,
-    hasGoldBandUserPrompt: session?.events?.some(isGoldBandUserPrompt) ?? null,
-  });
-}
-
-function debugAcpMetadataError(
-  source: string,
-  sessionIdentity: string,
-  error: unknown,
-) {
-  if (!isAcpMetadataDebugEnabled()) return;
-  console.warn("[GoldBand][ACP metadata]", {
-    source,
-    sessionIdentity,
-    error: error instanceof Error ? error.message : String(error),
-  });
-}
-
-function isAcpMetadataDebugEnabled() {
-  if (typeof window === "undefined") return false;
-  try {
-    return (
-      window.localStorage.getItem("goldBand.debug.acpTiming") === "1" ||
-      window.localStorage.getItem("goldBand.debug.acpMetadata") === "1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function countAcpConfigChoices(value: unknown, key: string): number | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const choices = (value as Record<string, unknown>)[key];
-  return Array.isArray(choices) ? choices.length : null;
-}
-
-function countSelectConfigChoices(value: unknown, category: string): number | null {
-  if (!Array.isArray(value)) return null;
-  const option = value.find((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    const configOption = item as Record<string, unknown>;
-    return configOption.id === category || configOption.category === category;
-  });
-  if (!option || typeof option !== "object" || Array.isArray(option)) return null;
-  const choices = (option as Record<string, unknown>).options;
-  return Array.isArray(choices) ? choices.length : null;
-}
-
 function latestSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTimingVm | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const timing = events[index]?.timing;
@@ -5477,6 +5333,130 @@ function mergeAcpSessionWithPreviousTiming(previous: AcpSessionVm, next: AcpSess
   };
 }
 
+function reconcileAcpSessionForDisplay(
+  previous: AcpSessionVm | null | undefined,
+  next: AcpSessionVm | null | undefined,
+): AcpSessionVm | null {
+  if (!next) return next ?? null;
+  const timingStable = stabilizeAcpSessionTimingForDisplay(previous, next);
+  return preserveAcpSessionMetadataForDisplay(previous, timingStable);
+}
+
+function preserveAcpSessionMetadataForDisplay(
+  previous: AcpSessionVm | null | undefined,
+  next: AcpSessionVm | null,
+): AcpSessionVm | null {
+  if (!next || !previous || !isSameAcpSessionForMetadata(previous, next)) {
+    return next;
+  }
+
+  const preserveSystemPrompt =
+    !next.systemPromptAppend?.trim() && Boolean(previous.systemPromptAppend?.trim());
+  const preserveConfig = shouldPreferAcpSessionConfig(previous.config, next.config);
+  const preserveGoldBandPrompts =
+    previous.events.some(isGoldBandUserPrompt) &&
+    !next.events.some(isGoldBandUserPrompt);
+
+  if (!preserveSystemPrompt && !preserveConfig && !preserveGoldBandPrompts) {
+    return next;
+  }
+
+  const events = preserveGoldBandPrompts
+    ? mergeAcpEvents(
+        previous.events.filter(isGoldBandUserPrompt),
+        next.events,
+      )
+    : next.events;
+
+  return {
+    ...next,
+    sessionId: next.sessionId ?? previous.sessionId,
+    title: next.title ?? previous.title,
+    adapterId: next.adapterId ?? previous.adapterId,
+    adapterDisplayName: next.adapterDisplayName ?? previous.adapterDisplayName,
+    systemPromptAppend: preserveSystemPrompt
+      ? previous.systemPromptAppend
+      : next.systemPromptAppend,
+    config: preserveConfig
+      ? mergeAcpSessionConfigForDisplay(previous.config, next.config)
+      : next.config,
+    events,
+    eventPage: preserveGoldBandPrompts
+      ? {
+          ...next.eventPage,
+          loadedCount: Math.max(next.eventPage.loadedCount, events.length),
+          total: Math.max(next.eventPage.total, events.length),
+        }
+      : next.eventPage,
+  };
+}
+
+function shouldPreferAcpSessionMetadata(
+  previous: AcpSessionVm,
+  next: AcpSessionVm,
+) {
+  if (!isSameAcpSessionForMetadata(previous, next)) return false;
+  if (previous.systemPromptAppend?.trim() && !next.systemPromptAppend?.trim()) {
+    return true;
+  }
+  if (shouldPreferAcpSessionConfig(previous.config, next.config)) return true;
+  return previous.events.some(isGoldBandUserPrompt) && !next.events.some(isGoldBandUserPrompt);
+}
+
+function shouldPreferAcpSessionConfig(
+  previous: AcpSessionVm["config"] | null | undefined,
+  next: AcpSessionVm["config"] | null | undefined,
+) {
+  return hasAcpSessionConfigChoicesForDisplay(previous) && !hasAcpSessionConfigChoicesForDisplay(next);
+}
+
+function mergeAcpSessionConfigForDisplay(
+  previous: AcpSessionVm["config"] | null | undefined,
+  next: AcpSessionVm["config"] | null | undefined,
+) {
+  if (!previous) return next ?? null;
+  if (!next) return previous;
+  return {
+    ...previous,
+    ...next,
+    models: hasGroupedConfigChoices(next.models, "availableModels")
+      ? next.models
+      : previous.models,
+    modes: hasGroupedConfigChoices(next.modes, "availableModes")
+      ? next.modes
+      : previous.modes,
+    configOptions: hasAnySelectConfigChoices(next.configOptions)
+      ? next.configOptions
+      : previous.configOptions,
+  };
+}
+
+function hasAcpSessionConfigChoicesForDisplay(
+  config: AcpSessionVm["config"] | null | undefined,
+) {
+  if (!config) return false;
+  const hasModelChoices =
+    hasGroupedConfigChoices(config.models, "availableModels") ||
+    hasSelectConfigChoices(config.configOptions, "model") ||
+    Boolean(config.currentModelId);
+  const hasModeChoices =
+    hasGroupedConfigChoices(config.modes, "availableModes") ||
+    hasSelectConfigChoices(config.configOptions, "mode") ||
+    Boolean(config.currentModeId);
+  return hasModelChoices && hasModeChoices;
+}
+
+function hasAnySelectConfigChoices(value: unknown) {
+  return hasSelectConfigChoices(value, "model") || hasSelectConfigChoices(value, "mode");
+}
+
+function isSameAcpSessionForMetadata(previous: AcpSessionVm, next: AcpSessionVm) {
+  if (previous.sessionId && next.sessionId && previous.sessionId !== next.sessionId) {
+    return false;
+  }
+  return true;
+}
+
 function shouldAcceptAcpSessionTiming(
   previous: AcpSessionTimingVm | null | undefined,
   next: AcpSessionTimingVm | null | undefined,
@@ -5523,6 +5503,112 @@ function isAcpInitialSessionReady(session: AcpSessionVm) {
   );
 }
 
+function logAcpSessionReady(
+  source: string,
+  componentInstanceId: string,
+  sessionIdentity: string,
+  session: AcpSessionVm | null | undefined,
+  extra?: Record<string, unknown>,
+) {
+  if (!isAcpSessionReadyDebugEnabled()) return;
+  console.info("[GoldBand][ACP session-ready]", {
+    source,
+    componentInstanceId,
+    sessionIdentity,
+    ...summarizeAcpSessionReady(session),
+    ...extra,
+  });
+}
+
+function logAcpSessionReadyLifecycle(
+  source: string,
+  componentInstanceId: string,
+  sessionIdentity: string,
+  extra?: Record<string, unknown>,
+) {
+  if (!isAcpSessionReadyDebugEnabled()) return;
+  console.info("[GoldBand][ACP session-ready]", {
+    source,
+    componentInstanceId,
+    sessionIdentity,
+    ...extra,
+  });
+}
+
+function isAcpSessionReadyDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("goldBand.debug.acpSessionReady") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function createAcpChatDialogInstanceId() {
+  return `acp-chat-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function summarizeAcpSessionReady(session: AcpSessionVm | null | undefined) {
+  const config = session?.config ?? null;
+  const hasSystemPromptAppend = Boolean(session?.systemPromptAppend?.trim());
+  const hasGoldBandUserPrompt = session?.events?.some(isGoldBandUserPrompt) ?? false;
+  return {
+    hasSession: Boolean(session),
+    ready: session ? isAcpInitialSessionReady(session) : false,
+    status: session?.status ?? null,
+    sessionUpdatedAt: session?.sessionUpdatedAt ?? null,
+    sessionId: session?.sessionId ?? null,
+    adapterId: session?.adapterId ?? null,
+    adapterDisplayName: session?.adapterDisplayName ?? null,
+    hasSystemPromptAppend,
+    systemPromptLength: session?.systemPromptAppend?.length ?? null,
+    hasConfig: Boolean(config),
+    currentModelId: config?.currentModelId ?? null,
+    currentModelName: config?.currentModelName ?? null,
+    currentModeId: config?.currentModeId ?? null,
+    currentModeName: config?.currentModeName ?? null,
+    hasModelChoices:
+      hasGroupedConfigChoices(config?.models, "availableModels") ||
+      hasSelectConfigChoices(config?.configOptions, "model") ||
+      Boolean(config?.currentModelId),
+    hasModeChoices:
+      hasGroupedConfigChoices(config?.modes, "availableModes") ||
+      hasSelectConfigChoices(config?.configOptions, "mode") ||
+      Boolean(config?.currentModeId),
+    configOptionCount: Array.isArray(config?.configOptions)
+      ? config.configOptions.length
+      : null,
+    eventCount: session?.events?.length ?? null,
+    hasGoldBandUserPrompt,
+    timingSeconds: session?.timing?.sessionElapsedSeconds ?? session?.sessionElapsedSeconds ?? null,
+    timingRevision: session?.timing?.revision ?? null,
+  };
+}
+
+function hasGroupedConfigChoices(value: unknown, key: string) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Array.isArray((value as Record<string, unknown>)[key]) &&
+      ((value as Record<string, unknown>)[key] as unknown[]).length > 0,
+  );
+}
+
+function hasSelectConfigChoices(value: unknown, category: string) {
+  return Boolean(
+    Array.isArray(value) &&
+      value.some((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const option = item as Record<string, unknown>;
+        const matches = option.id === category || option.category === category;
+        return matches && Array.isArray(option.options) && option.options.length > 0;
+      }),
+  );
+}
+
 function sessionsEquivalent(
   previous: AcpSessionVm | null | undefined,
   next: AcpSessionVm | null | undefined,
@@ -5565,6 +5651,7 @@ export {
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,
+  reconcileAcpSessionForDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,

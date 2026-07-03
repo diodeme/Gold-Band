@@ -6,7 +6,19 @@ export interface AcpLiveSessionShellPolicyInput {
 
 export type AcpSessionShellState = 'available' | 'loading' | 'missing';
 
-const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [120, 300, 700, 1200];
+const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
+  120,
+  300,
+  700,
+  1_200,
+  2_000,
+  3_000,
+  5_000,
+  5_000,
+  5_000,
+  5_000,
+  5_000,
+];
 
 export interface AcpSessionShellStateInput {
   hasBaseSession: boolean;

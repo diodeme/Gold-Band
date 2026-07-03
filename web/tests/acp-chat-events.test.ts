@@ -11,6 +11,7 @@ import {
   partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
+  reconcileAcpSessionForDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
@@ -45,6 +46,11 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
     sessionUpdatedAt: partial.sessionUpdatedAt,
     sessionElapsedSeconds: partial.sessionElapsedSeconds,
     timing: partial.timing,
+    title: partial.title,
+    adapterId: partial.adapterId,
+    adapterDisplayName: partial.adapterDisplayName,
+    systemPromptAppend: partial.systemPromptAppend,
+    config: partial.config,
     restored: partial.restored ?? false,
     events: partial.events ?? [],
     eventPage: partial.eventPage ?? {
@@ -653,6 +659,83 @@ describe('ACP chat event handling', () => {
 
     expect(stabilized?.timing?.sessionElapsedSeconds).toBe(83);
     expect(stabilized?.timing?.revision).toBe(340);
+  });
+
+  it('keeps ready session metadata when a later same-session payload is partial', () => {
+    const readyPrompt = event({
+      id: 'gold-band-user-prompt-1',
+      seq: 1,
+      kind: 'userTextDelta',
+      content: 'Build this',
+      raw: { source: 'goldBandPrompt' },
+    });
+    const ready = session({
+      sessionId: 'session-1',
+      systemPromptAppend: 'System instructions',
+      config: {
+        currentModelId: 'gpt-5',
+        currentModeId: 'default',
+        configOptions: [
+          { category: 'model', options: [{ value: 'gpt-5', name: 'GPT-5' }] },
+          { category: 'mode', options: [{ value: 'default', name: 'Default' }] },
+        ],
+      },
+      events: [readyPrompt],
+    });
+    const partial = session({
+      sessionId: 'session-1',
+      timing: {
+        sessionElapsedSeconds: 12,
+        revision: 12,
+        observedAt: '12Z',
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        permissionWaitStartedAt: null,
+        userWaitStartedAt: null,
+        waitReason: null,
+        paused: false,
+      },
+      events: [event({ id: 'assistant-message-2', seq: 2, kind: 'textDelta', content: 'Working' })],
+    });
+
+    const reconciled = reconcileAcpSessionForDisplay(ready, partial);
+
+    expect(reconciled?.systemPromptAppend).toBe('System instructions');
+    expect(reconciled?.config?.configOptions).toHaveLength(2);
+    expect(reconciled?.events.map((item) => item.id)).toEqual([
+      'gold-band-user-prompt-1',
+      'assistant-message-2',
+    ]);
+    expect(reconciled?.timing?.sessionElapsedSeconds).toBe(12);
+  });
+
+  it('does not carry ready metadata into a different ACP session', () => {
+    const ready = session({
+      sessionId: 'session-1',
+      systemPromptAppend: 'System instructions',
+      config: {
+        currentModelId: 'gpt-5',
+        currentModeId: 'default',
+      },
+      events: [
+        event({
+          id: 'gold-band-user-prompt-1',
+          seq: 1,
+          kind: 'userTextDelta',
+          raw: { source: 'goldBandPrompt' },
+        }),
+      ],
+    });
+    const nextSession = session({
+      sessionId: 'session-2',
+      events: [],
+    });
+
+    const reconciled = reconcileAcpSessionForDisplay(ready, nextSession);
+
+    expect(reconciled?.systemPromptAppend).toBeUndefined();
+    expect(reconciled?.config).toBeUndefined();
+    expect(reconciled?.events).toEqual([]);
   });
 
   it('does not carry timing across different ACP sessions', () => {

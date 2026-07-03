@@ -196,8 +196,9 @@ prompt terminal / stop / failure
 3. 普通 timeline event 上的 `timing` 只作为该事件发生时的历史锚点，用于审计和恢复扫描，不作为当前会话累计显示的实时来源，避免切换会话、权限响应或分页重放时用较旧事件 timing 覆盖 session snapshot。
 4. 同一 ACP session 的 session payload 可能由 stop response、subscription session、final `getAcpSession` 等异步入口乱序到达；后端 timing 必须携带 `revision` / `observedAt`，前端 session reducer 优先按 `revision` 接受或拒绝 timing，旧 payload 可以更新 status/events/metadata，但不能用旧 timing 覆盖较新的会话累计。缺少 revision 的旧历史数据才退回秒数单调保护。
 5. 外部传入的 session prop、identity session 初始化、subscription session、permission response、stop response 与 live-only `timingUpdate` 都必须进入同一 timing reducer；任何入口不得直接 `setCurrentSession(session)` 覆盖已接受的 live timing。
-6. metadata hydration 只用于补齐早期缺失的 system prompt / model / mode 等会话元数据，不属于计时热路径；同一 session 的 hydration request 必须有冷却时间或 attempt guard，不能被每个 live event 重复触发。
-7. 展示值：
+6. 前端异步回调用的 latest session ref 属于数据入口缓存，只能由 session payload 或 live-only timing patch 更新；不能由 `effective` / visible session / optimistic session 等 UI 派生态反写，避免旧 render 把 session-ready metadata 覆盖回 event-only shell。session reducer 即使发现 incoming payload 与 latest ref 等价，也必须让 React state 基于当前 `currentSession` 再判断一次，不能因为 ref 已经 ready 就跳过展示态同步。同一 ACP session 内，`systemPromptAppend`、模型/权限配置和 Gold Band synthetic user prompt 是 session-scoped metadata，后续 live timing、分页响应、空外部 prop 或 event-only shell 只能作为 patch 合入，不能把已就绪 metadata 降级为空；切换到不同 `sessionId` 时不得继承旧 metadata。
+7. metadata 不属于计时热路径；实时阶段需要展示的 system prompt / model / mode / synthetic user prompt 必须由后端 session-ready snapshot 提供。前端只在订阅初始化阶段等待 `getAcpSession` 返回完整 snapshot，等待窗口必须覆盖 ACP provider 慢启动，不得由每个 live event 触发 metadata hydration。
+8. 展示值：
 
 ```ts
 if (!timing) return sessionElapsedSeconds ?? null;
@@ -292,7 +293,7 @@ timeline item 可保留 `timing` patch，用于：
 - terminal session 使用最终 snapshot，不继续增长。
 - 缺少 timing 时回退 `sessionElapsedSeconds`。
 
-调试定位：前端支持在 DevTools 中设置 `localStorage.setItem("goldBand.debug.acpTiming", "1")` 打开 ACP timing 来源日志。日志前缀为 `[GoldBand][ACP timing]`，会标记 `prop-session`、`identity-session`、`authoritative-session`、`live-timing-update` 等来源以及对应秒数；旧 payload 的 timing 被 reducer 拒绝时，日志来源使用 `*:rejected-timing`，表示该秒数只是被拒绝的原始输入，不代表 UI 展示发生回退。同一开关也会输出 `[GoldBand][ACP metadata]`，用于定位实时期间 system prompt、Gold Band user prompt、model/mode 配置是否已进入当前 session。若只想看 metadata，也可以设置 `localStorage.setItem("goldBand.debug.acpMetadata", "1")`。关闭时删除对应 localStorage key。
+接口验收：same-session prompt、worker ACP prompt 和 AI-DYNAMIC 内部 prompt 都必须在真实 `session/prompt` 前发送 session-ready `AcpSessionVm`，其中包含 system prompt、模型/权限配置和 Gold Band synthetic user prompt；前端初始化 readiness fetch 总等待窗口不低于 30 秒，实时流只消费该 snapshot 与后续 live event，不依赖 debug 日志或 live-event 驱动的 metadata 补拉。调试 session-ready 链路时可在 DevTools 执行 `localStorage.setItem("goldBand.debug.acpSessionReady", "1")` 打开 `[GoldBand][ACP session-ready]` 日志，验证结束后删除该 key。
 
 ### 10.3 集成验证
 

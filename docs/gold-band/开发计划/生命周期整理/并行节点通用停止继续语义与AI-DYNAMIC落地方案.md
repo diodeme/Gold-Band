@@ -124,7 +124,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 8. 前端 auto-follow 必须区分用户手动查看历史 session、用户明确回到最新 active/current session 与 runtime 自然 terminal：manual 状态下新 active session 不抢焦点；auto 状态下当前选中自然 terminal 且用户仍在底部时，后续 child 首个 active/live event 或 lifecycle-only active update 可以切换过去；用户手动查看历史后，只有重新选中最新 active/current leaf 并回到底部才恢复 auto-follow。
 9. 前端继续只消费后端 lifecycle/composer，不理解 ACP cancel/close/delete 协议细节。
 10. 会话侧边栏 run 终态刷新按职责分层：ACP session update 继续触发 session/graph 实时 refresh；run 真正完成后由后端 `RuntimeLifecycleEvent::RunCompleted` 桥接到前端事件，进入同一个 `getConversationRun + getConversationSidebar` 刷新入口。`onSessionStopped` 不再作为新 UI run/sidebar 的第三套刷新触发。
-11. 停止后继续当前 leaf 的生命周期不得派生为 `launching-next-node`；该状态只表示当前节点自然完成后正在启动后继节点。当前 leaf resume 已被接受但新 ACP 输出尚未到达时，应输出普通 processing/provider-running 语义。
+11. 停止后继续当前 leaf 的生命周期不得派生为 `launching-next-node`；该状态只表示当前节点自然完成后正在启动后继节点。当前 leaf resume 已被接受但新 ACP 输出尚未到达时，应输出普通 processing/provider-running 语义。`runtime-continue-started` 响应和前端本地 composer override 都必须遵守这条语义，避免后台文件尚未推进到 running 前被旧 paused/interrupted-input 快照短暂降级。
 12. dynamic inner runtime-continue 必须把调用方传入的 prompt identity 贯穿到 ACP `PromptBundle` 与 synthetic `goldBandPrompt.raw.promptId`，前端才能把 optimistic 用户气泡与服务端快照匹配，并让多次相同文本继续按独立轮次展示。
 
 ## 9. 侧边栏 run 列表右键停止

@@ -247,8 +247,9 @@ RuntimeLifecycleBus
 1. 后端根据当前 run 是否 paused/resumable 以及选中 locator 是否匹配当前 runtime attempt 判定 `runtime-continue`。
 2. 顶层 attempt 的 `runtime-continue` 调用 `run_continue_background`。
 3. AI-DYNAMIC 内部 attempt 的 `runtime-continue` 调用 `run_continue_dynamic_inner_background`，携带 outer node/attempt 与 inner node/attempt。
-4. 其余场景降级为同会话 ACP prompt helper，只处理 runtime 未接管的普通追问。
-5. 新 UI 会话页与旧 UI Round 详情的工作流 attempt 提交都只调用 `submit_conversation_prompt`，不再自行选择 `sendAcpPrompt` 或 `continueRun`。
+4. `runtime-continue-started` 表示后端已接受继续命令；即使后台线程尚未把 run/node 文件推进到 running，返回体也必须合成 `runtime-active / provider-running` lifecycle，不能返回刚读取到的 paused/interrupted-input 快照。
+5. 其余场景降级为同会话 ACP prompt helper，只处理 runtime 未接管的普通追问。
+6. 新 UI 会话页与旧 UI Round 详情的工作流 attempt 提交都只调用 `submit_conversation_prompt`，不再自行选择 `sendAcpPrompt` 或 `continueRun`。
 
 `send_acp_prompt` 仅保留为非 runtime 生命周期会话的窄入口；若请求命中 paused/resumable/current workflow attempt，后端返回 `acp.runtime-submit-required`，要求调用 `submit_conversation_prompt`，避免再次绕过 runtime。
 
@@ -260,6 +261,7 @@ RuntimeLifecycleBus
 - AI-DYNAMIC 外层停止、重跑前停止旧 run 或关闭客户端时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`；`run_kill / kill_run / killRun` 产生链路已废弃，不允许再写新的 `Killed` 状态。
 - provider 已被调用但 stop 已落盘时，即使 provider 迟到返回 success，也不能写 success artifact，不能完成 run，不能进入下一节点。
 - stop / crash recovery 写入的历史 `cancelled` ACP snapshot/session 不能取消后续 runtime continue；继续入口必须只以当前 runtime lifecycle 和 provider control 为准，不能被历史 ACP cancelled metadata 阻断。
+- 前端收到 `runtime-continue-started` 后，本地 composer lifecycle 进入 runtime-active；后台 running 快照到达前，旧的 paused/interrupted-input lifecycle update 不能把输入框短暂恢复为可输入。父级 lifecycle 追到 active、stopping 或 runtime-error 后，本地 override 必须释放，重新以父级 lifecycle 为准。
 - `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control；活跃 runtime 必须发送一次 `session/cancel` notification 取消底层会话，并继续 drain 当前 prompt response，直到 cancelled/interrupted 或 cancel deadline 到期。普通停止不按 `provider.pid` 清理 adapter，不把 kill adapter 当作 cancel 成功兜底。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后按后端 lifecycle 和最终快照收敛。
 - 桌面启动 recovery 扫描 running run，并复用 interruption 路径收敛为可继续暂停态；关闭窗口同理。
 

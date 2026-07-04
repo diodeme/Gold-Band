@@ -46,8 +46,8 @@ use crate::view_models::{
     SkillListVm, SkillMetaVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
     acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
     log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
-    workflow_vm,
+    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
+    task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
@@ -182,11 +182,23 @@ fn runtime_continue_started_lifecycle_for_locator(
     locator: &AttemptLocator,
 ) -> Option<ConversationAttemptLifecycleVm> {
     lifecycle_for_locator(app, locator).map(|mut lifecycle| {
-        if lifecycle.runtime.active && lifecycle.runtime.phase == "launching-next-node" {
-            lifecycle.runtime.phase = "provider-running".to_string();
-            lifecycle.composer.processing_kind = "processing".to_string();
-            lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
-        }
+        lifecycle.runtime.status = "running".to_string();
+        lifecycle.runtime.outcome = None;
+        lifecycle.runtime.pause_reason = None;
+        lifecycle.runtime.resumable = false;
+        lifecycle.runtime.current = true;
+        lifecycle.runtime.active = true;
+        lifecycle.runtime.continuable = false;
+        lifecycle.runtime.phase = "provider-running".to_string();
+        lifecycle.display_status = "running".to_string();
+        lifecycle.runtime_display = runtime_display_vm(Some("running"), None, true, None, false);
+        lifecycle.continue_kind = None;
+        lifecycle.composer.mode = "runtime-active".to_string();
+        lifecycle.composer.submit_target = "none".to_string();
+        lifecycle.composer.processing_kind = "processing".to_string();
+        lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
+        lifecycle.composer.can_stop = true;
+        lifecycle.composer.lock_input = true;
         lifecycle
     })
 }

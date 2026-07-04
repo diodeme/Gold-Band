@@ -125,6 +125,7 @@ import {
   isSessionActiveStatus,
   isSessionCompletedStatus,
   isSessionTerminalStatus,
+  shouldKeepLocalRuntimeLifecycleOverride,
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
@@ -668,7 +669,11 @@ export const ACPChatDialog = forwardRef<
   }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
 
   useEffect(() => {
-    if (runtimeComposerContext?.lifecycle) setLocalRuntimeLifecycle(null);
+    const incoming = runtimeComposerContext?.lifecycle;
+    if (!incoming) return;
+    setLocalRuntimeLifecycle((current) =>
+      shouldKeepLocalRuntimeLifecycleOverride(current, incoming) ? current : null,
+    );
   }, [runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {

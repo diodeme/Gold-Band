@@ -171,6 +171,23 @@ export function deriveAcpRuntimeComposerState(
   };
 }
 
+export function shouldKeepLocalRuntimeLifecycleOverride(
+  local: ConversationAttemptLifecycleVm | null | undefined,
+  incoming: ConversationAttemptLifecycleVm | null | undefined,
+) {
+  if (!local?.runtime.active) return false;
+  if (!incoming) return true;
+  if (incoming.runtime.active || incoming.acp.active || incoming.acp.stopping) {
+    return false;
+  }
+  if (incoming.composer.mode === 'runtime-error') return false;
+  return (
+    incoming.runtime.phase === 'paused' &&
+    incoming.continueKind === 'input' &&
+    incoming.composer.mode === 'interrupted-input'
+  );
+}
+
 export function isSessionActiveStatus(status?: string | null) {
   return ['pending', 'running', 'in-progress', 'in_progress', 'active', 'sending', 'cancelling', 'cancel-requested', 'cancel_requested'].includes(
     normalizeStatus(status),

@@ -4475,6 +4475,7 @@ fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
         return false;
     };
     let mut close_request_ids = HashSet::new();
+    let mut close_completed_after_last_session_start = false;
     for line in content.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -4482,10 +4483,15 @@ fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
         let Some(frame) = value.get("frame") else {
             continue;
         };
-        let is_close_request = frame
-            .get("method")
-            .and_then(|method| method.as_str())
-            .is_some_and(|method| method == "session/close");
+        let method = frame.get("method").and_then(|method| method.as_str());
+        if matches!(
+            method,
+            Some("session/new" | "session/load" | "session/prompt")
+        ) {
+            close_request_ids.clear();
+            close_completed_after_last_session_start = false;
+        }
+        let is_close_request = method.is_some_and(|method| method == "session/close");
         let Some(id) = raw_frame_rpc_id_key(frame) else {
             continue;
         };
@@ -4494,10 +4500,10 @@ fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
             continue;
         }
         if frame.get("result").is_some() && close_request_ids.contains(&id) {
-            return true;
+            close_completed_after_last_session_start = true;
         }
     }
-    false
+    close_completed_after_last_session_start
 }
 
 fn raw_frame_rpc_id_key(frame: &serde_json::Value) -> Option<String> {
@@ -6360,6 +6366,33 @@ mod tests {
     }
 
     #[test]
+    fn raw_session_close_detection_ignores_close_before_later_prompt() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-resume-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn stale_session_completion_fuse_cancels_after_logged_session_close() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-raw-close-fuse-test-{}",
@@ -6393,6 +6426,45 @@ mod tests {
         assert_eq!(
             session.get("stopReason").and_then(|value| value.as_str()),
             Some("cancelled")
+        );
+        assert!(pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_keeps_running_after_prompt_following_close() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-resumed-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut session = json!({ "status": "running", "stopReason": null });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("running")
         );
         assert!(pid_path.exists());
 

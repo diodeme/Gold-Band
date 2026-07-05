@@ -3275,7 +3275,8 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if stopping {
+    let active_status = is_acp_session_active_status(&status);
+    let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
         event_scan
@@ -3521,7 +3522,8 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if stopping {
+    let active_status = is_acp_session_active_status(&status);
+    let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
         event_scan
@@ -4381,6 +4383,9 @@ fn apply_stale_session_completion_fuse(
     let pid_path = app
         .paths
         .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
+    let raw_path = app
+        .paths
+        .acp_raw_file(task_id, run_id, round_id, node_id, attempt_id);
     let node_status = if node_path.exists() {
         read_json::<NodeState>(node_path)
             .ok()
@@ -4390,6 +4395,7 @@ fn apply_stale_session_completion_fuse(
     };
     let fused = apply_stale_session_completion_fuse_common(
         &pid_path,
+        &raw_path,
         session,
         node_status
             .map(|status| status == RunStatus::Completed)
@@ -4410,6 +4416,7 @@ fn apply_stale_session_completion_fuse_dynamic(
     session: &mut serde_json::Value,
 ) -> Result<()> {
     let pid_path = attempt_dir.join("provider.pid");
+    let raw_path = attempt_dir.join("acp.raw.jsonl");
     let node_completed = if node_path.exists() {
         read_json::<gold_band::dynamic::DynamicNodeState>(node_path)
             .ok()
@@ -4418,7 +4425,8 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    let fused = apply_stale_session_completion_fuse_common(&pid_path, session, node_completed)?;
+    let fused =
+        apply_stale_session_completion_fuse_common(&pid_path, &raw_path, session, node_completed)?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -4428,6 +4436,7 @@ fn apply_stale_session_completion_fuse_dynamic(
 
 fn apply_stale_session_completion_fuse_common(
     pid_path: &camino::Utf8Path,
+    raw_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
 ) -> Result<bool> {
@@ -4437,6 +4446,12 @@ fn apply_stale_session_completion_fuse_common(
         .unwrap_or("unknown");
     if !is_acp_session_active_status(metadata_status) {
         return Ok(false);
+    }
+    if raw_has_successful_session_close(raw_path) {
+        session["status"] = serde_json::json!("cancelled");
+        session["stopReason"] = serde_json::json!("cancelled");
+        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
+        return Ok(true);
     }
     if pid_path.exists() && !node_completed {
         return Ok(false);
@@ -4453,6 +4468,49 @@ fn apply_stale_session_completion_fuse_common(
     }
     session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
     Ok(true)
+}
+
+fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
+    let Ok(content) = fs::read_to_string(raw_path.as_std_path()) else {
+        return false;
+    };
+    let mut close_request_ids = HashSet::new();
+    for line in content.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(frame) = value.get("frame") else {
+            continue;
+        };
+        let is_close_request = frame
+            .get("method")
+            .and_then(|method| method.as_str())
+            .is_some_and(|method| method == "session/close");
+        let Some(id) = raw_frame_rpc_id_key(frame) else {
+            continue;
+        };
+        if is_close_request {
+            close_request_ids.insert(id);
+            continue;
+        }
+        if frame.get("result").is_some() && close_request_ids.contains(&id) {
+            return true;
+        }
+    }
+    false
+}
+
+fn raw_frame_rpc_id_key(frame: &serde_json::Value) -> Option<String> {
+    let id = frame.get("id")?;
+    if let Some(value) = id.as_str() {
+        return Some(format!("s:{value}"));
+    }
+    if let Some(value) = id.as_u64() {
+        return Some(format!("n:{value}"));
+    }
+    id.as_i64()
+        .filter(|value| *value >= 0)
+        .map(|value| format!("n:{value}"))
 }
 
 fn parse_epoch_timestamp(value: &str) -> Option<u64> {
@@ -6185,11 +6243,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
+                .unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -6208,11 +6268,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, false).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -6233,16 +6295,106 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         let mut session = json!({ "status": "failed" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
+                .unwrap();
 
         assert!(!fused);
         assert_eq!(
             session.get("status").and_then(|value| value.as_str()),
             Some("failed")
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raw_session_close_detection_requires_matching_result() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-detection-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raw_session_close_detection_ignores_unrelated_results() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-unrelated-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":4,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_cancels_after_logged_session_close() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut session = json!({ "status": "running", "stopReason": null });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
+
+        assert!(fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert_eq!(
+            session.get("stopReason").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert!(pid_path.exists());
 
         fs::remove_dir_all(dir).unwrap();
     }

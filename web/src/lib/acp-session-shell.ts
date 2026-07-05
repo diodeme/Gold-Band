@@ -22,18 +22,21 @@ const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
 
 export interface AcpSessionShellStateInput {
   hasBaseSession: boolean;
+  baseSessionReady: boolean;
   hasLiveSessionShell: boolean;
   initialSessionLoading: boolean;
 }
 
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
-  if (input.runtimeActive) return true;
-  return input.allowEventOnlySessionShell && input.loadedEventCount > 0;
+  if (!input.allowEventOnlySessionShell) return false;
+  return input.runtimeActive || input.loadedEventCount > 0;
 }
 
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
-  if (input.hasBaseSession || input.hasLiveSessionShell) return 'available';
+  if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
+  if (input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';
+  if (input.hasBaseSession) return 'available';
   return 'missing';
 }
 

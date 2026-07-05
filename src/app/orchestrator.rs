@@ -3434,7 +3434,7 @@ fn try_reconcile_dynamic_resume_completion(
     }
     let mut node = graph.nodes[index].clone();
     let Some(proposal) =
-        try_accept_interrupted_dynamic_completion(ctx, &mut node, &resume.attempt_id)?
+        try_accept_interrupted_dynamic_completion(ctx, &mut node, &resume.attempt_id, None)?
     else {
         return Ok(false);
     };
@@ -4627,10 +4627,15 @@ fn execute_dynamic_worker(
             }),
         );
         let provider_status = result.status;
+        let interrupted_output_artifact = interrupted_dynamic_output_artifact_candidate(&result);
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
         if provider_status == ProviderRunStatus::Interrupted
-            && let Some(proposal) =
-                try_accept_interrupted_dynamic_completion(ctx, &mut node, &attempt_id)?
+            && let Some(proposal) = try_accept_interrupted_dynamic_completion(
+                ctx,
+                &mut node,
+                &attempt_id,
+                interrupted_output_artifact.as_ref(),
+            )?
         {
             proposals.push(proposal);
             append_dynamic_event(
@@ -4664,7 +4669,7 @@ fn execute_dynamic_worker(
         }
         if !outer_attempt_is_still_current_running(ctx)?
             && let Some(proposal) =
-                try_accept_interrupted_dynamic_completion(ctx, &mut node, &attempt_id)?
+                try_accept_interrupted_dynamic_completion(ctx, &mut node, &attempt_id, None)?
         {
             proposals.push(proposal);
             append_dynamic_event(
@@ -5272,38 +5277,13 @@ fn finalize_dynamic_worker_result(
     if let Some(info) = result.runtime_error {
         return Err(runtime_error(info));
     }
-    if let Some(payload) = result.result_payload
-        && let Some(output_artifact) = payload.output_artifact
-        && !output_artifact.content.trim().is_empty()
-    {
-        let artifact_path = ctx.app.paths.dynamic_node_artifact_file(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-            &node_id,
-            attempt_id,
-            &output_artifact.name,
-        );
-        std::fs::create_dir_all(
-            ctx.app
-                .paths
-                .dynamic_node_artifacts_dir(
-                    ctx.task_id,
-                    ctx.run_id,
-                    ctx.round_id,
-                    ctx.outer_node_id,
-                    ctx.outer_attempt_id,
-                    &node_id,
-                    attempt_id,
-                )
-                .as_std_path(),
-        )?;
-        std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
-    }
     match status {
         ProviderRunStatus::Success => {
+            if let Some(payload) = result.result_payload
+                && let Some(output_artifact) = payload.output_artifact
+            {
+                write_dynamic_output_artifact(ctx, &node_id, attempt_id, &output_artifact)?;
+            }
             node.status = DynamicNodeStatus::Completed;
             node.outcome = Some(NodeOutcome::Success);
         }
@@ -5321,41 +5301,108 @@ fn finalize_dynamic_worker_result(
     validate_dynamic_node_state(node)
 }
 
+fn interrupted_dynamic_output_artifact_candidate(
+    result: &ProviderRunResult,
+) -> Option<crate::provider::OutputArtifactPayload> {
+    (result.status == ProviderRunStatus::Interrupted)
+        .then(|| {
+            result
+                .result_payload
+                .as_ref()
+                .and_then(|payload| payload.output_artifact.clone())
+        })
+        .flatten()
+}
+
+fn dynamic_output_artifact_path(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+    artifact_name: &str,
+) -> Utf8PathBuf {
+    ctx.app.paths.dynamic_node_artifact_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        node_id,
+        attempt_id,
+        artifact_name,
+    )
+}
+
+fn write_dynamic_output_artifact(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+    output_artifact: &crate::provider::OutputArtifactPayload,
+) -> Result<Option<Utf8PathBuf>> {
+    if output_artifact.content.trim().is_empty() {
+        return Ok(None);
+    }
+    let artifact_path =
+        dynamic_output_artifact_path(ctx, node_id, attempt_id, &output_artifact.name);
+    std::fs::create_dir_all(
+        ctx.app
+            .paths
+            .dynamic_node_artifacts_dir(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                node_id,
+                attempt_id,
+            )
+            .as_std_path(),
+    )?;
+    std::fs::write(artifact_path.as_std_path(), &output_artifact.content)?;
+    Ok(Some(artifact_path))
+}
+
 fn try_accept_interrupted_dynamic_completion(
     ctx: &DynamicExecutionContext<'_>,
     node: &mut DynamicNodeState,
     attempt_id: &str,
+    candidate_artifact: Option<&crate::provider::OutputArtifactPayload>,
 ) -> Result<Option<DynamicProposalState>> {
-    let proposal = match build_dynamic_completion_from_artifact(ctx, attempt_id, node) {
-        Ok(proposal) if proposal.validation_status == DynamicProposalValidationStatus::Accepted => {
-            proposal
-        }
-        Ok(proposal) => {
-            append_dynamic_event(
-                ctx,
-                "dynamic_interrupted_completion_ignored",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "attemptId": attempt_id,
-                    "validationStatus": proposal.validation_status,
-                    "validationErrors": proposal.validation_errors,
-                }),
-            )?;
-            return Ok(None);
-        }
-        Err(error) => {
-            append_dynamic_event(
-                ctx,
-                "dynamic_interrupted_completion_ignored",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "attemptId": attempt_id,
-                    "error": error.to_string(),
-                }),
-            )?;
-            return Ok(None);
-        }
-    };
+    let proposal =
+        match build_interrupted_dynamic_completion(ctx, attempt_id, node, candidate_artifact) {
+            Ok(proposal)
+                if proposal.validation_status == DynamicProposalValidationStatus::Accepted =>
+            {
+                proposal
+            }
+            Ok(proposal) => {
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_interrupted_completion_ignored",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "validationStatus": proposal.validation_status,
+                        "validationErrors": proposal.validation_errors,
+                    }),
+                )?;
+                return Ok(None);
+            }
+            Err(error) => {
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_interrupted_completion_ignored",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "error": error.to_string(),
+                    }),
+                )?;
+                return Ok(None);
+            }
+        };
+    if let Some(candidate_artifact) = candidate_artifact {
+        write_dynamic_output_artifact(ctx, &node.id, attempt_id, candidate_artifact)?;
+    }
     node.status = DynamicNodeStatus::Completed;
     node.outcome = Some(NodeOutcome::Success);
     node.finished_at = Some(now_rfc3339_like());
@@ -5372,26 +5419,62 @@ fn try_accept_interrupted_dynamic_completion(
     Ok(Some(proposal))
 }
 
+fn build_interrupted_dynamic_completion(
+    ctx: &DynamicExecutionContext<'_>,
+    attempt_id: &str,
+    node: &DynamicNodeState,
+    candidate_artifact: Option<&crate::provider::OutputArtifactPayload>,
+) -> Result<DynamicProposalState> {
+    if let Some(candidate_artifact) = candidate_artifact {
+        ensure!(
+            candidate_artifact.name == DYNAMIC_COMPLETION_ARTIFACT,
+            "interrupted dynamic worker returned unexpected artifact `{}`",
+            candidate_artifact.name
+        );
+        return build_dynamic_completion_from_content(
+            ctx,
+            attempt_id,
+            node,
+            &candidate_artifact.content,
+        );
+    }
+    build_dynamic_completion_from_artifact(ctx, attempt_id, node)
+}
+
 fn build_dynamic_completion_from_artifact(
     ctx: &DynamicExecutionContext<'_>,
     attempt_id: &str,
     node: &DynamicNodeState,
 ) -> Result<DynamicProposalState> {
-    let artifact_path = ctx.app.paths.dynamic_node_artifact_file(
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
-        &node.id,
-        attempt_id,
-        DYNAMIC_COMPLETION_ARTIFACT,
-    );
+    let artifact_path =
+        dynamic_output_artifact_path(ctx, &node.id, attempt_id, DYNAMIC_COMPLETION_ARTIFACT);
     ensure!(
         artifact_path.exists(),
         "dynamic node `{}` did not produce dynamic-node-completion",
         node.id
     );
+    let raw = std::fs::read_to_string(artifact_path.as_std_path())?;
+    build_dynamic_completion_from_raw(ctx, attempt_id, node, &raw, artifact_path)
+}
+
+fn build_dynamic_completion_from_content(
+    ctx: &DynamicExecutionContext<'_>,
+    attempt_id: &str,
+    node: &DynamicNodeState,
+    raw: &str,
+) -> Result<DynamicProposalState> {
+    let artifact_path =
+        dynamic_output_artifact_path(ctx, &node.id, attempt_id, DYNAMIC_COMPLETION_ARTIFACT);
+    build_dynamic_completion_from_raw(ctx, attempt_id, node, raw, artifact_path)
+}
+
+fn build_dynamic_completion_from_raw(
+    ctx: &DynamicExecutionContext<'_>,
+    attempt_id: &str,
+    node: &DynamicNodeState,
+    raw: &str,
+    artifact_path: Utf8PathBuf,
+) -> Result<DynamicProposalState> {
     let graph: DynamicGraphState = {
         let lock = dynamic_state_lock(ctx)?;
         let _guard = lock
@@ -5405,8 +5488,7 @@ fn build_dynamic_completion_from_artifact(
             ctx.outer_attempt_id,
         ))?
     };
-    let raw = std::fs::read_to_string(artifact_path.as_std_path())?;
-    let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, &raw)?;
+    let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, raw)?;
     let raw_output_path = ctx
         .app
         .paths
@@ -11125,10 +11207,16 @@ mod tests {
             runtime_error: None,
         };
 
+        let candidate = interrupted_dynamic_output_artifact_candidate(&result);
         finalize_dynamic_worker_result(&ctx, &mut node, &attempt_id, result).unwrap();
-        let proposal = try_accept_interrupted_dynamic_completion(&ctx, &mut node, &attempt_id)
-            .unwrap()
-            .expect("valid interrupted completion is accepted");
+        let proposal = try_accept_interrupted_dynamic_completion(
+            &ctx,
+            &mut node,
+            &attempt_id,
+            candidate.as_ref(),
+        )
+        .unwrap()
+        .expect("valid interrupted completion is accepted");
 
         assert_eq!(node.status, DynamicNodeStatus::Completed);
         assert_eq!(node.outcome, Some(NodeOutcome::Success));
@@ -11166,7 +11254,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_dynamic_worker_with_invalid_completion_stays_paused() {
+    fn interrupted_dynamic_worker_with_invalid_completion_stays_paused_without_artifact() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         write_test_outer_run(&app);
@@ -11193,7 +11281,8 @@ mod tests {
             result_payload: Some(ProviderResultPayload {
                 output_artifact: Some(OutputArtifactPayload {
                     name: DYNAMIC_COMPLETION_ARTIFACT.to_string(),
-                    content: "{\"version\":\"0.1\"".to_string(),
+                    content: "我会继续当前会话，在 `.claude` 下补上独立的 good bye Python 类并写开发报告。"
+                        .to_string(),
                 }),
             }),
             worker_ref_seed: None,
@@ -11201,13 +11290,33 @@ mod tests {
             runtime_error: None,
         };
 
+        let candidate = interrupted_dynamic_output_artifact_candidate(&result);
         finalize_dynamic_worker_result(&ctx, &mut node, &attempt_id, result).unwrap();
-        let proposal =
-            try_accept_interrupted_dynamic_completion(&ctx, &mut node, &attempt_id).unwrap();
+        let proposal = try_accept_interrupted_dynamic_completion(
+            &ctx,
+            &mut node,
+            &attempt_id,
+            candidate.as_ref(),
+        )
+        .unwrap();
 
         assert!(proposal.is_none());
         assert_eq!(node.status, DynamicNodeStatus::Paused);
         assert_eq!(node.outcome, None);
+        assert!(
+            !app.paths
+                .dynamic_node_artifact_file(
+                    "task-006",
+                    "run-001",
+                    "round-001",
+                    "ai-dynamic",
+                    "attempt-001",
+                    "bootstrap",
+                    "attempt-001",
+                    DYNAMIC_COMPLETION_ARTIFACT,
+                )
+                .exists()
+        );
     }
 
     #[test]

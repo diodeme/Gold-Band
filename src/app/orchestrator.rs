@@ -483,6 +483,7 @@ struct DynamicResumeOverride {
     prompt_id: Option<String>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,6 +749,7 @@ pub(crate) fn run_continue(
     prompt_id: Option<String>,
     prompt: Option<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -879,6 +881,7 @@ pub(crate) fn run_continue(
         initial_parent_continue_prompt_id,
         None,
         model_override,
+        permission_mode_override,
     )?;
     Ok(run)
 }
@@ -897,6 +900,7 @@ pub(crate) fn run_continue_dynamic_inner(
     prompt: String,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow(workflow)?;
@@ -938,6 +942,7 @@ pub(crate) fn run_continue_dynamic_inner(
         prompt_id,
         attachment_paths,
         model_override,
+        permission_mode_override,
     };
     let dispatch = {
         let lock =
@@ -1004,6 +1009,7 @@ pub(crate) fn run_continue_dynamic_inner(
         None,
         Some(resume_override),
         None,
+        None,
     );
     if drive_result.is_err() {
         let key =
@@ -1028,6 +1034,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
     prompt: String,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let mut initial_run = app.run_status(task_id, run_id)?;
     if !(is_run_continuable(&initial_run) || initial_run.status == RunStatus::Running) {
@@ -1072,6 +1079,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
             prompt,
             attachment_paths,
             model_override,
+            permission_mode_override,
         ) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
@@ -1093,6 +1101,7 @@ pub(crate) fn run_continue_background(
     prompt_id: Option<String>,
     prompt: Option<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
     if !is_run_continuable(&initial_run) {
@@ -1108,10 +1117,19 @@ pub(crate) fn run_continue_background(
     let prompt_id = prompt_id.clone();
     let prompt = prompt.clone();
     let model_override = model_override.clone();
+    let permission_mode_override = permission_mode_override.clone();
 
     thread::spawn(move || {
         let app = background_app;
-        if let Err(err) = run_continue(&app, &task_id, &run_id, prompt_id, prompt, model_override) {
+        if let Err(err) = run_continue(
+            &app,
+            &task_id,
+            &run_id,
+            prompt_id,
+            prompt,
+            model_override,
+            permission_mode_override,
+        ) {
             let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
             let _ = std::fs::write(
                 app.paths
@@ -1246,6 +1264,7 @@ pub(crate) fn submit_manual_check(
             None,
             None,
             workflow_user_prompt_render_mode_for_session(next.session_mode),
+            None,
             None,
             None,
             None,
@@ -2269,6 +2288,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         UserPromptRenderMode::RequirementTask,
+        None,
         None,
         None,
         None,
@@ -4454,6 +4474,7 @@ fn execute_dynamic_worker(
     let mut resume_prompt_id = None;
     let mut resume_input_attachment_paths = Vec::new();
     let mut resume_model_override = None;
+    let mut resume_permission_mode_override = None;
     if let Some(resume) = ctx
         .resume_override
         .as_ref()
@@ -4471,6 +4492,7 @@ fn execute_dynamic_worker(
         resume_prompt_id = resume.prompt_id.clone();
         resume_input_attachment_paths = resume.attachment_paths.clone();
         resume_model_override = resume.model_override.clone();
+        resume_permission_mode_override = resume.permission_mode_override.clone();
     }
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = if let Some(resume) = ctx.resume_override.as_ref() {
@@ -4531,6 +4553,7 @@ fn execute_dynamic_worker(
             user_prompt_render_mode,
             resume_input_attachment_paths.clone(),
             resume_model_override.take(),
+            resume_permission_mode_override.take(),
         )
         .with_context(|| {
             format!(
@@ -4901,6 +4924,7 @@ fn execute_dynamic_agent_stage(
         PromptVisibility::Visible,
         workflow_user_prompt_render_mode_for_session(session_mode),
         Vec::new(),
+        None,
         None,
     )?;
     dynamic_event_best_effort(
@@ -7357,6 +7381,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         UserPromptRenderMode::UserMessage,
         Vec::new(),
         None,
+        None,
     )?;
     render_prompt_bundle(&invocation)
 }
@@ -7375,6 +7400,7 @@ fn build_dynamic_worker_invocation(
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<WorkerInvocation> {
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
@@ -7528,10 +7554,14 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "permission_mode");
     let permission_mode = {
-        let raw = node
-            .permission_mode
-            .clone()
-            .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned));
+        let raw = permission_mode_override
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                node.permission_mode
+                    .clone()
+                    .or_else(|| ctx.dynamic.permission_mode().map(ToOwned::to_owned))
+            });
         match (raw, node.provider.as_deref()) {
             (Some(normative), Some(provider)) => {
                 Some(ctx.app.config.resolve_permission_mode(provider, &normative))
@@ -9087,6 +9117,7 @@ fn drive_from_node_with_initial_session(
     parent_continue_prompt_id: Option<String>,
     dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
+    initial_permission_mode_override: Option<String>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
     let mut continue_ref = initial_continue_ref;
@@ -9095,6 +9126,7 @@ fn drive_from_node_with_initial_session(
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = initial_user_prompt_render_mode;
     let mut model_override = initial_model_override;
+    let mut permission_mode_override = initial_permission_mode_override;
     let mut invalid_output_repair_prompts = 0;
 
     loop {
@@ -9216,6 +9248,7 @@ fn drive_from_node_with_initial_session(
                             resume_prompt_visibility,
                             user_prompt_render_mode,
                             model_override.take(),
+                            permission_mode_override.take(),
                         )
                     }),
                 NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
@@ -10349,6 +10382,7 @@ mod tests {
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
             None,
+            None,
         )
         .unwrap();
 
@@ -10578,6 +10612,7 @@ mod tests {
             prompt_id: Some("prompt-morning".to_string()),
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
         let second = DynamicResumeOverride {
             node_id: "good-night".to_string(),
@@ -10586,6 +10621,7 @@ mod tests {
             prompt_id: Some("prompt-night".to_string()),
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
 
         let first_dispatch = dispatch_dynamic_resume_override(
@@ -10653,6 +10689,7 @@ mod tests {
             prompt_id: None,
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
 
         resume_paused_dynamic_graph(&mut graph, Some(&resume)).unwrap();
@@ -10846,6 +10883,7 @@ mod tests {
             prompt_id: None,
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
 
         assert!(!recover_legacy_cancelled_dynamic_leaves_for_paused_graph(
@@ -10885,6 +10923,7 @@ mod tests {
             prompt_id: None,
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
 
         resume_paused_dynamic_graph(&mut graph, Some(&resume)).unwrap();
@@ -11313,6 +11352,7 @@ mod tests {
             prompt_id: None,
             attachment_paths: Vec::new(),
             model_override: None,
+            permission_mode_override: None,
         };
 
         assert!(try_reconcile_dynamic_resume_completion(&ctx, &mut graph, &resume).unwrap());

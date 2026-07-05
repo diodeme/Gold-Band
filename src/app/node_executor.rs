@@ -314,6 +314,7 @@ pub(crate) fn build_worker_invocation(
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
@@ -345,6 +346,10 @@ pub(crate) fn build_worker_invocation(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or(configured_model);
+    let permission_mode = permission_mode_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(permission_mode);
 
     let profile_content = profile
         .as_deref()
@@ -419,6 +424,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let invocation = build_worker_invocation(
@@ -436,6 +442,7 @@ pub(crate) fn execute_ai_node(
         resume_prompt_visibility,
         user_prompt_render_mode,
         model_override,
+        permission_mode_override,
     )?;
 
     progress(&format!(

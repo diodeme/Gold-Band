@@ -22,6 +22,7 @@
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
 - view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals；同时 Round 详情主图已改为把 AI-DYNAMIC 内部实际执行节点内联到主执行图中，点击后复用普通节点详情 / 会话 / 产物链路。
+- `dynamic-node-completion` 是 AI-DYNAMIC 内部节点的控制协议产物，也会进入 Round 详情、会话资产栏、图节点产物数量和可点击弹窗；runtime 只能在 provider 已返回完整 artifact 内容后写入该文件，不能提前创建 0 字节占位文件。
 - 动态内联节点的详情与 ACP 会话定位必须读取真实 dynamic attempt 目录，并与主图边关系保持一致；不能把所有内部节点固定映射成同一个 attempt，否则会出现节点看似运行但会话/边信息错位。
 - Round 详情主图中，AI-DYNAMIC 外层 success/failure 边仍按普通 workflow trace 判定，但展示连接端点改为内部 dynamic graph 出口节点：显式 `dependsOn`、`sessionMode=continue` 和 `chainId/depth` 隐式成功边都会参与出口判定，避免 bootstrap 等中间层节点被误连到后续普通节点；当前常见单出口，保留多个出口 fan-in 到后续节点的能力。
 - 动态内联节点在主图中的 rank 必须位于其外层 AI-DYNAMIC trace 步骤与后续普通 workflow 节点之间；外层后继节点不能因为原始 trace sequence 更小而排到内部节点前面，否则出口边会被前端布局识别成回退边并走顶部绕线路由。

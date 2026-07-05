@@ -744,20 +744,22 @@ pub(crate) fn finalize_ai_attempt(
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
                 if let Some(output_artifact) = payload.output_artifact {
-                    let artifact_path = app.paths.artifact_file(
-                        task_id,
-                        run_id,
-                        round_id,
-                        node_id,
-                        attempt_id,
-                        &output_artifact.name,
-                    );
-                    std::fs::create_dir_all(
-                        app.paths
-                            .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
-                            .as_std_path(),
-                    )?;
-                    std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
+                    if !output_artifact.content.trim().is_empty() {
+                        let artifact_path = app.paths.artifact_file(
+                            task_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            &output_artifact.name,
+                        );
+                        std::fs::create_dir_all(
+                            app.paths
+                                .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
+                                .as_std_path(),
+                        )?;
+                        std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
+                    }
                 }
             }
 

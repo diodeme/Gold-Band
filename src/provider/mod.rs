@@ -736,21 +736,8 @@ impl ProviderAdapter for AcpProvider {
                 )
             })
             .flatten();
-        let result_payload = req.output_contract.as_ref().map(|contract| {
-            let uses_json_output =
-                contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
-            let content = if uses_json_output {
-                json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
-                    .unwrap_or_else(|| run.final_text.clone())
-            } else {
-                run.final_text.clone()
-            };
-            ProviderResultPayload {
-                output_artifact: Some(OutputArtifactPayload {
-                    name: contract.artifact.clone(),
-                    content,
-                }),
-            }
+        let result_payload = req.output_contract.as_ref().and_then(|contract| {
+            output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
         });
         Ok(ProviderRunResult {
             status,
@@ -772,6 +759,31 @@ impl ProviderAdapter for AcpProvider {
     fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
         Ok(None)
     }
+}
+
+fn output_artifact_payload_from_run(
+    contract: &PromptOutputContract,
+    final_outputs: &[String],
+    final_text: &str,
+) -> Option<ProviderResultPayload> {
+    let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
+    let content = if uses_json_output {
+        json_artifact_text_from_outputs(final_outputs, final_text)
+            .or_else(|| non_empty_artifact_text(final_text))
+    } else {
+        non_empty_artifact_text(final_text)
+    }?;
+
+    Some(ProviderResultPayload {
+        output_artifact: Some(OutputArtifactPayload {
+            name: contract.artifact.clone(),
+            content,
+        }),
+    })
+}
+
+fn non_empty_artifact_text(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
 }
 
 pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
@@ -1308,6 +1320,45 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+    }
+
+    #[test]
+    fn output_contract_without_final_content_does_not_create_empty_artifact_payload() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        let payload = output_artifact_payload_from_run(&contract, &[], "");
+
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn output_contract_with_json_final_output_creates_artifact_payload() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+        let outputs = vec![
+            "planning text".to_string(),
+            r#"{"kind":"dynamic-node-completion","status":"success"}"#.to_string(),
+        ];
+
+        let payload = output_artifact_payload_from_run(&contract, &outputs, "").unwrap();
+
+        let artifact = payload.output_artifact.unwrap();
+        assert_eq!(artifact.name, "dynamic-node-completion");
+        assert_eq!(
+            artifact.content,
+            r#"{"kind":"dynamic-node-completion","status":"success"}"#
+        );
     }
 
     #[test]

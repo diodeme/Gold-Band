@@ -5274,6 +5274,7 @@ fn finalize_dynamic_worker_result(
     }
     if let Some(payload) = result.result_payload
         && let Some(output_artifact) = payload.output_artifact
+        && !output_artifact.content.trim().is_empty()
     {
         let artifact_path = ctx.app.paths.dynamic_node_artifact_file(
             ctx.task_id,

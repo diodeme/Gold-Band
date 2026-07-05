@@ -27,6 +27,7 @@ enum DynamicScenario {
     MultiValidationRepair,
     MergeAcceptanceProfileRepair,
     ParseRepair,
+    MissingArtifactRepair,
     SessionContinuePrompt,
     InvalidSessionContinue,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
@@ -81,6 +82,10 @@ impl DynamicProvider {
 
     fn parse_repair() -> Self {
         Self::new(DynamicScenario::ParseRepair)
+    }
+
+    fn missing_artifact_repair() -> Self {
+        Self::new(DynamicScenario::MissingArtifactRepair)
     }
 
     fn session_continue_prompt() -> Self {
@@ -258,6 +263,16 @@ impl DynamicProvider {
                 } else {
                     Some(missing_merge_task_completion())
                 }
+            }
+            (DynamicScenario::MissingArtifactRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(String::new())
+                }
+            }
+            (DynamicScenario::MissingArtifactRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
             }
             (DynamicScenario::MultiValidationRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
@@ -1599,6 +1614,43 @@ fn ai_dynamic_parse_repair_prompt_includes_json_path() {
     let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
     assert!(resume_prompt.contains("[dynamic.schema.required]"));
     assert!(resume_prompt.contains("path: next.merge.task"));
+}
+
+#[test]
+fn ai_dynamic_repairs_missing_completion_without_empty_artifact() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-missing-artifact-repair";
+    let provider = DynamicProvider::missing_artifact_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.contains("did not produce dynamic-node-completion"));
+
+    let artifact_path = app.paths.dynamic_node_artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "bootstrap",
+        "attempt-001",
+        "dynamic-node-completion",
+    );
+    let metadata = std::fs::metadata(artifact_path.as_std_path()).unwrap();
+    assert!(metadata.len() > 0);
 }
 
 #[test]

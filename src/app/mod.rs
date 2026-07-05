@@ -2578,6 +2578,7 @@ impl App {
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
             None,
+            None,
         )?;
         render_prompt_bundle(&invocation)
     }
@@ -2617,7 +2618,7 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, None)
+        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, None, None)
     }
 
     pub fn run_continue_with_model_override(
@@ -2628,7 +2629,35 @@ impl App {
         prompt: Option<String>,
         model_override: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, model_override)
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            model_override,
+            permission_mode_override,
+        )
     }
 
     pub fn run_continue_background(
@@ -2638,7 +2667,7 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt, None)
+        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt, None, None)
     }
 
     pub fn run_continue_background_with_model_override(
@@ -2656,6 +2685,27 @@ impl App {
             prompt_id,
             prompt,
             model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_background_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            model_override,
+            permission_mode_override,
         )
     }
 
@@ -2673,6 +2723,7 @@ impl App {
         prompt: String,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
+        permission_mode_override: Option<String>,
     ) -> Result<RunState> {
         orchestrator::run_continue_dynamic_inner_background(
             self,
@@ -2687,6 +2738,7 @@ impl App {
             prompt,
             attachment_paths,
             model_override,
+            permission_mode_override,
         )
     }
 

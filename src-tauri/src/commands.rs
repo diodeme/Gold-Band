@@ -1636,7 +1636,9 @@ pub async fn submit_conversation_prompt(
     };
 
     if submit_target == "runtime-continue" {
-        let model_override = current_acp_session_model(&locator.attempt_dir(&app));
+        let attempt_dir = locator.attempt_dir(&app);
+        let model_override = current_acp_session_model(&attempt_dir);
+        let permission_mode_override = current_acp_session_permission_mode(&attempt_dir);
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
         {
@@ -1652,14 +1654,16 @@ pub async fn submit_conversation_prompt(
                 prompt,
                 attachment_paths.unwrap_or_default(),
                 model_override,
+                permission_mode_override,
             )
         } else {
-            app.run_continue_background_with_model_override(
+            app.run_continue_background_with_config_overrides(
                 &locator.task_id,
                 &locator.run_id,
                 prompt_id,
                 Some(prompt),
                 model_override,
+                permission_mode_override,
             )
         }
         .map(run_summary_vm)

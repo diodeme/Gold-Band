@@ -267,7 +267,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - composer 底部模型与权限配置统一使用胶囊式控件外观，模型选择器需要明确表现出“可展开下拉”的交互心智，不能像纯文本标签
 - 模型下拉列表默认向上弹出，并受当前窗口可用高度约束；超出时内部滚动，不允许选项直接溢出会话窗口外
 - 模型和权限都是当前 ACP session 的可切换配置；选中列表项后需要立即更新会话快照，并通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
-- 后续同一 ACP session 的每次追问和 runtime continue 都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 或停止/异常后的继续恢复必须继续带上最新选择，而不是回退到节点初始配置。该选择属于当前 attempt 的运行配置，只影响本次恢复的目标会话，不回写 workflow DSL，也不污染后继节点的模型策略。
+- 后续同一 ACP session 的每次追问和 runtime continue 都必须优先复用当前会话快照中的 `currentModelId / currentModeId`；如果用户中途切换了模型或权限模式，下一次 `session/prompt` 或停止/异常后的继续恢复必须同时带上最新模型与权限选择，而不是回退到节点初始配置。该选择属于当前 attempt 的运行配置，只影响本次恢复的目标会话，不回写 workflow DSL，也不污染后继节点的模型/权限策略。
 - 模型选中态只在触发器展示模型名称，长描述只在下拉项中换行展示，不允许撑破触发器或越出窗口边界
 - 配置栏解析逻辑统一收敛在前端 ACP session config 工具中：优先读取 provider 返回的 `models.availableModels / modes.availableModes`，缺失时回退 `configOptions[category=model|mode].options`。展示组件只消费归一化后的 id/name/description，不在 JSX 内重复解析协议 payload。
 

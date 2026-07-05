@@ -206,6 +206,7 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - 左侧外置垂直 tab：查看详情、查看会话。
 - 查看详情默认展示结构化节点信息：node id、节点说明、节点类型、sequence、status、outcome、current 标记、attempt id、startedAt、finishedAt。
 - artifact 与 attachment 作为资源列表展示，不预加载完整正文。
+- AI-DYNAMIC 内部控制协议产物 `dynamic-node-completion` 也作为产物展示；runtime 必须只在 provider 已返回完整 artifact 内容后落盘该文件，不允许用 0 字节占位文件触发产物数量和弹窗入口。
 - 点击 artifact 或 attachment 后打开二级抽屉展示完整内容；二级抽屉左上提供返回按钮，返回上一级节点详情。
 
 右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id、从该节点重跑；核心浏览路径必须通过单击节点完成。

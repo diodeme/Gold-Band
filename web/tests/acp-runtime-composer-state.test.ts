@@ -408,6 +408,26 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
+  it('keeps permission waits as a locked runtime composer state', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle(),
+      waitingForPermission: true,
+      prompt: 'allow?',
+    }));
+
+    expect(state.mode).toBe('permission-blocked');
+    expect(state.submitTarget).toBe('permission-response');
+    expect(state.sessionActive).toBe(true);
+    expect(state.composerLocked).toBe(true);
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(true);
+    expect(state.showExternalState).toBe(false);
+    expect(state.placeholderKind).toBe('runtime-controlled');
+    expect(state.hintKind).toBe('permission-pending');
+    expect(state.showStatus).toBe(false);
+  });
+
   it('does not turn workflow outcome failure into runtime error', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

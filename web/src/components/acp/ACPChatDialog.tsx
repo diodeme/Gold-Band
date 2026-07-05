@@ -1065,7 +1065,6 @@ export const ACPChatDialog = forwardRef<
     timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
   });
   const stopInProgress = composerState.stopInProgress;
-  const composerLocked = composerState.composerLocked;
   const composerInputDisabled = composerState.inputDisabled;
   const composerStatusActive = composerState.statusActive;
   const composerSessionSeconds = useSessionTimingSeconds(
@@ -2396,16 +2395,12 @@ export const ACPChatDialog = forwardRef<
                 }
               />
             ) : (
-              <>
-                {composerLocked ? (
-                  <AcpPermissionComposerLock />
-                ) : (
-                  <div
-                    data-attachment-dropzone="true"
-                    onDragEnter={dropZoneHandlers.onDragEnter}
-                    onDragOver={dropZoneHandlers.onDragOver}
-                    onDrop={dropZoneHandlers.onDrop}
-                  >
+              <div
+                data-attachment-dropzone="true"
+                onDragEnter={dropZoneHandlers.onDragEnter}
+                onDragOver={dropZoneHandlers.onDragOver}
+                onDrop={dropZoneHandlers.onDrop}
+              >
                     {/* Attachment chips */}
                     <div className="mb-2">
                       <AttachmentChipsList
@@ -2522,8 +2517,6 @@ export const ACPChatDialog = forwardRef<
                       />
                     </PromptInput>
                   </div>
-                )}
-              </>
             )}
           </div>
         </div>
@@ -2596,20 +2589,6 @@ function findAcpItemElement(scroller: HTMLElement, key: string) {
     Array.from(
       scroller.querySelectorAll<HTMLElement>("[data-acp-item-key]"),
     ).find((element) => element.dataset.acpItemKey === key) ?? null
-  );
-}
-
-function AcpPermissionComposerLock() {
-  const { t } = useTranslation();
-  return (
-    <div className="flex min-w-0 items-center gap-2 rounded-2xl border border-primary/15 bg-card/60 px-3 py-2 text-sm text-muted-foreground shadow-sm shadow-background/20">
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <ShieldQuestion className="size-4" />
-      </span>
-      <span className="min-w-0 truncate font-medium">
-        {t("acp.permissionPending")}
-      </span>
-    </div>
   );
 }
 

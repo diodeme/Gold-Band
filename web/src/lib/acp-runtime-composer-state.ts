@@ -117,7 +117,7 @@ export function deriveAcpRuntimeComposerState(
     runtimeErrorMessage,
   });
   const submitTarget = submitTargetFromBackend(input, mode, backend?.submitTarget);
-  const sessionActive = runtimeActive || acpActive || stopInProgress;
+  const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
   const activePromptLocked =
     input.sending ||
     waitingForOptimisticPrompt ||
@@ -293,6 +293,7 @@ function placeholderKindForMode(
   activePromptLocked: boolean,
 ): AcpComposerPlaceholderKind {
   if (input.hasPlanIntervention) return 'plan-intervention';
+  if (input.waitingForPermission) return 'runtime-controlled';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'interrupted-input') return 'stopped';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';

@@ -27,3 +27,10 @@ All previous nodes were ordinary transitions based on node outcome.
 ## Latest predecessor transition reasons
 {{ predecessors.reason_lines }}
 {% endif %}
+
+## Latest predecessor attachments
+{% if predecessors.attachment_lines_empty %}
+None.
+{% else %}
+{{ predecessors.attachment_lines }}
+{% endif %}

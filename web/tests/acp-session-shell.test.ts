@@ -6,12 +6,12 @@ import {
 } from '@/lib/acp-session-shell';
 
 describe('shouldCreateLiveAcpSessionShell', () => {
-  it('creates a shell when runtime is active even before session payload exists', () => {
+  it('does not create a shell for runtime-active conversation owners that disable event-only fallback', () => {
     expect(shouldCreateLiveAcpSessionShell({
       runtimeActive: true,
       allowEventOnlySessionShell: false,
       loadedEventCount: 0,
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('does not create a running shell from existing events when the owner disables event-only fallback', () => {
@@ -20,6 +20,14 @@ describe('shouldCreateLiveAcpSessionShell', () => {
       allowEventOnlySessionShell: false,
       loadedEventCount: 3,
     })).toBe(false);
+  });
+
+  it('creates a runtime-active shell when the owner explicitly allows event-only fallback', () => {
+    expect(shouldCreateLiveAcpSessionShell({
+      runtimeActive: true,
+      allowEventOnlySessionShell: true,
+      loadedEventCount: 0,
+    })).toBe(true);
   });
 
   it('keeps the legacy event-only fallback available for non-conversation owners', () => {
@@ -35,19 +43,31 @@ describe('resolveAcpSessionShellState', () => {
   it('keeps session switching in loading state until the target session fetch resolves', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
+      baseSessionReady: false,
       hasLiveSessionShell: false,
       initialSessionLoading: true,
     })).toBe('loading');
   });
 
-  it('treats real session payloads and live shells as available', () => {
+  it('keeps partial base sessions in loading state while the initial ready fetch is in flight', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+    })).toBe('loading');
+  });
+
+  it('treats ready session payloads and live shells as available', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
       hasLiveSessionShell: false,
       initialSessionLoading: true,
     })).toBe('available');
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
+      baseSessionReady: false,
       hasLiveSessionShell: true,
       initialSessionLoading: true,
     })).toBe('available');
@@ -56,9 +76,19 @@ describe('resolveAcpSessionShellState', () => {
   it('reports missing only after loading has completed without a session', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
+      baseSessionReady: false,
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('missing');
+  });
+
+  it('allows partial base sessions after startup retries are exhausted', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
+    })).toBe('available');
   });
 });
 

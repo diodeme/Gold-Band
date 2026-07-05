@@ -554,7 +554,9 @@ export const ACPChatDialog = forwardRef<
     pageSize: 100,
   });
   const [rawLoading, setRawLoading] = useState(false);
-  const [loadingInitialSession, setLoadingInitialSession] = useState(!session && isTauriRuntime());
+  const [loadingInitialSession, setLoadingInitialSession] = useState(
+    !isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime(),
+  );
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
     () => session?.eventPage.hasOlder ?? false,
@@ -691,7 +693,7 @@ export const ACPChatDialog = forwardRef<
       latestSessionRef.current = next;
       return next;
     });
-    if (session) setLoadingInitialSession(false);
+    if (isAcpSessionReadyForInitialDisplay(session)) setLoadingInitialSession(false);
     if (!session && identityChanged) {
       const restored = restoreAcpLoadedEvents(
         eventWindowKey,
@@ -752,7 +754,7 @@ export const ACPChatDialog = forwardRef<
       latestSessionRef.current = next;
       return next;
     });
-    setLoadingInitialSession(!session && isTauriRuntime());
+    setLoadingInitialSession(!isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime());
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
     setOptimisticEvents(storedOptimisticEvents);
@@ -1116,6 +1118,7 @@ export const ACPChatDialog = forwardRef<
     setCurrentSession((current) =>
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
+    if (isAcpSessionReadyForInitialDisplay(normalized)) setLoadingInitialSession(false);
     if (!normalized) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(normalized.eventPage.hasNewer);
@@ -2196,6 +2199,7 @@ export const ACPChatDialog = forwardRef<
 
   const sessionShellState = resolveAcpSessionShellState({
     hasBaseSession: Boolean(baseSession),
+    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     initialSessionLoading: loadingInitialSession,
   });
@@ -5485,6 +5489,10 @@ function isAcpInitialSessionReady(session: AcpSessionVm) {
       config: session.config,
     }) && session.events.some(isGoldBandUserPrompt)
   );
+}
+
+function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
+  return Boolean(session && (isAcpInitialSessionReady(session) || isSessionTerminalStatus(session.status)));
 }
 
 function logAcpSessionReady(

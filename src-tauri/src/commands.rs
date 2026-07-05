@@ -5,7 +5,7 @@ use gold_band::acp::elicitation::{
 };
 use gold_band::acp::events::{AcpUiEvent, current_timestamp};
 use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests, remove_permission_signal_files,
+    PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
 };
 use gold_band::app::{
@@ -2118,23 +2118,8 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
-        let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        let wrote_response = write_permission_response_if_pending(
-            &attempt_dir,
-            &canonical_request_id,
-            option_id.clone(),
-            false,
-            current_timestamp(),
-        )
-        .map_err(command_error)?;
-        if wrote_response {
-            if !attempt_session_is_active(
-                &attempt_dir.join("acp.snapshot.json"),
-                &attempt_dir.join("acp.session.json"),
-            ) {
-                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
-            }
-        }
+        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+            .map_err(command_error)?;
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -2152,23 +2137,8 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        let canonical_request_id = canonical_permission_request_id(&attempt_dir, &request_id);
-        let wrote_response = write_permission_response_if_pending(
-            &attempt_dir,
-            &canonical_request_id,
-            option_id.clone(),
-            false,
-            current_timestamp(),
-        )
-        .map_err(command_error)?;
-        if wrote_response {
-            if !attempt_session_is_active(
-                &attempt_dir.join("acp.snapshot.json"),
-                &attempt_dir.join("acp.session.json"),
-            ) {
-                let _ = remove_permission_signal_files(&attempt_dir, &canonical_request_id);
-            }
-        }
+        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+            .map_err(command_error)?;
         acp_session_vm(
             &app,
             &task_id,
@@ -2373,6 +2343,21 @@ fn strip_permission_display_prefix(request_id: &str) -> String {
         current = next;
     }
     current.to_string()
+}
+
+fn write_acp_permission_response_signal(
+    attempt_dir: &camino::Utf8Path,
+    request_id: &str,
+    option_id: Option<String>,
+) -> anyhow::Result<bool> {
+    let canonical_request_id = canonical_permission_request_id(attempt_dir, request_id);
+    write_permission_response_if_pending(
+        attempt_dir,
+        &canonical_request_id,
+        option_id,
+        false,
+        current_timestamp(),
+    )
 }
 
 fn attempt_session_is_active(
@@ -4108,6 +4093,47 @@ mod tests {
         assert_eq!(
             canonical_permission_request_id(&attempt_dir, "permission-permission-0"),
             "0"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn permission_response_signal_is_kept_for_live_waiter_when_snapshot_is_cancelled() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-permission-response-signal-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        gold_band::acp::permission::write_pending_permission(
+            &attempt_dir,
+            "0",
+            serde_json::json!({ "sessionId": "session-1" }),
+            "1778771541Z".to_string(),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "sessionId": "session-1",
+                "status": "cancelled",
+                "stopReason": "cancelled"
+            }),
+        )
+        .unwrap();
+
+        let written = write_acp_permission_response_signal(
+            &attempt_dir,
+            "permission-0",
+            Some("allow".into()),
+        )
+        .unwrap();
+
+        assert!(written);
+        assert!(
+            gold_band::acp::permission::permission_response_file(&attempt_dir, "0").exists(),
+            "permission response must remain for the live ACP waiter"
         );
 
         std::fs::remove_dir_all(dir).unwrap();

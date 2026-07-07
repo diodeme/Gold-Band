@@ -750,6 +750,7 @@ pub(crate) fn run_continue(
     run_id: &str,
     prompt_id: Option<String>,
     prompt: Option<String>,
+    attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
@@ -879,6 +880,7 @@ pub(crate) fn run_continue(
         initial_resume_prompt,
         initial_resume_prompt_id,
         initial_user_prompt_render_mode,
+        attachment_paths,
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
         None,
@@ -1007,6 +1009,7 @@ pub(crate) fn run_continue_dynamic_inner(
         None,
         None,
         user_prompt_render_mode,
+        Vec::new(),
         None,
         None,
         Some(resume_override),
@@ -1102,6 +1105,7 @@ pub(crate) fn run_continue_background(
     run_id: &str,
     prompt_id: Option<String>,
     prompt: Option<String>,
+    attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
@@ -1118,6 +1122,7 @@ pub(crate) fn run_continue_background(
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
     let prompt = prompt.clone();
+    let attachment_paths = attachment_paths.clone();
     let model_override = model_override.clone();
     let permission_mode_override = permission_mode_override.clone();
 
@@ -1129,6 +1134,7 @@ pub(crate) fn run_continue_background(
             &run_id,
             prompt_id,
             prompt,
+            attachment_paths,
             model_override,
             permission_mode_override,
         ) {
@@ -1266,6 +1272,7 @@ pub(crate) fn submit_manual_check(
             None,
             None,
             workflow_user_prompt_render_mode_for_session(next.session_mode),
+            Vec::new(),
             None,
             None,
             None,
@@ -2290,6 +2297,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         UserPromptRenderMode::RequirementTask,
+        Vec::new(),
         None,
         None,
         None,
@@ -9614,6 +9622,7 @@ fn drive_from_node_with_initial_session(
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
     initial_user_prompt_render_mode: UserPromptRenderMode,
+    initial_resume_input_attachment_paths: Vec<String>,
     parent_continue_prompt: Option<String>,
     parent_continue_prompt_id: Option<String>,
     dynamic_resume_override: Option<DynamicResumeOverride>,
@@ -9626,6 +9635,7 @@ fn drive_from_node_with_initial_session(
     let mut resume_prompt_id = initial_resume_prompt_id;
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = initial_user_prompt_render_mode;
+    let mut resume_input_attachment_paths = initial_resume_input_attachment_paths;
     let mut model_override = initial_model_override;
     let mut permission_mode_override = initial_permission_mode_override;
     let mut invalid_output_repair_prompts = 0;
@@ -9748,6 +9758,7 @@ fn drive_from_node_with_initial_session(
                             resume_prompt_id.clone(),
                             resume_prompt_visibility,
                             user_prompt_render_mode,
+                            resume_input_attachment_paths.clone(),
                             model_override.take(),
                             permission_mode_override.take(),
                         )
@@ -10165,6 +10176,7 @@ fn drive_from_node_with_initial_session(
             resume_prompt = None;
             resume_prompt_id = None;
             resume_prompt_visibility = PromptVisibility::Visible;
+            resume_input_attachment_paths = Vec::new();
             user_prompt_render_mode = workflow_user_prompt_render_mode_for_session(session_mode);
             invalid_output_repair_prompts = 0;
             continue;

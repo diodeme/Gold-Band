@@ -346,6 +346,7 @@ pub(crate) fn build_worker_invocation(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    resume_input_attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<WorkerInvocation> {
@@ -393,10 +394,9 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let input_attachment_paths = if matches!(session_mode, SessionMode::New) {
-        super::task_input_attachment_paths(app, task_id)
-    } else {
-        Vec::new()
+    let input_attachment_paths = match session_mode {
+        SessionMode::New => super::task_input_attachment_paths(app, task_id),
+        SessionMode::Continue => resume_input_attachment_paths,
     };
 
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
@@ -459,6 +459,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    resume_input_attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
@@ -477,6 +478,7 @@ pub(crate) fn execute_ai_node(
         resume_prompt_id,
         resume_prompt_visibility,
         user_prompt_render_mode,
+        resume_input_attachment_paths,
         model_override,
         permission_mode_override,
     )?;
@@ -984,6 +986,130 @@ mod tests {
             error
                 .to_string()
                 .contains("provider failed before business result")
+        );
+    }
+
+    fn attachment_test_workflow() -> ValidatedWorkflow {
+        crate::dsl::validate_workflow(crate::dsl::WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-001".to_string(),
+            entry: "dev".to_string(),
+            control: Default::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                provider: Some("claude-acp".to_string()),
+                model: None,
+                profile: None,
+                goal: Some("Do the work".to_string()),
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                manual_check: None,
+            })],
+            edges: vec![crate::dsl::EdgeDsl {
+                from: "dev".to_string(),
+                to: crate::dsl::END_NODE.to_string(),
+                on: crate::dsl::EdgeOutcome::Success,
+                session: None,
+            }],
+        })
+        .expect("workflow should validate")
+    }
+
+    fn attachment_test_round() -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn continue_worker_invocation_uses_only_resume_attachments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let task_id = "task-001";
+        let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
+        std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
+        let original_input = task_input_dir.join("original.txt");
+        std::fs::write(original_input.as_std_path(), "original").unwrap();
+        let resume_input = temp.path().join("resume.txt");
+        std::fs::write(&resume_input, "resume").unwrap();
+        let resume_input = resume_input.to_string_lossy().to_string();
+
+        let invocation = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            Some("prompt-001".to_string()),
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            vec![resume_input.clone()],
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(invocation.input_attachment_paths, vec![resume_input]);
+        assert!(
+            !invocation
+                .input_attachment_paths
+                .iter()
+                .any(|path| path.ends_with("original.txt"))
+        );
+    }
+
+    #[test]
+    fn new_worker_invocation_uses_task_input_attachments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let task_id = "task-001";
+        let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
+        std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
+        let original_input = task_input_dir.join("original.txt");
+        std::fs::write(original_input.as_std_path(), "original").unwrap();
+
+        let invocation = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            vec!["ignored-on-new.txt".to_string()],
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(
+            invocation.input_attachment_paths,
+            vec![original_input.to_string()]
         );
     }
 }

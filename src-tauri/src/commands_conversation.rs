@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 use tauri::{AppHandle, State};
 use tracing::info;
 use uuid::Uuid;
@@ -56,6 +57,7 @@ pub fn get_conversation_run(
     run_id: String,
     selected_session_key: Option<String>,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -68,14 +70,25 @@ pub fn get_conversation_run(
         ));
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    crate::view_models_conversation::conversation_run_vm(
+    let result = crate::view_models_conversation::conversation_run_vm(
         &workspace_app,
         &project_id,
         &task_id,
         &run_id,
         selected_session_key.as_deref(),
-    )
-    .map_err(command_error)
+    );
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_run",
+        project_id = %project_id,
+        task_id = %task_id,
+        run_id = %run_id,
+        selected_session_key = ?selected_session_key,
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation run view model loaded"
+    );
+    result.map_err(command_error)
 }
 
 #[tauri::command]
@@ -958,6 +971,128 @@ pub fn show_conversation_attachment(
     })
 }
 
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn show_conversation_message_attachment(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    name: String,
+    path: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ContentVm> {
+    let context = state.context().map_err(command_error)?;
+    let global_app = context.app();
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let Some((workspace_path, _)) =
+        workspace_entry_for_project(&global_app, &app_state, &project_id)
+    else {
+        return Err(CommandErrorVm::new(
+            "workspace.not-found",
+            serde_json::json!({ "projectId": project_id }),
+        ));
+    };
+    let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let attempt_dir = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (outer_node_id.as_deref(), outer_attempt_id.as_deref())
+    {
+        app.paths.dynamic_node_attempt_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        )
+    } else {
+        app.paths
+            .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+    };
+    message_attachment_content_from_attempt_dir(&attempt_dir, &name, &path)
+}
+
+fn message_attachment_content_from_attempt_dir(
+    attempt_dir: &camino::Utf8Path,
+    name: &str,
+    attachment_path: &str,
+) -> CommandResult<ContentVm> {
+    let relative_path = sanitize_message_attachment_relative_path(attachment_path)?;
+    let path = attempt_dir.join(&relative_path);
+    if !path.exists() {
+        return Err(CommandErrorVm::new(
+            "attachment.not-found",
+            serde_json::json!({ "name": name, "path": attachment_path }),
+        ));
+    }
+    let ext = Path::new(&relative_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .or_else(|| Path::new(name).extension().and_then(|e| e.to_str()))
+        .unwrap_or("")
+        .to_lowercase();
+    let is_image = matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+    );
+    let mime = attachment_mime_for_ext(&ext);
+    let content = if is_image {
+        let bytes = fs::read(path.as_std_path()).map_err(|e| {
+            CommandErrorVm::new(
+                "attachment.unreadable",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })?;
+        format!("data:{};base64,{}", mime, base64_encode(&bytes))
+    } else {
+        fs::read_to_string(path.as_std_path()).map_err(|e| {
+            CommandErrorVm::new(
+                "attachment.unreadable",
+                serde_json::json!({ "message": e.to_string() }),
+            )
+        })?
+    };
+    Ok(ContentVm {
+        title: name.to_string(),
+        kind: "message-attachment".to_string(),
+        content,
+        metadata: serde_json::json!({
+            "name": name,
+            "path": relative_path,
+            "mimeType": mime,
+            "isImage": is_image,
+            "encoding": if is_image { "data-url" } else { "text" },
+        }),
+    })
+}
+
+fn sanitize_message_attachment_relative_path(path: &str) -> CommandResult<String> {
+    let normalized = path.trim().replace('\\', "/");
+    let components: Vec<&str> = normalized.split('/').collect();
+    if components.is_empty()
+        || normalized.starts_with('/')
+        || normalized.starts_with('~')
+        || components.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.contains(':')
+                || part.chars().any(char::is_control)
+        })
+    {
+        return Err(CommandErrorVm::new(
+            "attachment.invalid-path",
+            serde_json::json!({ "path": path }),
+        ));
+    }
+    Ok(components.join("/"))
+}
+
 fn attachment_mime_for_ext(ext: &str) -> &'static str {
     match ext {
         "png" => "image/png",
@@ -1209,6 +1344,7 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, materialize_attachment_files_to_dir,
+        message_attachment_content_from_attempt_dir,
     };
     use camino::Utf8PathBuf;
     use uuid::Uuid;
@@ -1265,6 +1401,48 @@ mod tests {
         let error = materialize_attachment_files_to_dir(&root, &files).unwrap_err();
 
         assert_eq!(error.code, "conversation.attachment-unsupported-type");
+        let _ = std::fs::remove_dir_all(root.as_std_path());
+    }
+
+    #[test]
+    fn shows_message_attachment_from_attempt_user_inputs() {
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir()
+                .join("gold-band-message-attachment-test")
+                .join(Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        let user_inputs = root.join("user-inputs");
+        std::fs::create_dir_all(user_inputs.as_std_path()).unwrap();
+        std::fs::write(user_inputs.join("image.png").as_std_path(), [1_u8, 2, 3]).unwrap();
+
+        let content = message_attachment_content_from_attempt_dir(
+            &root,
+            "image.png",
+            "user-inputs/image.png",
+        )
+        .unwrap();
+
+        assert_eq!(content.kind, "message-attachment");
+        assert_eq!(content.title, "image.png");
+        assert!(content.content.starts_with("data:image/png;base64,"));
+        assert_eq!(content.content, "data:image/png;base64,AQID");
+        let _ = std::fs::remove_dir_all(root.as_std_path());
+    }
+
+    #[test]
+    fn rejects_message_attachment_path_traversal() {
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir()
+                .join("gold-band-message-attachment-test")
+                .join(Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+
+        let error = message_attachment_content_from_attempt_dir(&root, "image.png", "../image.png")
+            .unwrap_err();
+
+        assert_eq!(error.code, "attachment.invalid-path");
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 

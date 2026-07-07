@@ -12,6 +12,7 @@ import {
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
   reconcileAcpSessionForDisplay,
+  isAcpSessionReadyForInitialDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
@@ -456,6 +457,38 @@ describe('ACP chat event handling', () => {
 
     expect(shell.timing?.sessionElapsedSeconds).toBe(27);
     expect(shell.sessionElapsedSeconds).toBe(27);
+  });
+
+  it('treats active sessions with visible timeline events as displayable during readiness loading', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'running',
+      systemPromptAppend: null,
+      config: null,
+      events: [
+        event({
+          id: 'assistant-message-1',
+          seq: 100,
+          kind: 'textDelta',
+          content: 'The run is already streaming.',
+        }),
+      ],
+    }))).toBe(true);
+  });
+
+  it('keeps metadata-only active sessions behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'running',
+      systemPromptAppend: null,
+      config: null,
+      events: [
+        event({
+          id: 'available-commands-1',
+          seq: 100,
+          kind: 'availableCommands',
+          raw: { sessionUpdate: 'available_commands_update' },
+        }),
+      ],
+    }))).toBe(false);
   });
 
   it('keeps snapshot prompt events visible while live events are still catching up', () => {

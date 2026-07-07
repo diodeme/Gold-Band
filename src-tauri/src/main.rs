@@ -40,9 +40,9 @@ use commands_conversation::{
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
     reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, show_conversation_attachment, stat_attachment_files,
-    switch_conversation_session, sync_conversation_workspace, unpin_conversation,
-    update_task_metadata, validate_conversation_create,
+    search_conversation_tasks, show_conversation_attachment, show_conversation_message_attachment,
+    stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
+    unpin_conversation, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
@@ -212,6 +212,7 @@ fn run() -> anyhow::Result<()> {
             stat_attachment_files,
             materialize_conversation_attachments,
             show_conversation_attachment,
+            show_conversation_message_attachment,
             update_task_metadata,
             delete_conversation_task,
             pin_conversation,

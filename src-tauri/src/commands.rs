@@ -1662,6 +1662,7 @@ pub async fn submit_conversation_prompt(
                 &locator.run_id,
                 prompt_id,
                 Some(prompt),
+                attachment_paths.unwrap_or_default(),
                 model_override,
                 permission_mode_override,
             )

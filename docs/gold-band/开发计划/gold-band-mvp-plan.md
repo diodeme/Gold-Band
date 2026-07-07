@@ -78,6 +78,7 @@
 - 2026-05-07：修复 Round 详情实际工作图默认视口偏下和底部裁切的问题；GraphView 改为受控 viewport，按节点 bounds 和容器尺寸计算初始平移/缩放，并移除实际工作图超过父内容区的固定最小高度，确保打开页面时执行路径图边框与节点卡片完整居中展示；浏览器 fallback 对 `/run-024/round-001` 复现两节点失败验收图用于验证。
 - 2026-05-07：任务工作流页工作流默认折叠，仅保留展开入口；展开后仍显示 control 规则条与只读 GraphView，首屏优先给运行记录。
 - 2026-05-08：任务工作流页将工作流入口从页面内折叠条升级为顶部“工作流”生命周期卡片，按未创建/有效/无效提供新建、查看、修复动作；完整蓝图和 control 规则条进入右侧非模态抽屉。
+- 2026-07-07：会话继续/追问语义补齐：`codex-acp` 仅在同一 ACP session 首轮将 stable system prompt 作为 hidden user block 内联并持久化审计，后续停止后继续、恢复继续和完成后追问不再重复发送或记录该 system prompt；普通 worker 与 AI-DYNAMIC internal worker 的继续输入统一支持本次新附件，且不重带任务输入附件或历史附件；会话消息流中的附件预览按 timeline `raw.attachments[].path` 分流，`task-inputs/` 继续读取 task 级 `authoring/inputs`，`user-inputs/` 按 attempt locator 读取本轮新附件。
 - 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。

@@ -250,6 +250,9 @@ RuntimeLifecycleBus
 4. `runtime-continue-started` 表示后端已接受继续命令；即使后台线程尚未把 run/node 文件推进到 running，返回体也必须合成 `runtime-active / provider-running` lifecycle，不能返回刚读取到的 paused/interrupted-input 快照。
 5. 其余场景降级为同会话 ACP prompt helper，只处理 runtime 未接管的普通追问。
 6. 新 UI 会话页与旧 UI Round 详情的工作流 attempt 提交都只调用 `submit_conversation_prompt`，不再自行选择 `sendAcpPrompt` 或 `continueRun`。
+7. `submit_conversation_prompt` 的 runtime-continue 分支必须透传本次用户新上传的 `attachment_paths`。普通 worker 与 AI-DYNAMIC internal worker 使用同一语义：`SessionMode::New` 只带任务 authoring 输入附件；`SessionMode::Continue` 只带本次继续/追问附件，不重带任务输入附件或历史附件。
+8. 对 `codex-acp` 等不支持原生 `systemPrompt` 的 provider，首轮新 session 可把 stable system prompt 作为 hidden user block 内联发送并持久化；同一 ACP session 的后续 continue/追问必须复用历史上下文，不再重复内联 stable system prompt，timeline 中的 user prompt 记录也必须与实际发送内容一致。
+9. timeline 中用户消息附件必须按 `raw.attachments[].path` 分流展示：`task-inputs/<name>` 是首轮 task 输入附件，前端继续通过 task 级 `authoring/inputs` 读取；`user-inputs/<name>` 是继续/追问本轮新附件，前端必须传入 `projectId + taskId + runId + roundId + nodeId + attemptId + outer locator + path`，由后端从对应 attempt 目录读取。两类路径不能统一压成一个读取入口。
 
 `send_acp_prompt` 仅保留为非 runtime 生命周期会话的窄入口；若请求命中 paused/resumable/current workflow attempt，后端返回 `acp.runtime-submit-required`，要求调用 `submit_conversation_prompt`，避免再次绕过 runtime。
 

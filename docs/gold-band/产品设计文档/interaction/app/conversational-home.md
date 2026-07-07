@@ -37,9 +37,10 @@
 5. WORKFLOW 模式：显示工作流模板下拉，并提供跳转工作流 tab 的快速入口
 
 ### 创建规则
-- 标题 = 输入内容首行前 12 个 Unicode 字符
+- 标题 = 输入内容首行前 N 个 Unicode 字符；N 由项目级 `configs/app-config.toml` 的 `conversationAutoTitleMaxChars` 控制，默认 12
 - 无文字时使用 i18n "New Task / 新任务"
 - 自动标题仅在首次创建时生成
+- 调整 `conversationAutoTitleMaxChars` 只影响之后新建会话的自动标题，不回写历史 task，也不影响用户手动重命名
 - 描述为空，内容为完整输入
 
 ### 附件上传

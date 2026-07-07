@@ -2145,6 +2145,20 @@ pub fn validate_conversation_create_vm(
 
 // ── Real create ──
 
+fn conversation_auto_title(content: &str, max_chars: usize) -> String {
+    if content.is_empty() {
+        "New Task".to_string()
+    } else {
+        content
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(max_chars.max(1))
+            .collect()
+    }
+}
+
 fn dynamic_control_from_vm(control: Option<&ConversationDynamicControlVm>) -> DynamicControlDsl {
     control
         .map(|control| DynamicControlDsl {
@@ -2278,18 +2292,8 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationRunVm> {
-    let title = if input.content.is_empty() {
-        "New Task".to_string()
-    } else {
-        input
-            .content
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(12)
-            .collect()
-    };
+    let title =
+        conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
     // Build workflow
     let workflow = if input.run_mode == "auto" {
@@ -2509,7 +2513,7 @@ mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationDynamicAgentRefVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, build_auto_workflow, conversation_attempt_lifecycle_vm,
-        conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, derive_conversation_attempt_lifecycle,
         lifecycle_is_active, switch_conversation_session_vm,
     };
@@ -2517,6 +2521,18 @@ mod tests {
     use gold_band::app::App;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl};
     use serde_json::json;
+
+    #[test]
+    fn conversation_auto_title_uses_configured_character_limit() {
+        let content = "在.claude下输出两个python类，一个输出hello，一个输出good bye";
+
+        assert_eq!(conversation_auto_title(content, 12), "在.claude下输出两");
+        assert_eq!(
+            conversation_auto_title(content, 20),
+            "在.claude下输出两个python类"
+        );
+        assert_eq!(conversation_auto_title("", 20), "New Task");
+    }
 
     #[test]
     fn paused_runtime_keeps_paused_status_after_process_interrupt() {

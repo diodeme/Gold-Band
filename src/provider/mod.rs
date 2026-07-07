@@ -130,6 +130,8 @@ pub struct WorkerInvocation {
     pub extra_hidden_sections: Vec<PromptHiddenSection>,
     pub task_instruction: Option<String>,
     #[serde(default)]
+    pub user_tips_instruction: Option<String>,
+    #[serde(default)]
     pub resume_task_instruction: Option<String>,
     pub session_mode: SessionMode,
     #[serde(default)]
@@ -884,7 +886,7 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                 }
             });
 
-            render_template(
+            let content = render_template(
                 prompt_by_language(
                     req.runtime_context.language,
                     RUNTIME_USER_ZH_CN,
@@ -899,6 +901,12 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(str::to_string),
+                    user_tips: req
+                        .user_tips_instruction
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     resume_task: req
                         .resume_task_instruction
                         .as_deref()
@@ -908,7 +916,8 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                     continue_goal,
                 },
             )
-            .expect("prompt template renders")
+            .expect("prompt template renders");
+            compact_hidden_context_spacing(&content)
         }
     }
 }
@@ -989,6 +998,7 @@ struct RuntimeUserTemplateContext {
     hidden_context: String,
     requirement: String,
     task: Option<String>,
+    user_tips: Option<String>,
     resume_task: Option<String>,
     continue_goal: Option<String>,
 }
@@ -1372,6 +1382,7 @@ mod tests {
             extra_system_sections: Vec::new(),
             extra_hidden_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),
+            user_tips_instruction: None,
             resume_task_instruction: None,
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,

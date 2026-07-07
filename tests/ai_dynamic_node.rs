@@ -972,7 +972,7 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(
         bootstrap
             .user_prompt
-            .contains("# Requirement\nExercise AI-DYNAMIC")
+            .contains("# 需求\nExercise AI-DYNAMIC")
     );
     assert!(
         bootstrap
@@ -1137,9 +1137,9 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         merge_invocation.user_prompt_render_mode,
         UserPromptRenderMode::RequirementTask
     );
-    assert!(merge.user_prompt.contains("# Requirement"));
-    assert!(merge.user_prompt.contains("# Task"));
-    assert!(!merge.user_prompt.contains("# Goal"));
+    assert!(merge.user_prompt.contains("# 需求"));
+    assert!(merge.user_prompt.contains("# 任务"));
+    assert!(!merge.user_prompt.contains("# 目标"));
     assert!(merge.user_prompt.contains("branch workspaces"));
     let branch_lines = merge
         .user_prompt
@@ -2178,6 +2178,6 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
     assert!(
         child_invocation
             .user_prompt
-            .contains("# Requirement\nExercise AI-DYNAMIC")
+            .contains("# 需求\nExercise AI-DYNAMIC")
     );
 }

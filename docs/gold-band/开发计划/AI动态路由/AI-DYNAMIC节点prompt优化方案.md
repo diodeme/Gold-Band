@@ -84,7 +84,7 @@ runtime 需要解析 acceptance 的 `dynamic-node-completion` 并 materialize �
 - `src/prompts/zh-CN/runtime/ai-dynamic/hidden_context.md`
 - `src/prompts/en/runtime/ai-dynamic/hidden_context.md`
 
-该模板承载每次 invocation 必须刷新的动态事实，但不直接等同于完整 graph dump。AI-DYNAMIC 内部节点的当前任务仍只放在可见 `# Task` 中；如果外层配置了 `globalGoal`，它作为每个内部节点都必须继承的附加任务约束，也一起进入 `# Task`。hidden context 只负责说明“为什么轮到当前节点、当前处于什么图位置、哪些业务附件可消费”。
+该模板承载每次 invocation 必须刷新的动态事实，但不直接等同于完整 graph dump。AI-DYNAMIC 内部节点的当前任务仍只放在可见 `# 任务` / `# Task` 中；如果外层配置了 `globalGoal`，它作为每个内部节点都必须继承的用户提示约束，进入独立 `# 用户提示` / `# User Tips` 块，不再和当前节点 task 混排。hidden context 只负责说明“为什么轮到当前节点、当前处于什么图位置、哪些业务附件可消费”。
 
 - Dynamic identity：outer node、outer attempt、dynamic run、internal node、kind、title、group、chain、depth。
 - Continue context：session mode、continueFromNodeId、continue source summary。
@@ -112,30 +112,28 @@ merge 是执行型节点，不承担路由规划输出：hidden context 对 merg
 
 `RequirementTask` 模式：
 
-- 保留 `# Requirement`。
-- `# Task` 中包含外层 `globalGoal` 附加约束和当前动态节点任务。
-- 对 bootstrap / worker / merge / acceptance 追加简短的“当前动态目标”说明。
+- 保留 `# 需求` / `# Requirement`。
+- 如果存在外层 `globalGoal`，渲染独立 `# 用户提示` / `# User Tips`。
+- `# 任务` / `# Task` 中只包含当前动态节点业务任务。
+- 不追加 runtime 元信息或控制协议提示；当前动态节点身份、continue 来源、output contract 规则分别由 hidden context、system prompt 和 provider output contract 承担。
 
 `WorkflowResume` 模式：
 
-- 不再只输出通用 `# Goal`。
+- 不再只输出通用 `# 目标` / `# Goal`。
 - 必须包含当前动态节点任务。
-- 必须说明本次是复用 `continueFromNodeId` 的会话，不是执行来源节点旧任务。
+- 不在可见 `# 任务` / `# Task` 中重复 `nodeId / title / kind / continueFromNodeId` 或 continue 解释；这些信息只放 hidden context。
 
 建议中文可见结构：
 
 ```md
-# Goal
-继续当前 AI-DYNAMIC 内部节点，复用指定来源节点的 ACP session 上下文，但执行下面的当前节点任务。
+# 目标
+继续当前 AI-DYNAMIC 内部节点。
 
-# Current Dynamic Node
-- nodeId: ...
-- title: ...
-- kind: ...
-- continueFromNodeId: ...
+# 用户提示
+外层 globalGoal（如有）
 
-# Task
-...
+# 任务
+当前节点业务任务
 ```
 
 `RuntimeRepair` 模式保持现状：只发送 repair prompt，不注入 hidden context。
@@ -447,7 +445,7 @@ acp.diagnostics.jsonl
 ...
 ```
 
-空 section 不渲染，避免出现大量“无”。当前 task 不在 hidden context 中重复，始终由 visible `# Task` 表达。
+空 section 不渲染，避免出现大量“无”。当前 task 不在 hidden context 中重复，始终由 visible `# 任务` / `# Task` 表达。
 
 ## 7. 实施步骤
 
@@ -502,8 +500,8 @@ acp.diagnostics.jsonl
 - 将 `dynamic_system_sections` 拆分为 stable system section 和 dynamic hidden context 数据源。
 - 在 AI-DYNAMIC invocation 的 user prompt 中注入 AI-DYNAMIC hidden context。
 - AI-DYNAMIC invocation 使用专用 hidden context 投影，不再渲染普通 workflow predecessor hidden context。
-- `globalGoal` 作为每个内部节点的附加任务约束，和当前节点 task 一起进入 `# Task`。
-- `WorkflowResume` 模式下为 AI-DYNAMIC 渲染当前 node task，而不是只渲染 generic `# Goal`。
+- `globalGoal` 作为每个内部节点的用户提示约束，进入独立 `# 用户提示` / `# User Tips`，不拼进当前节点 task。
+- `WorkflowResume` 模式下为 AI-DYNAMIC 渲染当前 node task，而不是只渲染 generic `# 目标` / `# Goal`。
 - `RuntimeRepair` 继续只发送 repair prompt。
 
 完成标准：
@@ -522,7 +520,7 @@ acp.diagnostics.jsonl
 
 实现要点：
 
-- `node_task.md` 明确当前任务与 continue 来源的区别。
+- `node_task.md` 不追加固定尾巴；当前任务与 continue 来源的区别由 hidden context 和 system prompt 表达。
 - `acceptance.md` 明确最终必须输出 `dynamic-node-completion`。
 - acceptance pass/fail 映射：
   - pass：`next.type="end"`。
@@ -694,7 +692,7 @@ npm run web:build
 - [x] AI-DYNAMIC user hidden context 承载完整本次 invocation 动态事实。
 - [x] AI-DYNAMIC 内部节点不渲染普通 workflow predecessor hidden context，前序语义由 `DynamicContextProjection` 统一表达。
 - [x] `sessionMode=continue` 明确执行当前节点 task，并说明 continue 来源只用于会话复用。
-- [x] 外层 `globalGoal` 作为每个内部节点的附加任务约束进入 `# Task`。
+- [x] 外层 `globalGoal` 作为每个内部节点的用户提示约束进入独立 `# 用户提示` / `# User Tips`。
 - [x] worker 继续保持“按 profile 执行任务 + 最终输出 `dynamic-node-completion`”模式。
 - [x] merge 不强制输出控制协议。
 - [x] acceptance 强制输出 `dynamic-node-completion`，并可决定 end 或继续修复。

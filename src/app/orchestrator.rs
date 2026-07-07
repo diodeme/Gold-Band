@@ -7818,7 +7818,8 @@ fn build_dynamic_worker_invocation(
             has_output_contract,
         )?,
         task_instruction: Some(task_instruction.clone()),
-        resume_task_instruction: dynamic_resume_task_instruction(ctx, node, &task_instruction),
+        user_tips_instruction: dynamic_user_tips_instruction(ctx),
+        resume_task_instruction: dynamic_resume_task_instruction(node, &task_instruction),
         session_mode,
         user_prompt_render_mode,
         permission_mode,
@@ -8114,18 +8115,23 @@ fn dynamic_task_instruction(
         }),
     )
     .expect("prompt template renders");
-    let task = if let Some(global_goal) = ctx.dynamic.global_goal() {
-        if global_goal.trim().is_empty() {
-            node.task.trim().to_string()
-        } else if node.task.trim().is_empty() {
-            global_goal.trim().to_string()
-        } else {
-            format!("{}\n\n---\n\n{}", global_goal.trim(), node.task.trim())
-        }
+    let task = node.task.trim().to_string();
+    let metadata = metadata.trim();
+    if metadata.is_empty() {
+        task
+    } else if task.is_empty() {
+        metadata.to_string()
     } else {
-        node.task.trim().to_string()
-    };
-    format!("{}\n\n{}", task, metadata.trim())
+        format!("{}\n\n{}", task, metadata)
+    }
+}
+
+fn dynamic_user_tips_instruction(ctx: &DynamicExecutionContext<'_>) -> Option<String> {
+    ctx.dynamic
+        .global_goal()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn dynamic_predecessor_contexts(
@@ -8860,33 +8866,14 @@ fn dynamic_hidden_sections(
 }
 
 fn dynamic_resume_task_instruction(
-    ctx: &DynamicExecutionContext<'_>,
     node: &DynamicNodeState,
     task_instruction: &str,
 ) -> Option<String> {
     if node.session_mode != SessionMode::Continue && node.continue_from_node_id.is_none() {
         return None;
     }
-    let continue_from = node.continue_from_node_id.as_deref().unwrap_or("none");
-    let value = match ctx.app.config.desktop_language {
-        DesktopLanguage::ZhCn => format!(
-            "当前 AI-DYNAMIC 内部节点：\n- nodeId: {}\n- title: {}\n- kind: {:?}\n- continueFromNodeId: {}\n\n本次 continue 只复用来源节点的 ACP session 上下文；当前仍必须执行下面的当前节点任务。\n\n{}",
-            node.id,
-            node.title,
-            node.kind,
-            continue_from,
-            task_instruction.trim()
-        ),
-        DesktopLanguage::En => format!(
-            "Current AI-DYNAMIC internal node:\n- nodeId: {}\n- title: {}\n- kind: {:?}\n- continueFromNodeId: {}\n\nThis continue only reuses the source node's ACP session context; still execute the current node task below.\n\n{}",
-            node.id,
-            node.title,
-            node.kind,
-            continue_from,
-            task_instruction.trim()
-        ),
-    };
-    Some(value)
+    let task = task_instruction.trim();
+    (!task.is_empty()).then(|| task.to_string())
 }
 
 fn prepare_dynamic_attempt_dirs(
@@ -11063,7 +11050,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_task_instruction_keeps_global_goal_as_node_wide_constraint() {
+    fn dynamic_task_instruction_keeps_global_goal_as_user_tips() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let mut dynamic = test_dynamic();
@@ -11075,9 +11062,43 @@ mod tests {
 
         let task = dynamic_task_instruction(&ctx, &graph, &node, true);
 
-        assert!(task.contains("初始fanout时必须用至少两个节点完成开发任务"));
-        assert!(task.contains("---"));
+        assert!(!task.contains("初始fanout时必须用至少两个节点完成开发任务"));
+        assert!(!task.contains("---"));
         assert!(task.contains("实现 .claude 下的问候 Python 类。"));
+        assert_eq!(
+            dynamic_user_tips_instruction(&ctx).as_deref(),
+            Some("初始fanout时必须用至少两个节点完成开发任务")
+        );
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            Some(dynamic_output_contract(&ctx, &graph)),
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+        assert!(
+            prompt
+                .user_prompt
+                .contains("# 用户提示\n初始fanout时必须用至少两个节点完成开发任务")
+        );
+        let task_section = prompt
+            .user_prompt
+            .rsplit_once("# 任务")
+            .map(|(_, task)| task)
+            .unwrap_or(&prompt.user_prompt);
+        assert!(task_section.contains("实现 .claude 下的问候 Python 类。"));
+        assert!(!task_section.contains("初始fanout时必须用至少两个节点完成开发任务"));
     }
 
     #[test]
@@ -11268,7 +11289,6 @@ mod tests {
                 .user_prompt
                 .contains("output contract 要求的控制 JSON")
         );
-        assert!(prompt.user_prompt.contains("本节点是执行型节点"));
     }
 
     #[test]
@@ -11340,11 +11360,6 @@ mod tests {
         assert!(prompt.user_prompt.contains("## Agent 与 profile 选项"));
         assert!(prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(prompt.system_prompt.contains("next.type"));
-        assert!(
-            prompt
-                .user_prompt
-                .contains("output contract 要求的控制 JSON")
-        );
     }
 
     #[test]
@@ -11468,19 +11483,29 @@ mod tests {
         .unwrap();
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
-        assert!(prompt.user_prompt.contains("# Goal"));
-        assert!(prompt.user_prompt.contains("# Task"));
+        assert!(prompt.user_prompt.contains("# 目标"));
+        assert!(prompt.user_prompt.contains("# 任务"));
         assert!(prompt.user_prompt.contains("goodbye-step"));
-        assert!(
-            prompt
-                .user_prompt
-                .contains("continueFromNodeId: hello-step")
-        );
+        assert!(prompt.user_prompt.contains("continueFromNodeId"));
+        assert!(prompt.user_prompt.contains("hello-step"));
         assert!(
             prompt
                 .user_prompt
                 .contains("Create the good bye class in the current workspace.")
         );
+        let task_section = prompt
+            .user_prompt
+            .rsplit_once("# 任务")
+            .map(|(_, task)| task)
+            .unwrap_or(&prompt.user_prompt);
+        assert!(task_section.contains("Create the good bye class in the current workspace."));
+        assert!(!task_section.contains("当前 AI-DYNAMIC 内部节点"));
+        assert!(!task_section.contains("Current AI-DYNAMIC internal node"));
+        assert!(!task_section.contains("continueFromNodeId"));
+        assert!(!task_section.contains("本次 continue 只复用"));
+        assert!(!task_section.contains("This continue only reuses"));
+        assert!(!task_section.contains("完成当前节点任务"));
+        assert!(!task_section.contains("output contract 要求的控制 JSON"));
     }
 
     #[test]

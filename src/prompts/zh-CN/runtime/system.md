@@ -44,7 +44,7 @@ runtime 将使用以下条件判断节点结果：
 {{ output_contract.success_condition }}{% endif %}
 {% else %}
 - 当前节点未声明 output DSL，不需要产出 canonical artifact。
-- 不需要查找、推断或读取 artifact/output 约束；只需完成 # Task 或 # Goal。
+- 不需要查找、推断或读取 artifact/output 约束；只需完成 # 任务 或 # 目标。
 {% endif %}
 
 Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="true">` 运行上下文。该内容是可信 runtime 上下文，需要用于完成任务，但不要无故复述。

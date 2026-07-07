@@ -79,6 +79,7 @@ fn invocation() -> WorkerInvocation {
         extra_system_sections: Vec::new(),
         extra_hidden_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
+        user_tips_instruction: None,
         resume_task_instruction: None,
         session_mode: SessionMode::New,
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
@@ -313,10 +314,31 @@ fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     assert!(prompt.user_prompt.contains("Session mode: continue"));
     assert!(prompt.user_prompt.contains("Invocation reason"));
     assert!(prompt.user_prompt.contains("继续"));
-    assert!(prompt.user_prompt.contains("# Goal"));
+    assert!(prompt.user_prompt.contains("# 目标"));
     assert!(prompt.user_prompt.contains("根据最新反馈进行调整"));
-    assert!(!prompt.user_prompt.contains("# Requirement"));
+    assert!(!prompt.user_prompt.contains("# 需求"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-001"));
+}
+
+#[test]
+fn render_prompt_bundle_renders_user_tips_as_separate_section() {
+    let mut req = invocation();
+    req.user_tips_instruction = Some("先做 A，再做 B。".to_string());
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("# 用户提示\n先做 A，再做 B。"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("# 任务\nImplement the requested change")
+    );
+    let task_section = prompt
+        .user_prompt
+        .rsplit_once("# 任务")
+        .map(|(_, task)| task)
+        .unwrap_or(&prompt.user_prompt);
+    assert!(!task_section.contains("先做 A，再做 B。"));
 }
 
 #[test]
@@ -331,8 +353,8 @@ fn render_prompt_bundle_user_message_sends_user_text_without_hidden_context() {
 
     assert_eq!(prompt.user_prompt, "请继续检查这个会话");
     assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
-    assert!(!prompt.user_prompt.contains("# Goal"));
-    assert!(!prompt.user_prompt.contains("# Requirement"));
+    assert!(!prompt.user_prompt.contains("# 目标"));
+    assert!(!prompt.user_prompt.contains("# 需求"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-user-001"));
 }
 
@@ -349,8 +371,8 @@ fn render_prompt_bundle_runtime_repair_sends_repair_prompt_without_hidden_contex
     assert_eq!(prompt.user_prompt, "请修复刚才输出的 JSON。");
     assert_eq!(prompt.visibility, PromptVisibility::Hidden);
     assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
-    assert!(!prompt.user_prompt.contains("# Goal"));
-    assert!(!prompt.user_prompt.contains("# Requirement"));
+    assert!(!prompt.user_prompt.contains("# 目标"));
+    assert!(!prompt.user_prompt.contains("# 需求"));
 }
 
 #[test]

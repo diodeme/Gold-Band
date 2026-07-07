@@ -50,7 +50,7 @@
 ## 会话复用
 - Session mode：{{ session_mode }}
 - continueFromNodeId：{{ continue_from_node_id }}
-- 说明：`continue` 只表示复用来源节点的 ACP session 上下文；当前任务以本次 user prompt 的 `# Task` 为准。
+- 说明：`continue` 只表示复用来源节点的 ACP session 上下文；当前任务以本次 user prompt 的 `# 任务` 为准。
 - 当前链路可复用会话节点：
 {{ resumable_sessions }}
 

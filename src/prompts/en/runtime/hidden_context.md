@@ -17,12 +17,14 @@ Previous executed nodes: none. This node is the entry node for the current round
 {{ predecessors.chain }}
 {% endif %}
 
+{% if predecessors.reason_lines_empty %}
 {% if predecessors.is_empty %}
 ## Latest predecessor transition reasons
 None.
-{% elif predecessors.reason_lines_empty %}
+{% else %}
 ## Latest predecessor transition reasons
 All previous nodes were ordinary transitions based on node outcome.
+{% endif %}
 {% else %}
 ## Latest predecessor transition reasons
 {{ predecessors.reason_lines }}

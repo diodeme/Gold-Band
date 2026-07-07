@@ -7817,6 +7817,7 @@ fn build_dynamic_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
+        new_round_trigger: None,
         extra_system_sections,
         extra_hidden_sections: dynamic_hidden_sections(
             ctx,
@@ -11054,7 +11055,7 @@ mod tests {
                 == 1
         );
         assert!(prompt.user_prompt.contains("# 本次 AI-DYNAMIC 运行上下文"));
-        assert!(!prompt.user_prompt.contains("## Latest predecessor chain"));
+        assert!(!prompt.user_prompt.contains("## 最新前序执行链"));
         assert!(!prompt.user_prompt.contains("当前节点的前序运行节点：无"));
         assert!(!prompt.user_prompt.contains("## Current task"));
         assert!(prompt.user_prompt.contains("remaining dynamic nodes"));

@@ -124,6 +124,8 @@ pub struct WorkerInvocation {
     pub output_contract: Option<PromptOutputContract>,
     pub runtime_context: PromptRuntimeContext,
     pub predecessors: Vec<PromptPredecessorContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_round_trigger: Option<PromptPredecessorContext>,
     #[serde(default)]
     pub extra_system_sections: Vec<String>,
     #[serde(default)]
@@ -1063,7 +1065,11 @@ fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplat
         attempt_dir: req.runtime_context.attempt_dir.to_string(),
         attachments_dir: req.runtime_context.attachments_dir.to_string(),
         invocation_reason: runtime_invocation_reason(req),
-        predecessors: runtime_predecessor_context(&req.predecessors, &req.runtime_context),
+        predecessors: runtime_predecessor_context(
+            &req.predecessors,
+            req.new_round_trigger.as_ref(),
+            &req.runtime_context,
+        ),
     }
 }
 
@@ -1115,9 +1121,10 @@ fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
 
 fn runtime_predecessor_context(
     predecessors: &[PromptPredecessorContext],
+    new_round_trigger: Option<&PromptPredecessorContext>,
     ctx: &PromptRuntimeContext,
 ) -> RuntimePredecessorTemplateContext {
-    let reason_lines = predecessor_reason_lines(predecessors);
+    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger);
     let attachment_lines = predecessor_attachment_lines(predecessors);
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
@@ -1159,8 +1166,11 @@ fn predecessor_chain_text(
     chain
 }
 
-fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String {
-    predecessors
+fn predecessor_reason_lines(
+    predecessors: &[PromptPredecessorContext],
+    new_round_trigger: Option<&PromptPredecessorContext>,
+) -> String {
+    let mut lines = predecessors
         .iter()
         .filter_map(|predecessor| {
             let is_ordinary = predecessor.branch_kind == "普通"
@@ -1196,22 +1206,61 @@ fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String
             ))
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if let Some(trigger) = new_round_trigger {
+        if !lines.is_empty() {
+            lines.push('\n');
+        }
+        lines.push_str(&new_round_trigger_reason_line(trigger));
+    }
+    lines
+}
+
+fn new_round_trigger_reason_line(trigger: &PromptPredecessorContext) -> String {
+    let mut parts = vec![format!(
+        "$new-round 由该节点触发；节点类型={}；结果={}",
+        trigger.node_type,
+        trigger.outcome.as_deref().unwrap_or("unknown")
+    )];
+    if let Some(reason) = trigger.branch_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(artifact) = &trigger.output_artifact {
+        parts.push(format!(
+            "输出 artifact={}: {}",
+            artifact.name, artifact.path
+        ));
+        if let Some(preview) = artifact.preview.as_deref() {
+            parts.push(format!("输出预览={}", preview.trim()));
+        }
+    }
+    if !trigger.attachments.is_empty() {
+        let files = trigger
+            .attachments
+            .iter()
+            .map(|attachment| format!("attachments/{}", attachment.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("附件={}", files));
+    }
+    format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
 }
 
 fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> String {
-    let mut seen = IndexMap::<&String, Vec<String>>::new();
+    let mut seen = IndexMap::<String, Vec<String>>::new();
     for p in predecessors {
         if p.attachments.is_empty() {
             continue;
         }
-        let entry = seen.entry(&p.node_id).or_insert_with(Vec::new);
+        let entry = seen
+            .entry(format!("{}/{}/{}", p.round_id, p.node_id, p.attempt_id))
+            .or_insert_with(Vec::new);
         for a in &p.attachments {
-            entry.push(format!("{}/{}", p.attempt_id, a.name));
+            entry.push(format!("attachments/{}", a.name));
         }
     }
     seen.iter()
-        .map(|(node_id, files)| format!("- {}: {}", node_id, files.join(", ")))
+        .map(|(locator, files)| format!("- {}: {}", locator, files.join(", ")))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1379,6 +1428,7 @@ mod tests {
             output_contract: None,
             runtime_context,
             predecessors: Vec::new(),
+            new_round_trigger: None,
             extra_system_sections: Vec::new(),
             extra_hidden_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),

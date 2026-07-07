@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
+use std::collections::HashSet;
 
 use tracing::warn;
 
@@ -134,30 +135,127 @@ fn load_rounds_through_current(
     rounds
 }
 
-fn flatten_trace_until_current(
-    rounds: &[RoundState],
-    current_round_id: &str,
+fn trace_refs_before_current_attempt(
+    round: &RoundState,
     current_node_id: &str,
     current_attempt_id: &str,
 ) -> Vec<TraceRef> {
     let mut refs = Vec::new();
-    for round in rounds {
-        let mut trace = round.trace.clone();
-        trace.sort_by_key(|step| step.sequence);
-        for step in trace {
-            if round.id == current_round_id
-                && step.node_id == current_node_id
-                && step.attempt_id == current_attempt_id
-            {
-                return refs;
-            }
-            refs.push(TraceRef {
-                round_id: round.id.clone(),
-                step,
-            });
+    let mut trace = round.trace.clone();
+    trace.sort_by_key(|step| step.sequence);
+    for step in trace {
+        if step.node_id == current_node_id && step.attempt_id == current_attempt_id {
+            return refs;
         }
+        refs.push(TraceRef {
+            round_id: round.id.clone(),
+            step,
+        });
     }
     refs
+}
+
+fn current_round_entry_step(round: &RoundState) -> Option<RoundTraceStep> {
+    round.trace.iter().min_by_key(|step| step.sequence).cloned()
+}
+
+fn stable_prefix_node_ids(rounds: &[RoundState], current_round: &RoundState) -> Vec<String> {
+    if current_round.trigger != crate::domain::RoundTrigger::NewRound {
+        return Vec::new();
+    }
+    let Some(entry_step) = current_round_entry_step(current_round) else {
+        return Vec::new();
+    };
+    let mut best = Vec::new();
+    for round in rounds
+        .iter()
+        .filter(|round| round.index < current_round.index)
+    {
+        let mut trace = round.trace.clone();
+        trace.sort_by_key(|step| step.sequence);
+        let Some(entry_index) = trace
+            .iter()
+            .position(|step| step.node_id == entry_step.node_id)
+        else {
+            continue;
+        };
+        let mut candidate = Vec::new();
+        for step in trace.iter().take(entry_index) {
+            if !candidate.contains(&step.node_id) {
+                candidate.push(step.node_id.clone());
+            }
+        }
+        if candidate.len() >= best.len() {
+            best = candidate;
+        }
+    }
+    best
+}
+
+fn scoped_predecessor_trace_refs(
+    rounds: &[RoundState],
+    current_round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> Vec<TraceRef> {
+    let current_round_refs =
+        trace_refs_before_current_attempt(current_round, current_node_id, current_attempt_id);
+    let current_round_node_ids = current_round_refs
+        .iter()
+        .map(|trace_ref| trace_ref.step.node_id.clone())
+        .collect::<HashSet<_>>();
+    let prefix_node_ids = stable_prefix_node_ids(rounds, current_round);
+    let mut scoped = Vec::new();
+
+    for node_id in prefix_node_ids {
+        if current_round_node_ids.contains(&node_id) {
+            continue;
+        }
+        let latest = rounds
+            .iter()
+            .filter(|round| round.index < current_round.index)
+            .flat_map(|round| {
+                let mut trace = round.trace.clone();
+                trace.sort_by_key(|step| step.sequence);
+                trace
+                    .into_iter()
+                    .filter(|step| step.node_id == node_id)
+                    .map(|step| TraceRef {
+                        round_id: round.id.clone(),
+                        step,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .last();
+        if let Some(trace_ref) = latest {
+            scoped.push(trace_ref);
+        }
+    }
+
+    scoped.extend(current_round_refs);
+    scoped
+}
+
+fn new_round_trigger_trace_ref(
+    rounds: &[RoundState],
+    current_round: &RoundState,
+) -> Option<TraceRef> {
+    if current_round.trigger != crate::domain::RoundTrigger::NewRound {
+        return None;
+    }
+    let previous_round = rounds
+        .iter()
+        .filter(|round| round.index < current_round.index)
+        .max_by_key(|round| round.index)?;
+    let step = previous_round
+        .trace
+        .iter()
+        .max_by_key(|step| step.sequence)?
+        .clone();
+    Some(TraceRef {
+        round_id: previous_round.id.clone(),
+        step,
+    })
 }
 
 fn branch_kind_for_node(node: &NodeDsl) -> String {
@@ -248,6 +346,55 @@ fn predecessor_attachments(
     refs
 }
 
+fn predecessor_context_from_trace_ref(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    trace_ref: &TraceRef,
+    node_dsl: &NodeDsl,
+    branch_direction: Option<String>,
+) -> PromptPredecessorContext {
+    let node = read_json::<NodeState>(&app.paths.node_file(
+        task_id,
+        run_id,
+        &trace_ref.round_id,
+        &trace_ref.step.node_id,
+        &trace_ref.step.attempt_id,
+    ))
+    .ok();
+    let branch_reason = match node_dsl {
+        NodeDsl::Worker(worker) => output_contract_reason(worker),
+        NodeDsl::AiDynamic(_) => None,
+    };
+    PromptPredecessorContext {
+        round_id: trace_ref.round_id.clone(),
+        node_id: trace_ref.step.node_id.clone(),
+        attempt_id: trace_ref.step.attempt_id.clone(),
+        node_type: format!("{:?}", node_dsl.node_type()).to_ascii_lowercase(),
+        branch_kind: branch_kind_for_node(node_dsl),
+        outcome: node
+            .and_then(|node| node.outcome)
+            .map(|outcome| format!("{:?}", outcome).to_ascii_lowercase()),
+        branch_direction,
+        output_artifact: output_artifact_for_predecessor(
+            app,
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step,
+            node_dsl,
+        ),
+        branch_reason,
+        attachments: predecessor_attachments(
+            app,
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step,
+        ),
+    }
+}
+
 fn build_predecessor_contexts(
     app: &App,
     task_id: &str,
@@ -258,26 +405,14 @@ fn build_predecessor_contexts(
     workflow: &ValidatedWorkflow,
 ) -> Vec<PromptPredecessorContext> {
     let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
-    let traces = flatten_trace_until_current(
-        &rounds,
-        &current_round.id,
-        current_node_id,
-        current_attempt_id,
-    );
+    let traces =
+        scoped_predecessor_trace_refs(&rounds, current_round, current_node_id, current_attempt_id);
 
     traces
         .iter()
         .enumerate()
         .filter_map(|(index, trace_ref)| {
             let node_dsl = workflow.get_node(&trace_ref.step.node_id)?;
-            let node = read_json::<NodeState>(&app.paths.node_file(
-                task_id,
-                run_id,
-                &trace_ref.round_id,
-                &trace_ref.step.node_id,
-                &trace_ref.step.attempt_id,
-            ))
-            .ok();
             let next = traces.get(index + 1);
             let branch_direction = next
                 .and_then(|next| next.step.edge_outcome.clone())
@@ -297,39 +432,36 @@ fn build_predecessor_contexts(
                         None
                     }
                 });
-            let branch_reason = match node_dsl {
-                NodeDsl::Worker(worker) => output_contract_reason(worker),
-                NodeDsl::AiDynamic(_) => None,
-            };
-            Some(PromptPredecessorContext {
-                round_id: trace_ref.round_id.clone(),
-                node_id: trace_ref.step.node_id.clone(),
-                attempt_id: trace_ref.step.attempt_id.clone(),
-                node_type: format!("{:?}", node_dsl.node_type()).to_ascii_lowercase(),
-                branch_kind: branch_kind_for_node(node_dsl),
-                outcome: node
-                    .and_then(|node| node.outcome)
-                    .map(|outcome| format!("{:?}", outcome).to_ascii_lowercase()),
+            Some(predecessor_context_from_trace_ref(
+                app,
+                task_id,
+                run_id,
+                trace_ref,
+                node_dsl,
                 branch_direction,
-                output_artifact: output_artifact_for_predecessor(
-                    app,
-                    task_id,
-                    run_id,
-                    &trace_ref.round_id,
-                    &trace_ref.step,
-                    node_dsl,
-                ),
-                branch_reason,
-                attachments: predecessor_attachments(
-                    app,
-                    task_id,
-                    run_id,
-                    &trace_ref.round_id,
-                    &trace_ref.step,
-                ),
-            })
+            ))
         })
         .collect()
+}
+
+fn build_new_round_trigger_context(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    current_round: &RoundState,
+    workflow: &ValidatedWorkflow,
+) -> Option<PromptPredecessorContext> {
+    let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
+    let trigger = new_round_trigger_trace_ref(&rounds, current_round)?;
+    let node_dsl = workflow.get_node(&trigger.step.node_id)?;
+    Some(predecessor_context_from_trace_ref(
+        app,
+        task_id,
+        run_id,
+        &trigger,
+        node_dsl,
+        Some("$new-round".to_string()),
+    ))
 }
 
 pub(crate) fn build_worker_invocation(
@@ -394,6 +526,7 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
+    let new_round_trigger = build_new_round_trigger_context(app, task_id, run_id, round, workflow);
     let input_attachment_paths = match session_mode {
         SessionMode::New => super::task_input_attachment_paths(app, task_id),
         SessionMode::Continue => resume_input_attachment_paths,
@@ -417,6 +550,7 @@ pub(crate) fn build_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
+        new_round_trigger,
         extra_system_sections: Vec::new(),
         extra_hidden_sections: Vec::new(),
         task_instruction,
@@ -1030,6 +1164,75 @@ mod tests {
             trace: Vec::new(),
             uuid: None,
         }
+    }
+
+    fn trace_step(sequence: u32, node_id: &str, from_node_id: Option<&str>) -> RoundTraceStep {
+        RoundTraceStep {
+            sequence,
+            node_id: node_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: from_node_id.map(str::to_string),
+            edge_outcome: from_node_id.map(|_| "success".to_string()),
+            entered_at: format!("2026-07-01T00:00:0{sequence}Z"),
+        }
+    }
+
+    fn traced_round(
+        id: &str,
+        index: u32,
+        trigger: crate::domain::RoundTrigger,
+        trace: Vec<RoundTraceStep>,
+    ) -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            run_id: "run-001".to_string(),
+            index,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            trace,
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn new_round_predecessors_use_stable_prefix_and_current_round_only() {
+        let round1 = traced_round(
+            "round-001",
+            1,
+            crate::domain::RoundTrigger::Initial,
+            vec![
+                trace_step(1, "plan", None),
+                trace_step(2, "dev", Some("plan")),
+                trace_step(3, "accept", Some("dev")),
+            ],
+        );
+        let round2 = traced_round(
+            "round-002",
+            2,
+            crate::domain::RoundTrigger::NewRound,
+            vec![
+                trace_step(1, "dev", None),
+                trace_step(2, "accept", Some("dev")),
+            ],
+        );
+        let rounds = vec![round1, round2.clone()];
+
+        let dev_predecessors =
+            scoped_predecessor_trace_refs(&rounds, &round2, "dev", "attempt-001");
+        assert_eq!(dev_predecessors.len(), 1);
+        assert_eq!(dev_predecessors[0].round_id, "round-001");
+        assert_eq!(dev_predecessors[0].step.node_id, "plan");
+
+        let accept_predecessors =
+            scoped_predecessor_trace_refs(&rounds, &round2, "accept", "attempt-001");
+        let locators = accept_predecessors
+            .iter()
+            .map(|trace_ref| format!("{}/{}", trace_ref.round_id, trace_ref.step.node_id))
+            .collect::<Vec<_>>();
+        assert_eq!(locators, vec!["round-001/plan", "round-002/dev"]);
     }
 
     #[test]

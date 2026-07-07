@@ -52,7 +52,7 @@ edge target 规则：
 { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" }
 ```
 
-新 round 使用同一 workflow snapshot，并把上一轮失败节点的输出摘要纳入反馈上下文。`new_round_entry="$entry"` 表示从当前 workflow 的 `entry` 开始；也可以填写任一真实 worker 节点 id，让下一轮从该节点开始。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
+新 round 使用同一 workflow snapshot。`new_round_entry="$entry"` 表示从当前 workflow 的 `entry` 开始；也可以填写任一真实 worker 节点 id，让下一轮从该节点开始。下一轮的 hidden runtime context 不会直接继承上一轮完整前序链；它只暴露当前 round 已执行节点，以及当前 round 起点之前的稳定前缀节点的最新产物。例如 `A -> B -> C` 且新 round 从 `B` 开始时，`A` 的产物会继续作为稳定前缀暴露，上一轮 `B/C` 的附件不会作为本轮 predecessor attachment 继续暴露；本轮 `B` 重新执行后，后续 `C` 看到的是本轮 `B`。触发 `$new-round` 的上一 round 最后节点会作为“进入本轮的原因”写入 hidden context 的前序流转原因，包含该节点 output artifact、预览和 attachments，但不进入 predecessor chain。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
 
 ## 7. 人工 check 暂停
 启用 `manual_check=true` 的 worker 在 provider 会话自然结束后进入：

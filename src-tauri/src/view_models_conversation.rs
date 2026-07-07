@@ -1410,12 +1410,28 @@ pub fn conversation_run_vm(
     for round in &rounds {
         // List all nodes for this round (latest attempt per node)
         let mut nodes = app.node_list(task_id, run_id, &round.id)?;
-        // Sort by workflow DSL order so the session tree matches the intended workflow sequence
+        let trace_node_order: HashMap<String, usize> = {
+            let mut order = HashMap::new();
+            let mut trace = round.trace.clone();
+            trace.sort_by_key(|step| step.sequence);
+            for (index, step) in trace.iter().enumerate() {
+                order.entry(step.node_id.clone()).or_insert(index);
+            }
+            order
+        };
+        // Prefer the actual per-round execution trace. Workflow DSL order is only a fallback for
+        // legacy or synthetic nodes that do not have trace entries.
         nodes.sort_by_key(|n| {
-            workflow_node_order
-                .get(&n.node_id)
-                .copied()
-                .unwrap_or(usize::MAX)
+            (
+                trace_node_order
+                    .get(&n.node_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                workflow_node_order
+                    .get(&n.node_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+            )
         });
         let mut tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
 
@@ -3230,6 +3246,22 @@ mod tests {
     }
 
     #[test]
+    fn conversation_session_tree_orders_nodes_by_round_trace() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        let node_ids = vm.session_tree.rounds[0]
+            .nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(node_ids, vec!["方案", "开发", "验收"]);
+    }
+
+    #[test]
     fn conversation_run_vm_restores_manual_check_pending_from_node_state() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -3639,6 +3671,105 @@ mod tests {
             .attachments_dir(task_id, run_id, round_id, node_id, attempt_id);
         std::fs::create_dir_all(attachments_dir.as_std_path()).unwrap();
         std::fs::write(attachments_dir.join("test-report.md").as_std_path(), "ok").unwrap();
+    }
+
+    fn write_trace_order_fixture(app: &App) {
+        let task_id = "task-trace";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": task_id,
+                "title": "Trace order",
+                "description": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "failure",
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &json!({
+                "version": "0.1",
+                "id": "workflow-trace-order",
+                "entry": "方案",
+                "nodes": [
+                    { "type": "worker", "id": "开发", "provider": "claude-acp" },
+                    { "type": "worker", "id": "验收", "provider": "claude-acp" },
+                    { "type": "worker", "id": "方案", "provider": "claude-acp" }
+                ],
+                "edges": [
+                    { "from": "方案", "to": "开发", "on": "success" },
+                    { "from": "开发", "to": "验收", "on": "success" },
+                    { "from": "验收", "to": "$end", "on": "success" }
+                ]
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "failure",
+                "trigger": "initial",
+                "started_at": "2026-07-08T00:00:00Z",
+                "trace": [
+                    { "sequence": 1, "node_id": "方案", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-07-08T00:00:00Z" },
+                    { "sequence": 2, "node_id": "开发", "attempt_id": "attempt-001", "from_node_id": "方案", "edge_outcome": "success", "entered_at": "2026-07-08T00:00:01Z" },
+                    { "sequence": 3, "node_id": "验收", "attempt_id": "attempt-001", "from_node_id": "开发", "edge_outcome": "success", "entered_at": "2026-07-08T00:00:02Z" }
+                ]
+            }),
+        )
+        .unwrap();
+        for (node_id, status, outcome) in [
+            ("方案", "completed", "success"),
+            ("开发", "completed", "success"),
+            ("验收", "completed", "failure"),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, node_id, "attempt-001"),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "node_id": node_id,
+                    "node_type": "worker",
+                    "run_id": run_id,
+                    "round_id": round_id,
+                    "attempt_id": "attempt-001",
+                    "status": status,
+                    "outcome": outcome,
+                    "started_at": "2026-07-08T00:00:00Z",
+                    "finished_at": "2026-07-08T00:00:01Z",
+                    "manual_check_pending": false,
+                    "resolved_config": {}
+                }),
+            )
+            .unwrap();
+        }
     }
 
     fn write_manual_check_pause_overrides(app: &App) {

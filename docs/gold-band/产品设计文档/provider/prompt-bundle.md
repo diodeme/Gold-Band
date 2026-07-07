@@ -116,7 +116,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 - 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
 - `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
 - `skill_catalog` 不再注入 runtime prompt。
-- 前序链、前序分支原因和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。
+- 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，predecessors 只包含当前 round 已执行节点，以及当前 round 起点之前的稳定前缀节点的最新产物；不会把上一 round 中位于本轮起点之后的节点产物继续暴露给新 round。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。
 
 ---
 
@@ -139,6 +139,9 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 
 ## Latest predecessor transition reasons
 {{predecessor_branch_reasons}}
+
+## Latest predecessor attachments
+{{predecessor_attachment_locators}}
 </hidden>
 
 # 需求 / Requirement
@@ -173,6 +176,9 @@ workflow resume 请求：
 
 ## Latest predecessor transition reasons
 {{predecessor_branch_reasons}}
+
+## Latest predecessor attachments
+{{predecessor_attachment_locators}}
 </hidden>
 
 # 目标 / Goal
@@ -199,6 +205,7 @@ workflow resume 请求：
 - runtime repair 是同一 ACP session 中紧接上一次输出校验失败后的内部修复提示，不注入 hidden context，只发送修复 prompt 原文，并继续由 `PromptVisibility::Hidden` 控制整条消息是否展示。
 - 用户在已停止 / 已完成 ACP session 中手动继续或追问属于普通 user message，不注入 hidden context，不包 `# 需求` / `# Requirement` 或 `# 目标` / `# Goal`，直接发送用户原文。
 - `Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
+- predecessor attachment locator 必须带 round / node / attempt，例如 `round-001/方案/attempt-001: attachments/tech-plan.md`，避免跨 round 时出现同名节点或同名 attempt 的歧义。
 
 ---
 
@@ -234,6 +241,16 @@ workflow resume 请求：
 - `predecessors[].branch_direction`
 - `predecessors[].output_artifact`
 - `predecessors[].branch_reason`
+- `predecessors[].attachments`
+- `new_round_trigger`：可选，仅 `$new-round` 打开的 round 使用；结构与 `predecessors[]` 相同，但只渲染到前序流转原因，不渲染到前序链或前序附件列表。
+
+跨 round predecessor 选择规则：
+
+- 初始 round：只取当前 round 中当前 attempt 之前的 trace 节点。
+- `$new-round` round：取当前 round 中当前 attempt 之前的 trace 节点；同时补充当前 round 入口节点之前的稳定前缀节点。
+- 稳定前缀来自历史 round 的实际 trace，而不是 `workflow.nodes` 数组顺序；同一个前缀节点在多个历史 round 出现时，取当前 round 之前最新一次出现的 attempt。
+- 当前 round 已经重新执行过的节点优先使用当前 round 产物，不再重复暴露历史 round 中同 node id 的旧附件。
+- `$new-round` trigger 来自当前 round 之前最新 round 的最后一个 trace step；其 artifact 和 attachments 是“进入本轮的原因”，不是本轮业务前序。
 
 ### 6.4 节点配置
 

@@ -76,6 +76,7 @@ fn invocation() -> WorkerInvocation {
             branch_reason: None,
             attachments: Vec::new(),
         }],
+        new_round_trigger: None,
         extra_system_sections: Vec::new(),
         extra_hidden_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
@@ -134,7 +135,7 @@ fn render_prompt_bundle_uses_runtime_context_without_old_invocation_labels() {
     assert!(prompt.system_prompt.contains("Node: dev"));
     assert!(!prompt.system_prompt.contains("Round: round-001"));
     assert!(!prompt.system_prompt.contains("Attempt: attempt-001"));
-    assert!(prompt.user_prompt.contains("Session mode: new"));
+    assert!(prompt.user_prompt.contains("会话模式: new"));
     assert!(prompt.user_prompt.contains("- Round: round-001"));
     assert!(prompt.user_prompt.contains("- Attempt: attempt-001"));
     assert!(!prompt.system_prompt.contains("Invocation kind"));
@@ -311,8 +312,8 @@ fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band runtime context\">"
         )
     );
-    assert!(prompt.user_prompt.contains("Session mode: continue"));
-    assert!(prompt.user_prompt.contains("Invocation reason"));
+    assert!(prompt.user_prompt.contains("会话模式: continue"));
+    assert!(prompt.user_prompt.contains("调用原因"));
     assert!(prompt.user_prompt.contains("继续"));
     assert!(prompt.user_prompt.contains("# 目标"));
     assert!(prompt.user_prompt.contains("根据最新反馈进行调整"));
@@ -395,15 +396,11 @@ fn render_prompt_bundle_shows_predecessor_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
+    assert!(prompt.user_prompt.contains("## 最新前序附件"));
     assert!(
         prompt
             .user_prompt
-            .contains("## Latest predecessor attachments")
-    );
-    assert!(
-        prompt
-            .user_prompt
-            .contains("- dev: attempt-001/dev-report.md")
+            .contains("- round-001/dev/attempt-001: attachments/dev-report.md")
     );
 }
 
@@ -435,7 +432,7 @@ fn render_prompt_bundle_shows_multi_file_attachments() {
     assert!(
         prompt
             .user_prompt
-            .contains("- dev: attempt-001/a.md, attempt-001/b.md")
+            .contains("- round-001/dev/attempt-001: attachments/a.md, attachments/b.md")
     );
 }
 
@@ -492,12 +489,76 @@ fn render_prompt_bundle_shows_reflow_attachments() {
     assert!(
         prompt
             .user_prompt
-            .contains("- dev: attempt-001/dev-report.md, attempt-002/dev-report.md")
+            .contains("- round-001/dev/attempt-001: attachments/dev-report.md")
     );
     assert!(
         prompt
             .user_prompt
-            .contains("- review: attempt-001/review-result.md")
+            .contains("- round-001/dev/attempt-002: attachments/dev-report.md")
+    );
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- round-001/review/attempt-001: attachments/review-result.md")
+    );
+}
+
+#[test]
+fn render_prompt_bundle_shows_new_round_trigger_reason() {
+    let mut req = invocation();
+    req.runtime_context.round_id = "round-002".to_string();
+    req.runtime_context.node_id = "dev".to_string();
+    req.predecessors = vec![PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "plan".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "普通".to_string(),
+        outcome: Some("success".to_string()),
+        branch_direction: None,
+        output_artifact: None,
+        branch_reason: None,
+        attachments: vec![PromptAttachmentRef {
+            name: "tech-plan.md".to_string(),
+        }],
+    }];
+    req.new_round_trigger = Some(PromptPredecessorContext {
+        round_id: "round-001".to_string(),
+        node_id: "accept".to_string(),
+        attempt_id: "attempt-001".to_string(),
+        node_type: "worker".to_string(),
+        branch_kind: "节点输出检查".to_string(),
+        outcome: Some("failure".to_string()),
+        branch_direction: Some("$new-round".to_string()),
+        output_artifact: Some(PromptArtifactRef {
+            name: "accept-result".to_string(),
+            path: Utf8PathBuf::from(
+                "/run/rounds/round-001/nodes/accept/attempt-001/artifacts/accept-result.json",
+            ),
+            preview: Some(r#"{"result":false,"reason":"needs another round"}"#.to_string()),
+        }),
+        branch_reason: None,
+        attachments: vec![PromptAttachmentRef {
+            name: "accept-report.md".to_string(),
+        }],
+    });
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("## 最新前序流转原因"));
+    assert!(prompt.user_prompt.contains("$new-round 由该节点触发"));
+    assert!(prompt.user_prompt.contains("round-001/accept/attempt-001"));
+    assert!(prompt.user_prompt.contains("输出 artifact=accept-result"));
+    assert!(prompt.user_prompt.contains("attachments/accept-report.md"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- round-001/plan/attempt-001: attachments/tech-plan.md")
+    );
+    assert!(
+        !prompt
+            .user_prompt
+            .contains("- round-001/accept/attempt-001: attachments/accept-report.md")
     );
 }
 
@@ -519,11 +580,7 @@ fn render_prompt_bundle_shows_empty_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(
-        !prompt
-            .user_prompt
-            .contains("## Latest predecessor attachments")
-    );
+    assert!(!prompt.user_prompt.contains("## 最新前序附件"));
 }
 
 #[test]
@@ -556,11 +613,11 @@ fn render_prompt_bundle_attachment_section_in_hidden_block() {
         .unwrap();
     let hidden_content = &prompt.user_prompt[hidden_start..hidden_start + hidden_end];
     assert!(
-        hidden_content.contains("## Latest predecessor attachments"),
+        hidden_content.contains("## 最新前序附件"),
         "attachment section should be inside hidden block"
     );
     assert!(
-        hidden_content.contains("- dev: attempt-001/notes.md"),
+        hidden_content.contains("- round-001/dev/attempt-001: attachments/notes.md"),
         "attachment content should be inside hidden block"
     );
 }
@@ -577,7 +634,7 @@ fn render_prompt_bundle_ai_dynamic_hidden_section_suppresses_base_predecessor_co
 
     assert!(prompt.user_prompt.contains("# 本次 AI-DYNAMIC 运行上下文"));
     assert!(prompt.user_prompt.contains("## 直接前序节点"));
-    assert!(!prompt.user_prompt.contains("## Latest predecessor chain"));
+    assert!(!prompt.user_prompt.contains("## 最新前序执行链"));
     assert!(!prompt.user_prompt.contains("当前节点的前序运行节点：无"));
     assert!(!prompt.user_prompt.contains("\n\n\n"));
 }

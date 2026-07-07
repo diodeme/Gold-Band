@@ -98,6 +98,8 @@
 - allowed workflows 使用可搜索多选下拉栏，分为“可选择的工作流”和“不可选择的工作流”。不可选择项禁用并展示原因，例如 `workflow.id` 重复、`workflow.id` 为空、包含 AI-DYNAMIC 但未允许嵌套；默认工作流不做重复 ID 豁免。触发器内以标签展示已选 workflow 名称与 DSL `workflow.id`，标签可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
 - 保存 workflow 时，前端校验 AI-DYNAMIC 的控制限制必须为正整数、allowed workflow 必须存在且不重复、`allowNestedDynamic=false` 时不得选择包含 AI-DYNAMIC 的 workflow；后端保存和 run start 时会再次校验并冻结 snapshot。
 - 作者态画布右键菜单提供“添加结束节点”和“添加新 Round 节点”；添加后会在画布中出现对应虚拟目标节点，普通节点可拖拽连线到该目标，用于补齐结束流向或开启新 round 的流向。
+- 初始入口不提供独立选择器，由画布拓扑自动派生：真实节点中没有普通入边的节点显示“入口”标识；唯一入口候选会自动写入 `workflow.entry`，多个或零个入口候选均不能保存。`$new-round.new_round_entry` 不参与初始入口推导，仍必须在边 Inspector 中显式选择下一轮 Round 起点。
+- 作者态画布自动整形使用 success 主链拓扑顺序，不使用 `workflow.nodes` 数组追加顺序判断前后；当用户新增前置节点并连出 success 边时，该节点应自动排到原入口前方，failure 边仍按主链顺序作为分支/回退线处理。
 - Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
 - 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置且 doctor 成功的 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。

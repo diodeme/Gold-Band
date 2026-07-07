@@ -126,7 +126,11 @@ pub struct WorkerInvocation {
     pub predecessors: Vec<PromptPredecessorContext>,
     #[serde(default)]
     pub extra_system_sections: Vec<String>,
+    #[serde(default)]
+    pub extra_hidden_sections: Vec<PromptHiddenSection>,
     pub task_instruction: Option<String>,
+    #[serde(default)]
+    pub resume_task_instruction: Option<String>,
     pub session_mode: SessionMode,
     #[serde(default)]
     pub user_prompt_render_mode: UserPromptRenderMode,
@@ -174,6 +178,12 @@ pub struct PromptRuntimeContext {
     pub attachments_dir: Utf8PathBuf,
     #[serde(default)]
     pub task_inputs_dir: Option<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptHiddenSection {
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -889,6 +899,12 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(str::to_string),
+                    resume_task: req
+                        .resume_task_instruction
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     continue_goal,
                 },
             )
@@ -898,16 +914,41 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {
-    let content = render_template(
-        prompt_by_language(
-            req.runtime_context.language,
-            RUNTIME_HIDDEN_CONTEXT_ZH_CN,
-            RUNTIME_HIDDEN_CONTEXT_EN,
-        ),
-        runtime_hidden_context(req),
-    )
-    .expect("prompt template renders");
+    let extra_sections = req
+        .extra_hidden_sections
+        .iter()
+        .filter(|section| !section.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    let suppress_base_context = extra_sections
+        .iter()
+        .any(|section| section.title == "Gold Band AI-DYNAMIC runtime context");
+    let mut content = if suppress_base_context {
+        String::new()
+    } else {
+        render_template(
+            prompt_by_language(
+                req.runtime_context.language,
+                RUNTIME_HIDDEN_CONTEXT_ZH_CN,
+                RUNTIME_HIDDEN_CONTEXT_EN,
+            ),
+            runtime_hidden_context(req),
+        )
+        .expect("prompt template renders")
+    };
+    for section in extra_sections {
+        content.push_str("\n\n");
+        content.push_str(section.content.trim());
+    }
+    let content = compact_hidden_context_spacing(&content);
     gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+fn compact_hidden_context_spacing(content: &str) -> String {
+    let mut compacted = content.replace("\r\n", "\n");
+    while compacted.contains("\n\n\n") {
+        compacted = compacted.replace("\n\n\n", "\n\n");
+    }
+    compacted.trim().to_string()
 }
 
 pub(crate) fn gold_band_hidden_block(title: &str, content: &str) -> String {
@@ -948,6 +989,7 @@ struct RuntimeUserTemplateContext {
     hidden_context: String,
     requirement: String,
     task: Option<String>,
+    resume_task: Option<String>,
     continue_goal: Option<String>,
 }
 
@@ -1328,7 +1370,9 @@ mod tests {
             runtime_context,
             predecessors: Vec::new(),
             extra_system_sections: Vec::new(),
+            extra_hidden_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),
+            resume_task_instruction: None,
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,

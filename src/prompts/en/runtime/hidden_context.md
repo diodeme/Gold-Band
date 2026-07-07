@@ -4,7 +4,7 @@
 - Round: {{ round_id }}
 - Attempt: {{ attempt_id }}
 - Attempt directory: {{ attempt_dir }}
-- Attachments directory: {{ attachments_dir }}
+- Attachments directory (default location for this node's reports, temporary scripts, process notes, and other free-form outputs): {{ attachments_dir }}
 {% if invocation_reason %}
 - Invocation reason: {{ invocation_reason }}
 {% endif %}

@@ -84,6 +84,8 @@
 - 2026-07-07：作者态工作流画布自动整形改为使用 success 主链拓扑顺序，不再用 `workflow.nodes` 数组追加顺序判断边是否回退；后追加的前置入口节点连到原入口后会排到主链前方，failure 边继续作为分支/回退线。
 - 2026-07-08：多 round 会话上下文收敛：会话树每个 round 的节点顺序优先使用 `round.json.trace.sequence`，不再受 `workflow.nodes` 数组顺序影响；普通 worker hidden runtime context 的 predecessor 只包含当前 round 已执行节点和本轮起点之前的稳定前缀节点，附件 locator 带 `round/node/attempt`，中文 hidden context 标题完成本地化。
 - 2026-07-08：`$new-round` 首节点的 hidden context 新增进入本轮的触发原因：上一 round 最后触发 `$new-round` 的节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会出现在“最新前序流转原因”，用于让本轮入口节点理解为什么需要重做。
+- 2026-07-08：普通 worker runtime prompt 强化自由输出目录边界：attempt 根目录归 Gold Band runtime / ACP 管理，角色、任务或用户要求输出报告、脚本、过程记录等文件且未给绝对路径时，默认写入 hidden context 的 attachments 目录；hidden context 中的“附件目录”同时标注为本节点自由输出默认落点。
+- 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。

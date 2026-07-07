@@ -41,6 +41,8 @@
 
 `systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要和本轮反馈。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
 
+内置审查 profile 的审查边界固定为当前开发节点 / 当前迭代改动：优先以 `dev-report.md` 中列出的文件和行号为范围，缺失时退回当前 git diff；相邻代码只作为理解上下文，未被当前改动引入或放大的历史问题不应阻塞本轮 review 裁决。
+
 ### 3.2 `userPrompt`
 
 `userPrompt` 负责本次 invocation 输入，回答：
@@ -76,7 +78,10 @@ Gold Band 文件规则：
 - 不要主动扫描 run 目录来寻找未声明产物、理解当前任务或确认输出约束。
 - 当前 node 目录可写入：{{node_dir}}
 - 本次调用的 attempt 目录和 attachments 目录会在 user prompt 的 Gold Band hidden runtime context 中给出。
-- runtime/ACP 可能会在 node 目录下写入状态文件；你的附加自由文件必须写入 hidden context 给出的 attachments 目录。
+- runtime/ACP 会管理 node 目录和 attempt 根目录下的状态文件。不要直接在 attempt 根目录写入你创建的文件。
+- 除非任务明确要求修改项目仓库内的源码、文档或配置文件，否则你创建的节点过程输出都必须写入 hidden context 给出的 attachments 目录。
+- 节点过程输出包括但不限于：报告、记录、临时脚本、验证脚本、调试输出、中间笔记、截图说明、结果清单等。
+- 如果 profile、任务或用户要求输出 `*.md`、`*.json`、`*.txt`、脚本或报告，但没有给出绝对路径，默认写入 attachments 目录。
 - 当前节点所需上下文已在本 prompt 中给出。
 - 如需查阅前序节点产出，只读取本 prompt 明确给出的前序产出路径。
 
@@ -117,6 +122,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 - `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
 - `skill_catalog` 不再注入 runtime prompt。
 - 前序链、前序分支原因、前序附件索引和 attempt 级目录属于每次 invocation 的运行事实，进入 user prompt hidden context。跨 `$new-round` 时，predecessors 只包含当前 round 已执行节点，以及当前 round 起点之前的稳定前缀节点的最新产物；不会把上一 round 中位于本轮起点之后的节点产物继续暴露给新 round。触发 `$new-round` 的上一 round 节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会作为 `new_round_trigger` 写入“Latest predecessor transition reasons / 最新前序流转原因”，用于解释为什么进入当前 round。
+- attempt 根目录是 runtime / ACP 状态区；角色、任务或用户要求输出报告、脚本、过程记录等自由文件且未给绝对路径时，默认落入 hidden context 中的 attachments 目录。
 
 ---
 
@@ -132,7 +138,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 - Round: {{round_id}}
 - Attempt: {{attempt_id}}
 - Attempt directory: {{attempt_dir}}
-- Attachments directory: {{attachments_dir}}
+- Attachments directory (default location for this node's reports, temporary scripts, process notes, and other free-form outputs): {{attachments_dir}}
 
 ## Latest predecessor chain
 {{predecessor_chain}}
@@ -168,7 +174,7 @@ workflow resume 请求：
 - Round: {{round_id}}
 - Attempt: {{attempt_id}}
 - Attempt directory: {{attempt_dir}}
-- Attachments directory: {{attachments_dir}}
+- Attachments directory (default location for this node's reports, temporary scripts, process notes, and other free-form outputs): {{attachments_dir}}
 - Invocation reason: {{resume_prompt_or_repair_feedback}}
 
 ## Latest predecessor chain

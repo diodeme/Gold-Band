@@ -2,6 +2,7 @@ use camino::Utf8PathBuf;
 use gold_band::app::{
     App, CreateTaskInput, ProfileCommandError, ProfileInput, ProfileScope, is_run_continuable,
 };
+use gold_band::config::{DesktopLanguage, RuntimeConfig};
 use gold_band::domain::{RunStatus, SessionMode};
 use gold_band::dsl::{WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::{
@@ -247,6 +248,54 @@ fn default_workflow_template_includes_simplified_output_schema() {
             .iter()
             .any(|edge| edge.from == "cleanup" && edge.to == "$end")
     );
+    assert!(
+        default
+            .workflow
+            .edges
+            .iter()
+            .any(|edge| edge.from == "accept"
+                && edge.to == "$new-round"
+                && edge.new_round_entry.as_deref() == Some("dev"))
+    );
+    let plan = default
+        .workflow
+        .nodes
+        .iter()
+        .find(|node| node.id() == "plan")
+        .unwrap();
+    let gold_band::dsl::NodeDsl::Worker(plan) = plan else {
+        panic!("plan should be a worker node");
+    };
+    assert_eq!(plan.goal.as_deref(), Some("分析导入的需求并产出实施方案。"));
+}
+
+#[test]
+fn default_workflow_template_localizes_goals_for_english_desktop_language() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let mut config = RuntimeConfig::default();
+    config.desktop_language = DesktopLanguage::En;
+    let app = App::with_config(repo_root, config);
+
+    let store = app.workflow_templates().unwrap();
+    let default = store
+        .templates
+        .iter()
+        .find(|template| template.id == "default")
+        .unwrap();
+    let plan = default
+        .workflow
+        .nodes
+        .iter()
+        .find(|node| node.id() == "plan")
+        .unwrap();
+    let gold_band::dsl::NodeDsl::Worker(plan) = plan else {
+        panic!("plan should be a worker node");
+    };
+    assert_eq!(
+        plan.goal.as_deref(),
+        Some("Analyze the imported requirement and produce an implementation plan.")
+    );
 }
 
 #[test]
@@ -302,8 +351,16 @@ fn built_in_review_profile_scopes_review_to_current_changes() {
         .find(|profile| profile.id == "pf-builtin-review")
         .unwrap();
 
-    assert!(review.content.contains("只审查当前开发节点 / 本轮迭代产生的改动"));
-    assert!(review.content.contains("优先以 `dev-report.md` 中列出的文件和行号作为审查范围"));
+    assert!(
+        review
+            .content
+            .contains("只审查当前开发节点 / 本轮迭代产生的改动")
+    );
+    assert!(
+        review
+            .content
+            .contains("优先以 `dev-report.md` 中列出的文件和行号作为审查范围")
+    );
     assert!(review.content.contains("当前 git 工作区 diff"));
     assert!(review.content.contains("不得因此 REJECT"));
 }

@@ -27,10 +27,9 @@ use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
-    AiDynamicAgentStrategy, END_NODE, ENTRY_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl,
-    NEW_ROUND_NODE, NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode,
-    WorkflowControl, WorkflowDsl, WorkflowValidationError, validate_workflow,
-    workflow_contains_ai_dynamic,
+    AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
+    NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
+    WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
@@ -118,18 +117,59 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
-fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
+fn default_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: "default".to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
 }
 
-fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> WorkflowDsl {
+fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
+    match (language, key) {
+        (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
+        (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
+        (DesktopLanguage::ZhCn, "review") => {
+            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "test") => {
+            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "accept") => {
+            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::En, "plan") => {
+            "Analyze the imported requirement and produce an implementation plan."
+        }
+        (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
+        (DesktopLanguage::En, "review") => {
+            "Review the implementation and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "test") => {
+            "Run or describe verification and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "accept") => {
+            "Validate acceptance and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "cleanup") => {
+            "Clean up resources, finalize handoff notes, and clean up the Git workspace."
+        }
+        _ => "Execute this workflow node.",
+    }
+}
+
+fn default_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
     fn worker(
         provider: &str,
         profiles: &DefaultProfileIds,
@@ -181,7 +221,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "plan",
                 "plan",
-                "Analyze the imported requirement and produce an implementation plan.",
+                default_workflow_goal(language, "plan"),
                 false,
                 true,
             ),
@@ -190,7 +230,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "dev",
                 "dev",
-                "Implement the requirement in the workspace.",
+                default_workflow_goal(language, "dev"),
                 false,
                 false,
             ),
@@ -199,7 +239,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "review",
                 "review",
-                "Review the implementation and return JSON with result and reason fields.",
+                default_workflow_goal(language, "review"),
                 true,
                 false,
             ),
@@ -208,7 +248,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "test",
                 "test",
-                "Run or describe verification and return JSON with result and reason fields.",
+                default_workflow_goal(language, "test"),
                 true,
                 false,
             ),
@@ -217,7 +257,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "accept",
                 "accept",
-                "Validate acceptance and return JSON with result and reason fields.",
+                default_workflow_goal(language, "accept"),
                 true,
                 false,
             ),
@@ -226,7 +266,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "cleanup",
                 "cleanup",
-                "Clean up resources, finalize handoff notes, clean up Git workspace",
+                default_workflow_goal(language, "cleanup"),
                 false,
                 false,
             ),
@@ -293,7 +333,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 to: NEW_ROUND_NODE.to_string(),
                 on: EdgeOutcome::Failure,
                 session: None,
-                new_round_entry: Some(ENTRY_NODE.to_string()),
+                new_round_entry: Some("dev".to_string()),
             },
         ],
     }
@@ -1448,7 +1488,8 @@ impl App {
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
-        let default_template = default_workflow_template(&default_profiles);
+        let default_template =
+            default_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();

@@ -1,19 +1,29 @@
 {{ hidden_context }}
 
 {% if continue_goal %}
-# Goal
+# 目标
 {{ continue_goal }}
+{% if user_tips %}
+
+# 用户提示
+{{ user_tips }}
+{% endif %}
 {% if resume_task %}
 
-# Task
+# 任务
 {{ resume_task }}
 {% endif %}
 {% else %}
-# Requirement
+# 需求
 {{ requirement }}
+{% if user_tips %}
+
+# 用户提示
+{{ user_tips }}
+{% endif %}
 {% if task %}
 
-# Task
+# 任务
 {{ task }}
 {% endif %}
 {% endif %}

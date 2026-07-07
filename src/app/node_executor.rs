@@ -420,6 +420,7 @@ pub(crate) fn build_worker_invocation(
         extra_system_sections: Vec::new(),
         extra_hidden_sections: Vec::new(),
         task_instruction,
+        user_tips_instruction: None,
         resume_task_instruction: None,
         session_mode,
         user_prompt_render_mode,

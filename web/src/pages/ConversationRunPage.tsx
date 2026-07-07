@@ -267,13 +267,19 @@ export function ConversationRunPage({
   const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
   const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
+  const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
+    selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
+  )
+    ? run.runtimeErrorMessage
+    : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
   const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
-  const selectedRuntimeErrorMessage = selectedSessionRuntimeError
-    ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
-    : null;
+  const selectedRuntimeErrorMessage = selectedSessionRuntimeControlError
+    ?? (selectedSessionRuntimeError
+      ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
+      : null);
   const canViewWorkflow = canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {

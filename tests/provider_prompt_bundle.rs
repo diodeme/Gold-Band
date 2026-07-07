@@ -143,6 +143,61 @@ fn render_prompt_bundle_uses_runtime_context_without_old_invocation_labels() {
 }
 
 #[test]
+fn render_prompt_bundle_routes_free_outputs_to_attachments_dir() {
+    let prompt = render_prompt_bundle(&invocation()).unwrap();
+
+    assert!(
+        prompt
+            .system_prompt
+            .contains("不要直接在 attempt 根目录写入你创建的文件")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("节点过程输出包括但不限于：报告、记录、临时脚本、验证脚本")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("默认写入 attachments 目录")
+    );
+    assert!(
+        prompt
+            .user_prompt
+            .contains("附件目录（本节点报告、临时脚本、过程记录等自由输出默认写入这里）")
+    );
+}
+
+#[test]
+fn render_prompt_bundle_routes_english_free_outputs_to_attachments_dir() {
+    let mut req = invocation();
+    req.runtime_context.language = gold_band::config::DesktopLanguage::En;
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(
+        prompt
+            .system_prompt
+            .contains("Do not write files you create directly into the attempt root")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("Node process outputs include, but are not limited to: reports, records, temporary scripts")
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("write it to the attachments directory by default")
+    );
+    assert!(
+        prompt
+            .user_prompt
+            .contains("Attachments directory (default location for this node's reports, temporary scripts, process notes, and other free-form outputs)")
+    );
+}
+
+#[test]
 fn render_prompt_bundle_guides_nodes_without_artifacts() {
     let mut req = invocation();
     req.output_contract = None;

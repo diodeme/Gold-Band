@@ -290,6 +290,25 @@ fn default_workflow_template_binds_seeded_profile_ids() {
 }
 
 #[test]
+fn built_in_review_profile_scopes_review_to_current_changes() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let profiles = app.profiles().unwrap();
+    let review = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.id == "pf-builtin-review")
+        .unwrap();
+
+    assert!(review.content.contains("只审查当前开发节点 / 本轮迭代产生的改动"));
+    assert!(review.content.contains("优先以 `dev-report.md` 中列出的文件和行号作为审查范围"));
+    assert!(review.content.contains("当前 git 工作区 diff"));
+    assert!(review.content.contains("不得因此 REJECT"));
+}
+
+#[test]
 fn default_workflow_keeps_seeded_profile_ids_when_project_role_has_same_name() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();

@@ -4,7 +4,7 @@
 - Round: {{ round_id }}
 - Attempt: {{ attempt_id }}
 - Attempt 目录: {{ attempt_dir }}
-- 附件目录: {{ attachments_dir }}
+- 附件目录（本节点报告、临时脚本、过程记录等自由输出默认写入这里）: {{ attachments_dir }}
 {% if invocation_reason %}
 - 调用原因: {{ invocation_reason }}
 {% endif %}

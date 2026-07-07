@@ -80,16 +80,6 @@
 - **可见事件合并**：base session 一旦存在，消息流必须按 `AcpSessionVm.events + loadedEvents` 合成可见窗口；`loadedEvents` 只是实时/分页事件窗口，不能直接替换 session snapshot 中的事件。Gold Band synthetic user prompt 可以只通过 session-ready snapshot 到达，因此前端必须保留 snapshot prompt 并继续合并后续 live event。
 - **session 等价判断**：`sessionsEquivalent` 必须比较 session config 与 adapter 元数据签名，使后端在启动阶段发出的元数据-only session 快照（事件数可能没有变化）能刷新 UI。模型/权限栏只要存在可选项就应展示，不以 `currentModelId/currentModeId` 是否已归一化作为隐藏条件。
 
-### 会话加载性能诊断
-
-会话式运行页的加载性能诊断不在 UI 中展示，只作为开发调试能力：
-
-- 前端调试开关为 `localStorage.setItem("goldBand.debug.acpPerf", "1")`；关闭时删除该 key。
-- 前端日志统一使用 `[GoldBand][perf]` 前缀，记录 `conversation.run.initial-load`、`conversation.run.live-refresh`、`conversation.run.merge`、`acp.initial-fetch`、`acp.live.flush`、`acp.live.apply-events`、`acp.live.merge-events`、`acp.timeline.build` 等阶段。
-- 日志必须包含 session/run 定位字段、事件数量、批处理数量与耗时，帮助区分后端读取慢、前端 session 合并慢、live event flush 慢或 timeline 构建慢。
-- 流式渲染中的诊断不得默认逐 token 输出日志；应以批量 flush 和 timeline 构建为主要观测边界，避免调试能力反过来放大卡顿。
-- 后端 `get_conversation_run` 使用 `gold_band::perf` tracing target 输出总耗时，用于和前端 `conversation.run.initial-load/live-refresh` 对齐。
-
 ### 自动切换规则
 - 上一个 session 完成 + 消息窗口在底部 → 自动切换并折叠历史
 - 用户不在底部（正在看历史）→ 不自动切换、不折叠

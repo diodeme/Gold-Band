@@ -2062,7 +2062,7 @@ fn apply_control_decision(
                 continue_ref,
             }))
         }
-        ControlDecision::OpenNewRound => {
+        ControlDecision::OpenNewRound { entry_node_id } => {
             if let Some(max_rounds) = workflow.raw.control.max_rounds {
                 let proposed_rounds = run.new_rounds_opened + 1;
                 if proposed_rounds > max_rounds {
@@ -2111,8 +2111,8 @@ fn apply_control_decision(
             write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
 
             let next_node_dsl = workflow
-                .get_node(&workflow.raw.entry)
-                .expect("validated entry exists");
+                .get_node(&entry_node_id)
+                .expect("validated new round entry exists");
             let next_attempt_id = "attempt-001".to_string();
             let next_profile = next_node_dsl
                 .profile()
@@ -2120,7 +2120,7 @@ fn apply_control_decision(
             let next_node = create_node_state(
                 &run.id,
                 &round.id,
-                &workflow.raw.entry,
+                &entry_node_id,
                 &next_attempt_id,
                 next_node_dsl,
                 next_profile,

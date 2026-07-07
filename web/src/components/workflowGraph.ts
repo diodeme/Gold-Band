@@ -21,6 +21,7 @@ export const LAYOUT_MARGIN_Y = 120;
 
 // ── Terminal sentinel IDs ─────────────────────────────────────────────────
 export const END_NODE = '$end';
+export const ENTRY_NODE = '$entry';
 export const NEW_ROUND_NODE = '$new-round';
 
 // ── Lane routing helpers ──────────────────────────────────────────────────

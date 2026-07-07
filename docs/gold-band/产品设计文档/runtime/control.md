@@ -26,7 +26,7 @@ edge target 规则：
 
 - 指向 worker：创建目标节点的新 attempt 并继续执行。
 - 指向 `$end`：根据 edge outcome 完成 run。
-- 指向 `$new-round`：关闭当前 round，创建新 round，并从 workflow entry 重新开始；`success -> $new-round` 在 DSL 校验阶段被拒绝。
+- 指向 `$new-round`：关闭当前 round，创建新 round，并从 edge 的 `new_round_entry` 解析下一轮起点；`success -> $new-round` 在 DSL 校验阶段被拒绝。
 
 `failure` edge 只承接业务失败：artifact 结构合法，但 success condition 明确判定不通过，或人工 check 明确判定失败。运行异常、provider 异常和 adapter/ACP 异常不属于 failure edge 输入。
 
@@ -49,10 +49,10 @@ edge target 规则：
 `$new-round` 用于表达验收类 worker 未通过后的下一轮执行：
 
 ```json
-{ "from": "accept", "to": "$new-round", "on": "failure" }
+{ "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" }
 ```
 
-新 round 使用同一 workflow snapshot，从 `entry` 重新开始，并把上一轮失败节点的输出摘要纳入反馈上下文。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
+新 round 使用同一 workflow snapshot，并把上一轮失败节点的输出摘要纳入反馈上下文。`new_round_entry="$entry"` 表示从当前 workflow 的 `entry` 开始；也可以填写任一真实 worker 节点 id，让下一轮从该节点开始。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
 
 ## 7. 人工 check 暂停
 启用 `manual_check=true` 的 worker 在 provider 会话自然结束后进入：

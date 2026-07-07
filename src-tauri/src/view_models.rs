@@ -1311,6 +1311,16 @@ fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
             code: "workflow.success-new-round-target".to_string(),
             params: serde_json::json!({ "from": from }),
         }),
+        Some(WorkflowValidationError::MissingNewRoundEntry { from }) => Some(WorkflowErrorVm {
+            code: "workflow.missing-new-round-entry".to_string(),
+            params: serde_json::json!({ "from": from }),
+        }),
+        Some(WorkflowValidationError::InvalidNewRoundEntry { from, entry }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.invalid-new-round-entry".to_string(),
+                params: serde_json::json!({ "from": from, "entry": entry }),
+            })
+        }
         Some(WorkflowValidationError::DuplicateWorkflowId {
             workflow_name,
             workflow_id,

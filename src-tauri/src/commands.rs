@@ -2781,6 +2781,14 @@ fn workflow_validation_command_error(error: &WorkflowValidationError) -> Command
             "workflow.success-new-round-target",
             serde_json::json!({ "from": from }),
         ),
+        WorkflowValidationError::MissingNewRoundEntry { from } => CommandErrorVm::new(
+            "workflow.missing-new-round-entry",
+            serde_json::json!({ "from": from }),
+        ),
+        WorkflowValidationError::InvalidNewRoundEntry { from, entry } => CommandErrorVm::new(
+            "workflow.invalid-new-round-entry",
+            serde_json::json!({ "from": from, "entry": entry }),
+        ),
         WorkflowValidationError::DuplicateWorkflowId {
             workflow_name,
             workflow_id,

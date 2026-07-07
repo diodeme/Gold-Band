@@ -6,8 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 
 pub const END_NODE: &str = "$end";
+pub const ENTRY_NODE: &str = "$entry";
 pub const NEW_ROUND_NODE: &str = "$new-round";
-const RESERVED_NODE_IDS: &[&str] = &[END_NODE, NEW_ROUND_NODE];
+const RESERVED_NODE_IDS: &[&str] = &[END_NODE, ENTRY_NODE, NEW_ROUND_NODE];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -18,6 +19,10 @@ pub enum WorkflowValidationError {
     UnreachableNode { node_id: String },
     #[error("edge `{from}` cannot target `$new-round` on success")]
     SuccessNewRoundTarget { from: String },
+    #[error("edge `{from}` targeting `$new-round` must declare `new_round_entry`")]
+    MissingNewRoundEntry { from: String },
+    #[error("edge `{from}` has invalid `new_round_entry`: {entry}")]
+    InvalidNewRoundEntry { from: String, entry: String },
     #[error("workflow `{workflow_name}` id `{workflow_id}` is duplicated with {conflicts}")]
     DuplicateWorkflowId {
         workflow_name: String,
@@ -499,6 +504,8 @@ pub struct EdgeDsl {
     pub to: String,
     pub on: EdgeOutcome,
     pub session: Option<SessionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_round_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -823,6 +830,26 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             }
             .into());
         }
+        if edge.to == NEW_ROUND_NODE {
+            let Some(new_round_entry) = edge
+                .new_round_entry
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return Err(WorkflowValidationError::MissingNewRoundEntry {
+                    from: edge.from.clone(),
+                }
+                .into());
+            };
+            if new_round_entry != ENTRY_NODE && !nodes_by_id.contains_key(new_round_entry) {
+                return Err(WorkflowValidationError::InvalidNewRoundEntry {
+                    from: edge.from.clone(),
+                    entry: new_round_entry.to_string(),
+                }
+                .into());
+            }
+        }
         ensure!(
             edge.from != END_NODE && edge.from != NEW_ROUND_NODE,
             "edge source cannot be a terminal target: {}",
@@ -867,8 +894,23 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
             .edges
             .iter()
             .filter(|edge| edge.from == node_id)
-            .filter(|edge| edge.to != END_NODE && edge.to != NEW_ROUND_NODE)
-            .for_each(|edge| pending.push(edge.to.clone()));
+            .filter(|edge| edge.to != END_NODE)
+            .for_each(|edge| {
+                if edge.to == NEW_ROUND_NODE {
+                    let new_round_entry = edge
+                        .new_round_entry
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or_default();
+                    pending.push(if new_round_entry == ENTRY_NODE {
+                        workflow.entry.clone()
+                    } else {
+                        new_round_entry.to_string()
+                    });
+                } else {
+                    pending.push(edge.to.clone());
+                }
+            });
     }
     if let Some(node_id) = nodes_by_id
         .keys()

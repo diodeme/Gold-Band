@@ -27,9 +27,10 @@ use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
 use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
-    AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
-    NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
+    AiDynamicAgentStrategy, END_NODE, ENTRY_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl,
+    NEW_ROUND_NODE, NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode,
+    WorkflowControl, WorkflowDsl, WorkflowValidationError, validate_workflow,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
@@ -236,54 +237,63 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 to: "dev".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "dev".to_string(),
                 to: "review".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "test".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "accept".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: "cleanup".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "cleanup".to_string(),
                 to: END_NODE.to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: NEW_ROUND_NODE.to_string(),
                 on: EdgeOutcome::Failure,
                 session: None,
+                new_round_entry: Some(ENTRY_NODE.to_string()),
             },
         ],
     }
@@ -3254,6 +3264,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         }
@@ -3423,6 +3434,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         };

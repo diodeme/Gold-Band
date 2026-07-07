@@ -2253,6 +2253,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             to: END_NODE.to_string(),
             on: EdgeOutcome::Success,
             session: None,
+            new_round_entry: None,
         }],
     }
 }

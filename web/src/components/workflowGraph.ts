@@ -115,6 +115,55 @@ export function workflowNodeOrder(workflow: WorkflowDsl): Map<string, number> {
   return new Map(workflow.nodes.map((n, i) => [n.id, i]));
 }
 
+/** Node order derived from the authoring graph's success path instead of array append order. */
+export function workflowSuccessTopologyOrder(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): Map<string, number> {
+  const nodeIds = workflow.nodes.map((node) => node.id).filter(Boolean);
+  const nodeIdSet = new Set(nodeIds);
+  const adjacency = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+
+  nodeIds.forEach((id) => {
+    adjacency.set(id, []);
+    indegree.set(id, 0);
+  });
+
+  workflow.edges.forEach((edge) => {
+    if (edge.on !== 'success') return;
+    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to)) return;
+    adjacency.get(edge.from)?.push(edge.to);
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  });
+
+  const queued = new Set<string>();
+  const queue: string[] = [];
+  const pushRoot = (id: string) => {
+    if (!nodeIdSet.has(id) || queued.has(id)) return;
+    queued.add(id);
+    queue.push(id);
+  };
+
+  pushRoot(workflow.entry);
+  nodeIds.forEach((id) => {
+    if ((indegree.get(id) ?? 0) === 0) pushRoot(id);
+  });
+
+  const ordered: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    ordered.push(id);
+    adjacency.get(id)?.forEach((nextId) => {
+      indegree.set(nextId, (indegree.get(nextId) ?? 0) - 1);
+      if ((indegree.get(nextId) ?? 0) === 0) pushRoot(nextId);
+    });
+  }
+
+  nodeIds.forEach((id) => {
+    if (!queued.has(id)) ordered.push(id);
+  });
+
+  return new Map(ordered.map((id, index) => [id, index]));
+}
+
 /** Edge color CSS variable for authoring edges. */
 export function authoringEdgeColor(outcome: WorkflowEdgeDsl['on']): string {
   if (outcome === 'failure') return 'var(--destructive)';

@@ -609,9 +609,14 @@ const resources = {
           "请先处理以下问题。关闭弹窗后，对应字段会以红色标出。",
         validationDialogClose: "查看并修正",
         unnamedNode: "未命名节点",
+        entryBadge: "入口",
         validationWorkflowIdRequired: "工作流 ID 不能为空。",
         validationEntryRequired: "入口节点不能为空。",
         validationEntryMissingTarget: "入口节点 {{node}} 不存在。",
+        validationEntryCandidateMissing:
+          "工作流必须存在且只能存在一个没有入边的入口节点。",
+        validationEntryCandidateMultiple:
+          "工作流存在多个入口节点：{{entries}}。请通过连线收敛为唯一入口。",
         validationNodesRequired: "工作流至少需要一个节点。",
         validationEndNodeRequired: "工作流必须包含结束节点。",
         validationMaxAttemptsPositive: "Attempt 最大次数必须大于 0。",
@@ -1802,9 +1807,14 @@ const resources = {
           "Fix these issues first. After closing, invalid fields are highlighted in red.",
         validationDialogClose: "Review and fix",
         unnamedNode: "Unnamed node",
+        entryBadge: "Entry",
         validationWorkflowIdRequired: "Workflow ID is required.",
         validationEntryRequired: "Entry node is required.",
         validationEntryMissingTarget: "Entry node {{node}} does not exist.",
+        validationEntryCandidateMissing:
+          "Workflow must have exactly one entry node with no incoming edge.",
+        validationEntryCandidateMultiple:
+          "Workflow has multiple entry nodes: {{entries}}. Connect the graph so there is exactly one entry.",
         validationNodesRequired: "Workflow requires at least one node.",
         validationEndNodeRequired: "Workflow must include an end node.",
         validationMaxAttemptsPositive: "Max attempts must be greater than 0.",

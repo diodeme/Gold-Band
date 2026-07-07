@@ -27,7 +27,7 @@ import {
   TERMINAL_NODE_WIDTH,
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
-  workflowNodeOrder,
+  workflowSuccessTopologyOrder,
   computeBackwardLanes,
   authoringEdgeColor,
   layoutSuccessPath,
@@ -73,9 +73,9 @@ const DEFAULT_PERMISSION_MODE = '__default_permission_mode__';
 type EditorTab = 'canvas' | 'json';
 type EdgeOutcome = 'success' | 'failure';
 type SessionMode = 'new' | 'continue';
-type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string };
+type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string; entryCandidate?: boolean; entryLabel?: string };
 type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; lane?: number };
-export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; edgeIndex?: number };
+export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; nodeIds?: string[]; edgeIndex?: number };
 export type WorkflowValidationResult = {
   valid: boolean;
   issues: WorkflowValidationIssue[];
@@ -97,7 +97,12 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
     );
   }
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+    <div className="relative flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+      {data.entryCandidate ? (
+        <Badge variant="outline" className="pointer-events-none absolute -left-1 -top-2 z-10 h-5 rounded-full bg-background px-1.5 text-[10px] font-medium">
+          {data.entryLabel}
+        </Badge>
+      ) : null}
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <div className="flex items-center gap-1.5">
@@ -134,7 +139,7 @@ interface WorkflowEditorProps {
 
 export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
   const { t } = useTranslation();
-  const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
+  const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
   const [tab, setTab] = useState<EditorTab>('canvas');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialWorkflow.nodes[0]?.id ?? null);
@@ -192,28 +197,30 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   }, [flowInstance, nodes, pendingFocusNodeId]);
 
   const syncWorkflow = (next: WorkflowDsl) => {
+    const normalizedNext = normalizeWorkflowEntryFromTopology(next);
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     setJsonError(null);
-    setWorkflow(next);
-    setJsonDraft(JSON.stringify(next, null, 2));
-    onChange?.(next);
+    setWorkflow(normalizedNext);
+    setJsonDraft(JSON.stringify(normalizedNext, null, 2));
+    onChange?.(normalizedNext);
   };
 
   const closeValidationDialog = (open: boolean) => {
     setValidationDialogOpen(open);
     if (open || !pendingValidation) return;
     setFieldErrors(pendingValidation.fieldErrors);
-    setInvalidNodeIds(new Set(pendingValidation.issues.map((issue) => issue.nodeId).filter(Boolean) as string[]));
+    setInvalidNodeIds(new Set(pendingValidation.issues.flatMap((issue) => issue.nodeIds ?? (issue.nodeId ? [issue.nodeId] : []))));
     setWorkflow(pendingValidation.sanitizedWorkflow);
     setJsonDraft(JSON.stringify(pendingValidation.sanitizedWorkflow, null, 2));
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(pendingValidation.sanitizedWorkflow));
     onChange?.(pendingValidation.sanitizedWorkflow);
-    const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.edgeIndex !== undefined);
-    if (firstIssue?.nodeId) {
-      setSelectedNodeId(firstIssue.nodeId);
+    const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.nodeIds?.length || issue.edgeIndex !== undefined);
+    const firstIssueNodeId = firstIssue?.nodeId ?? firstIssue?.nodeIds?.[0];
+    if (firstIssueNodeId) {
+      setSelectedNodeId(firstIssueNodeId);
       setSelectedEdgeId(null);
-      setPendingFocusNodeId(firstIssue.nodeId);
+      setPendingFocusNodeId(firstIssueNodeId);
     } else if (firstIssue?.edgeIndex !== undefined) {
       const edge = pendingValidation.sanitizedWorkflow.edges[firstIssue.edgeIndex];
       if (edge) {
@@ -262,7 +269,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
         setJsonError(t('workflowEditor.outputSchemaInvalid'));
         return;
       }
-      workflowToSave = normalizeWorkflowSchemas(parsed);
+      workflowToSave = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(parsed));
       setWorkflow(workflowToSave);
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       onChange?.(workflowToSave);
@@ -1818,6 +1825,23 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
   );
 }
 
+export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nodes' | 'edges'>): string[] {
+  const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
+  const incomingNodeIds = new Set<string>();
+  workflow.edges.forEach((edge) => {
+    if (nodeIds.has(edge.from) && nodeIds.has(edge.to)) incomingNodeIds.add(edge.to);
+  });
+  return workflow.nodes
+    .map((node) => node.id)
+    .filter((id) => Boolean(id) && !incomingNodeIds.has(id));
+}
+
+function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl {
+  const entryCandidateIds = deriveWorkflowEntryCandidateIds(workflow);
+  const entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
+  return workflow.entry === entry ? workflow : { ...workflow, entry };
+}
+
 function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
@@ -1826,7 +1850,8 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
     ...Array.from(visibleTerminalIds).filter((id) => !collectedIds.has(id)).map((id) => ({ id, terminal: true })),
   ];
   const nodeIds = new Set(allNodes.map((n) => n.id));
-  const nodeOrder = workflowNodeOrder(workflow);
+  const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
+  const nodeOrder = workflowSuccessTopologyOrder(workflow);
   const retryLaneByEdgeIndex = computeBackwardLanes(workflow.edges as Array<{ from: string; to: string; on: string }>, nodeOrder);
   const layoutPositions = layoutSuccessPath(
     allNodes.map((n) => ({ id: n.id, width: n.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: n.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT })),
@@ -1850,7 +1875,15 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       position: topLeft(pos.x, pos.y, width, height),
       sourcePosition: SOURCE_POS,
       targetPosition: TARGET_POS,
-      data: { label: workflowNodeLabel(item.id, item.terminal, node?.type, t), kind: item.terminal ? 'terminal' : node?.type ?? 'node', detail, terminal: item.terminal, iconKey },
+      data: {
+        label: workflowNodeLabel(item.id, item.terminal, node?.type, t),
+        kind: item.terminal ? 'terminal' : node?.type ?? 'node',
+        detail,
+        terminal: item.terminal,
+        iconKey,
+        entryCandidate: !item.terminal && entryCandidateIds.has(item.id),
+        entryLabel: t('workflowEditor.entryBadge'),
+      },
       className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected', invalid && 'ring-1 ring-destructive'),
       selected: !item.terminal && item.id === selectedNodeId,
       draggable: false,
@@ -2131,16 +2164,8 @@ export function validateWorkflowForSave(
     : [];
   const duplicateConflictTemplates = duplicateWorkflowTemplates.filter((template) => template.id !== currentTemplateId);
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
-  const incomingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
-    if (edge.to.trim() && ![END_NODE, NEW_ROUND_NODE].includes(edge.to)) {
-      counts[edge.to] = (counts[edge.to] ?? 0) + 1;
-    }
-    const newRoundEntry = edge.to === NEW_ROUND_NODE ? edge.new_round_entry?.trim() : null;
-    if (newRoundEntry && newRoundEntry !== ENTRY_NODE) {
-      counts[newRoundEntry] = (counts[newRoundEntry] ?? 0) + 1;
-    }
-    return counts;
-  }, {});
+  const entryCandidateIds = deriveWorkflowEntryCandidateIds(sanitizedWorkflow);
+  sanitizedWorkflow.entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
   const outgoingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim()) {
       counts[edge.from] = (counts[edge.from] ?? 0) + 1;
@@ -2160,8 +2185,8 @@ export function validateWorkflowForSave(
     return counts;
   }, {});
 
-  const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number) => {
-    issues.push({ message, fieldKey, nodeId, edgeIndex });
+  const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number, nodeIds?: string[]) => {
+    issues.push({ message, fieldKey, nodeId, edgeIndex, nodeIds });
     if (fieldKey) fieldErrors[fieldKey] = [...(fieldErrors[fieldKey] ?? []), message];
   };
   const nodeField = (node: WorkflowNodeDsl, field: string) => `node:${node.id}:${field}`;
@@ -2177,9 +2202,12 @@ export function validateWorkflowForSave(
       }),
     );
   }
-  if (!workflow.entry.trim()) addIssue(t('workflowEditor.validationEntryRequired'));
-  else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
+  else if (entryCandidateIds.length === 0) {
+    addIssue(t('workflowEditor.validationEntryCandidateMissing'));
+  } else if (entryCandidateIds.length > 1) {
+    addIssue(t('workflowEditor.validationEntryCandidateMultiple', { entries: entryCandidateIds.join(', ') }), undefined, undefined, undefined, entryCandidateIds);
+  }
   if (!workflow.edges.some((edge) => edge.to === END_NODE)) addIssue(t('workflowEditor.validationEndNodeRequired'));
   if (sanitizedWorkflow.control.max_attempts != null && sanitizedWorkflow.control.max_attempts <= 0) {
     addIssue(t('workflowEditor.validationMaxAttemptsPositive'), controlField('max_attempts'));
@@ -2193,9 +2221,6 @@ export function validateWorkflowForSave(
     if (!node.id.trim()) addIssue(t('workflowEditor.validationNodeIdRequired', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ([END_NODE, ENTRY_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    if (node.id !== workflow.entry && (incomingEdgeCounts[node.id] ?? 0) === 0) {
-      addIssue(t('workflowEditor.validationUnreachableNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    }
     if ((outgoingEdgeCounts[node.id] ?? 0) === 0) {
       addIssue(t('workflowEditor.validationDanglingNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     }

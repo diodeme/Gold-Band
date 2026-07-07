@@ -16,6 +16,7 @@ import {
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
+  visibleAcpBannerError,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpSessionVm, AcpUiEventVm } from '../src/types';
 
@@ -70,6 +71,24 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('shows runtime control failures in the session banner', () => {
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 0,
+        eventCount: 0,
+        errorCount: 0,
+      },
+    });
+
+    expect(
+      visibleAcpBannerError(
+        'Round 数已达上限：max rounds exceeded for $new-round: 2 > 1',
+        acpSession,
+        [],
+      ),
+    ).toBe('Round 数已达上限：max rounds exceeded for $new-round: 2 > 1');
+  });
+
   it('uses raw permission request id instead of display id', () => {
     const permission = pendingPermissionFromEvents(
       [

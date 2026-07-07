@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_vm, dynamic_acp_session_vm,
-    dynamic_runtime_graph_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
+    workflow_graph_vm,
 };
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
@@ -810,12 +811,30 @@ fn runtime_error_message(
     task_id: &str,
     run_id: &str,
     pause_reason: Option<&str>,
+    run_outcome: Option<&str>,
 ) -> Option<String> {
-    if pause_reason.map(normalize_lifecycle_code).as_deref() != Some("error-blocked") {
+    if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("error-blocked") {
+        let progress = app.run_progress(task_id, run_id).ok().flatten()?;
+        return runtime_error_message_from_summary(progress.get("summary")?.as_str()?);
+    }
+
+    if !matches!(
+        run_outcome.map(normalize_lifecycle_code).as_deref(),
+        Some("failure" | "failed" | "error")
+    ) {
         return None;
     }
-    let progress = app.run_progress(task_id, run_id).ok().flatten()?;
-    runtime_error_message_from_summary(progress.get("summary")?.as_str()?)
+
+    latest_control_failure_vm(app, task_id, run_id)
+        .ok()
+        .flatten()
+        .map(|failure| {
+            if failure.title.trim().is_empty() || failure.message.trim().is_empty() {
+                failure.message
+            } else {
+                format!("{}：{}", failure.title, failure.message)
+            }
+        })
 }
 
 fn runtime_error_message_from_summary(summary: &str) -> Option<String> {
@@ -1873,11 +1892,16 @@ pub fn conversation_run_vm(
 
     let input_attachments = input_attachments_vm(app, task_id);
 
+    let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
-    let runtime_error_message =
-        runtime_error_message(app, task_id, run_id, run_pause_reason.as_deref());
-    let run_outcome = run.outcome.map(|o| enum_label(&o));
+    let runtime_error_message = runtime_error_message(
+        app,
+        task_id,
+        run_id,
+        run_pause_reason.as_deref(),
+        run_outcome.as_deref(),
+    );
 
     let (workflow_valid, workflow_json) = if let Some(ref dsl) = workflow_snapshot {
         (true, Some(serde_json::to_string(dsl).unwrap_or_default()))
@@ -3275,6 +3299,27 @@ mod tests {
             .map(|node| node.node_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(node_ids, vec!["方案", "开发", "验收"]);
+    }
+
+    #[test]
+    fn conversation_run_vm_exposes_terminal_control_failure_message() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"workflow_control_limit_exceeded","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","roundId":"round-001","nodeId":"验收","attemptId":"attempt-001","stage":"completed","status":"completed","summary":"max rounds exceeded for $new-round: 2 > 1","pauseReason":null,"controlFailure":{"limit":1,"message":"max rounds exceeded for $new-round: 2 > 1","proposedCount":2,"reasonKind":"max_rounds_exceeded","target":"$new-round"}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("Round 数已达上限：max rounds exceeded for $new-round: 2 > 1")
+        );
     }
 
     #[test]

@@ -1447,7 +1447,7 @@ fn workflow_control_vm(workflow: &WorkflowDsl) -> WorkflowControlVm {
     }
 }
 
-fn latest_control_failure_vm(
+pub(crate) fn latest_control_failure_vm(
     app: &App,
     task_id: &str,
     run_id: &str,

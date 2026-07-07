@@ -2293,7 +2293,11 @@ export const ACPChatDialog = forwardRef<
     return <AcpErrorState reason={t("acp.missingSessionReason")} />;
   }
 
-  const visibleError = visibleSessionError(effective, effectiveEvents);
+  const visibleError = visibleAcpBannerError(
+    runtimeComposerContext?.runtimeError,
+    effective,
+    effectiveEvents,
+  );
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
@@ -4773,6 +4777,14 @@ export function pendingElicitationFromEvents(
     return null;
   }
   return null;
+}
+
+export function visibleAcpBannerError(
+  runtimeError: string | null | undefined,
+  session: AcpSessionVm,
+  events: AcpUiEventVm[],
+) {
+  return runtimeError ?? visibleSessionError(session, events);
 }
 
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {

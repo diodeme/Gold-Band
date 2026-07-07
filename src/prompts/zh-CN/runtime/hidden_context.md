@@ -28,9 +28,7 @@
 {{ predecessors.reason_lines }}
 {% endif %}
 
+{% if not predecessors.attachment_lines_empty %}
 ## Latest predecessor attachments
-{% if predecessors.attachment_lines_empty %}
-无。
-{% else %}
 {{ predecessors.attachment_lines }}
 {% endif %}

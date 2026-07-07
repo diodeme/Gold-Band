@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode};
 use gold_band::provider::{
-    ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptOutputContract,
+    ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, StreamMode,
     UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
@@ -77,7 +77,9 @@ fn invocation() -> WorkerInvocation {
             attachments: Vec::new(),
         }],
         extra_system_sections: Vec::new(),
+        extra_hidden_sections: Vec::new(),
         task_instruction: Some("Implement the requested change".to_string()),
+        resume_task_instruction: None,
         session_mode: SessionMode::New,
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
@@ -371,8 +373,16 @@ fn render_prompt_bundle_shows_predecessor_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt.user_prompt.contains("## Latest predecessor attachments"));
-    assert!(prompt.user_prompt.contains("- dev: attempt-001/dev-report.md"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("## Latest predecessor attachments")
+    );
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- dev: attempt-001/dev-report.md")
+    );
 }
 
 #[test]
@@ -400,9 +410,11 @@ fn render_prompt_bundle_shows_multi_file_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt
-        .user_prompt
-        .contains("- dev: attempt-001/a.md, attempt-001/b.md"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- dev: attempt-001/a.md, attempt-001/b.md")
+    );
 }
 
 #[test]
@@ -455,12 +467,16 @@ fn render_prompt_bundle_shows_reflow_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt
-        .user_prompt
-        .contains("- dev: attempt-001/dev-report.md, attempt-002/dev-report.md"));
-    assert!(prompt
-        .user_prompt
-        .contains("- review: attempt-001/review-result.md"));
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- dev: attempt-001/dev-report.md, attempt-002/dev-report.md")
+    );
+    assert!(
+        prompt
+            .user_prompt
+            .contains("- review: attempt-001/review-result.md")
+    );
 }
 
 #[test]
@@ -481,8 +497,11 @@ fn render_prompt_bundle_shows_empty_attachments() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt.user_prompt.contains("## Latest predecessor attachments"));
-    assert!(prompt.user_prompt.contains("无。"));
+    assert!(
+        !prompt
+            .user_prompt
+            .contains("## Latest predecessor attachments")
+    );
 }
 
 #[test]
@@ -510,7 +529,9 @@ fn render_prompt_bundle_attachment_section_in_hidden_block() {
         .user_prompt
         .find("<hidden data-gold-band-hidden=\"true\"")
         .unwrap();
-    let hidden_end = prompt.user_prompt[hidden_start..].find("</hidden>").unwrap();
+    let hidden_end = prompt.user_prompt[hidden_start..]
+        .find("</hidden>")
+        .unwrap();
     let hidden_content = &prompt.user_prompt[hidden_start..hidden_start + hidden_end];
     assert!(
         hidden_content.contains("## Latest predecessor attachments"),
@@ -520,4 +541,21 @@ fn render_prompt_bundle_attachment_section_in_hidden_block() {
         hidden_content.contains("- dev: attempt-001/notes.md"),
         "attachment content should be inside hidden block"
     );
+}
+
+#[test]
+fn render_prompt_bundle_ai_dynamic_hidden_section_suppresses_base_predecessor_context() {
+    let mut req = invocation();
+    req.extra_hidden_sections = vec![PromptHiddenSection {
+        title: "Gold Band AI-DYNAMIC runtime context".to_string(),
+        content: "# 本次 AI-DYNAMIC 运行上下文\n\n## 直接前序节点\n- bootstrap\n\n\n\n\n## 会话复用\n- Session mode：new".to_string(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("# 本次 AI-DYNAMIC 运行上下文"));
+    assert!(prompt.user_prompt.contains("## 直接前序节点"));
+    assert!(!prompt.user_prompt.contains("## Latest predecessor chain"));
+    assert!(!prompt.user_prompt.contains("当前节点的前序运行节点：无"));
+    assert!(!prompt.user_prompt.contains("\n\n\n"));
 }

@@ -28,9 +28,7 @@ All previous nodes were ordinary transitions based on node outcome.
 {{ predecessors.reason_lines }}
 {% endif %}
 
+{% if not predecessors.attachment_lines_empty %}
 ## Latest predecessor attachments
-{% if predecessors.attachment_lines_empty %}
-None.
-{% else %}
 {{ predecessors.attachment_lines }}
 {% endif %}

@@ -229,13 +229,9 @@ fn predecessor_attachments(
     round_id: &str,
     trace: &RoundTraceStep,
 ) -> Vec<PromptAttachmentRef> {
-    let dir = app.paths.attachments_dir(
-        task_id,
-        run_id,
-        round_id,
-        &trace.node_id,
-        &trace.attempt_id,
-    );
+    let dir =
+        app.paths
+            .attachments_dir(task_id, run_id, round_id, &trace.node_id, &trace.attempt_id);
     let mut refs = std::fs::read_dir(dir.as_std_path())
         .map(|entries| {
             entries
@@ -243,8 +239,7 @@ fn predecessor_attachments(
                 .filter_map(|entry| {
                     let path = Utf8PathBuf::from_path_buf(entry.path()).ok()?;
                     let name = path.file_name()?.to_string();
-                    (path.is_file() && !name.starts_with('.'))
-                        .then(|| PromptAttachmentRef { name })
+                    (path.is_file() && !name.starts_with('.')).then(|| PromptAttachmentRef { name })
                 })
                 .collect::<Vec<_>>()
         })
@@ -423,7 +418,9 @@ pub(crate) fn build_worker_invocation(
         runtime_context,
         predecessors,
         extra_system_sections: Vec::new(),
+        extra_hidden_sections: Vec::new(),
         task_instruction,
+        resume_task_instruction: None,
         session_mode,
         user_prompt_render_mode,
         permission_mode,

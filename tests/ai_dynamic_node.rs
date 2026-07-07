@@ -304,6 +304,7 @@ impl DynamicProvider {
                 let workflow_id = workflow_id.lock().unwrap().clone();
                 Some(workflow_invocation_completion(&workflow_id))
             }
+            (_, node_id) if node_id.ends_with("-accept") => Some(end_completion("accepted")),
             _ => None,
         }
     }
@@ -945,8 +946,8 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     );
     assert_eq!(graph.groups.len(), 1);
     assert_eq!(graph.groups[0].status, DynamicGroupStatus::Closed);
-    assert_eq!(graph.groups[0].terminal_node_ids.len(), 2);
-    assert_eq!(graph.proposals.len(), 3);
+    assert_eq!(graph.groups[0].terminal_node_ids.len(), 3);
+    assert_eq!(graph.proposals.len(), 4);
     assert!(graph.proposals.iter().all(|proposal| {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
     }));
@@ -963,9 +964,10 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(branch_nodes.contains(&"branch-a"));
     assert!(branch_nodes.contains(&"branch-b"));
     let bootstrap = render_prompt_bundle(&invocations[0]).unwrap();
-    assert!(bootstrap.system_prompt.contains("dynamic-run-001"));
-    assert!(bootstrap.system_prompt.contains("bootstrap"));
-    assert!(bootstrap.system_prompt.contains("claude-acp"));
+    assert!(!bootstrap.system_prompt.contains("dynamic-run-001"));
+    assert!(bootstrap.user_prompt.contains("dynamic-run-001"));
+    assert!(bootstrap.user_prompt.contains("bootstrap"));
+    assert!(bootstrap.user_prompt.contains("claude-acp"));
     assert!(bootstrap.system_prompt.contains("dynamic-node-completion"));
     assert!(
         bootstrap
@@ -975,12 +977,12 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(
         bootstrap
             .user_prompt
-            .contains("# Task\nDesign the first internal dynamic step")
+            .contains("Design the first internal dynamic step")
     );
     let merge = render_prompt_bundle(&invocations[3]).unwrap();
-    assert!(merge.system_prompt.contains("group-core"));
-    assert!(merge.system_prompt.contains("branch-a"));
-    assert!(merge.system_prompt.contains("branch-b"));
+    assert!(merge.user_prompt.contains("group-core"));
+    assert!(merge.user_prompt.contains("branch-a"));
+    assert!(merge.user_prompt.contains("branch-b"));
 }
 
 #[test]
@@ -1138,32 +1140,19 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
     assert!(merge.user_prompt.contains("# Requirement"));
     assert!(merge.user_prompt.contains("# Task"));
     assert!(!merge.user_prompt.contains("# Goal"));
-    assert!(merge.system_prompt.contains("branch workspaces"));
+    assert!(merge.user_prompt.contains("branch workspaces"));
     let branch_lines = merge
-        .system_prompt
+        .user_prompt
         .lines()
         .filter(|line| line.contains("branch=gb-dyn-task-ai-dynamic-worktree-fanout-run-001-dyn-"))
         .collect::<Vec<_>>();
     assert_eq!(branch_lines.len(), 2);
     assert_ne!(branch_lines[0], branch_lines[1]);
-    assert!(merge.system_prompt.contains("head="));
-    assert!(merge.system_prompt.contains("mergeBase="));
-    assert!(merge.system_prompt.contains("status=?? branch-a.txt"));
-    assert!(merge.system_prompt.contains("status=?? branch-b.txt"));
-    assert!(
-        merge_invocation
-            .task_instruction
-            .as_deref()
-            .unwrap()
-            .contains("Main workspace:")
-    );
-    assert!(
-        merge_invocation
-            .task_instruction
-            .as_deref()
-            .unwrap()
-            .contains(repo_root.as_str())
-    );
+    assert!(merge.user_prompt.contains("head="));
+    assert!(merge.user_prompt.contains("mergeBase="));
+    assert!(merge.user_prompt.contains("status=?? branch-a.txt"));
+    assert!(merge.user_prompt.contains("status=?? branch-b.txt"));
+    assert!(merge.user_prompt.contains(repo_root.as_str()));
 }
 
 #[test]
@@ -1673,6 +1662,10 @@ fn ai_dynamic_effective_schema_reflects_runtime_policy() {
         Some(&json!(2))
     );
     assert_eq!(
+        schema.pointer("/definitions/DynamicNext/properties/nodes/minItems"),
+        Some(&json!(2))
+    );
+    assert_eq!(
         schema.pointer("/definitions/DynamicNodeSpec/allOf/0/if/properties/kind/enum/0"),
         Some(&json!("worker"))
     );
@@ -1753,8 +1746,8 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
             .unwrap(),
     )
     .unwrap();
-    assert!(branch_b.system_prompt.contains("branch-a"));
-    assert!(branch_b.system_prompt.contains("branch-b"));
+    assert!(branch_b.user_prompt.contains("branch-a"));
+    assert!(branch_b.user_prompt.contains("branch-b"));
     assert!(!branch_b.system_prompt.contains("bootstrap title="));
     let branch_c = invocations
         .iter()

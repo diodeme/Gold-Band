@@ -610,7 +610,7 @@ fn dynamic_next_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Va
             "groupId": string_schema(),
             "nodes": {
                 "type": "array",
-                "minItems": 1,
+                "minItems": 2,
                 "maxItems": max_items,
                 "items": schema_ref("DynamicNodeSpec")
             },

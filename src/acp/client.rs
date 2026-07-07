@@ -494,7 +494,7 @@ pub fn run_prompt(
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(provider_id, prompt, session_update.is_none())?;
+    runtime.record_user_prompt_event(provider_id, prompt, restored, session_update.is_none())?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -638,7 +638,12 @@ fn session_load_params(
     params
 }
 
-fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+fn session_prompt_params(
+    provider_id: &str,
+    session_id: &str,
+    prompt: &PromptBundle,
+    restored: bool,
+) -> Value {
     let mut prompt_blocks: Vec<Value> = Vec::new();
 
     // Add attachment content blocks first (images, resources)
@@ -647,7 +652,7 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
     }
 
     // Add the text block with user prompt
-    let text = session_prompt_text(provider_id, prompt);
+    let text = session_prompt_text(provider_id, prompt, restored);
     if !text.is_empty() {
         prompt_blocks.push(json!({
             "type": "text",
@@ -661,8 +666,9 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
     })
 }
 
-fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
-    if !supports_system_prompt(provider_id).unwrap_or(false)
+fn session_prompt_text(provider_id: &str, prompt: &PromptBundle, restored: bool) -> String {
+    if !restored
+        && !supports_system_prompt(provider_id).unwrap_or(false)
         && !prompt.system_prompt.trim().is_empty()
     {
         let system_prompt =
@@ -1377,6 +1383,7 @@ impl<'a> AcpRuntime<'a> {
         &mut self,
         provider_id: &str,
         prompt: &PromptBundle,
+        restored: bool,
         emit_live_update: bool,
     ) -> Result<()> {
         let session_id = self
@@ -1387,7 +1394,7 @@ impl<'a> AcpRuntime<'a> {
         let user_event = user_prompt_event(
             self.seq,
             session_id,
-            session_prompt_text(provider_id, prompt),
+            session_prompt_text(provider_id, prompt, restored),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
@@ -1416,6 +1423,7 @@ impl<'a> AcpRuntime<'a> {
             provider_id,
             &session_id,
             prompt,
+            restored,
             acp_session_title_refresh_enabled.then_some((
                 workspace_dir,
                 "running",
@@ -1588,6 +1596,7 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         session_id: &str,
         prompt: &PromptBundle,
+        restored: bool,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
         if self.is_prompt_cancel_requested() {
@@ -1606,7 +1615,7 @@ impl<'a> AcpRuntime<'a> {
         );
         let request = self.connection.begin_request(
             "session/prompt",
-            session_prompt_params(provider_id, session_id, prompt),
+            session_prompt_params(provider_id, session_id, prompt, restored),
         )?;
         self.append_outbound_frame(&request.frame)?;
         self.connection.mark_prompt_active();
@@ -3151,16 +3160,37 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        let text = session_prompt_text("codex-acp", &prompt);
+        let text = session_prompt_text("codex-acp", &prompt, false);
         assert!(text.contains(
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
         ));
         assert!(text.contains("node constraints"));
         assert!(text.ends_with("do the task"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt);
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, false);
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], text);
+    }
+
+    #[test]
+    fn codex_restored_session_prompt_does_not_inline_system_prompt() {
+        let prompt = PromptBundle {
+            system_prompt: "node constraints".to_string(),
+            user_prompt: "follow up".to_string(),
+            prompt_id: Some("prompt-002".to_string()),
+            visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
+        };
+
+        let text = session_prompt_text("codex-acp", &prompt, true);
+        assert_eq!(text, "follow up");
+        assert!(!text.contains("Gold Band stable system prompt"));
+        assert!(!text.contains("node constraints"));
+
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, true);
+        assert_eq!(params["sessionId"], "session-123");
+        assert_eq!(params["prompt"][0]["text"], "follow up");
     }
 
     #[test]
@@ -3174,7 +3204,14 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");
+        assert_eq!(
+            session_prompt_text("claude-acp", &prompt, false),
+            "do the task"
+        );
+        assert_eq!(
+            session_prompt_text("claude-acp", &prompt, true),
+            "do the task"
+        );
     }
 
     #[test]

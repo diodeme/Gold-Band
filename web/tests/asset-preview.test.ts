@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { imageSrcFromContent, isImageMessageAttachment } from '../src/lib/asset-preview';
+import {
+  imageSrcFromContent,
+  isImageMessageAttachment,
+  isTaskInputMessageAttachment,
+} from '../src/lib/asset-preview';
 
 describe('asset preview helpers', () => {
   it('returns image data URLs for image ContentVm values', () => {
@@ -26,6 +30,22 @@ describe('asset preview helpers', () => {
       path: 'task-inputs/icon.svg',
       type: 'image/svg+xml',
       size: 42,
+    })).toBe(false);
+  });
+
+  it('detects task input attachments separately from attempt user inputs', () => {
+    expect(isTaskInputMessageAttachment({
+      name: 'requirement.txt',
+      path: 'task-inputs/requirement.txt',
+      type: 'text/plain',
+      size: 12,
+    })).toBe(true);
+
+    expect(isTaskInputMessageAttachment({
+      name: 'image.png',
+      path: 'user-inputs/image.png',
+      type: 'image/png',
+      size: 12,
     })).toBe(false);
   });
 });

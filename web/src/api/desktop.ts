@@ -191,6 +191,9 @@ export const desktopApi: RuntimeApi = {
   showConversationAttachment(projectId: string, taskId: string, name: string) {
     return invokeCommand('show_conversation_attachment', { projectId, taskId, name });
   },
+  showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('show_conversation_message_attachment', { projectId, taskId, runId, roundId, nodeId, attemptId, name, path, outerNodeId, outerAttemptId });
+  },
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },

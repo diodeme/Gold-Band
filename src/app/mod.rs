@@ -2577,6 +2577,7 @@ impl App {
             prompt_id,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
+            Vec::new(),
             None,
             None,
         )?;
@@ -2618,7 +2619,16 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt, None, None)
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
     }
 
     pub fn run_continue_with_model_override(
@@ -2635,6 +2645,7 @@ impl App {
             run_id,
             prompt_id,
             prompt,
+            Vec::new(),
             model_override,
             None,
         )
@@ -2655,6 +2666,7 @@ impl App {
             run_id,
             prompt_id,
             prompt,
+            Vec::new(),
             model_override,
             permission_mode_override,
         )
@@ -2667,7 +2679,16 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt, None, None)
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
     }
 
     pub fn run_continue_background_with_model_override(
@@ -2684,6 +2705,7 @@ impl App {
             run_id,
             prompt_id,
             prompt,
+            Vec::new(),
             model_override,
             None,
         )
@@ -2695,6 +2717,7 @@ impl App {
         run_id: &str,
         prompt_id: Option<String>,
         prompt: Option<String>,
+        attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
     ) -> Result<RunState> {
@@ -2704,6 +2727,7 @@ impl App {
             run_id,
             prompt_id,
             prompt,
+            attachment_paths,
             model_override,
             permission_mode_override,
         )

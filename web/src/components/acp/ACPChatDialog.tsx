@@ -89,6 +89,7 @@ import {
 import {
   imageSrcFromContent,
   isImageMessageAttachment,
+  isTaskInputMessageAttachment,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
 import {
@@ -145,6 +146,7 @@ import {
   showArtifact,
   showAttachment,
   showConversationAttachment,
+  showConversationMessageAttachment,
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
@@ -957,32 +959,108 @@ export const ACPChatDialog = forwardRef<
     }
   }, []);
 
+  const loadMessageAttachmentContent = useCallback(
+    (attachment: MessageAttachmentPreview) =>
+      isTaskInputMessageAttachment(attachment)
+        ? showConversationAttachment(projectId, taskId, attachment.name)
+        : showConversationMessageAttachment(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            attachment.name,
+            attachment.path,
+            outerNodeId,
+            outerAttemptId,
+          ),
+    [
+      attemptId,
+      nodeId,
+      outerAttemptId,
+      outerNodeId,
+      projectId,
+      roundId,
+      runId,
+      taskId,
+    ],
+  );
+
+  const messageAttachmentAsset = useCallback(
+    (attachment: MessageAttachmentPreview): AssetItemVm => ({
+      kind: isTaskInputMessageAttachment(attachment) ? 'input-attachment' : 'message-attachment',
+      name: attachment.name,
+      title: attachment.name,
+      tone: 'neutral',
+      preview: '',
+      roundId,
+      nodeId,
+      attemptId,
+    }),
+    [attemptId, nodeId, roundId],
+  );
+
+  const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
+    () => ({
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId,
+      outerAttemptId,
+    }),
+    [
+      attemptId,
+      nodeId,
+      outerAttemptId,
+      outerNodeId,
+      projectId,
+      roundId,
+      runId,
+      taskId,
+    ],
+  );
+
   const handleOpenMessageAttachment = useCallback(
     async (attachment: MessageAttachmentPreview) => {
+      const asset = messageAttachmentAsset(attachment);
       if (isImageMessageAttachment(attachment)) {
         try {
-          const content = await showConversationAttachment(projectId, taskId, attachment.name);
+          const content = await loadMessageAttachmentContent(attachment);
           const src = imageSrcFromContent(content);
           if (src) {
             setMessageImagePreview({ name: attachment.name, src });
             return;
           }
+          setArtifactsDialogOpen(true);
+          setSelectedArtifact(asset);
+          setArtifactContent(content);
+          setArtifactLoading(false);
+          return;
         } catch {
-          // Fall through to the attachment detail dialog.
+          setArtifactsDialogOpen(true);
+          setSelectedArtifact(asset);
+          setArtifactContent(null);
+          setArtifactLoading(false);
+          return;
         }
       }
-      await handleOpenArtifactDetail({
-        kind: 'input-attachment',
-        name: attachment.name,
-        title: attachment.name,
-        tone: 'neutral',
-        preview: '',
-        roundId: '',
-        nodeId: '',
-        attemptId: '',
-      });
+      setArtifactsDialogOpen(true);
+      setSelectedArtifact(asset);
+      setArtifactContent(null);
+      setArtifactLoading(true);
+      try {
+        setArtifactContent(await loadMessageAttachmentContent(attachment));
+      } catch {
+        setArtifactContent(null);
+      } finally {
+        setArtifactLoading(false);
+      }
     },
-    [handleOpenArtifactDetail, taskId],
+    [loadMessageAttachmentContent, messageAttachmentAsset],
   );
 
   useImperativeHandle(
@@ -1569,7 +1647,7 @@ export const ACPChatDialog = forwardRef<
           });
           if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
             applySessionUpdate(updated, "initial-fetch");
-            if (isAcpInitialSessionReady(updated) || isSessionTerminalStatus(updated.status)) {
+            if (isAcpSessionReadyForInitialDisplay(updated)) {
               break;
             }
           }
@@ -2302,8 +2380,7 @@ export const ACPChatDialog = forwardRef<
                         event={item}
                         expansionControls={expansionControls}
                         streamingTextItemKey={streamingTextItemKey}
-                        projectId={projectId}
-                        taskId={taskId}
+                        messageAttachmentLocator={messageAttachmentLocator}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
                       />
                     </div>
@@ -3446,15 +3523,13 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
   expansionControls,
   streamingTextItemKey,
-  projectId,
-  taskId,
+  messageAttachmentLocator,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
   streamingTextItemKey?: string | null;
-  projectId?: string;
-  taskId?: string;
+  messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
   if (isChildAgentGroup(event))
@@ -3464,13 +3539,15 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
           event={event}
           expansionControls={expansionControls}
           streamingTextItemKey={streamingTextItemKey}
+          messageAttachmentLocator={messageAttachmentLocator}
+          onMessageAttachmentClick={onMessageAttachmentClick}
         />
       </AssistantTimelineRow>
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} projectId={projectId} taskId={taskId} onMessageAttachmentClick={onMessageAttachmentClick} />;
+    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
     return <ThoughtBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -3488,11 +3565,15 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   event,
   expansionControls,
   streamingTextItemKey,
+  messageAttachmentLocator,
+  onMessageAttachmentClick,
   onLayoutChange,
 }: {
   event: AcpChildAgentGroup;
   expansionControls: AcpExpansionControls;
   streamingTextItemKey?: string | null;
+  messageAttachmentLocator?: MessageAttachmentLocator;
+  onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   onLayoutChange?: () => void;
 }) {
   const { t } = useTranslation();
@@ -3607,6 +3688,8 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                       event={child}
                       expansionControls={expansionControls}
                       streamingTextItemKey={streamingTextItemKey}
+                      messageAttachmentLocator={messageAttachmentLocator}
+                      onMessageAttachmentClick={onMessageAttachmentClick}
                     />
                   ))}
                 </div>
@@ -3717,14 +3800,12 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
 const MessageBubble = memo(function MessageBubble({
   event,
   streamingTextItemKey,
-  projectId,
-  taskId,
+  messageAttachmentLocator,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineEvent;
   streamingTextItemKey?: string | null;
-  projectId?: string;
-  taskId?: string;
+  messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
   const { t } = useTranslation();
@@ -3775,8 +3856,7 @@ const MessageBubble = memo(function MessageBubble({
               <MessageAttachmentPreviewButton
                 key={att.path}
                 attachment={att}
-                projectId={projectId}
-                taskId={taskId}
+                locator={messageAttachmentLocator}
                 onClick={onMessageAttachmentClick}
               />
             ))}
@@ -3811,26 +3891,38 @@ const MessageBubble = memo(function MessageBubble({
 
 const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
   attachment,
-  projectId,
-  taskId,
+  locator,
   onClick,
 }: {
   attachment: MessageAttachmentPreview;
-  projectId?: string;
-  taskId?: string;
+  locator?: MessageAttachmentLocator;
   onClick?: (attachment: MessageAttachmentPreview) => void;
 }) {
   const isImage = isImageMessageAttachment(attachment);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isImage || !taskId) {
+    if (!isImage || !locator) {
       setPreviewSrc(null);
       return;
     }
     let cancelled = false;
     setPreviewSrc(null);
-    showConversationAttachment(projectId ?? 'default', taskId ?? '', attachment.name)
+    const contentPromise = isTaskInputMessageAttachment(attachment)
+      ? showConversationAttachment(locator.projectId, locator.taskId, attachment.name)
+      : showConversationMessageAttachment(
+          locator.projectId,
+          locator.taskId,
+          locator.runId,
+          locator.roundId,
+          locator.nodeId,
+          locator.attemptId,
+          attachment.name,
+          attachment.path,
+          locator.outerNodeId,
+          locator.outerAttemptId,
+        );
+    contentPromise
       .then((content) => {
         if (!cancelled) setPreviewSrc(imageSrcFromContent(content));
       })
@@ -3840,7 +3932,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
     return () => {
       cancelled = true;
     };
-  }, [attachment.name, isImage, taskId]);
+  }, [attachment.name, attachment.path, isImage, locator]);
 
   if (isImage) {
     return (
@@ -5491,8 +5583,23 @@ function isAcpInitialSessionReady(session: AcpSessionVm) {
   );
 }
 
+function isAcpSessionDisplayableDuringInitialLoad(session: AcpSessionVm | null | undefined) {
+  return Boolean(
+    session &&
+    isSessionActiveStatus(session.status) &&
+    liveTimelineUpdatesFromEvents(session.events).length > 0,
+  );
+}
+
 function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
-  return Boolean(session && (isAcpInitialSessionReady(session) || isSessionTerminalStatus(session.status)));
+  return Boolean(
+    session &&
+    (
+      isAcpInitialSessionReady(session) ||
+      isAcpSessionDisplayableDuringInitialLoad(session) ||
+      isSessionTerminalStatus(session.status)
+    ),
+  );
 }
 
 function logAcpSessionReady(
@@ -5647,6 +5754,18 @@ export {
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
+  isAcpSessionReadyForInitialDisplay,
+};
+
+type MessageAttachmentLocator = {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
 };
 
 export function createAcpPromptId() {

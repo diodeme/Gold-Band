@@ -1011,6 +1011,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
         })
         .expect("workflow should validate")

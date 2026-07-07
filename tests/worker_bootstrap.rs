@@ -1430,7 +1430,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
             {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"accept","to":"$new-round","on":"failure"}},
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"$entry"}},
             {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
@@ -1449,6 +1449,74 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     assert_eq!(run.outcome, Some(RunOutcome::Failure));
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn new_round_starts_from_configured_entry_node() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-new-round-entry";
+
+    let provider = AlwaysFailAcceptanceProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let profiles = app.profiles().unwrap().profiles;
+    let accept_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
+    let dev_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Start the next round from development",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "round-entry-flow",
+          "entry": "accept",
+          "control": {{ "max_rounds": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}"}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"dev"}},
+            {{"from":"accept","to":"$end","on":"success"}},
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile, dev_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-new-round-entry"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    assert_eq!(run.new_rounds_opened, 1);
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].runtime_context.node_id, "accept");
+    assert_eq!(invocations[1].runtime_context.round_id, "round-002");
+    assert_eq!(invocations[1].runtime_context.node_id, "dev");
 }
 
 #[test]

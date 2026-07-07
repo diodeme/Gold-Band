@@ -108,6 +108,10 @@ const resources = {
           "unreachable-node": "节点 {{nodeId}} 不可达，请把它接入当前工作流。",
           "success-new-round-target":
             "{{from}} 的 success 边不能指向 new round。",
+          "missing-new-round-entry":
+            "{{from}} 指向 new round 的边必须选择下一轮 Round 起点。",
+          "invalid-new-round-entry":
+            "{{from}} 指向 new round 的边选择了不存在的起点 {{entry}}。",
           "duplicate-id":
             "工作流模板 {{workflowName}} 的 workflow.id（{{workflowId}}）与 {{conflicts}} 重复，请修改 JSON 后重试。",
           "ai-dynamic-invalid-workflow":
@@ -663,6 +667,10 @@ const resources = {
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
           "{{node}} 的 success 边不能指向 new round。",
+        validationNewRoundEntryRequired:
+          "{{node}} 指向 new round 的边必须选择下一轮 Round 起点。",
+        validationNewRoundEntryMissing:
+          "{{node}} 指向 new round 的边选择了不存在的起点 {{entry}}。",
         validationTerminalEdgeSource: "终止节点 {{node}} 不能作为边的来源。",
         validationContinueTerminalTarget:
           "第 {{index}} 条边的 continue session 不能指向终止节点。",
@@ -685,6 +693,10 @@ const resources = {
         successEquals: "期望值",
         edgeOutcome: "边类型",
         edgeTarget: "目标",
+        newRoundEntry: "新 Round 起点",
+        newRoundEntryHelp:
+          "选择下一轮 Round 的起点；$entry 表示当前工作流的起点。",
+        selectNewRoundEntry: "选择起点",
         sessionMode: "Session",
         enable: "启用",
         disable: "关闭",
@@ -1269,6 +1281,10 @@ const resources = {
             "Node {{nodeId}} is unreachable and must be connected to the workflow.",
           "success-new-round-target":
             "{{from}} success edge cannot target new round.",
+          "missing-new-round-entry":
+            "{{from}} edge targeting new round must choose the next round start.",
+          "invalid-new-round-entry":
+            "{{from}} edge targeting new round selected missing start node {{entry}}.",
           "duplicate-id":
             "Workflow template {{workflowName}} uses workflow.id {{workflowId}}, which duplicates {{conflicts}}. Update the JSON and try again.",
           "ai-dynamic-invalid-workflow":
@@ -1855,6 +1871,10 @@ const resources = {
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:
           "{{node}} success edge cannot target new round.",
+        validationNewRoundEntryRequired:
+          "{{node}} edge targeting new round must choose the next round start.",
+        validationNewRoundEntryMissing:
+          "{{node}} edge targeting new round selected missing start node {{entry}}.",
         validationTerminalEdgeSource:
           "Terminal node {{node}} cannot be an edge source.",
         validationContinueTerminalTarget:
@@ -1878,6 +1898,10 @@ const resources = {
         successEquals: "Expected Value",
         edgeOutcome: "Edge Type",
         edgeTarget: "Target",
+        newRoundEntry: "New Round Start",
+        newRoundEntryHelp:
+          "Choose where the next round starts; $entry means the current workflow entry.",
+        selectNewRoundEntry: "Select start",
         sessionMode: "Session",
         enable: "Enable",
         disable: "Disable",

@@ -291,6 +291,7 @@ export interface WorkflowEdgeDsl {
   to: string;
   on: 'success' | 'failure' | string;
   session?: 'new' | 'continue' | null;
+  new_round_entry?: '$entry' | string | null;
 }
 
 export interface CreateTaskInput {

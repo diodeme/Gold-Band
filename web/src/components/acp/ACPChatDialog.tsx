@@ -2280,6 +2280,7 @@ export const ACPChatDialog = forwardRef<
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     initialSessionLoading: loadingInitialSession,
+    runtimeActive: runtimeActiveFromContext,
   });
 
   if (sessionShellState === 'loading') {
@@ -2287,9 +2288,6 @@ export const ACPChatDialog = forwardRef<
   }
 
   if (!effective) {
-    if (runtimeActiveFromContext) {
-      return <AcpLoadingState label={t("conversation.runtime.runtimeActive")} />;
-    }
     return <AcpErrorState reason={t("acp.missingSessionReason")} />;
   }
 

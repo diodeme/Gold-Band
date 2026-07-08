@@ -104,6 +104,7 @@ runtime 落盘完成后，前端可见状态必须继续通过 lifecycle/run-sta
 - 标注位置：对应 assistant `textDelta` item 的 `raw.runtimeControlOutputDisplay`。
 - 标注内容：`artifactName`、`kind`、`jsonText`、`start/end`、`jsonStart/jsonEnd`、`fenced`、`parseStatus`。
 - `parseStatus` 可以是 `valid` 或 `invalid`。runtime 控制和 artifact 解析仍只接受合法 JSON；`invalid` 只表示该 assistant 输出中存在 JSON-like 控制候选，且本轮将进入 repair 或阻塞处理。
+- 同一条 assistant 输出中同时存在合法完整 JSON 与更靠后的非法 JSON-like 嵌套片段时，展示标注必须优先选择合法完整 JSON；非法 span 只作为没有合法 JSON 时的 fallback。
 - `start/end` 使用前端 JavaScript 字符串可直接消费的 UTF-16 索引，用于展示层把自然语言和控制 JSON 拆分。
 - 前端展示为单行折叠控制条：收起态不展示 JSON 内容，展开后才展示完整格式化 JSON；`valid` 使用主色和控制清单图标，`invalid` 使用告警色和告警图标。
 - 该标注只服务 UI 展示，不参与 artifact 内容、schema 校验、success condition、edge control 或 repair 判断。

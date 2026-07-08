@@ -36,9 +36,13 @@ pub fn json_artifact_span(content: &str) -> Option<JsonArtifactSpan> {
 }
 
 pub fn json_artifact_display_span(content: &str) -> Option<JsonArtifactSpan> {
-    json_artifact_spans(content)
-        .into_iter()
+    let spans = json_artifact_spans(content);
+    spans
+        .iter()
+        .filter(|span| span.parse_status == "valid")
         .max_by_key(|span| span.start)
+        .cloned()
+        .or_else(|| spans.into_iter().max_by_key(|span| span.start))
 }
 
 fn json_artifact_spans(content: &str) -> Vec<JsonArtifactSpan> {
@@ -364,6 +368,16 @@ mod tests {
         assert_eq!(span.parse_status, "invalid");
         assert_eq!(span.json_text, "{\"a\":\"unterminated}");
         assert!(json_artifact_span(content).is_none());
+    }
+
+    #[test]
+    fn display_span_prefers_valid_outer_json_over_invalid_inner_suffix() {
+        let content = "{\"next\":{\"node\":{\"workspace\":{\"mode\":\"main\"}}}}";
+        let span = json_artifact_display_span(content).expect("span should parse");
+        assert_eq!(span.parse_status, "valid");
+        assert_eq!(span.start, 0);
+        assert_eq!(span.end, content.len());
+        assert_eq!(span.json_text, content);
     }
 
     #[test]

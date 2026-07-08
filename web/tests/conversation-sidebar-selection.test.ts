@@ -4,9 +4,12 @@ import {
   canPauseConversationSidebarRun,
   conversationSidebarRunKey,
   conversationSidebarTaskKey,
+  isConversationSidebarRunListScopeActive,
   isConversationSidebarRunActive,
   prioritizeConversationSidebarWorkspace,
   selectConversationSidebarRunPauseAction,
+  shouldShowConversationSidebarRunList,
+  updateConversationSidebarExpandedTaskKeys,
 } from '@/components/conversation/ConversationSidebar';
 
 describe('ConversationSidebar run selection identity', () => {
@@ -47,6 +50,54 @@ describe('ConversationSidebar run selection identity', () => {
   it('opens stop context menu only for concrete run rows', () => {
     expect(canOpenConversationSidebarRunMenu('run')).toBe(true);
     expect(canOpenConversationSidebarRunMenu('task')).toBe(false);
+  });
+
+  it('shows the run list for a task as soon as it has one run', () => {
+    expect(shouldShowConversationSidebarRunList({ runs: [] })).toBe(false);
+    expect(shouldShowConversationSidebarRunList({ runs: [{ runId: 'run-001' }] })).toBe(true);
+    expect(shouldShowConversationSidebarRunList({ runs: [{ runId: 'run-002' }, { runId: 'run-001' }] })).toBe(true);
+  });
+
+  it('keeps pinned and workspace run-list expansion independent', () => {
+    const taskA = conversationSidebarTaskKey('project-a', 'task-a');
+    const taskB = conversationSidebarTaskKey('project-a', 'task-b');
+    const taskC = conversationSidebarTaskKey('project-a', 'task-c');
+
+    const pinnedExpanded = updateConversationSidebarExpandedTaskKeys(
+      { pinned: null, workspace: null },
+      'pinned',
+      taskA,
+      'expand',
+    );
+    expect(pinnedExpanded).toEqual({ pinned: taskA, workspace: null });
+
+    const workspaceExpanded = updateConversationSidebarExpandedTaskKeys(
+      pinnedExpanded,
+      'workspace',
+      taskB,
+      'expand',
+    );
+    expect(workspaceExpanded).toEqual({ pinned: taskA, workspace: taskB });
+
+    const workspaceReplaced = updateConversationSidebarExpandedTaskKeys(
+      workspaceExpanded,
+      'workspace',
+      taskC,
+      'expand',
+    );
+    expect(workspaceReplaced).toEqual({ pinned: taskA, workspace: taskC });
+
+    expect(updateConversationSidebarExpandedTaskKeys(workspaceReplaced, 'pinned', taskA, 'toggle')).toEqual({
+      pinned: null,
+      workspace: taskC,
+    });
+  });
+
+  it('keeps selected run-list highlight scoped to the interaction area', () => {
+    expect(isConversationSidebarRunListScopeActive('pinned', 'pinned')).toBe(true);
+    expect(isConversationSidebarRunListScopeActive('workspace', 'workspace')).toBe(true);
+    expect(isConversationSidebarRunListScopeActive('pinned', 'workspace')).toBe(false);
+    expect(isConversationSidebarRunListScopeActive('workspace', 'pinned')).toBe(false);
   });
 
   it('routes run stop menu selection to pause callback only when running', () => {

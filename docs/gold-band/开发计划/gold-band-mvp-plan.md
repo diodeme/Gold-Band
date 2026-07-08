@@ -84,8 +84,8 @@
 - 2026-07-08：工作流控制默认分支语义调整：节点产生 `success` 或 `failure` 后若没有匹配同类型 edge，runtime 不再进入 `error-blocked`，而是等价于隐式指向 `$end`，按当前 outcome 完成 run；显式 edge 仍优先。
 - 2026-07-07：作者态工作流入口改为由画布拓扑自动派生：没有普通入边的真实节点显示“入口”标识；唯一入口候选自动写入 `workflow.entry`，多个或零个入口候选会阻止保存。`new_round_entry` 仅表示下一轮 Round 起点，不参与初始入口推导，也不会在拖线到 `$new-round` 时自动补默认值。
 - 2026-07-07：作者态工作流画布自动整形改为使用 success 主链拓扑顺序，不再用 `workflow.nodes` 数组追加顺序判断边是否回退；后追加的前置入口节点连到原入口后会排到主链前方，failure 边继续作为分支/回退线。
-- 2026-07-08：多 round 会话上下文收敛：会话树每个 round 的节点顺序优先使用 `round.json.trace.sequence`，不再受 `workflow.nodes` 数组顺序影响；普通 worker hidden runtime context 的 predecessor 只包含当前 round 已执行节点和本轮起点之前的稳定前缀节点，附件 locator 带 `round/node/attempt`，中文 hidden context 标题完成本地化。
-- 2026-07-08：`$new-round` 首节点的 hidden context 新增进入本轮的触发原因：上一 round 最后触发 `$new-round` 的节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会出现在“最新前序流转原因”，用于让本轮入口节点理解为什么需要重做。
+- 2026-07-08：多 round 会话上下文收敛：会话树每个 round 的节点顺序优先使用 `round.json.trace.sequence`，不再受 `workflow.nodes` 数组顺序影响；普通 worker hidden runtime context 的 predecessor 默认只包含当前 round 已执行节点，只有 `$new-round` 入口节点额外包含本轮起点之前的稳定前缀节点；附件 locator 带 `round/node/attempt`，中文 hidden context 标题完成本地化。
+- 2026-07-08：`$new-round` 首节点的 hidden context 新增进入本轮的触发原因：上一 round 最后触发 `$new-round` 的节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会出现在入口节点的“最新前序流转原因”，用于让本轮入口节点理解为什么需要重做；本轮后续节点不继续携带该触发原因或历史稳定前缀。
 - 2026-07-08：普通 worker runtime prompt 强化自由输出目录边界：attempt 根目录归 Gold Band runtime / ACP 管理，角色、任务或用户要求输出报告、脚本、过程记录等文件且未给绝对路径时，默认写入 hidden context 的 attachments 目录；hidden context 中的“附件目录”同时标注为本节点自由输出默认落点。
 - 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-07-08：会话消息流新增 runtime control JSON 展示优化。普通 worker output contract 与 AI-DYNAMIC `dynamic-node-completion` 继续复用 Rust 端既有 JSON artifact 提取和校验链路；runtime 在实际消费控制输出或将非法 JSON 控制候选送入 repair 时为对应 ACP `textDelta` 写入 `raw.runtimeControlOutputDisplay`，前端只基于该标记把自然语言和控制 JSON 拆分展示，控制 JSON 收起态只显示单行 Gold Band 工作流控制条，非法候选使用告警色和告警图标，未标记 JSON 保持普通 Markdown 消息。

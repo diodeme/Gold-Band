@@ -1606,6 +1606,7 @@ fn fail_workflow_control_limit(
     validate_round_state(round)?;
     validate_run_state(run)?;
     persist_runtime_state(app, task_id, run, round, node)?;
+    emit_run_completed_lifecycle_event(app, task_id, run, round, node, RunOutcome::Failure);
     Ok(None)
 }
 
@@ -10535,6 +10536,112 @@ mod tests {
             },
         )]));
         (temp, App::with_config(repo_root, config))
+    }
+
+    #[test]
+    fn workflow_control_limit_failure_emits_run_completed_lifecycle_event() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+        }));
+        let task_id = "task-001";
+        let mut run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-09T00:00:00Z".to_string(),
+            updated_at: "2026-07-09T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("accept".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 1,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+        };
+        let mut round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-07-09T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut resolved_config = crate::domain::ResolvedConfig::new();
+        resolved_config.insert(
+            "profileName".to_string(),
+            serde_json::Value::String("验收".to_string()),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "accept".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Completed,
+            outcome: Some(NodeOutcome::Failure),
+            started_at: "2026-07-09T00:00:00Z".to_string(),
+            finished_at: Some("2026-07-09T00:00:01Z".to_string()),
+            manual_check_pending: false,
+            resolved_config,
+            uuid: None,
+        };
+
+        fail_workflow_control_limit(
+            &app,
+            task_id,
+            &mut run,
+            &mut round,
+            &node,
+            "max rounds exceeded for $new-round: 2 > 1".to_string(),
+            serde_json::json!({
+                "reasonKind": "max_rounds_exceeded",
+                "target": "$new-round",
+                "proposedCount": 2,
+                "limit": 1,
+                "message": "max rounds exceeded for $new-round: 2 > 1",
+            }),
+        )
+        .unwrap();
+
+        let persisted_run: RunState = read_json(&app.paths.run_file(task_id, &run.id)).unwrap();
+        assert_eq!(persisted_run.status, RunStatus::Completed);
+        assert_eq!(persisted_run.outcome, Some(RunOutcome::Failure));
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RuntimeLifecycleEvent::RunCompleted {
+                task_id: emitted_task_id,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                node_label,
+                outcome,
+                ..
+            } => {
+                assert_eq!(emitted_task_id, task_id);
+                assert_eq!(run_id, "run-001");
+                assert_eq!(round_id, "round-001");
+                assert_eq!(node_id, "accept");
+                assert_eq!(attempt_id, "attempt-001");
+                assert_eq!(node_label, "验收");
+                assert_eq!(*outcome, RunOutcome::Failure);
+            }
+            event => panic!("expected RunCompleted event, got {event:?}"),
+        }
     }
 
     fn test_context<'a>(app: &'a App, dynamic: &'a AiDynamicNode) -> DynamicExecutionContext<'a> {

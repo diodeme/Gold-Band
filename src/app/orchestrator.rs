@@ -12,6 +12,7 @@ use jsonschema::JSONSchema;
 use jsonschema::error::{ValidationError, ValidationErrorKind};
 
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
+use crate::acp::events::annotate_latest_runtime_control_output;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::artifacts::parse_json_artifact;
 use crate::config::DesktopLanguage;
@@ -5358,6 +5359,13 @@ fn write_dynamic_output_artifact(
     if output_artifact.content.trim().is_empty() {
         return Ok(None);
     }
+    annotate_dynamic_runtime_control_output_best_effort(
+        ctx,
+        node_id,
+        attempt_id,
+        &output_artifact.name,
+        "dynamic-node-completion",
+    );
     let artifact_path =
         dynamic_output_artifact_path(ctx, node_id, attempt_id, &output_artifact.name);
     std::fs::create_dir_all(
@@ -5376,6 +5384,42 @@ fn write_dynamic_output_artifact(
     )?;
     std::fs::write(artifact_path.as_std_path(), &output_artifact.content)?;
     Ok(Some(artifact_path))
+}
+
+fn annotate_dynamic_runtime_control_output_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+    artifact_name: &str,
+    kind: &str,
+) {
+    let path = ctx
+        .app
+        .paths
+        .dynamic_node_attempt_dir(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            node_id,
+            attempt_id,
+        )
+        .join("acp.timeline.jsonl");
+    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+        tracing::warn!(
+            task_id = ctx.task_id,
+            run_id = ctx.run_id,
+            round_id = ctx.round_id,
+            outer_node_id = ctx.outer_node_id,
+            outer_attempt_id = ctx.outer_attempt_id,
+            node_id,
+            attempt_id,
+            artifact_name,
+            error = %error,
+            "failed to annotate dynamic runtime control output display"
+        );
+    }
 }
 
 fn try_accept_interrupted_dynamic_completion(
@@ -7824,11 +7868,12 @@ fn build_dynamic_worker_invocation(
             graph,
             node,
             attempt_id,
+            session_mode,
             has_output_contract,
         )?,
         task_instruction: Some(task_instruction.clone()),
         user_tips_instruction: dynamic_user_tips_instruction(ctx),
-        resume_task_instruction: dynamic_resume_task_instruction(node, &task_instruction),
+        resume_task_instruction: dynamic_resume_task_instruction(session_mode, &task_instruction),
         session_mode,
         user_prompt_render_mode,
         permission_mode,
@@ -8784,6 +8829,7 @@ fn dynamic_hidden_sections(
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
     attempt_id: &str,
+    session_mode: SessionMode,
     has_output_contract: bool,
 ) -> Result<Vec<PromptHiddenSection>> {
     let workspace_path = node
@@ -8816,7 +8862,7 @@ fn dynamic_hidden_sections(
             "group_id": node.group_id.as_deref().unwrap_or("none"),
             "chain_id": node.chain_id,
             "depth": node.depth,
-            "session_mode": match node.session_mode {
+            "session_mode": match session_mode {
                 SessionMode::New => "new",
                 SessionMode::Continue => "continue",
             },
@@ -8875,10 +8921,10 @@ fn dynamic_hidden_sections(
 }
 
 fn dynamic_resume_task_instruction(
-    node: &DynamicNodeState,
+    session_mode: SessionMode,
     task_instruction: &str,
 ) -> Option<String> {
-    if node.session_mode != SessionMode::Continue && node.continue_from_node_id.is_none() {
+    if session_mode != SessionMode::Continue {
         return None;
     }
     let task = task_instruction.trim();

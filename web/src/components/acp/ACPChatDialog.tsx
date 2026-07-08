@@ -13,6 +13,7 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
+  CircleAlert,
   CircleStop,
   Clock,
   FileText,
@@ -244,6 +245,23 @@ type AcpTimelineEvent = AcpUiEventVm & {
   endedSeq?: number;
   durationMs?: number;
   optimistic?: boolean;
+};
+
+type RuntimeControlOutputDisplay = {
+  artifactName?: string;
+  kind?: string;
+  jsonText?: string;
+  start?: number;
+  end?: number;
+  jsonStart?: number;
+  jsonEnd?: number;
+  fenced?: boolean;
+  parseStatus?: string;
+};
+
+export type RuntimeControlMessageParts = {
+  display: RuntimeControlOutputDisplay | null;
+  visibleText: string;
 };
 
 type AcpChildAgentGroup = {
@@ -3818,6 +3836,13 @@ const MessageBubble = memo(function MessageBubble({
   const rawAttachments: MessageAttachmentPreview[] =
     rawObject(event.raw)?.attachments as any ?? [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
+  const runtimeControlParts = !isUser && !streamingDraft
+    ? runtimeControlMessageParts(event)
+    : { display: null, visibleText: event.content ?? "" };
+  const messageText = runtimeControlParts.display
+    ? runtimeControlParts.visibleText
+    : (event.content ?? "");
+  const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
   return (
     <Message
       className={cn(
@@ -3834,24 +3859,29 @@ const MessageBubble = memo(function MessageBubble({
           isUser && "flex flex-col items-end",
         )}
       >
-        <MessageContent
-          className={cn(
-            "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
-            isUser
-              ? "w-fit max-w-full rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
-              : "rounded-bl-md border-border/70 bg-card text-card-foreground",
-            failed &&
-              "border border-destructive/40 bg-destructive/10 text-destructive",
-          )}
-        >
-          {isUser ? (
-            <HiddenPromptMessageContent content={event.content ?? ""} />
-          ) : streamingDraft ? (
-            <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
-          ) : (
-            <Markdown>{event.content ?? ""}</Markdown>
-          )}
-        </MessageContent>
+        {showMessageBubble ? (
+          <MessageContent
+            className={cn(
+              "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
+              isUser
+                ? "w-fit max-w-full rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+                : "rounded-bl-md border-border/70 bg-card text-card-foreground",
+              failed &&
+                "border border-destructive/40 bg-destructive/10 text-destructive",
+            )}
+          >
+            {isUser ? (
+              <HiddenPromptMessageContent content={event.content ?? ""} />
+            ) : streamingDraft ? (
+              <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
+            ) : (
+              <Markdown>{messageText}</Markdown>
+            )}
+          </MessageContent>
+        ) : null}
+        {runtimeControlParts.display ? (
+          <RuntimeControlOutputCard display={runtimeControlParts.display} />
+        ) : null}
         {hasAttachments ? (
           <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
             {rawAttachments.map((att) => (
@@ -3890,6 +3920,113 @@ const MessageBubble = memo(function MessageBubble({
     </Message>
   );
 });
+
+const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
+  display,
+}: {
+  display: RuntimeControlOutputDisplay;
+}) {
+  const { t } = useTranslation();
+  const jsonText = display.jsonText ?? "";
+  const prettyJson = useMemo(() => {
+    try {
+      return JSON.stringify(JSON.parse(jsonText), null, 2);
+    } catch {
+      return jsonText;
+    }
+  }, [jsonText]);
+  const subtitle = display.kind === "dynamic-node-completion"
+    ? t("acp.runtimeControlDynamic")
+    : t("acp.runtimeControlWorkflow");
+  const isInvalid = display.parseStatus === "invalid";
+  const Icon = isInvalid ? CircleAlert : ListTodo;
+  return (
+    <Collapsible
+      className={cn(
+        "min-w-0 max-w-full overflow-hidden rounded-lg border",
+        isInvalid
+          ? "border-destructive/25 bg-destructive/5"
+          : "border-primary/20 bg-primary/5",
+      )}
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          className={cn(
+            "group h-9 w-full min-w-0 justify-between rounded-none px-3 py-1.5 text-left font-normal",
+            isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
+          )}
+        >
+          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+            <span
+              className={cn(
+                "flex size-6 shrink-0 items-center justify-center rounded-md",
+                isInvalid
+                  ? "bg-destructive/10 text-destructive"
+                  : "bg-primary/10 text-primary",
+              )}
+            >
+              <Icon className="size-3.5" />
+            </span>
+            <span className="truncate text-sm font-medium text-foreground">
+              {t("acp.runtimeControlTitle")}
+            </span>
+            <span className="shrink-0 text-xs text-muted-foreground">·</span>
+            <span className="truncate text-xs text-muted-foreground">
+              {subtitle}
+              {display.artifactName ? ` · ${display.artifactName}` : ""}
+            </span>
+          </span>
+          <ChevronDown className="ml-2 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        className={cn(
+          "border-t bg-background/60 px-3 py-2",
+          isInvalid ? "border-destructive/15" : "border-primary/15",
+        )}
+      >
+        <pre className="max-h-64 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground [overflow-wrap:anywhere]">
+          {prettyJson}
+        </pre>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
+
+export function runtimeControlMessageParts(event: Pick<AcpUiEventVm, "content" | "raw">): RuntimeControlMessageParts {
+  const display = runtimeControlOutputDisplayFromRaw(event.raw);
+  const content = event.content ?? "";
+  if (!display) return { display: null, visibleText: content };
+  const start = numberValue(display.start);
+  const end = numberValue(display.end);
+  if (start == null || end == null || start < 0 || end < start || end > content.length) {
+    return { display, visibleText: content };
+  }
+  const visibleText = `${content.slice(0, start)}${content.slice(end)}`.trim();
+  return { display, visibleText };
+}
+
+function runtimeControlOutputDisplayFromRaw(raw: unknown): RuntimeControlOutputDisplay | null {
+  const display = rawObject(raw)?.runtimeControlOutputDisplay;
+  if (!display || typeof display !== "object" || Array.isArray(display)) return null;
+  const object = display as Record<string, unknown>;
+  return {
+    artifactName: stringValue(object.artifactName) ?? undefined,
+    kind: stringValue(object.kind) ?? undefined,
+    jsonText: stringValue(object.jsonText) ?? undefined,
+    start: numberValue(object.start) ?? undefined,
+    end: numberValue(object.end) ?? undefined,
+    jsonStart: numberValue(object.jsonStart) ?? undefined,
+    jsonEnd: numberValue(object.jsonEnd) ?? undefined,
+    fenced: typeof object.fenced === "boolean" ? object.fenced : undefined,
+    parseStatus: stringValue(object.parseStatus) ?? undefined,
+  };
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
 const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewButton({
   attachment,

@@ -138,6 +138,17 @@ merge 是执行型节点，不承担路由规划输出：hidden context 对 merg
 
 `RuntimeRepair` 模式保持现状：只发送 repair prompt，不注入 hidden context。
 
+### 3.4 ACP continue prompt state 统一
+
+普通 workflow worker 与 AI-DYNAMIC 内部 worker / acceptance / merge 必须复用同一套 ACP invocation prompt state 决策：
+
+- 新 session：`RequirementTask`。
+- continue session 且用户没有显式输入：`WorkflowResume`，发送 runtime 默认继续提示。
+- continue session 且用户有显式输入：`UserMessage`，只发送用户输入原文，不注入 hidden context，不包装 `# 目标` / `# Goal`。
+- runtime repair：`RuntimeRepair` 单独覆盖，不参与普通 continue 决策。
+
+实现上由统一 resolver 生成 `sessionMode / continueRef / resumePrompt / promptId / visibility / renderMode / attachments / model / permissionMode`。普通 workflow worker、AI-DYNAMIC worker、AI-DYNAMIC acceptance、AI-DYNAMIC merge 只负责提供各自的 continue ref 来源和业务参数，不得各自复制 prompt mode 判断。收敛后必须删除原先分散在 `run_continue`、dynamic worker 和 merge agent stage 中的重复 continue prompt 逻辑，避免新旧两套路径并存。
+
 ## 4. Acceptance 控制协议方案
 
 ### 4.1 invocation 构建

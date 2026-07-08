@@ -36,6 +36,15 @@ edge target 规则：
 - continue ref 来自目标 worker 节点当前最新 attempt 的 worker ref；找不到时降级为普通新会话上下文。
 - 上一节点的 primary/output artifact 可作为 feedback summary 进入下一次 worker 调用。
 
+ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workflow worker 与 AI-DYNAMIC 内部 worker / acceptance / merge 复用同一套规则：
+
+- 新 session 使用 `RequirementTask`。
+- continue session 且用户没有显式输入时使用 `WorkflowResume`，发送 runtime 默认继续提示。
+- continue session 且用户有显式输入时使用 `UserMessage`，只发送用户输入原文，不重新注入 hidden runtime context，也不包装 `# Goal` / `# 用户提示` / `# Task`。
+- runtime repair 使用 `RuntimeRepair` 覆盖普通 continue 决策。
+
+各节点类型只提供自己的 continue ref 来源；不得在普通 workflow、AI-DYNAMIC worker / acceptance / merge 中分别复制 prompt mode 判断。
+
 ## 5. attempt 限制
 节点跳转不再使用 repair loop 概念，而由显式 edge 创建目标节点的新 attempt。例如：
 

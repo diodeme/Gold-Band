@@ -50,8 +50,8 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 
 | outcome | 有匹配 edge | 无匹配 edge |
 | --- | --- | --- |
-| `success` | 按 edge 跳转；`$end` 完成成功；不能指向 `$new-round` | 暂停为错误阻塞 |
-| `failure` | 按 edge 跳转；`$end` 完成失败；`$new-round` 打开新 round | 暂停为错误阻塞 |
+| `success` | 按 edge 跳转；`$end` 完成成功；不能指向 `$new-round` | 等价于隐式 `success -> $end`，完成成功 |
+| `failure` | 按 edge 跳转；`$end` 完成失败；`$new-round` 打开新 round | 等价于隐式 `failure -> $end`，完成失败 |
 | `invalid` | 不匹配 edge；`output.schema` 不合法时先同 attempt 隐藏追问修复，修复耗尽后 workflow failure | workflow failure |
 | `killed` | 不看 edge | run 完成 killed |
 | `none` | 不看 edge | 暂停，等待外部继续或人工处理 |

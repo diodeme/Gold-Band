@@ -16,8 +16,8 @@ provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归�
 
 | 当前 outcome | 决策 |
 | --- | --- |
-| `success` | 查找 `on=success` edge；无 edge 则错误阻塞 |
-| `failure` | 查找 `on=failure` edge；无 edge 则错误阻塞 |
+| `success` | 查找 `on=success` edge；无 edge 则等价于隐式 `success -> $end`，run success |
+| `failure` | 查找 `on=failure` edge；无 edge 则等价于隐式 `failure -> $end`，run failure |
 | `invalid` | 不查找 edge；若来自 `output.schema` 不合法则同 attempt 隐藏追问修复，最多 3 次；修复耗尽后 run failure |
 | `killed` | run 完成 killed |
 | `None` | run 暂停，保留当前节点与 attempt |
@@ -79,7 +79,6 @@ edge target 规则：
 ## 9. 错误阻塞
 以下情况进入 `paused + error-blocked`：
 
-- 已有确定业务 outcome，但 edge 缺失导致无法决定下一步。
 - workflow / DSL 无效或 workflow snapshot 与 runtime 状态不一致。
 - AI-DYNAMIC proposal repair 耗尽后仍不合法。
 - AI 输出验证声明了产物但产物缺失，且 repair 机制耗尽。

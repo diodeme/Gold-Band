@@ -25,12 +25,12 @@ pub fn decide_next_step(
     match node.outcome {
         Some(crate::domain::NodeOutcome::Success) => {
             match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Success, || {
-                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                ControlDecision::CompleteRun(RunOutcome::Success)
             })
         }
         Some(crate::domain::NodeOutcome::Failure) => {
             match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
-                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                ControlDecision::CompleteRun(RunOutcome::Failure)
             })
         }
         Some(crate::domain::NodeOutcome::Invalid) => {

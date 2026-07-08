@@ -156,11 +156,7 @@ fn render_prompt_bundle_routes_free_outputs_to_attachments_dir() {
             .system_prompt
             .contains("节点过程输出包括但不限于：报告、记录、临时脚本、验证脚本")
     );
-    assert!(
-        prompt
-            .system_prompt
-            .contains("默认写入 attachments 目录")
-    );
+    assert!(prompt.system_prompt.contains("默认写入 attachments 目录"));
     assert!(
         prompt
             .user_prompt
@@ -180,11 +176,9 @@ fn render_prompt_bundle_routes_english_free_outputs_to_attachments_dir() {
             .system_prompt
             .contains("Do not write files you create directly into the attempt root")
     );
-    assert!(
-        prompt
-            .system_prompt
-            .contains("Node process outputs include, but are not limited to: reports, records, temporary scripts")
-    );
+    assert!(prompt.system_prompt.contains(
+        "Node process outputs include, but are not limited to: reports, records, temporary scripts"
+    ));
     assert!(
         prompt
             .system_prompt

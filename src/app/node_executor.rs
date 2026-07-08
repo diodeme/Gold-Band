@@ -160,6 +160,16 @@ fn current_round_entry_step(round: &RoundState) -> Option<RoundTraceStep> {
     round.trace.iter().min_by_key(|step| step.sequence).cloned()
 }
 
+fn is_current_round_entry_attempt(
+    round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> bool {
+    current_round_entry_step(round)
+        .map(|entry| entry.node_id == current_node_id && entry.attempt_id == current_attempt_id)
+        .unwrap_or(false)
+}
+
 fn stable_prefix_node_ids(rounds: &[RoundState], current_round: &RoundState) -> Vec<String> {
     if current_round.trigger != crate::domain::RoundTrigger::NewRound {
         return Vec::new();
@@ -205,7 +215,12 @@ fn scoped_predecessor_trace_refs(
         .iter()
         .map(|trace_ref| trace_ref.step.node_id.clone())
         .collect::<HashSet<_>>();
-    let prefix_node_ids = stable_prefix_node_ids(rounds, current_round);
+    let prefix_node_ids =
+        if is_current_round_entry_attempt(current_round, current_node_id, current_attempt_id) {
+            stable_prefix_node_ids(rounds, current_round)
+        } else {
+            Vec::new()
+        };
     let mut scoped = Vec::new();
 
     for node_id in prefix_node_ids {
@@ -450,8 +465,13 @@ fn build_new_round_trigger_context(
     task_id: &str,
     run_id: &str,
     current_round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
     workflow: &ValidatedWorkflow,
 ) -> Option<PromptPredecessorContext> {
+    if !is_current_round_entry_attempt(current_round, current_node_id, current_attempt_id) {
+        return None;
+    }
     let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
     let trigger = new_round_trigger_trace_ref(&rounds, current_round)?;
     let node_dsl = workflow.get_node(&trigger.step.node_id)?;
@@ -527,7 +547,8 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let new_round_trigger = build_new_round_trigger_context(app, task_id, run_id, round, workflow);
+    let new_round_trigger =
+        build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let input_attachment_paths = match session_mode {
         SessionMode::New => super::task_input_attachment_paths(app, task_id),
         SessionMode::Continue => resume_input_attachment_paths,
@@ -1373,7 +1394,7 @@ mod tests {
             .iter()
             .map(|trace_ref| format!("{}/{}", trace_ref.round_id, trace_ref.step.node_id))
             .collect::<Vec<_>>();
-        assert_eq!(locators, vec!["round-001/plan", "round-002/dev"]);
+        assert_eq!(locators, vec!["round-002/dev"]);
     }
 
     #[test]

@@ -1759,18 +1759,12 @@ fn new_round_predecessor_context_uses_stable_prefix_and_current_round() {
         .iter()
         .map(|predecessor| format!("{}/{}", predecessor.round_id, predecessor.node_id))
         .collect::<Vec<_>>();
-    assert_eq!(
-        round2_accept_predecessors,
-        vec!["round-001/plan", "round-002/dev"]
-    );
+    assert_eq!(round2_accept_predecessors, vec!["round-002/dev"]);
     assert_eq!(
         round2_accept.predecessors[0].attachments[0].name,
-        "tech-plan.md"
-    );
-    assert_eq!(
-        round2_accept.predecessors[1].attachments[0].name,
         "dev-report.md"
     );
+    assert!(round2_accept.new_round_trigger.is_none());
 }
 
 #[test]

@@ -25,6 +25,7 @@ export interface AcpSessionShellStateInput {
   baseSessionReady: boolean;
   hasLiveSessionShell: boolean;
   initialSessionLoading: boolean;
+  runtimeActive?: boolean;
 }
 
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
@@ -37,6 +38,7 @@ export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): A
   if (input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';
   if (input.hasBaseSession) return 'available';
+  if (input.runtimeActive) return 'loading';
   return 'missing';
 }
 

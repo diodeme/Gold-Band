@@ -82,6 +82,16 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('missing');
   });
 
+  it('keeps runtime-active empty session owners in loading state', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
+      runtimeActive: true,
+    })).toBe('loading');
+  });
+
   it('allows partial base sessions after startup retries are exhausted', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,

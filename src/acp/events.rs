@@ -6,6 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::artifacts::json_artifact_display_span;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
 };
@@ -797,6 +798,61 @@ pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
 }
 
+pub fn annotate_latest_runtime_control_output(
+    path: &Utf8Path,
+    artifact_name: &str,
+    kind: &str,
+) -> Result<bool> {
+    let mut items = load_timeline_items(path)?;
+    let Some(index) = items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| {
+            if item.kind != "textDelta" {
+                return None;
+            }
+            let content = item.content.as_deref()?;
+            json_artifact_display_span(content).map(|span| (index, span))
+        })
+        .map(|(index, _)| index)
+    else {
+        return Ok(false);
+    };
+
+    let content = items[index].content.as_deref().unwrap_or_default();
+    let Some(span) = json_artifact_display_span(content) else {
+        return Ok(false);
+    };
+    let display = serde_json::json!({
+        "artifactName": artifact_name,
+        "kind": kind,
+        "jsonText": span.json_text,
+        "start": utf16_index(content, span.start),
+        "end": utf16_index(content, span.end),
+        "jsonStart": utf16_index(content, span.json_start),
+        "jsonEnd": utf16_index(content, span.json_end),
+        "fenced": span.fenced,
+        "parseStatus": span.parse_status,
+    });
+
+    let item = &mut items[index];
+    let raw = item.raw.get_or_insert_with(|| serde_json::json!({}));
+    if !raw.is_object() {
+        *raw = serde_json::json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("runtimeControlOutputDisplay".to_string(), display);
+    }
+    let revision = latest_timeline_source_seq(path).saturating_add(1);
+    append_timeline_patch(path, item.id.clone(), revision, item)?;
+    Ok(true)
+}
+
+fn utf16_index(content: &str, byte_index: usize) -> usize {
+    content[..byte_index].encode_utf16().count()
+}
+
 fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
@@ -1146,12 +1202,12 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpTimingState, AcpUiEvent, append_raw_frame, append_timeline_patch,
-        elicitation_request_event, elicitation_response_event, extract_usage_fields,
-        kind_to_ui_kind, load_timeline_items, permission_request_event, user_prompt_event,
-        write_timeline_items,
+        AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
+        append_raw_frame, append_timeline_patch, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind, load_timeline_items,
+        permission_request_event, user_prompt_event, write_timeline_items,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     // --- extract_usage_fields ---
 
@@ -1634,6 +1690,109 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn annotates_latest_runtime_control_text_delta() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[
+                test_timeline_event("message-1", 10, "earlier {\"old\":true}"),
+                test_timeline_event("message-2", 20, "你好\n```json\n{\"a\":\"b\"}\n```"),
+            ],
+        )
+        .unwrap();
+
+        assert!(
+            annotate_latest_runtime_control_output(
+                &path,
+                "dynamic-node-completion",
+                "dynamic-node-completion",
+            )
+            .unwrap()
+        );
+
+        let items = load_timeline_items(&path).unwrap();
+        assert!(
+            items[0]
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+                .is_none()
+        );
+        let raw = items[1].raw.as_ref().unwrap();
+        let display = raw.get("runtimeControlOutputDisplay").unwrap();
+        assert_eq!(
+            display.get("artifactName").and_then(Value::as_str),
+            Some("dynamic-node-completion")
+        );
+        assert_eq!(
+            display.get("kind").and_then(Value::as_str),
+            Some("dynamic-node-completion")
+        );
+        assert_eq!(
+            display.get("jsonText").and_then(Value::as_str),
+            Some("{\"a\":\"b\"}")
+        );
+        assert_eq!(display.get("fenced").and_then(Value::as_bool), Some(true));
+        let start = display.get("start").and_then(Value::as_u64).unwrap() as usize;
+        let end = display.get("end").and_then(Value::as_u64).unwrap() as usize;
+        let content = items[1].content.as_ref().unwrap();
+        let display_text = content
+            .encode_utf16()
+            .skip(start)
+            .take(end - start)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            String::from_utf16(&display_text).unwrap(),
+            "```json\n{\"a\":\"b\"}\n```"
+        );
+    }
+
+    #[test]
+    fn annotates_invalid_runtime_control_text_delta() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[test_timeline_event(
+                "message-1",
+                10,
+                "修复前\n```json\n{\"a\":\"unterminated}\n```",
+            )],
+        )
+        .unwrap();
+
+        assert!(
+            annotate_latest_runtime_control_output(&path, "accept-result", "workflow-output")
+                .unwrap()
+        );
+
+        let items = load_timeline_items(&path).unwrap();
+        let display = items[0]
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+            .unwrap();
+        assert_eq!(
+            display.get("kind").and_then(Value::as_str),
+            Some("workflow-output")
+        );
+        assert_eq!(
+            display.get("parseStatus").and_then(Value::as_str),
+            Some("invalid")
+        );
+        assert_eq!(
+            display.get("jsonText").and_then(Value::as_str),
+            Some("{\"a\":\"unterminated}")
+        );
+        assert_eq!(display.get("fenced").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

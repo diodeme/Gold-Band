@@ -12,6 +12,7 @@ import {
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
   reconcileAcpSessionForDisplay,
+  runtimeControlMessageParts,
   isAcpSessionReadyForInitialDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
@@ -358,6 +359,111 @@ describe('ACP chat event handling', () => {
     expect(latestSessionTimingFromEvents(updates)?.sessionElapsedSeconds).toBe(13);
     expect(liveTimelineUpdatesFromEvents(updates).map((update) => update.kind)).toEqual([
       'textDelta',
+    ]);
+  });
+
+  it('splits marked fenced runtime control JSON from assistant text', () => {
+    const content = 'hello!\n```json\n{"a":"b"}\n```';
+    const parts = runtimeControlMessageParts(event({
+      kind: 'textDelta',
+      content,
+      raw: {
+        runtimeControlOutputDisplay: {
+          kind: 'workflow-output',
+          artifactName: 'accept-result',
+          jsonText: '{"a":"b"}',
+          start: content.indexOf('```json'),
+          end: content.length,
+          fenced: true,
+          parseStatus: 'valid',
+        },
+      },
+    }));
+
+    expect(parts.visibleText).toBe('hello!');
+    expect(parts.display?.jsonText).toBe('{"a":"b"}');
+  });
+
+  it('splits marked bare runtime control JSON from assistant text', () => {
+    const content = 'hello!\n{"a":"b"}';
+    const parts = runtimeControlMessageParts(event({
+      kind: 'textDelta',
+      content,
+      raw: {
+        runtimeControlOutputDisplay: {
+          kind: 'dynamic-node-completion',
+          artifactName: 'dynamic-node-completion',
+          jsonText: '{"a":"b"}',
+          start: content.indexOf('{'),
+          end: content.length,
+          fenced: false,
+          parseStatus: 'valid',
+        },
+      },
+    }));
+
+    expect(parts.visibleText).toBe('hello!');
+    expect(parts.display?.kind).toBe('dynamic-node-completion');
+  });
+
+  it('hides the message bubble text when marked runtime control output is only JSON', () => {
+    const content = '{"a":"b"}';
+    const parts = runtimeControlMessageParts(event({
+      kind: 'textDelta',
+      content,
+      raw: {
+        runtimeControlOutputDisplay: {
+          kind: 'workflow-output',
+          artifactName: 'test-result',
+          jsonText: content,
+          start: 0,
+          end: content.length,
+          parseStatus: 'valid',
+        },
+      },
+    }));
+
+    expect(parts.visibleText).toBe('');
+    expect(parts.display?.jsonText).toBe(content);
+  });
+
+  it('does not split unmarked assistant JSON', () => {
+    const content = 'hello!\n{"a":"b"}';
+    const parts = runtimeControlMessageParts(event({
+      kind: 'textDelta',
+      content,
+    }));
+
+    expect(parts.display).toBeNull();
+    expect(parts.visibleText).toBe(content);
+  });
+
+  it('splits every marked runtime repair attempt independently', () => {
+    const attempts = ['A', 'B', 'C'].map((label, index) => {
+      const content = `${label}\n{"try":${index + 1}}`;
+      return runtimeControlMessageParts(event({
+        id: `assistant-${label}`,
+        seq: 20 + index,
+        kind: 'textDelta',
+        content,
+        raw: {
+          runtimeControlOutputDisplay: {
+            kind: 'dynamic-node-completion',
+            artifactName: 'dynamic-node-completion',
+            jsonText: `{"try":${index + 1}}`,
+            start: content.indexOf('{'),
+            end: content.length,
+            parseStatus: 'valid',
+          },
+        },
+      }));
+    });
+
+    expect(attempts.map((parts) => parts.visibleText)).toEqual(['A', 'B', 'C']);
+    expect(attempts.map((parts) => parts.display?.jsonText)).toEqual([
+      '{"try":1}',
+      '{"try":2}',
+      '{"try":3}',
     ]);
   });
 

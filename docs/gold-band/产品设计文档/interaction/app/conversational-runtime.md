@@ -283,3 +283,12 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 参数按来源优先级提取：rawInput > 结构化 fields > title/locations 解析
 - 同标签参数保留多个不同值（如多个路径、多个查询条件）
 - 语义化参数缺失时回退展示原始输入 JSON
+
+## Runtime Control JSON 展示
+
+- Runtime output contract 或 AI-DYNAMIC completion 被后端实际消费为控制 JSON 后，后端会在对应 ACP `textDelta` timeline item 的 `raw.runtimeControlOutputDisplay` 中写入展示标记；前端只消费该标记，不按消息内容全局猜测 JSON。
+- 带标记的 assistant 消息如果同时包含自然语言和控制 JSON，自然语言继续作为普通 assistant 消息气泡展示，控制 JSON 单独展示为 `GOLD BAND 工作流控制` 折叠控制条。
+- 带标记的 assistant 消息如果仅包含控制 JSON，不展示普通消息气泡，只展示折叠控制条。
+- runtime 已将输出作为控制候选处理但 JSON 不合法时，也会写入 `parseStatus=invalid` 展示标记；这类消息同样拆分展示为自然语言 + 控制条，展开后展示原始 JSON-like 内容。
+- 未带标记的 assistant JSON 始终按普通 Markdown 消息展示，包括节点完成后的普通追问、用户要求 agent 输出的业务 JSON、调试说明和代码示例。
+- 控制条视觉参考 tool call 的紧凑结构；`parseStatus=valid` 使用 Gold Band 主色和控制清单图标弱强调，`parseStatus=invalid` 使用告警色和告警图标弱强调。收起态只保留单行控制条，展示标题、路由语义和 artifact 名称，不展示 JSON 预览；展开后在控制条下方展示完整格式化 JSON。

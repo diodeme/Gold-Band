@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use tracing::warn;
 
+use crate::acp::events::annotate_latest_runtime_control_output;
 use crate::artifacts::parse_json_artifact;
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
@@ -917,6 +918,16 @@ pub(crate) fn finalize_ai_attempt(
             if let Some(payload) = result.result_payload {
                 if let Some(output_artifact) = payload.output_artifact {
                     if !output_artifact.content.trim().is_empty() {
+                        annotate_runtime_control_output_best_effort(
+                            app,
+                            task_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            &output_artifact.name,
+                            "workflow-output",
+                        );
                         let artifact_path = app.paths.artifact_file(
                             task_id,
                             run_id,
@@ -975,6 +986,33 @@ pub(crate) fn finalize_ai_attempt(
     }
     validate_node_state(&node)?;
     Ok(node)
+}
+
+fn annotate_runtime_control_output_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    artifact_name: &str,
+    kind: &str,
+) {
+    let path = app
+        .paths
+        .acp_timeline_file(task_id, run_id, round_id, node_id, attempt_id);
+    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+        warn!(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            artifact_name,
+            error = %error,
+            "failed to annotate runtime control output display"
+        );
+    }
 }
 
 pub(crate) fn re_evaluate_attempt(
@@ -1120,6 +1158,109 @@ mod tests {
             error
                 .to_string()
                 .contains("provider failed before business result")
+        );
+    }
+
+    #[test]
+    fn finalize_ai_attempt_marks_invalid_runtime_control_output() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path"),
+            crate::config::RuntimeConfig::default(),
+        );
+        let content = "好的\n```json\n{\"reason\":\"unterminated,\"result\":true}\n```";
+        let timeline_path = app.paths.acp_timeline_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        crate::acp::events::write_timeline_items(
+            &timeline_path,
+            &[crate::acp::events::AcpUiEvent {
+                id: "assistant-message-1".to_string(),
+                seq: 10,
+                timestamp: "10Z".to_string(),
+                kind: "textDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some(content.to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: Some(10),
+                ended_seq: Some(10),
+                started_at: Some("10Z".to_string()),
+                ended_at: Some("10Z".to_string()),
+                timing: None,
+                raw: None,
+            }],
+        )
+        .unwrap();
+        let mut resolved_config = crate::domain::ResolvedConfig::new();
+        resolved_config.insert(
+            "outputArtifact".to_string(),
+            serde_json::Value::String("node-result".to_string()),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "node-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config,
+            uuid: None,
+        };
+        let result = ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: None,
+            result_payload: Some(crate::provider::ProviderResultPayload {
+                output_artifact: Some(crate::provider::OutputArtifactPayload {
+                    name: "node-result".to_string(),
+                    content: content.to_string(),
+                }),
+            }),
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: None,
+        };
+
+        let node = finalize_ai_attempt(
+            &app,
+            "task-001",
+            "run-001",
+            "round-001",
+            "attempt-001",
+            "node-001",
+            node,
+            result,
+        )
+        .expect("attempt should finalize as invalid business output");
+
+        assert_eq!(node.outcome, Some(NodeOutcome::Invalid));
+        let items = crate::acp::events::load_timeline_items(&timeline_path).unwrap();
+        let display = items[0]
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+            .unwrap();
+        assert_eq!(
+            display
+                .get("artifactName")
+                .and_then(serde_json::Value::as_str),
+            Some("node-result")
+        );
+        assert_eq!(
+            display
+                .get("parseStatus")
+                .and_then(serde_json::Value::as_str),
+            Some("invalid")
         );
     }
 

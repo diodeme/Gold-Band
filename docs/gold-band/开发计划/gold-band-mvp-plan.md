@@ -83,6 +83,7 @@
 - 2026-07-08：默认工作流的 `accept.failure -> $new-round` 起点从 `$entry` 调整为 `dev`，避免验收失败后重复执行方案节点；默认 workflow 节点 goal 改为按桌面语言生成中英文文案，不再硬编码英文。
 - 2026-07-08：工作流控制默认分支语义调整：节点产生 `success` 或 `failure` 后若没有匹配同类型 edge，runtime 不再进入 `error-blocked`，而是等价于隐式指向 `$end`，按当前 outcome 完成 run；显式 edge 仍优先。
 - 2026-07-07：作者态工作流入口改为由画布拓扑自动派生：没有普通入边的真实节点显示“入口”标识；唯一入口候选自动写入 `workflow.entry`，多个或零个入口候选会阻止保存。`new_round_entry` 仅表示下一轮 Round 起点，不参与初始入口推导，也不会在拖线到 `$new-round` 时自动补默认值。
+- 2026-07-09：作者态入口推导验收修正：failure 回退边指回 success 主链前序节点时不再计入初始入口入边，避免“开发 -> 测试 -> 验收，测试失败回开发”这类合法工作流被误判为没有入口；非回退的前向 failure 分支仍计入入边，防止分支节点被误识别为第二入口。
 - 2026-07-07：作者态工作流画布自动整形改为使用 success 主链拓扑顺序，不再用 `workflow.nodes` 数组追加顺序判断边是否回退；后追加的前置入口节点连到原入口后会排到主链前方，failure 边继续作为分支/回退线。
 - 2026-07-08：多 round 会话上下文收敛：会话树每个 round 的节点顺序优先使用 `round.json.trace.sequence`，不再受 `workflow.nodes` 数组顺序影响；普通 worker hidden runtime context 的 predecessor 默认只包含当前 round 已执行节点，只有 `$new-round` 入口节点额外包含本轮起点之前的稳定前缀节点；附件 locator 带 `round/node/attempt`，中文 hidden context 标题完成本地化。
 - 2026-07-08：`$new-round` 首节点的 hidden context 新增进入本轮的触发原因：上一 round 最后触发 `$new-round` 的节点不进入 predecessor chain，但其 output artifact、预览和 attachments 会出现在入口节点的“最新前序流转原因”，用于让本轮入口节点理解为什么需要重做；本轮后续节点不继续携带该触发原因或历史稳定前缀。

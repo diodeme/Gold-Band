@@ -55,6 +55,43 @@ describe('WorkflowEditor new round entry validation', () => {
     expect(validation.sanitizedWorkflow.entry).toBe('plan');
   });
 
+  it('accepts a failure back edge into the initial entry node', () => {
+    const validation = validate({
+      version: '0.1',
+      id: 'failure-back-edge-entry',
+      entry: 'dev',
+      control: {},
+      nodes: [worker('dev'), worker('test'), worker('accept')],
+      edges: [
+        { from: 'dev', to: 'test', on: 'success' },
+        { from: 'test', to: 'accept', on: 'success' },
+        { from: 'test', to: 'dev', on: 'failure' },
+        { from: 'accept', to: '$end', on: 'success' },
+      ],
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.sanitizedWorkflow.entry).toBe('dev');
+  });
+
+  it('counts a forward failure branch as an ordinary incoming edge', () => {
+    const validation = validate({
+      version: '0.1',
+      id: 'forward-failure-branch-entry',
+      entry: 'dev',
+      control: {},
+      nodes: [worker('dev'), worker('fallback')],
+      edges: [
+        { from: 'dev', to: '$end', on: 'success' },
+        { from: 'dev', to: 'fallback', on: 'failure' },
+        { from: 'fallback', to: '$end', on: 'success' },
+      ],
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.sanitizedWorkflow.entry).toBe('dev');
+  });
+
   it('rejects multiple nodes without ordinary incoming edges', () => {
     const validation = validate({
       version: '0.1',

@@ -29,6 +29,7 @@ import {
   collectAuthoringNodes,
   workflowSuccessTopologyOrder,
   computeBackwardLanes,
+  isBackwardEdge,
   authoringEdgeColor,
   layoutSuccessPath,
   topLeft,
@@ -1827,9 +1828,12 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
 
 export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nodes' | 'edges'>): string[] {
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
+  const nodeOrder = workflowSuccessTopologyOrder({ ...workflow, entry: '' });
   const incomingNodeIds = new Set<string>();
   workflow.edges.forEach((edge) => {
-    if (nodeIds.has(edge.from) && nodeIds.has(edge.to)) incomingNodeIds.add(edge.to);
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return;
+    if (edge.on !== 'success' && isBackwardEdge(edge.from, edge.to, nodeOrder)) return;
+    incomingNodeIds.add(edge.to);
   });
   return workflow.nodes
     .map((node) => node.id)

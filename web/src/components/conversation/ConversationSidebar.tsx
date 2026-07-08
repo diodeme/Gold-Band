@@ -52,7 +52,8 @@ export function ConversationSidebar({
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
-  const [expandedTaskKey, setExpandedTaskKey] = useState<string | null>(null);
+  const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
+  const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') return pref;
@@ -67,6 +68,7 @@ export function ConversationSidebar({
   }, [vm.preferences]);
 
   const prevExpandTargetRef = useRef<string | null>(null);
+  const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
 
   useEffect(() => {
     const targetWorkspaceId: string | null = active.kind === 'conversation-run'
@@ -113,20 +115,38 @@ export function ConversationSidebar({
     : null;
 
   useEffect(() => {
-    if (activeTaskKey) setExpandedTaskKey(activeTaskKey);
+    if (!activeTaskKey) return;
+    const interactionScope = runListInteractionScopeRef.current;
+    runListInteractionScopeRef.current = null;
+    if (interactionScope === 'pinned') return;
+    setExpandedTaskKeys((prev) => prev.workspace === activeTaskKey
+      ? prev
+      : updateConversationSidebarExpandedTaskKeys(prev, 'workspace', activeTaskKey, 'expand'));
   }, [activeTaskKey]);
 
   const toggleWorkspace = (projectId: string) => {
     setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
 
-  const toggleTaskRuns = (projectId: string, taskId: string) => {
-    const taskKey = conversationSidebarTaskKey(projectId, taskId);
-    setExpandedTaskKey((prev) => (prev === taskKey ? null : taskKey));
+  const markRunListInteraction = (scope: ConversationSidebarRunListScope) => {
+    runListInteractionScopeRef.current = scope;
+    setActiveRunListScope(scope);
   };
 
-  const expandTaskRuns = (projectId: string, taskId: string) => {
-    setExpandedTaskKey(conversationSidebarTaskKey(projectId, taskId));
+  const toggleTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
+    const taskKey = conversationSidebarTaskKey(projectId, taskId);
+    markRunListInteraction(scope);
+    setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(prev, scope, taskKey, 'toggle'));
+  };
+
+  const expandTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
+    markRunListInteraction(scope);
+    setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(
+      prev,
+      scope,
+      conversationSidebarTaskKey(projectId, taskId),
+      'expand',
+    ));
   };
 
   return (
@@ -212,13 +232,16 @@ export function ConversationSidebar({
                               key={`pinned-${task.projectId}-${task.taskId}`}
                               task={task}
                               pinned
-                              isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                              activeRunKey={activeRunKey}
-                              expanded={expandedTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId)}
+                              isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                              activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
+                              expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId)}
                               onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                              onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
-                              onToggleRuns={() => toggleTaskRuns(task.projectId, task.taskId)}
-                              onExpandRuns={() => expandTaskRuns(task.projectId, task.taskId)}
+                              onSelectRun={(runId) => {
+                                markRunListInteraction('pinned');
+                                onSelectRun(task.projectId, task.taskId, runId);
+                              }}
+                              onToggleRuns={() => toggleTaskRuns('pinned', task.projectId, task.taskId)}
+                              onExpandRuns={() => expandTaskRuns('pinned', task.projectId, task.taskId)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
                               onDelete={() => onDeleteTask(task.projectId, task.taskId)}
@@ -272,13 +295,16 @@ export function ConversationSidebar({
                         key={`${task.projectId}-${task.taskId}`}
                         task={task}
                         pinned={vm.pinnedTasks.some((p) => p.projectId === task.projectId && p.taskId === task.taskId)}
-                        isActive={active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                        activeRunKey={activeRunKey}
-                        expanded={expandedTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId)}
+                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                        activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
+                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
                         onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                        onSelectRun={(runId) => onSelectRun(task.projectId, task.taskId, runId)}
-                        onToggleRuns={() => toggleTaskRuns(task.projectId, task.taskId)}
-                        onExpandRuns={() => expandTaskRuns(task.projectId, task.taskId)}
+                        onSelectRun={(runId) => {
+                          markRunListInteraction('workspace');
+                          onSelectRun(task.projectId, task.taskId, runId);
+                        }}
+                        onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
+                        onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
@@ -348,6 +374,31 @@ export function selectConversationSidebarRunPauseAction(
 
 export function canOpenConversationSidebarRunMenu(scope: 'task' | 'run') {
   return scope === 'run';
+}
+
+export function shouldShowConversationSidebarRunList(task: { runs: unknown[] }) {
+  return task.runs.length >= 1;
+}
+
+export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
+
+export type ConversationSidebarExpandedTaskKeys = Record<ConversationSidebarRunListScope, string | null>;
+
+export function updateConversationSidebarExpandedTaskKeys(
+  current: ConversationSidebarExpandedTaskKeys,
+  scope: ConversationSidebarRunListScope,
+  taskKey: string,
+  mode: 'expand' | 'toggle',
+): ConversationSidebarExpandedTaskKeys {
+  const nextKey = mode === 'toggle' && current[scope] === taskKey ? null : taskKey;
+  return { ...current, [scope]: nextKey };
+}
+
+export function isConversationSidebarRunListScopeActive(
+  scope: ConversationSidebarRunListScope,
+  activeScope: ConversationSidebarRunListScope,
+) {
+  return scope === activeScope;
 }
 
 function RunStopMenu({
@@ -427,7 +478,7 @@ function TaskRow({
   const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
-  const hasMultipleRuns = task.runs.length > 1;
+  const hasRuns = shouldShowConversationSidebarRunList(task);
 
   const latestRun = task.latestRun;
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
@@ -436,7 +487,7 @@ function TaskRow({
     : null;
 
   const handleRowClick = () => {
-    if (hasMultipleRuns) {
+    if (hasRuns) {
       if (isActive) {
         // Already viewing a run of this task — just toggle expand, don't re-navigate
         onToggleRuns();
@@ -530,9 +581,9 @@ function TaskRow({
 
   return (
     <>
-    <div className={cn(expanded && hasMultipleRuns && 'space-y-1')}>
+    <div className={cn(expanded && hasRuns && 'space-y-1')}>
       {taskRow}
-      {expanded && hasMultipleRuns ? (
+      {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
             const color = runStatusColor(run);

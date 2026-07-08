@@ -216,6 +216,9 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - composer 内也有 stop 按钮（ACP 会话停止）
 - composer 内的 ACP 停止表示“中断当前响应”，不是 workflow 配置错误；停止后的 attempt 应显示为可继续暂停
 - 会话内停止使用 `stop_active_session` 单一路径；旧 UI Run 停止与新 UI 侧边栏 run 右键“停止”使用 `pause_run`。新 UI 侧边栏停止菜单只挂在具体 run 行，不挂在任务/需求标题行；菜单打开和菜单内容二次右键都必须阻止 WebView 原生右键菜单。二者共享普通中断语义但作用域不同：`stop_active_session` 只停止当前 leaf/session，AI-DYNAMIC fan-out 中不会拖停兄弟 leaf；`pause_run` 停止整个 run，会把该 run 下所有 active leaf 一起写成 `paused + process-interrupted` 并分别发送 `session/cancel`。若运行线程控制句柄不可用，则通过 live ACP connection registry 对目标 attempt 的真实 ACP session 发 best-effort `session/cancel`。活跃 ACP runtime 不因 cancel notification 已发出就立刻退出，而是继续 drain 当前 `session/prompt`；cancel timeout 必须暴露为明确错误，不能 kill adapter 伪装成功。停止不是 kill run，不能把 run/round/node/dynamic node 写成 `killed`。
+- 新 UI 侧边栏 task 只要存在 run，就必须展示 run 子列表；只有一个 run 时也展示 `run-001` 行，确保右键停止菜单始终挂在具体 run 行上，而不是回退到 task 行。
+- 新 UI 侧边栏的置顶区与普通工作区是两个独立的列表区域；同一会话同时出现在两处时，run 子列表开合状态必须按区域隔离。置顶区内部一次只展开一个会话实例，普通工作区内部一次只展开一个会话实例，点击其中一区不得联动展开另一区的同一 task。
+- 新 UI 侧边栏的选中高亮同样按区域隔离；同一会话同时出现在置顶区与普通工作区时，只高亮用户最后交互的那个区域实例，另一处保持普通展示，避免用户误判两处列表被同步选中。
 - 停止期间会话窗口显示全局“正在停止”遮罩，停止正常交互与流式观感；后端只合并已经进入 ACP runtime channel 的事件，不再等待额外文件信号。命令返回后前端按后端 lifecycle 和最终 snapshot 对齐已确认消息。侧边栏 run 级“停止”点击后也必须立即关闭菜单并展示页面级“正在停止当前运行”遮罩；遮罩不只跟随 `pause_run` 命令返回，而是等当前 run VM 刷新确认 run 非 running、active sessions 清空且选中 ACP session 已 terminal 后再消失，避免用户误以为操作没有生效。
 - 关闭客户端和启动时崩溃恢复与用户停止共享同一 interruption 语义：所有仍为 running 的 run、当前 node 和 AI-DYNAMIC descendants 都收敛为 `paused + process-interrupted`。`provider.pid` 不参与业务状态判断，只能作为 adapter process metadata 用于诊断和 orphan cleanup。
 - 停止请求一旦落盘，迟到的普通 ACP success response 不能写 success artifact，也不能驱动 workflow 跳到下一节点；runtime 必须在 provider 返回后重新确认当前 attempt 仍是 running/current，确认已暂停则直接停止推进。唯一例外是 AI-DYNAMIC worker 已经返回完整且合法的 `dynamic-node-completion`：这属于业务结果已完成但 stop 先被 ACP 观察到的竞态，应按完成优先接受并继续 graph 推进；非法/不完整 completion 不进入该例外。

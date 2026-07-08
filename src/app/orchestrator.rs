@@ -91,6 +91,19 @@ struct NextExecution {
     continue_ref: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone)]
+struct AcpInvocationPromptState {
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+    resume_prompt: Option<String>,
+    resume_prompt_id: Option<String>,
+    resume_prompt_visibility: PromptVisibility,
+    user_prompt_render_mode: UserPromptRenderMode,
+    input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+}
+
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
@@ -221,26 +234,76 @@ fn localized_continue_prompt(language: DesktopLanguage) -> String {
     }
 }
 
-fn continue_prompt_or_default(language: DesktopLanguage, prompt: Option<String>) -> String {
-    prompt
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| localized_continue_prompt(language))
-}
-
-fn user_prompt_render_mode_for_continue(prompt: Option<&str>) -> UserPromptRenderMode {
-    if prompt.is_some_and(|value| !value.trim().is_empty()) {
-        UserPromptRenderMode::UserMessage
-    } else {
-        UserPromptRenderMode::WorkflowResume
-    }
-}
-
-fn workflow_user_prompt_render_mode_for_session(session_mode: SessionMode) -> UserPromptRenderMode {
+fn default_user_prompt_render_mode_for_session(session_mode: SessionMode) -> UserPromptRenderMode {
     match session_mode {
         SessionMode::New => UserPromptRenderMode::RequirementTask,
         SessionMode::Continue => UserPromptRenderMode::WorkflowResume,
     }
+}
+
+fn acp_invocation_prompt_state(
+    language: DesktopLanguage,
+    session_mode: SessionMode,
+    continue_ref: Option<serde_json::Value>,
+) -> AcpInvocationPromptState {
+    AcpInvocationPromptState {
+        session_mode,
+        continue_ref,
+        resume_prompt: matches!(session_mode, SessionMode::Continue)
+            .then(|| localized_continue_prompt(language)),
+        resume_prompt_id: None,
+        resume_prompt_visibility: PromptVisibility::Visible,
+        user_prompt_render_mode: default_user_prompt_render_mode_for_session(session_mode),
+        input_attachment_paths: Vec::new(),
+        model_override: None,
+        permission_mode_override: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_continue_input_to_prompt_state(
+    state: &mut AcpInvocationPromptState,
+    prompt: Option<String>,
+    prompt_id: Option<String>,
+    input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+) {
+    state.resume_prompt_id = prompt_id;
+    state.input_attachment_paths = input_attachment_paths;
+    state.model_override = model_override;
+    state.permission_mode_override = permission_mode_override;
+
+    if let Some(prompt) = prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        state.resume_prompt = Some(prompt);
+        state.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn acp_invocation_prompt_state_for_continue_input(
+    language: DesktopLanguage,
+    continue_ref: serde_json::Value,
+    prompt: Option<String>,
+    prompt_id: Option<String>,
+    input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+) -> AcpInvocationPromptState {
+    let mut state =
+        acp_invocation_prompt_state(language, SessionMode::Continue, Some(continue_ref));
+    apply_continue_input_to_prompt_state(
+        &mut state,
+        prompt,
+        prompt_id,
+        input_attachment_paths,
+        model_override,
+        permission_mode_override,
+    );
+    state
 }
 
 fn output_schema_for_node<'a>(
@@ -801,8 +864,11 @@ pub(crate) fn run_continue(
         initial_resume_prompt,
         initial_resume_prompt_id,
         initial_user_prompt_render_mode,
+        initial_resume_input_attachment_paths,
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
+        initial_model_override,
+        initial_permission_mode_override,
     ) = match node.status {
         RunStatus::Paused => {
             if !is_run_continuable(&run) {
@@ -811,20 +877,38 @@ pub(crate) fn run_continue(
             if node.manual_check_pending {
                 bail!("current attempt is waiting for manual check");
             }
-            let user_prompt_render_mode = user_prompt_render_mode_for_continue(prompt.as_deref());
             match validated.get_node(&node.node_id) {
                 Some(NodeDsl::AiDynamic(_)) => {
                     let parent_continue_prompt = prompt
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty());
-                    (
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    let mut prompt_state = acp_invocation_prompt_state(
+                        app.config.desktop_language,
                         SessionMode::Continue,
                         None,
-                        None,
-                        None,
-                        user_prompt_render_mode,
-                        parent_continue_prompt,
+                    );
+                    apply_continue_input_to_prompt_state(
+                        &mut prompt_state,
+                        prompt,
                         prompt_id,
+                        attachment_paths,
+                        model_override,
+                        permission_mode_override,
+                    );
+                    let parent_continue_prompt_id = prompt_state.resume_prompt_id.clone();
+                    (
+                        prompt_state.session_mode,
+                        prompt_state.continue_ref,
+                        prompt_state.resume_prompt,
+                        prompt_state.resume_prompt_id,
+                        prompt_state.user_prompt_render_mode,
+                        prompt_state.input_attachment_paths,
+                        parent_continue_prompt,
+                        parent_continue_prompt_id,
+                        prompt_state.model_override,
+                        prompt_state.permission_mode_override,
                     )
                 }
                 _ => {
@@ -839,16 +923,26 @@ pub(crate) fn run_continue(
                     .ok_or_else(|| {
                         anyhow::anyhow!("current attempt has no ACP continue reference")
                     })?;
-                    let resume_prompt =
-                        continue_prompt_or_default(app.config.desktop_language, prompt);
-                    (
-                        SessionMode::Continue,
-                        Some(continue_ref),
-                        Some(resume_prompt),
+                    let prompt_state = acp_invocation_prompt_state_for_continue_input(
+                        app.config.desktop_language,
+                        continue_ref,
+                        prompt,
                         prompt_id,
-                        user_prompt_render_mode,
+                        attachment_paths,
+                        model_override,
+                        permission_mode_override,
+                    );
+                    (
+                        prompt_state.session_mode,
+                        prompt_state.continue_ref,
+                        prompt_state.resume_prompt,
+                        prompt_state.resume_prompt_id,
+                        prompt_state.user_prompt_render_mode,
+                        prompt_state.input_attachment_paths,
                         None,
                         None,
+                        prompt_state.model_override,
+                        prompt_state.permission_mode_override,
                     )
                 }
             }
@@ -861,6 +955,9 @@ pub(crate) fn run_continue(
                 None,
                 None,
                 UserPromptRenderMode::RequirementTask,
+                Vec::new(),
+                None,
+                None,
                 None,
                 None,
             )
@@ -881,12 +978,12 @@ pub(crate) fn run_continue(
         initial_resume_prompt,
         initial_resume_prompt_id,
         initial_user_prompt_render_mode,
-        attachment_paths,
+        initial_resume_input_attachment_paths,
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
         None,
-        model_override,
-        permission_mode_override,
+        initial_model_override,
+        initial_permission_mode_override,
     )?;
     Ok(run)
 }
@@ -938,8 +1035,17 @@ pub(crate) fn run_continue_dynamic_inner(
         outer_node_id,
         outer_attempt_id,
     ))?;
-    let user_prompt_render_mode = user_prompt_render_mode_for_continue(Some(prompt.as_str()));
     let resume_prompt = prompt.trim().to_string();
+    let mut prompt_state =
+        acp_invocation_prompt_state(app.config.desktop_language, SessionMode::Continue, None);
+    apply_continue_input_to_prompt_state(
+        &mut prompt_state,
+        Some(resume_prompt.clone()),
+        prompt_id.clone(),
+        Vec::new(),
+        None,
+        None,
+    );
     let resume_override = DynamicResumeOverride {
         node_id: dynamic_node_id.to_string(),
         attempt_id: dynamic_attempt_id.to_string(),
@@ -1005,17 +1111,17 @@ pub(crate) fn run_continue_dynamic_inner(
         &mut run,
         &mut round,
         outer_node,
-        SessionMode::Continue,
-        None,
-        None,
-        None,
-        user_prompt_render_mode,
-        Vec::new(),
+        prompt_state.session_mode,
+        prompt_state.continue_ref,
+        prompt_state.resume_prompt,
+        prompt_state.resume_prompt_id,
+        prompt_state.user_prompt_render_mode,
+        prompt_state.input_attachment_paths,
         None,
         None,
         Some(resume_override),
-        None,
-        None,
+        prompt_state.model_override,
+        prompt_state.permission_mode_override,
     );
     if drive_result.is_err() {
         let key =
@@ -1260,6 +1366,11 @@ pub(crate) fn submit_manual_check(
         &node,
         decision,
     )? {
+        let prompt_state = acp_invocation_prompt_state(
+            app.config.desktop_language,
+            next.session_mode,
+            next.continue_ref,
+        );
         drive_from_node_with_initial_session(
             app,
             task_id,
@@ -1268,17 +1379,17 @@ pub(crate) fn submit_manual_check(
             &mut run,
             &mut round,
             next.node,
-            next.session_mode,
-            next.continue_ref,
-            None,
-            None,
-            workflow_user_prompt_render_mode_for_session(next.session_mode),
-            Vec::new(),
-            None,
-            None,
+            prompt_state.session_mode,
+            prompt_state.continue_ref,
+            prompt_state.resume_prompt,
+            prompt_state.resume_prompt_id,
+            prompt_state.user_prompt_render_mode,
+            prompt_state.input_attachment_paths,
             None,
             None,
             None,
+            prompt_state.model_override,
+            prompt_state.permission_mode_override,
         )?;
     }
     Ok(run)
@@ -4460,7 +4571,7 @@ fn execute_dynamic_worker(
             "continueFromNodeId": node.continue_from_node_id,
         }),
     );
-    let mut continue_ref = match node.session_mode {
+    let continue_ref = match node.session_mode {
         SessionMode::Continue => node
             .continue_from_node_id
             .as_deref()
@@ -4479,20 +4590,13 @@ fn execute_dynamic_worker(
             "hasContinueRef": continue_ref.is_some(),
         }),
     );
-    let mut session_mode = if continue_ref.is_some() {
+    let session_mode = if continue_ref.is_some() {
         SessionMode::Continue
     } else {
         SessionMode::New
     };
-    let mut resume_prompt = if continue_ref.is_some() {
-        Some(localized_continue_prompt(ctx.app.config.desktop_language))
-    } else {
-        None
-    };
-    let mut resume_prompt_id = None;
-    let mut resume_input_attachment_paths = Vec::new();
-    let mut resume_model_override = None;
-    let mut resume_permission_mode_override = None;
+    let mut prompt_state =
+        acp_invocation_prompt_state(ctx.app.config.desktop_language, session_mode, continue_ref);
     if let Some(resume) = ctx
         .resume_override
         .as_ref()
@@ -4504,20 +4608,25 @@ fn execute_dynamic_worker(
                 node.id
             )));
         };
-        continue_ref = Some(saved_continue_ref);
-        session_mode = SessionMode::Continue;
-        resume_prompt = Some(resume.prompt.clone());
-        resume_prompt_id = resume.prompt_id.clone();
-        resume_input_attachment_paths = resume.attachment_paths.clone();
-        resume_model_override = resume.model_override.clone();
-        resume_permission_mode_override = resume.permission_mode_override.clone();
+        prompt_state = acp_invocation_prompt_state_for_continue_input(
+            ctx.app.config.desktop_language,
+            saved_continue_ref,
+            Some(resume.prompt.clone()),
+            resume.prompt_id.clone(),
+            resume.attachment_paths.clone(),
+            resume.model_override.clone(),
+            resume.permission_mode_override.clone(),
+        );
     }
+    let mut session_mode = prompt_state.session_mode;
+    let mut continue_ref = prompt_state.continue_ref;
+    let mut resume_prompt = prompt_state.resume_prompt;
+    let mut resume_prompt_id = prompt_state.resume_prompt_id;
     let mut resume_prompt_visibility = PromptVisibility::Visible;
-    let mut user_prompt_render_mode = if let Some(resume) = ctx.resume_override.as_ref() {
-        user_prompt_render_mode_for_continue(Some(resume.prompt.as_str()))
-    } else {
-        workflow_user_prompt_render_mode_for_session(session_mode)
-    };
+    let mut user_prompt_render_mode = prompt_state.user_prompt_render_mode;
+    let resume_input_attachment_paths = prompt_state.input_attachment_paths;
+    let mut resume_model_override = prompt_state.model_override;
+    let mut resume_permission_mode_override = prompt_state.permission_mode_override;
     let mut proposals = Vec::new();
 
     loop {
@@ -4914,11 +5023,29 @@ fn execute_dynamic_agent_stage(
     } else {
         SessionMode::New
     };
-    let resume_prompt = if continue_ref.is_some() {
-        Some(localized_continue_prompt(ctx.app.config.desktop_language))
-    } else {
-        None
-    };
+    let mut prompt_state =
+        acp_invocation_prompt_state(ctx.app.config.desktop_language, session_mode, continue_ref);
+    if let Some(resume) = ctx
+        .resume_override
+        .as_ref()
+        .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
+    {
+        let Some(saved_continue_ref) = dynamic_node_continue_ref(ctx, &node, &attempt_id) else {
+            return Err(blocked_runtime_error(format!(
+                "dynamic node `{}` has no ACP continue reference",
+                node.id
+            )));
+        };
+        prompt_state = acp_invocation_prompt_state_for_continue_input(
+            ctx.app.config.desktop_language,
+            saved_continue_ref,
+            Some(resume.prompt.clone()),
+            resume.prompt_id.clone(),
+            resume.attachment_paths.clone(),
+            resume.model_override.clone(),
+            resume.permission_mode_override.clone(),
+        );
+    }
     let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
     let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
     let session_update = ctx.app.acp_session_update_for(live_update_context);
@@ -4929,7 +5056,7 @@ fn execute_dynamic_agent_stage(
         serde_json::json!({
             "nodeId": node.id,
             "kind": node.kind,
-            "sessionMode": session_mode,
+            "sessionMode": prompt_state.session_mode,
             "providerId": node.provider.clone(),
             "model": node.model.clone(),
         }),
@@ -4940,15 +5067,15 @@ fn execute_dynamic_agent_stage(
         &node,
         &attempt_id,
         None,
-        session_mode,
-        continue_ref,
-        resume_prompt,
-        None,
-        PromptVisibility::Visible,
-        workflow_user_prompt_render_mode_for_session(session_mode),
-        Vec::new(),
-        None,
-        None,
+        prompt_state.session_mode,
+        prompt_state.continue_ref.clone(),
+        prompt_state.resume_prompt.clone(),
+        prompt_state.resume_prompt_id.clone(),
+        prompt_state.resume_prompt_visibility,
+        prompt_state.user_prompt_render_mode,
+        prompt_state.input_attachment_paths.clone(),
+        prompt_state.model_override.clone(),
+        prompt_state.permission_mode_override.clone(),
     )?;
     dynamic_event_best_effort(
         ctx,
@@ -4957,7 +5084,7 @@ fn execute_dynamic_agent_stage(
             "nodeId": node.id,
             "kind": node.kind,
             "elapsedMs": elapsed_ms(invocation_build_started_at),
-            "sessionMode": session_mode,
+            "sessionMode": prompt_state.session_mode,
             "providerId": node.provider.clone(),
             "model": node.model.clone(),
         }),
@@ -4985,7 +5112,7 @@ fn execute_dynamic_agent_stage(
         serde_json::json!({
             "nodeId": node.id,
             "kind": node.kind,
-            "sessionMode": session_mode,
+            "sessionMode": prompt_state.session_mode,
             "providerId": provider_id,
             "model": node.model.clone(),
         }),
@@ -10218,13 +10345,20 @@ fn drive_from_node_with_initial_session(
         )? {
             run.last_executed_node = Some(completed_snapshot);
             node = next.node;
-            session_mode = next.session_mode;
-            continue_ref = next.continue_ref;
-            resume_prompt = None;
-            resume_prompt_id = None;
-            resume_prompt_visibility = PromptVisibility::Visible;
-            resume_input_attachment_paths = Vec::new();
-            user_prompt_render_mode = workflow_user_prompt_render_mode_for_session(session_mode);
+            let prompt_state = acp_invocation_prompt_state(
+                app.config.desktop_language,
+                next.session_mode,
+                next.continue_ref,
+            );
+            session_mode = prompt_state.session_mode;
+            continue_ref = prompt_state.continue_ref;
+            resume_prompt = prompt_state.resume_prompt;
+            resume_prompt_id = prompt_state.resume_prompt_id;
+            resume_prompt_visibility = prompt_state.resume_prompt_visibility;
+            resume_input_attachment_paths = prompt_state.input_attachment_paths;
+            user_prompt_render_mode = prompt_state.user_prompt_render_mode;
+            model_override = prompt_state.model_override;
+            permission_mode_override = prompt_state.permission_mode_override;
             invalid_output_repair_prompts = 0;
             continue;
         }

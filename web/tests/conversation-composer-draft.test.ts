@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   conversationComposerDraftReducer,
+  createConversationComposerDraftBoundaryHandle,
   createInitialConversationComposerDraft,
+  resetConversationComposerDraft,
   type ConversationComposerDraftState,
 } from '../src/lib/conversation-composer-draft';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from '../src/lib/attachment-service';
@@ -106,5 +108,25 @@ describe('ConversationComposer draft cross-page retention', () => {
     let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')] };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
     expect(state).toEqual({ content: '', attachments: [] });
+  });
+
+  it('exposes only reset to the App boundary handle', () => {
+    const reset = vi.fn();
+    const handle = createConversationComposerDraftBoundaryHandle({
+      draft: createInitialConversationComposerDraft(),
+      setContent: vi.fn(),
+      setAttachments: vi.fn(),
+      reset,
+    });
+
+    expect(Object.keys(handle)).toEqual(['reset']);
+
+    resetConversationComposerDraft(handle);
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores missing boundary handles when App reset races with unmount', () => {
+    expect(() => resetConversationComposerDraft(null)).not.toThrow();
+    expect(() => resetConversationComposerDraft(undefined)).not.toThrow();
   });
 });

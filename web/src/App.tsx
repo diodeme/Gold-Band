@@ -89,6 +89,11 @@ import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomeP
 import { applyFont, applyTheme } from './theme';
 import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
+import {
+  shouldRunWorkbenchBackgroundRefresh,
+  WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
+  WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS,
+} from '@/lib/workbench-background-refresh';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -754,26 +759,31 @@ export function App() {
   }, [bootstrap, primaryModule, roundSelection, t, taskPage]);
 
   useEffect(() => {
+    if (uiMode !== 'workbench') return;
     void refresh(hasPageData ? 'background' : 'initial');
-  }, [hasPageData, refresh]);
+  }, [hasPageData, refresh, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || !hasPageData) return undefined;
+    if (!shouldRunWorkbenchBackgroundRefresh({
+      uiMode,
+      bootstrapReady: Boolean(bootstrap),
+      hasPageData,
+    })) return undefined;
     let intervalId: number;
     const startInterval = (ms: number) => {
       window.clearInterval(intervalId);
       intervalId = window.setInterval(() => void refresh('background'), ms) as unknown as number;
     };
-    startInterval(10000);
+    startInterval(WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS);
     const onVisibilityChange = () => {
-      startInterval(document.hidden ? 30000 : 10000);
+      startInterval(document.hidden ? WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS : WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS);
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [bootstrap, hasPageData, refresh]);
+  }, [bootstrap, hasPageData, refresh, uiMode]);
 
   const openProfileManagement = () => {
     setWorkspacePickerOpen(false);

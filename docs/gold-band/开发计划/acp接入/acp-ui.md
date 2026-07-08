@@ -253,7 +253,7 @@ artifact validation
 workflow control
 ```
 
-UI 上应避免把 ACP `stopReason`、session status 或 tool call status 直接展示成 Gold Band node status/outcome；ACP 会话头部不展示 session status，处理中状态由 composer 表达。返回 artifact 时，runtime 只在最近有限个 assistant 文本输出段中查找可解析 JSON，支持最后一段为“说明文字 + JSON”或 JSON 出现在倒数几段内，但不无限扫描历史会话。Gold Band runtime canonical state 仍由 task / run / round / node / attempt / artifact 维护。
+UI 上应避免把 ACP `stopReason`、session status 或 tool call status 直接展示成 Gold Band node status/outcome；ACP 会话头部不展示 session status，处理中状态由 composer 表达。返回 JSON artifact 时，runtime 只在最近有限个 assistant 文本输出段中查找可解析 JSON，支持最后一段为“说明文字 + JSON”或 JSON 出现在倒数几段内，但不无限扫描历史会话；未提取到合法 JSON 时不得把普通 assistant 文本 fallback 成 artifact。普通 worker 进入 invalid-output hidden repair 前必须删除本次非法 output artifact，repair 被停止或中断时 UI 不应继续展示旧的无效产物。Gold Band runtime canonical state 仍由 task / run / round / node / attempt / artifact 维护。
 
 ## 8. UI 功能模块清单
 

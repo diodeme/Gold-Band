@@ -331,6 +331,40 @@ fn invalid_output_repair_prompt(schema: &serde_json::Value) -> String {
     .expect("prompt template renders")
 }
 
+fn clear_invalid_output_artifact_for_repair(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node: &NodeState,
+) -> Result<()> {
+    let Some(artifact_name) = node
+        .resolved_config
+        .get("outputArtifact")
+        .and_then(|value| value.as_str())
+    else {
+        return Ok(());
+    };
+    let artifact_path = app.paths.artifact_file(
+        task_id,
+        run_id,
+        round_id,
+        &node.node_id,
+        &node.attempt_id,
+        artifact_name,
+    );
+    match std::fs::remove_file(artifact_path.as_std_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to clear invalid output artifact before repair: {}",
+                artifact_path
+            )
+        }),
+    }
+}
+
 pub(crate) fn run_start(
     app: &App,
     task_id: &str,
@@ -10230,6 +10264,7 @@ fn drive_from_node_with_initial_session(
                         None,
                     ),
                 );
+                clear_invalid_output_artifact_for_repair(app, task_id, &run.id, &round.id, &node)?;
                 node.status = RunStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
@@ -10420,6 +10455,55 @@ mod tests {
         git(&repo_root, &["add", "README.md"]);
         git(&repo_root, &["commit", "-m", "init"]);
         (temp, repo_root)
+    }
+
+    #[test]
+    fn invalid_output_repair_cleanup_removes_output_artifact() {
+        let temp = tempdir().unwrap();
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap(),
+            RuntimeConfig::default(),
+        );
+        let mut resolved_config = crate::domain::ResolvedConfig::new();
+        resolved_config.insert(
+            "outputArtifact".to_string(),
+            serde_json::Value::String("accept-result".to_string()),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "accept".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Completed,
+            outcome: Some(NodeOutcome::Invalid),
+            started_at: "1Z".to_string(),
+            finished_at: Some("2Z".to_string()),
+            manual_check_pending: false,
+            resolved_config,
+            uuid: None,
+        };
+        let artifact_dir =
+            app.paths
+                .artifacts_dir("task-001", "run-001", "round-001", "accept", "attempt-001");
+        std::fs::create_dir_all(artifact_dir.as_std_path()).unwrap();
+        let artifact_path = app.paths.artifact_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "accept",
+            "attempt-001",
+            "accept-result",
+        );
+        std::fs::write(artifact_path.as_std_path(), "not json").unwrap();
+
+        clear_invalid_output_artifact_for_repair(&app, "task-001", "run-001", "round-001", &node)
+            .unwrap();
+
+        assert!(!artifact_path.exists());
+        clear_invalid_output_artifact_for_repair(&app, "task-001", "run-001", "round-001", &node)
+            .unwrap();
     }
 
     fn test_dynamic() -> AiDynamicNode {

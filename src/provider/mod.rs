@@ -790,7 +790,6 @@ fn output_artifact_payload_from_run(
     let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
     let content = if uses_json_output {
         json_artifact_text_from_outputs(final_outputs, final_text)
-            .or_else(|| non_empty_artifact_text(final_text))
     } else {
         non_empty_artifact_text(final_text)
     }?;
@@ -1493,6 +1492,25 @@ mod tests {
             artifact.content,
             r#"{"kind":"dynamic-node-completion","status":"success"}"#
         );
+    }
+
+    #[test]
+    fn json_output_contract_without_json_does_not_fallback_to_text_artifact() {
+        let contract = PromptOutputContract {
+            artifact: "accept-result".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        let payload = output_artifact_payload_from_run(
+            &contract,
+            &["I can see the requirement.".to_string()],
+            "I can see the requirement.",
+        );
+
+        assert!(payload.is_none());
     }
 
     #[test]

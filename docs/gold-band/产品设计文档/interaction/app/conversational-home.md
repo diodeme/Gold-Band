@@ -130,3 +130,8 @@
 - 状态 = 最新 run 的最终状态
 - 成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色
 - 运行中不显示时间
+
+## 性能与后台刷新
+
+- Conversation 模式是桌面端主路径，输入与会话流式渲染期间不得启动旧 Workbench 的任务/工作流/round detail 周期刷新。
+- 旧 Workbench 的 10 秒可见窗口刷新与 30 秒隐藏窗口刷新只在 Workbench 模式启用；切回 Conversation 时必须清理该 interval，避免周期性文件扫描、Tauri IPC 与 React 大状态更新抢占会话输入主线程。

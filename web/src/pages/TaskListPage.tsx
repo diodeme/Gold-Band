@@ -26,6 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -882,17 +883,6 @@ function TaskPagination({ pageIndex, pageCount, onPageChange }: { pageIndex: num
 
 function canonicalWorkflow(workflow: WorkflowDsl) {
   return JSON.stringify(workflow);
-}
-
-function createBlankWorkflowDraft(): WorkflowDsl {
-  return {
-    version: '0.1',
-    id: `workflow-${Date.now().toString(36)}`,
-    entry: '',
-    control: {},
-    nodes: [],
-    edges: [],
-  };
 }
 
 function compareTasks(left: TaskRowVm, right: TaskRowVm, key: TaskSortKey, dir: SortDir) {

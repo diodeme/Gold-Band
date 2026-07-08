@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -29,6 +30,15 @@ interface RunModeManagementPageProps {
 }
 
 type RunModeManagementTab = 'auto' | 'workflow';
+
+export function createBlankWorkflowTemplateEditorState() {
+  const workflow = createBlankWorkflowDraft();
+  return {
+    templateId: null as string | null,
+    workflow,
+    saveName: '',
+  };
+}
 
 export function RunModeTabsToolbar({
   mode,
@@ -303,9 +313,10 @@ export function RunModeManagementPage({
   };
 
   const startWfBlank = () => {
-    setWfEditTemplateId(null);
-    setWfEditWorkflow(null);
-    setWfSaveName('');
+    const draft = createBlankWorkflowTemplateEditorState();
+    setWfEditTemplateId(draft.templateId);
+    setWfEditWorkflow(draft.workflow);
+    setWfSaveName(draft.saveName);
     setWfTemplatePickerOpen(false);
     setWfNotice(null);
     setWfError(null);

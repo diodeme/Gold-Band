@@ -613,10 +613,19 @@ pub struct AcpUsageVm {
 pub struct AcpSessionVm {
     pub session_id: Option<String>,
     pub title: Option<String>,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outer_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outer_attempt_id: Option<String>,
     pub provider: String,
     pub adapter_id: Option<String>,
     pub adapter_display_name: Option<String>,
     pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cwd: Option<String>,
     pub status: String,
     pub session_started_at: Option<String>,
     pub session_updated_at: Option<String>,
@@ -3320,6 +3329,15 @@ pub fn dynamic_acp_session_vm(
         event_scan.session_timing.clone(),
         event_scan.session_elapsed_seconds,
     );
+    let provider_cwd = continue_ref
+        .and_then(|value| value.get("cwd"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let cwd = session
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| Some(attempt_dir.to_string()));
     let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -3335,6 +3353,11 @@ pub fn dynamic_acp_session_vm(
             .get("title")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: Some(outer_node_id.to_string()),
+        outer_attempt_id: Some(outer_attempt_id.to_string()),
         provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
@@ -3342,11 +3365,8 @@ pub fn dynamic_acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
-        cwd: continue_ref
-            .and_then(|value| value.get("cwd"))
-            .and_then(|value| value.as_str())
-            .or_else(|| session.get("cwd").and_then(|value| value.as_str()))
-            .map(str::to_string),
+        cwd,
+        provider_cwd,
         status,
         session_started_at: session
             .get("createdAt")
@@ -3569,6 +3589,15 @@ pub fn acp_session_vm(
         event_scan.session_timing.clone(),
         event_scan.session_elapsed_seconds,
     );
+    let provider_cwd = continue_ref
+        .and_then(|value| value.get("cwd"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let cwd = session
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
 
     let result = AcpSessionVm {
         session_id: continue_ref
@@ -3585,6 +3614,11 @@ pub fn acp_session_vm(
             .get("title")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
         provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
@@ -3592,11 +3626,8 @@ pub fn acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
-        cwd: continue_ref
-            .and_then(|value| value.get("cwd"))
-            .and_then(|value| value.as_str())
-            .or_else(|| session.get("cwd").and_then(|value| value.as_str()))
-            .map(str::to_string),
+        cwd,
+        provider_cwd,
         status,
         session_started_at: session
             .get("createdAt")
@@ -5821,6 +5852,7 @@ fn skill_source_str(source: gold_band::config::SkillSource) -> String {
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::app::App;
     use serde_json::json;
 
     fn test_event(kind: &str, content: &str) -> AcpUiEventVm {
@@ -7110,6 +7142,78 @@ mod tests {
         let (_, _, elapsed, _, _, _) = parse_timeline_file(&path, false).unwrap();
 
         assert_eq!(elapsed, Some(11));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dynamic_acp_session_vm_keeps_attempt_cwd_separate_from_provider_cwd() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-dynamic-session-cwd-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.clone()).unwrap());
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            "task-081",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "goodbye-output",
+            "attempt-001",
+        );
+        let workspace_cwd = "D:\\Projects\\code\\ai\\Gold-Band";
+        gold_band::storage::write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": attempt_dir.to_string(),
+                "status": "completed",
+                "restored": true
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": "0.1",
+                "provider": "codex-acp",
+                "mode": "continue",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": {
+                    "acpSessionId": "session-continue-1",
+                    "adapterId": "npx",
+                    "adapterDisplayName": "Codex",
+                    "cwd": workspace_cwd
+                },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+
+        let session = dynamic_acp_session_vm(
+            &app,
+            "task-081",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "goodbye-output",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(session.cwd.as_deref(), Some(attempt_dir.as_str()));
+        assert_eq!(session.provider_cwd.as_deref(), Some(workspace_cwd));
+        assert_eq!(session.round_id, "round-001");
+        assert_eq!(session.node_id, "goodbye-output");
+        assert_eq!(session.attempt_id, "attempt-001");
+        assert_eq!(session.outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(session.outer_attempt_id.as_deref(), Some("attempt-001"));
 
         fs::remove_dir_all(dir).unwrap();
     }

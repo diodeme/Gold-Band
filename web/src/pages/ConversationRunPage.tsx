@@ -30,8 +30,16 @@ function activeSessionKey(session: {
   return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
 }
 
-function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
-  if (!session || !leaf || !session.cwd) return true;
+export function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
+  if (!session || !leaf) return true;
+  if (session.roundId && session.nodeId && session.attemptId) {
+    return session.roundId === leaf.roundId &&
+      session.nodeId === leaf.nodeId &&
+      session.attemptId === leaf.attemptId &&
+      (session.outerNodeId ?? null) === (leaf.outerNodeId ?? null) &&
+      (session.outerAttemptId ?? null) === (leaf.outerAttemptId ?? null);
+  }
+  if (!session.cwd) return true;
   const cwd = normalizeSessionPath(session.cwd);
   const expected = leaf.outerNodeId && leaf.outerAttemptId
     ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)

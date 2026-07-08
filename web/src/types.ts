@@ -589,10 +589,16 @@ export interface AcpAttemptSessionVm {
 export interface AcpSessionVm {
   sessionId?: string | null;
   title?: string | null;
+  roundId?: string | null;
+  nodeId?: string | null;
+  attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   cwd?: string | null;
+  providerCwd?: string | null;
   status: string;
   sessionStartedAt?: string | null;
   sessionUpdatedAt?: string | null;

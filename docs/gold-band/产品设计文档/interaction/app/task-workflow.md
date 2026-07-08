@@ -116,7 +116,7 @@
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
-- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。
+- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。声明 JSON 输出的 worker 只有在最近 assistant 输出中提取到可解析 JSON 时才允许落盘 canonical artifact，不得把普通自然语言回复 fallback 成 `.json` 产物；进入隐藏修复前必须清理本轮非法 output artifact，避免修复中断后产物列表展示旧的无效产物。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
 - 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。

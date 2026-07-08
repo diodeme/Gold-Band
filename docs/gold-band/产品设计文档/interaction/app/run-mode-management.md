@@ -59,6 +59,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 会话 composer 选择 WORKFLOW 模式时展示工作流模板下拉，并提供跳转工作流 tab 的快速入口
 - WORKFLOW 模式发起会话等价于旧 UI 使用指定工作流创建 task
 - 运行模式管理的工作流模板编辑区、旧 UI 创建任务抽屉、任务工作流页必须复用同一个 `WorkflowEditor` 组件；各入口只允许保留不同的外层模板选择/保存编排
+- 工作流模板“新增模板”必须创建可编辑的空 `WorkflowDsl` 草稿并立即进入 `WorkflowEditor`；选择器显示“新增模板（未保存）”。空态只用于模板 store 不可用或没有可编辑草稿，不用于新增模板流程。
 - “保存为新的工作流”不会继承来源 `workflow.id` 作为新模板 DSL ID；后端保存时生成 `workflow-{uuid}`，如与现有模板冲突最多重试 3 次
 - 工作流模板存储在用户目录 `~/.gold-band/context/workflows.json`，属于用户级跨 workspace 模板；若新路径不存在且当前 workspace 仍存在旧版 `authoring/workflows.json`，首次读取时会复制迁移到用户级 context
 - 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store，新模板应立刻出现在模板选择器中，并显示保存后的模板名

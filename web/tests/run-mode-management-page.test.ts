@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { RunModeTabsToolbar } from '@/pages/RunModeManagementPage';
+import { createBlankWorkflowTemplateEditorState, RunModeTabsToolbar } from '@/pages/RunModeManagementPage';
 
 describe('RunModeTabsToolbar', () => {
   it('keeps the page save action beside the mode tabs', () => {
@@ -23,5 +23,20 @@ describe('RunModeTabsToolbar', () => {
     expect(html.indexOf('工作流模板')).toBeLessThan(html.indexOf('保存'));
     expect(html.indexOf('AUTO 设置')).toBeLessThan(html.indexOf('保存'));
     expect(html).toContain('已保存');
+  });
+
+  it('creates an editable blank workflow draft for a new workflow template', () => {
+    const draft = createBlankWorkflowTemplateEditorState();
+
+    expect(draft.templateId).toBeNull();
+    expect(draft.saveName).toBe('');
+    expect(draft.workflow).toMatchObject({
+      version: '0.1',
+      entry: '',
+      control: {},
+      nodes: [],
+      edges: [],
+    });
+    expect(draft.workflow.id).toMatch(/^workflow-/);
   });
 });

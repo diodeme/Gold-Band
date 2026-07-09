@@ -20,6 +20,7 @@ const agentRegistry: AgentRegistryVm = {
     args: [],
     env: [],
     iconKey: 'claude',
+    skillsDirName: '.claude',
     supported: true,
     supportedModes: [{ id: 'ask', name: 'Ask' }],
     supportedModels: [],

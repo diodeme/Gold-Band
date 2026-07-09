@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use tracing::{debug, warn};
+
+use crate::process::background_command;
 
 pub fn create_link(src: &Path, dst: &Path) {
     #[cfg(unix)]
@@ -23,7 +24,7 @@ pub fn create_link(src: &Path, dst: &Path) {
             Err(error) => debug!("symlink_dir failed (will try junction): {error}"),
         }
 
-        let output = Command::new("cmd")
+        let output = background_command("cmd")
             .args(["/c", "mklink", "/J"])
             .arg(dst.as_os_str())
             .arg(src.as_os_str())

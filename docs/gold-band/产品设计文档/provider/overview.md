@@ -30,22 +30,23 @@ Gold Band 核心 runtime 不应直接了解：
 
 Claude ACP 默认通过 `npx -y @agentclientprotocol/claude-agent-acp@latest` 启动；Windows 桌面运行时仅在进程启动边界把 bare `npx` 解析为 `npx.cmd`，其他平台不做命令改写。
 
-用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`；若 PATH 目录暴露了 `claude.cmd` 或 extensionless `claude`，则按标准 npm global prefix 结构查找同 prefix 下的 `node_modules/@anthropic-ai/claude-code/bin/claude.exe`；若无法定位包内原生 binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找 `claude`。
+用户开启“使用本地 Claude”时，桌面端只负责为 ACP adapter 注入 `CLAUDE_CODE_EXECUTABLE`，不改变 adapter 命令本身。Windows 下必须避免把 npm 暴露的 extensionless `claude` shell shim 传给 adapter：优先使用 PATH 中的原生 `claude.exe`；若 PATH 目录暴露了 `claude.cmd`，则读取 `.cmd` wrapper 内容并解析其实际指向的 native `.exe`，例如 npm 生成的 `%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe`；若无法从 `.cmd` 解析并验证 native binary，则不注入该环境变量，让 adapter 使用自身 fallback。macOS / Linux 继续按 PATH 查找可执行 `claude`；Unix npm shim 本身是可执行脚本，不需要像 Windows 一样解析 `.cmd` wrapper。
 
-实现上，本地 Claude 注入必须统一经过 `resolve_local_claude_executable` 解析，不能在 adapter 启动边界回退成仅查找 `claude.exe`，否则会丢失 Windows npm 安装场景的包内 native binary 兼容。
+实现上，本地 Claude 注入必须统一经过 `resolve_local_claude_executable` 解析，不能在 adapter 启动边界回退成仅查找 `claude.exe`，也不能用固定 npm prefix 拼接替代 `.cmd` 内容解析，否则会丢失或误判 Windows npm 安装场景的包内 native binary 兼容。
 
 ### 项目级 app config
-项目内需要版本控制的共享运行配置，统一放在仓库根目录 `configs/app-config.json`。
+项目内需要版本控制的共享运行配置，统一放在仓库根目录 `configs/app-config.toml`。
 
 当前规则：
-- `configs/app-config.json` 属于项目级配置，随仓库版本管理。
+- `configs/app-config.toml` 属于项目级配置，随仓库版本管理。
 - 这类配置用于控制 runtime / provider / UI 的共享能力，不放入用户本机 `settings.json` 或 `state.json`。
 - CLI 与桌面端都读取同一份 app config，并在运行时合并到 `RuntimeConfig`。
-- 默认值以代码内 `RuntimeConfig::default()` 为准，`configs/app-config.json` 只覆盖明确声明的字段。
+- 默认值以代码内 `RuntimeConfig::default()` 为准，`configs/app-config.toml` 只覆盖明确声明的字段。
 
 当前已落地的配置示例：
 - `acpSessionTitleRefreshEnabled`：控制 ACP 会话运行期间是否定时调用 `session/list` best-effort 刷新并持久化 session title 缓存；默认关闭。
 - `acpChatEventPageSize`：控制前端 ACP 会话历史分页的单次加载条数；默认 360。前端会额外保留有限多页内存缓冲以保证滚动连续性。
+- `requireLocalClaudeExecutable`：本地 Claude 诊断开关；默认关闭。开启后，当用户启用“使用本地 Claude”但 Gold Band 无法解析出 native Claude executable 时，adapter 启动直接失败，不再落到 `claude-agent-acp` / Claude Agent SDK 的内部 fallback，便于验证本地发现逻辑；临时排障也可用环境变量 `GOLD_BAND_REQUIRE_LOCAL_CLAUDE=1` 覆盖开启。
 
 ### Legacy 历史数据
 新运行不再启动 `claude-code` direct CLI / stream-json。若旧 run 已存在 `progress.events.jsonl` 或 `raw.stream.jsonl`，只能通过日志/诊断入口查看，不能形成第二套主会话 UI。

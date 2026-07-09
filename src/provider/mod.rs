@@ -610,6 +610,7 @@ pub struct AcpProvider {
     provider_id: String,
     adapter_config: AcpAdapterConfig,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
@@ -620,6 +621,7 @@ impl AcpProvider {
         provider_id: impl Into<String>,
         adapter_config: AcpAdapterConfig,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
         acp_session_title_refresh_enabled: bool,
         acp_raw_max_size_bytes: u64,
         acp_raw_target_size_bytes: u64,
@@ -628,6 +630,7 @@ impl AcpProvider {
             provider_id: provider_id.into(),
             adapter_config,
             use_local_claude,
+            require_local_claude_executable,
             acp_session_title_refresh_enabled,
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
@@ -655,7 +658,12 @@ impl ProviderAdapter for AcpProvider {
             .ok()
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
-        match client::doctor(&self.adapter_config, cwd, self.use_local_claude) {
+        match client::doctor(
+            &self.adapter_config,
+            cwd,
+            self.use_local_claude,
+            self.require_local_claude_executable,
+        ) {
             Ok(capabilities) => DoctorResult {
                 available: true,
                 reason: None,
@@ -711,6 +719,7 @@ impl ProviderAdapter for AcpProvider {
             req.model.clone(),
             req.continue_ref.clone(),
             self.use_local_claude,
+            self.require_local_claude_executable,
             self.acp_session_title_refresh_enabled,
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
@@ -1323,6 +1332,7 @@ pub fn provider_capabilities_for_type(
         agent_type.default_adapter_config(),
         false,
         false,
+        false,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
     )
@@ -1342,6 +1352,7 @@ pub fn provider_from_agent(
     agent_type: ManagedAgentType,
     config: &ManagedAgentConfig,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
@@ -1353,6 +1364,7 @@ pub fn provider_from_agent(
         agent_type.as_str(),
         config.adapter.clone(),
         use_local_claude,
+        require_local_claude_executable,
         acp_session_title_refresh_enabled,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
@@ -1362,6 +1374,7 @@ pub fn provider_from_agent(
 pub fn provider_from_id(
     provider_id: &str,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
@@ -1372,6 +1385,7 @@ pub fn provider_from_id(
         agent_type,
         &config,
         use_local_claude,
+        require_local_claude_executable,
         acp_session_title_refresh_enabled,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
@@ -1381,6 +1395,7 @@ pub fn provider_from_id(
 pub fn default_provider() -> Box<dyn ProviderAdapter> {
     provider_from_id(
         DEFAULT_PROVIDER,
+        false,
         false,
         false,
         5 * 1024 * 1024,

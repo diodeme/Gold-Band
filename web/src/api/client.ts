@@ -221,6 +221,7 @@ export interface RuntimeApi {
     name: string,
     source: string,
     workspacePath?: string | null,
+    oldName?: string | null,
     directoryPath?: string | null,
     syncTargets?: string[] | null,
   ): Promise<string[]>;

@@ -483,7 +483,7 @@ export const browserApi: RuntimeApi = {
   writeSkill(_name: string, _source: string, _content: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve({ global: [], project: [] }); },
   deleteSkill(_name: string, _source: string) { return Promise.resolve({ global: [], project: [] }); },
   getSkillSyncStatus(_name: string, _directoryPath: string, _workspacePath?: string | null) { return Promise.resolve([]); },
-  checkSkillNameConflict(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve([] as string[]); },
+  checkSkillNameConflict(_name: string, _source: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve([] as string[]); },
 };
 
 function browserProfileId() {

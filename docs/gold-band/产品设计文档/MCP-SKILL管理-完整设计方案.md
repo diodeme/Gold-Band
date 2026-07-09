@@ -14,6 +14,13 @@
 - SKILL 卡片左下角图标改为“来源 agent + 已同步目标 agent”的并集展示；`.gold-band` 自建 skill 固定展示 Gold Band 图标。
 - 编辑原生 agent skill 时，同步目标列表排除其自身 agent，不再允许出现“`.claude` skill 再同步到 `.claude`”这类自相矛盾操作。
 
+## 2026-07-09 实施补充
+- Gold Band 自管 SKILL 的权威存储目录为 `~/.gold-band/skills/<dir>/SKILL.md` 与 `<workspace>/.gold-band/skills/<dir>/SKILL.md`；原生 agent skill 继续按各 agent 实例目录扫描，但列表、编辑、删除、同步状态均以 `directoryPath` 标识单个实例。
+- 多 Agent 同步模型以“已配置 agent 实例 + skill 目录名”为同步键。同步链接只在已配置 agent 的 `skills/<dir>` 下创建、移除和回放；未配置目录中的手工链接不属于 Gold Band 对账范围。
+- 保存流程收敛为后端单一事务入口：先计算目标目录并完成同目录与同步目标冲突预检，再执行目录移动/写入，最后按目标集合 reconcile 软链。若写入或同步失败，后端恢复旧内容、旧目录和已记录的旧同步目标，避免 UI 报错但磁盘已半成功。
+- Rename 是真实目录 rename：编辑已有 skill 且 `name` 变化时，后端将旧 `directoryPath` 移动到同父目录的新目录名，删除旧目录名下的已配置 agent 同步链接，再按新目录名建立新链接；frontmatter `name:` 只作为展示/运行时名称，不再代替目录身份。
+- 前端冲突检查必须同时传入 `oldName`、`directoryPath` 与 `syncTargets`，由后端按最终目标目录名判断新目录冲突和多 Agent 同步冲突，避免编辑原生 skill 时仅按 frontmatter 名误判。
+
 
 ---
 
@@ -231,7 +238,7 @@ pub fn invalidate_health(&self, id: &str);
 | 3 | 默认 Scope | 有 workspace 时默认 Project，无时默认 Global | ✅ |
 | 4 | 编辑限制 | 编辑时 Scope 锁定 | ✅ |
 | 5 | 重名检测 | 实时，冲突时禁用保存 + 红色错误提示 | ✅ |
-| 6 | 改名处理 | 编辑改名先写新文件再删旧文件（oldName 参数） | ✅ |
+| 6 | 改名处理 | 编辑改名由后端移动真实目录并重建同步链接（`oldName + directoryPath`） | ✅ |
 | 7 | 渲染 | View 模式 Markdown 渲染 | ✅ |
 | 8 | 传递方式 | System Prompt `{{skill_catalog}}` → ACP `_meta.systemPrompt.append` | ✅ |
 | 9 | Body 嵌入 | SKILL.md 正文直接注入 system prompt（路径 A） | ✅ 替代 SkillTool |
@@ -277,7 +284,12 @@ fn precedence(source: SkillSource) -> u8 {
 
 <workspace>/.gold-band/skills/        ← 项目级 SKILL（仅当前 project）
   └── <name>/SKILL.md
+
+<agent-root>/skills/                  ← 原生 agent SKILL 实例（按已配置 agent 扫描）
+  └── <dir>/SKILL.md
 ```
+
+目录名 `<name>/<dir>` 是文件系统身份与同步链接名；frontmatter `name:` 可以与目录名不同，运行时展示和 catalog 使用 frontmatter，冲突检测与同步使用目录名。
 
 ### 3.4 SKILL.md 格式
 
@@ -349,8 +361,12 @@ You have access to the following Skills — modular capabilities...
 | `list_skills` | — | `SkillListVm { global, project }` |
 | `list_project_skills` | `workspacePath` | `Vec<SkillMetaVm>` |
 | `read_skill` | `name, source, workspacePath?` | `SkillContentVm` |
-| `write_skill` | `name, source, content, workspacePath?, oldName?` | `SkillListVm` |
-| `delete_skill` | `name, source, workspacePath?` | `SkillListVm` |
+| `write_skill` | `name, source, content, workspacePath?, oldName?, directoryPath?, syncTargets?` | `SkillListVm` |
+| `delete_skill` | `name, source, workspacePath?, directoryPath?` | `SkillListVm` |
+| `get_skill_sync_status` | `name, directoryPath, workspacePath?` | `Vec<SyncStatusEntryVm>` |
+| `check_skill_name_conflict` | `name, source, workspacePath?, oldName?, directoryPath?, syncTargets?` | `Vec<String>` |
+
+`write_skill` 不直接分散执行创建、覆盖、rename 和同步。Tauri command 只解析入参并委托 `SkillManager::write_instance`，由后端统一执行“预检 → 文件系统变更 → 同步链接 reconcile → 失败回滚”。
 
 ### 3.8 UI 特性
 

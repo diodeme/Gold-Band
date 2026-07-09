@@ -442,6 +442,7 @@ export function checkSkillNameConflict(
   name: string,
   source: string,
   workspacePath?: string | null,
+  oldName?: string | null,
   directoryPath?: string | null,
   syncTargets?: string[] | null,
 ) {
@@ -449,6 +450,7 @@ export function checkSkillNameConflict(
     name,
     source,
     workspacePath,
+    oldName,
     directoryPath,
     syncTargets,
   );

@@ -982,7 +982,7 @@ export function ContextManagementPage() {
                     const content = `---\nname: ${skillForm.name.trim()}\ndescription: ${skillForm.description.trim()}\n---\n\n${skillForm.body}`;
                     const oldName = skillSheetMode === 'edit' ? skillEditTarget?.name : null;
                     const currentDirectoryPath = skillSheetMode === 'edit' ? skillEditTarget?.directoryPath ?? null : null;
-                    const conflicts = await checkSkillNameConflict(skillForm.name.trim(), scope, wsPath, currentDirectoryPath, syncTargets);
+                    const conflicts = await checkSkillNameConflict(skillForm.name.trim(), scope, wsPath, oldName, currentDirectoryPath, syncTargets);
                     if (conflicts.length > 0) {
                       setSkillError(t('errors.skill.sync-conflict', { skillName: skillForm.name.trim(), conflicts: conflicts.join('、') }));
                       return;

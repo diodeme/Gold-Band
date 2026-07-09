@@ -368,6 +368,7 @@ export const desktopApi: RuntimeApi = {
     name: string,
     source: string,
     workspacePath?: string | null,
+    oldName?: string | null,
     directoryPath?: string | null,
     syncTargets?: string[] | null,
   ) {
@@ -375,6 +376,7 @@ export const desktopApi: RuntimeApi = {
       name,
       source,
       workspacePath,
+      oldName,
       directoryPath,
       syncTargets,
     });

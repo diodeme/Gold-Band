@@ -35,6 +35,11 @@ pub struct SkillContent {
     pub body: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SkillWriteResult {
+    pub directory_path: Utf8PathBuf,
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SkillCommandError {
     #[error("skill.already-exists")]
@@ -316,6 +321,126 @@ impl SkillManager {
         Ok(meta)
     }
 
+    pub fn write_instance(
+        &self,
+        name: &str,
+        source: SkillSource,
+        content: &str,
+        workspace_path: Option<&str>,
+        old_name: Option<&str>,
+        current_directory_path: Option<&str>,
+        sync_targets: Option<&[String]>,
+    ) -> Result<SkillWriteResult> {
+        let target_dir = self.save_target_dir(
+            name,
+            source,
+            workspace_path,
+            old_name,
+            current_directory_path,
+        )?;
+        self.ensure_save_target_available(name, &target_dir, current_directory_path)?;
+
+        let skill_dir_name = skill_dir_name_from_str(target_dir.as_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {}", target_dir.as_str()))?;
+        let sync_conflicts = self.check_dir_name_conflict(
+            skill_dir_name,
+            source,
+            workspace_path,
+            sync_targets,
+            current_directory_path,
+        );
+        if !sync_conflicts.is_empty() {
+            return Err(SkillCommandError::SyncConflict {
+                skill_name: skill_dir_name.to_string(),
+                conflicts: sync_conflicts,
+            }
+            .into());
+        }
+
+        let current_dir = current_directory_path.map(Utf8PathBuf::from);
+        let is_rename = current_dir
+            .as_ref()
+            .map(|dir| {
+                canonicalize_lossy(dir.as_std_path())
+                    != canonicalize_lossy(target_dir.as_std_path())
+            })
+            .unwrap_or(false);
+
+        if let Some(ref current_dir) = current_dir {
+            if !current_dir.exists() {
+                bail!("SKILL dir not found: {:?}", current_dir);
+            }
+        }
+
+        let old_content = current_dir
+            .as_ref()
+            .and_then(|dir| fs::read_to_string(dir.join(SKILL_FILE_NAME).as_std_path()).ok());
+        let previous_sync_targets = current_dir
+            .as_ref()
+            .map(|dir| self.synced_agent_types_for_directory(dir.as_str(), source, workspace_path));
+
+        if is_rename {
+            if let Some(ref current_dir) = current_dir {
+                self.cleanup_skill_instance_links(
+                    name,
+                    current_dir.as_str(),
+                    source,
+                    workspace_path,
+                    None,
+                );
+                if let Err(error) = fs::rename(current_dir.as_std_path(), target_dir.as_std_path())
+                {
+                    self.restore_skill_links(
+                        current_dir.as_str(),
+                        source,
+                        workspace_path,
+                        previous_sync_targets.as_deref(),
+                    );
+                    return Err(error.into());
+                }
+            }
+        } else if current_dir.is_none() {
+            fs::create_dir_all(target_dir.as_std_path())?;
+        }
+
+        let skill_path = target_dir.join(SKILL_FILE_NAME);
+        if let Err(error) = fs::write(skill_path.as_std_path(), content) {
+            self.rollback_instance_write(
+                &target_dir,
+                current_dir.as_ref(),
+                is_rename,
+                old_content.as_deref(),
+                source,
+                workspace_path,
+                previous_sync_targets.as_deref(),
+            );
+            return Err(error.into());
+        }
+
+        if let Err(error) = self.reconcile_skill_instance_links(
+            name,
+            target_dir.as_str(),
+            source,
+            workspace_path,
+            sync_targets,
+        ) {
+            self.rollback_instance_write(
+                &target_dir,
+                current_dir.as_ref(),
+                is_rename,
+                old_content.as_deref(),
+                source,
+                workspace_path,
+                previous_sync_targets.as_deref(),
+            );
+            return Err(error);
+        }
+
+        Ok(SkillWriteResult {
+            directory_path: target_dir,
+        })
+    }
+
     pub fn delete(&self, name: &str, source: SkillSource) -> Result<()> {
         let dir = skills_dir_for_source(source, &self.paths)?;
         let skill_dir = dir.join(name);
@@ -386,6 +511,39 @@ impl SkillManager {
                 }
             })
             .collect()
+    }
+
+    pub fn check_save_conflict(
+        &self,
+        name: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        old_name: Option<&str>,
+        current_directory_path: Option<&str>,
+        sync_targets: Option<&[String]>,
+    ) -> Result<Vec<String>> {
+        let target_dir = self.save_target_dir(
+            name,
+            source,
+            workspace_path,
+            old_name,
+            current_directory_path,
+        )?;
+        let mut conflicts = Vec::new();
+        if self.target_conflicts_with_existing_directory(&target_dir, current_directory_path) {
+            conflicts.push(target_dir.as_str().to_string());
+        }
+        let Some(skill_dir_name) = skill_dir_name_from_str(target_dir.as_str()) else {
+            return Ok(conflicts);
+        };
+        conflicts.extend(self.check_dir_name_conflict(
+            skill_dir_name,
+            source,
+            workspace_path,
+            sync_targets,
+            current_directory_path,
+        ));
+        Ok(conflicts)
     }
 
     pub fn sync_skill_instance(
@@ -497,6 +655,187 @@ impl SkillManager {
             symlink::remove_link_if_points_to(
                 target_skill_dir.as_std_path(),
                 Path::new(source_directory_path),
+            );
+        }
+    }
+
+    fn save_target_dir(
+        &self,
+        name: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        old_name: Option<&str>,
+        current_directory_path: Option<&str>,
+    ) -> Result<Utf8PathBuf> {
+        if let Some(current_directory_path) = current_directory_path {
+            let current_dir = Utf8PathBuf::from(current_directory_path);
+            let should_rename = old_name.map(|old| old != name).unwrap_or(false);
+            if !should_rename {
+                return Ok(current_dir);
+            }
+            let parent = current_dir.parent().ok_or_else(|| {
+                anyhow::anyhow!("invalid skill directory: {current_directory_path}")
+            })?;
+            return Ok(parent.join(name));
+        }
+
+        if source == SkillSource::Project {
+            if let Some(workspace_path) = workspace_path {
+                return Ok(Self::workspace_skills_dir(workspace_path).join(name));
+            }
+        }
+
+        Ok(skills_dir_for_source(source, &self.paths)?.join(name))
+    }
+
+    fn ensure_save_target_available(
+        &self,
+        name: &str,
+        target_dir: &Utf8PathBuf,
+        current_directory_path: Option<&str>,
+    ) -> Result<()> {
+        if !self.target_conflicts_with_existing_directory(target_dir, current_directory_path) {
+            return Ok(());
+        }
+        Err(SkillCommandError::AlreadyExists {
+            skill_name: name.to_string(),
+            directory_path: target_dir.as_str().to_string(),
+        }
+        .into())
+    }
+
+    fn target_conflicts_with_existing_directory(
+        &self,
+        target_dir: &Utf8PathBuf,
+        current_directory_path: Option<&str>,
+    ) -> bool {
+        if !target_dir.exists() {
+            return false;
+        }
+        let Some(current_directory_path) = current_directory_path else {
+            return true;
+        };
+        canonicalize_lossy(target_dir.as_std_path())
+            != canonicalize_lossy(Path::new(current_directory_path))
+    }
+
+    fn check_dir_name_conflict(
+        &self,
+        skill_dir_name: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        sync_targets: Option<&[String]>,
+        current_directory_path: Option<&str>,
+    ) -> Vec<String> {
+        let current_canonical =
+            current_directory_path.map(|value| canonicalize_lossy(Path::new(value)));
+        self.configured_agent_dirs_for_scope(source, workspace_path, sync_targets)
+            .into_iter()
+            .filter_map(|agent_dir| {
+                let skill_dir = agent_dir.skills_dir.join(skill_dir_name);
+                if !skill_dir.exists() {
+                    return None;
+                }
+                if skill_dir.as_std_path().read_link().is_ok()
+                    || skill_dir.as_std_path().is_symlink()
+                {
+                    return None;
+                }
+                let target_canonical = canonicalize_lossy(skill_dir.as_std_path());
+                if current_canonical
+                    .as_ref()
+                    .map(|current| current == &target_canonical)
+                    .unwrap_or(false)
+                {
+                    None
+                } else {
+                    Some(skill_dir.as_str().to_string())
+                }
+            })
+            .collect()
+    }
+
+    fn synced_agent_types_for_directory(
+        &self,
+        source_directory_path: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+    ) -> Vec<String> {
+        let source_canonical = canonicalize_lossy(Path::new(source_directory_path));
+        let Some(skill_dir_name) = skill_dir_name_from_str(source_directory_path) else {
+            return Vec::new();
+        };
+        resolve_skill_dirs(&self.agents_config, source, workspace_path, None, false)
+            .into_iter()
+            .filter_map(|agent_dir| {
+                let candidate = agent_dir.skills_dir.join(skill_dir_name);
+                is_link_pointing_to(candidate.as_std_path(), &source_canonical)
+                    .then(|| agent_dir.agent_type.as_str().to_string())
+            })
+            .collect()
+    }
+
+    fn restore_skill_links(
+        &self,
+        source_directory_path: &str,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        sync_targets: Option<&[String]>,
+    ) {
+        if let Some(targets) = sync_targets {
+            let _ = self.sync_skill_instance(
+                skill_dir_name_from_str(source_directory_path).unwrap_or_default(),
+                source_directory_path,
+                source,
+                workspace_path,
+                Some(targets),
+            );
+        }
+    }
+
+    fn rollback_instance_write(
+        &self,
+        target_dir: &Utf8PathBuf,
+        current_dir: Option<&Utf8PathBuf>,
+        is_rename: bool,
+        old_content: Option<&str>,
+        source: SkillSource,
+        workspace_path: Option<&str>,
+        previous_sync_targets: Option<&[String]>,
+    ) {
+        self.cleanup_skill_instance_links(
+            skill_dir_name_from_str(target_dir.as_str()).unwrap_or_default(),
+            target_dir.as_str(),
+            source,
+            workspace_path,
+            None,
+        );
+
+        if is_rename {
+            if let Some(current_dir) = current_dir {
+                let _ = fs::remove_dir_all(current_dir.as_std_path());
+                if target_dir.exists() {
+                    let _ = fs::rename(target_dir.as_std_path(), current_dir.as_std_path());
+                }
+                if let Some(old_content) = old_content {
+                    let _ = fs::write(current_dir.join(SKILL_FILE_NAME).as_std_path(), old_content);
+                }
+                self.restore_skill_links(
+                    current_dir.as_str(),
+                    source,
+                    workspace_path,
+                    previous_sync_targets,
+                );
+            }
+        } else if current_dir.is_none() {
+            let _ = fs::remove_dir_all(target_dir.as_std_path());
+        } else if let Some(old_content) = old_content {
+            let _ = fs::write(target_dir.join(SKILL_FILE_NAME).as_std_path(), old_content);
+            self.restore_skill_links(
+                target_dir.as_str(),
+                source,
+                workspace_path,
+                previous_sync_targets,
             );
         }
     }
@@ -1020,10 +1359,8 @@ mod tests {
 
     #[test]
     fn sync_uses_directory_name_instead_of_frontmatter_name() {
-        let tmp = std::env::temp_dir().join(format!(
-            "gb-sync-directory-name-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("gb-sync-directory-name-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
         fs::create_dir_all(repo_root.as_std_path()).unwrap();
@@ -1054,8 +1391,18 @@ mod tests {
             )
             .unwrap();
 
-        assert!(tmp.join(".codex").join("skills").join("ckm-design").exists());
-        assert!(!tmp.join(".codex").join("skills").join("ckm:design").exists());
+        assert!(
+            tmp.join(".codex")
+                .join("skills")
+                .join("ckm-design")
+                .exists()
+        );
+        assert!(
+            !tmp.join(".codex")
+                .join("skills")
+                .join("ckm:design")
+                .exists()
+        );
 
         let skills = manager.list_by_workspace(repo_root.as_str()).unwrap();
         let skill = skills
@@ -1063,6 +1410,130 @@ mod tests {
             .find(|skill| skill.directory_path == source_dir.as_str())
             .unwrap();
         assert_eq!(skill.synced_agent_types, vec!["codex-acp".to_string()]);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_instance_rejects_sync_conflict_before_creating_source() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gb-write-atomic-sync-conflict-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let conflict_dir = repo_root
+            .join(".codex")
+            .join("skills")
+            .join("conflicted-skill");
+        fs::create_dir_all(conflict_dir.as_std_path()).unwrap();
+        fs::write(
+            conflict_dir.join("SKILL.md").as_std_path(),
+            "---\nname: conflicted-skill\ndescription: native\n---\ncontent",
+        )
+        .unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        agents.insert(
+            ManagedAgentType::CodexAcp,
+            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
+        );
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+
+        let error = manager
+            .write_instance(
+                "conflicted-skill",
+                SkillSource::Project,
+                "---\nname: conflicted-skill\ndescription: test\n---\ncontent",
+                Some(repo_root.as_str()),
+                None,
+                None,
+                Some(&["codex-acp".to_string()]),
+            )
+            .unwrap_err();
+        let skill_error = error.downcast_ref::<SkillCommandError>().unwrap();
+        assert!(matches!(
+            skill_error,
+            SkillCommandError::SyncConflict { .. }
+        ));
+        assert!(
+            !repo_root
+                .join(".gold-band")
+                .join("skills")
+                .join("conflicted-skill")
+                .exists()
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_instance_renames_directory_and_reconciles_links() {
+        let tmp = std::env::temp_dir().join(format!("gb-write-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let repo_root = Utf8PathBuf::from_path_buf(tmp.join("repo")).unwrap();
+        fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let source_dir = repo_root
+            .join(".gold-band")
+            .join("skills")
+            .join("old-skill");
+        fs::create_dir_all(source_dir.as_std_path()).unwrap();
+        fs::write(
+            source_dir.join("SKILL.md").as_std_path(),
+            "---\nname: old-skill\ndescription: test\n---\nold content",
+        )
+        .unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        agents.insert(
+            ManagedAgentType::CodexAcp,
+            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
+        );
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+        manager
+            .sync_skill_instance(
+                "old-skill",
+                source_dir.as_str(),
+                SkillSource::Project,
+                Some(repo_root.as_str()),
+                Some(&["claude-acp".to_string(), "codex-acp".to_string()]),
+            )
+            .unwrap();
+
+        let result = manager
+            .write_instance(
+                "new-skill",
+                SkillSource::Project,
+                "---\nname: new-skill\ndescription: test\n---\nnew content",
+                Some(repo_root.as_str()),
+                Some("old-skill"),
+                Some(source_dir.as_str()),
+                Some(&["claude-acp".to_string(), "codex-acp".to_string()]),
+            )
+            .unwrap();
+
+        let new_source_dir = repo_root
+            .join(".gold-band")
+            .join("skills")
+            .join("new-skill");
+        assert_eq!(result.directory_path, new_source_dir);
+        assert!(!source_dir.exists());
+        assert!(new_source_dir.exists());
+        for agent_dir in [".claude", ".codex"] {
+            let old_link = repo_root.join(agent_dir).join("skills").join("old-skill");
+            let new_link = repo_root.join(agent_dir).join("skills").join("new-skill");
+            assert!(!old_link.exists());
+            assert!(is_link_pointing_to(
+                new_link.as_std_path(),
+                &canonicalize_lossy(new_source_dir.as_std_path())
+            ));
+        }
+        let saved = fs::read_to_string(new_source_dir.join("SKILL.md").as_std_path()).unwrap();
+        assert!(saved.contains("new content"));
 
         let _ = fs::remove_dir_all(&tmp);
     }

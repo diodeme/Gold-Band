@@ -47,8 +47,8 @@ use crate::view_models::{
     SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
     WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
     dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm,
-    run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
-    task_detail_vm, task_list_vm, workflow_vm,
+    run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm,
+    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
@@ -3595,55 +3595,17 @@ pub fn write_skill(
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
 
-    let sync_skill_dir = if let Some(ref dir_path) = directory_path {
-        let skill_dir = Utf8PathBuf::from(dir_path);
-        app.skill_manager()
-            .write_at_path(&skill_dir, &name, skill_source, &content)
-            .map_err(command_error)?;
-        skill_dir
-    } else if let Some(ref ws_path) = workspace_path {
-        if skill_source == gold_band::config::SkillSource::Project {
-            app.skill_manager()
-                .write_to_workspace(&name, ws_path, &content)
-                .map_err(command_error)?;
-            gold_band::skill::SkillManager::workspace_skills_dir(ws_path).join(&name)
-        } else {
-            app.write_skill(&name, skill_source, &content)
-                .map_err(command_error)?;
-            gold_band::storage::GoldBandPaths::global_skills_dir().join(&name)
-        }
-    } else {
-        app.write_skill(&name, skill_source, &content)
-            .map_err(command_error)?;
-        gold_band::storage::GoldBandPaths::global_skills_dir().join(&name)
-    };
-
-    app.reconcile_skill_instance_links(
-        &name,
-        sync_skill_dir.as_str(),
-        skill_source,
-        workspace_path.as_deref(),
-        sync_targets.as_deref(),
-    )
-    .map_err(command_error)?;
-
-    if directory_path.is_none() {
-        if let Some(old) = old_name {
-            if old != name {
-                if let Some(ref ws_path) = workspace_path {
-                    if skill_source == gold_band::config::SkillSource::Project {
-                        let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path)
-                            .join(&old);
-                        if dir.exists() {
-                            let _ = std::fs::remove_dir_all(dir.as_std_path());
-                        }
-                    }
-                } else {
-                    let _ = app.delete_skill(&old, skill_source);
-                }
-            }
-        }
-    }
+    app.skill_manager()
+        .write_instance(
+            &name,
+            skill_source,
+            &content,
+            workspace_path.as_deref(),
+            old_name.as_deref(),
+            directory_path.as_deref(),
+            sync_targets.as_deref(),
+        )
+        .map_err(command_error)?;
 
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
@@ -3735,8 +3697,10 @@ pub fn get_skill_sync_status(
     let src_path = std::path::Path::new(&directory_path);
     // ??????????????junction ???????????
     let canonical_src = std::fs::canonicalize(src_path).unwrap_or_else(|_| src_path.to_path_buf());
-    let skill_dir_name = gold_band::skill::skill_dir_name_from_str(&directory_path)
-        .ok_or_else(|| command_error(anyhow::anyhow!("invalid skill directory: {directory_path}")))?;
+    let skill_dir_name =
+        gold_band::skill::skill_dir_name_from_str(&directory_path).ok_or_else(|| {
+            command_error(anyhow::anyhow!("invalid skill directory: {directory_path}"))
+        })?;
     let mut statuses = Vec::new();
 
     for (agent_type, config) in &app.config.agents {
@@ -3783,18 +3747,22 @@ pub fn check_skill_name_conflict(
     name: String,
     source: String,
     workspace_path: Option<String>,
+    old_name: Option<String>,
     directory_path: Option<String>,
     sync_targets: Option<Vec<String>>,
 ) -> CommandResult<Vec<String>> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
-    Ok(app.skill_manager().check_name_conflict(
-        &name,
-        skill_source,
-        workspace_path.as_deref(),
-        sync_targets.as_deref(),
-        directory_path.as_deref(),
-    ))
+    app.skill_manager()
+        .check_save_conflict(
+            &name,
+            skill_source,
+            workspace_path.as_deref(),
+            old_name.as_deref(),
+            directory_path.as_deref(),
+            sync_targets.as_deref(),
+        )
+        .map_err(command_error)
 }
 
 fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, CommandErrorVm> {

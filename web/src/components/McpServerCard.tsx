@@ -60,7 +60,7 @@ export function McpServerCard({
             {server.helpMessage && (
               <Popover>
                 <PopoverTrigger asChild>
-                  <button type="button" className="inline-flex shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label="帮助信息">
+                  <button type="button" className="inline-flex shrink-0 text-muted-foreground hover:text-foreground transition-colors" aria-label={t('contextManagement.mcp.helpInfo', '帮助信息')}>
                     <Info className="size-3.5" />
                   </button>
                 </PopoverTrigger>
@@ -105,7 +105,7 @@ export function McpServerCard({
                   {isToolsFetching ? <Loader2 className="size-3.5 animate-spin" /> : <Wrench className="size-3.5" />}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">工具列表</TooltipContent>
+              <TooltipContent side="top">{t('contextManagement.mcp.toolsList', '工具列表')}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
           {onEdit && (

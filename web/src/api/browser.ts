@@ -479,9 +479,12 @@ export const browserApi: RuntimeApi = {
   listMcpTools(_id: string) { return Promise.resolve([]); },
   listSkills() { return Promise.resolve({ global: [], project: [] }); },
   listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
-  readSkill(_name: string, _source: string) { return Promise.resolve({ meta: { name: '', description: '', source: 'global', directoryPath: '', disableModelInvocation: false, loadWarnings: [] }, body: '' }); },
-  writeSkill(_name: string, _source: string, _content: string) { return Promise.resolve({ global: [], project: [] }); },
+  readSkill(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null) { return Promise.resolve({ meta: { name: '', description: '', source: 'global' as const, directoryPath: '', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: [] }, body: '' }); },
+  writeSkill(_name: string, _source: string, _content: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve({ global: [], project: [] }); },
   deleteSkill(_name: string, _source: string) { return Promise.resolve({ global: [], project: [] }); },
+  updateSkillSyncTargets(_name: string, _source: string, _workspacePath: string | null | undefined, _directoryPath: string, _syncTargets: string[]) { return Promise.resolve({ global: [], project: [] }); },
+  getSkillSyncStatus(_name: string, _directoryPath: string, _workspacePath?: string | null) { return Promise.resolve([]); },
+  checkSkillNameConflict(_name: string, _source: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve([] as string[]); },
 };
 
 function browserProfileId() {

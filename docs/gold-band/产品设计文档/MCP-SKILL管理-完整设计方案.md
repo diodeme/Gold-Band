@@ -1,10 +1,31 @@
 # Gold-Band MCP & SKILL 管理 — 完整设计方案（最终版）
 
 > 基于 5 轮深度访谈 + 完整开发实现（对标 Zed）
-> 更新：2026-06-26
-> 涵盖：MCP 服务管理、MCP 健康检查、SKILL 管理、运行时集成
->
-> 说明：runtime prompt 已移除 `skill_catalog` 注入；本文件中关于 `skill_catalog_block.md` 注入 system prompt 的早期设计仅作为历史背景，不再代表当前运行时链路。
+> 更新：2026-06-11
+> 涵盖：MCP 服务管理、MCP 健康检查、SKILL 管理、SKILL 传递、运行时集成
+## 2026-07-01 实施补充
+- SKILL 管理改为按实例目录（`directoryPath`）识别，同名原生 skill 允许并列展示。
+- 查询与同步以全局已配置 agent 为准；保存时按目标集合对账，允许“只保存不同步”以及取消既有软链同步。
+- 软链副本不单独展示；同步遇到目标目录已有同名原生 skill，或同目录发生同名创建/重命名时，均直接阻止并提示冲突。
+- 管理页卡片左下角展示来源 agent 图标；同步目标仅展示全局已配置 agent。
+- 编辑已有 skill 时，抽屉中的保存位置提示必须按真实 `directoryPath` 展示；项目内原生 agent skill 显示为 `<project>/<agent-dir>/skills/...`，不再一律回退成 `<project>/.gold-band/...`。
+- 原生 agent skill 的文件系统身份以真实目录名为准，而不是 frontmatter `name:`；同步、冲突检测、同步状态识别都基于 `directoryPath` 的最后一级目录处理。
+- 管理页支持按“当前 agent 可用 skill”筛选；过滤选项仅来自全局已配置 agent。
+- SKILL 卡片左下角图标改为“来源 agent + 已同步目标 agent”的并集展示；`.gold-band` 自建 skill 固定展示 Gold Band 图标。
+- 编辑原生 agent skill 时，同步目标列表排除其自身 agent，不再允许出现“`.claude` skill 再同步到 `.claude`”这类自相矛盾操作。
+
+## 2026-07-09 实施补充
+- Gold Band 自管 SKILL 的权威存储目录为 `~/.gold-band/skills/<dir>/SKILL.md` 与 `<workspace>/.gold-band/skills/<dir>/SKILL.md`；原生 agent skill 继续按各 agent 实例目录扫描，但列表、编辑、删除、同步状态均以 `directoryPath` 标识单个实例。
+- 多 Agent 同步模型以“已配置 agent 实例 + skill 目录名”为同步键。同步链接只在已配置 agent 的 `skills/<dir>` 下创建、移除和回放；未配置目录中的手工链接不属于 Gold Band 对账范围。
+- 保存流程收敛为后端单一事务入口：先计算目标目录并完成同目录与同步目标冲突预检，再执行目录移动/写入，最后按目标集合 reconcile 软链。若写入或同步失败，后端恢复旧内容、旧目录和已记录的旧同步目标，避免 UI 报错但磁盘已半成功。
+- Rename 是真实目录 rename：编辑已有 skill 且 `name` 变化时，后端将旧 `directoryPath` 移动到同父目录的新目录名，删除旧目录名下的已配置 agent 同步链接，再按新目录名建立新链接；frontmatter `name:` 只作为展示/运行时名称，不再代替目录身份。
+- SKILL 与角色管理统一使用共享 YAML frontmatter 解析模块：`name:`、`summary:` 与 `description:` 可为单行值，也可使用 `>` folded block 或 `|` literal block；frontmatter 分隔符同时支持 LF 与 Windows CRLF 换行，`description: >` 不会再被误读成字面量 `>` 或因为 CRLF 被视为无描述。编辑已有 SKILL/角色时采用字段级 frontmatter 更新，只覆盖 `name`、`description`/`summary` 与正文，保留 `compatibility` 等未知字段和原 block scalar 风格。
+- 前端冲突检查必须同时传入 `oldName`、`directoryPath` 与 `syncTargets`，由后端按最终目标目录名判断新目录冲突和多 Agent 同步冲突，避免编辑原生 skill 时仅按 frontmatter 名误判。
+- SKILL 卡片底部将“来源实例”和“同步目标”分区展示：来源 icon 不可点击；同步目标 icon 列表与创建/编辑抽屉的 `syncTargets` 枚举一致，并复用工作流节点的 agent icon 视觉规格化逻辑，保证圆形、方形和留白不同的图标视觉重量一致。已同步目标用原色 icon + 左上角绿色状态点，未同步目标用灰色 icon；点击目标 icon 通过 `update_skill_sync_targets` 只更新软链对账，不重写 `SKILL.md` 正文，仅当前 icon 显示加载态，失败复用页面错误横幅并自动消失。
+- SKILL 卡片采用紧凑稳定尺寸结构：卡片使用固定高度，顶部信息区与底部 agent/action 区均固定高度；描述最多两行省略，不能因为描述行数不同导致底部 agent 列表和操作按钮上下跳动，也不能被 grid 行高拉伸出大面积空白。
+- SKILL 管理页的项目级 workspace 选择会记忆上一次有效选择。切回“项目 SKILL”或重新进入上下文管理页时，如果该 workspace 仍存在于当前 workspace 列表中，自动恢复并加载项目 SKILL；如果 workspace 已不存在，清除本地记忆并保持未选择状态。
+- SKILL 创建/编辑抽屉拥有独立表单状态，正文 Markdown 输入、名称/描述编辑和同步目标勾选只重渲染抽屉自身；`ContextManagementPage` 列表页只负责打开目标、接收保存后的列表刷新，避免每个字符触发背后的 SKILL 卡片网格、筛选栏和 tooltip 树重新 render。
+
 
 ---
 
@@ -217,12 +238,12 @@ pub fn invalidate_health(&self, id: &str);
 
 | # | 决策 | 结论 | 对标 Zed |
 |---|------|------|----------|
-| 1 | 存储模型 | `.agents/skills/` 文件系统（全局 + 项目级） | ✅ |
+| 1 | 存储模型 | `.gold-band/skills/` 文件系统（全局 + 项目级） | ✅ |
 | 2 | Scope 选择 | 创建时 Dropdown 显式选择 Global / Project | ✅ |
 | 3 | 默认 Scope | 有 workspace 时默认 Project，无时默认 Global | ✅ |
 | 4 | 编辑限制 | 编辑时 Scope 锁定 | ✅ |
 | 5 | 重名检测 | 实时，冲突时禁用保存 + 红色错误提示 | ✅ |
-| 6 | 改名处理 | 编辑改名先写新文件再删旧文件（oldName 参数） | ✅ |
+| 6 | 改名处理 | 编辑改名由后端移动真实目录并重建同步链接（`oldName + directoryPath`） | ✅ |
 | 7 | 渲染 | View 模式 Markdown 渲染 | ✅ |
 | 8 | 传递方式 | System Prompt `{{skill_catalog}}` → ACP `_meta.systemPrompt.append` | ✅ |
 | 9 | Body 嵌入 | SKILL.md 正文直接注入 system prompt（路径 A） | ✅ 替代 SkillTool |
@@ -246,8 +267,8 @@ pub struct SkillMeta {
 
 pub enum SkillSource {
     BuiltIn,  // 内置（暂未实现）
-    Global,   // ~/.agents/skills/
-    Project,  // <workspace>/.agents/skills/
+    Global,   // ~/.gold-band/skills/
+    Project,  // <workspace>/.gold-band/skills/
 }
 
 // ── 优先级（对标 Zed SkillSource::precedence） ──
@@ -263,12 +284,17 @@ fn precedence(source: SkillSource) -> u8 {
 ### 3.3 文件系统布局
 
 ```
-~/.agents/skills/                    ← 全局 SKILL（所有项目可用）
+~/.gold-band/skills/                 ← 全局 SKILL（所有项目可用）
   └── <name>/SKILL.md
 
-<workspace>/.agents/skills/           ← 项目级 SKILL（仅当前 project）
+<workspace>/.gold-band/skills/        ← 项目级 SKILL（仅当前 project）
   └── <name>/SKILL.md
+
+<agent-root>/skills/                  ← 原生 agent SKILL 实例（按已配置 agent 扫描）
+  └── <dir>/SKILL.md
 ```
+
+目录名 `<name>/<dir>` 是文件系统身份与同步链接名；frontmatter `name:` 可以与目录名不同，运行时展示和 catalog 使用 frontmatter，冲突检测与同步使用目录名。
 
 ### 3.4 SKILL.md 格式
 
@@ -340,8 +366,14 @@ You have access to the following Skills — modular capabilities...
 | `list_skills` | — | `SkillListVm { global, project }` |
 | `list_project_skills` | `workspacePath` | `Vec<SkillMetaVm>` |
 | `read_skill` | `name, source, workspacePath?` | `SkillContentVm` |
-| `write_skill` | `name, source, content, workspacePath?, oldName?` | `SkillListVm` |
-| `delete_skill` | `name, source, workspacePath?` | `SkillListVm` |
+| `write_skill` | `name, source, content, workspacePath?, oldName?, directoryPath?, syncTargets?` | `SkillListVm` |
+| `delete_skill` | `name, source, workspacePath?, directoryPath?` | `SkillListVm` |
+| `update_skill_sync_targets` | `name, source, workspacePath?, directoryPath, syncTargets` | `SkillListVm` |
+| `get_skill_sync_status` | `name, directoryPath, workspacePath?` | `Vec<SyncStatusEntryVm>` |
+| `check_skill_name_conflict` | `name, source, workspacePath?, oldName?, directoryPath?, syncTargets?` | `Vec<String>` |
+
+`write_skill` 不直接分散执行创建、覆盖、rename 和同步。Tauri command 只解析入参并委托 `SkillManager::write_instance`，由后端统一执行“预检 → 文件系统变更 → 同步链接 reconcile → 失败回滚”。
+`update_skill_sync_targets` 只处理已有 SKILL 实例的同步链接 reconcile，用于卡片上的快速同步/取消同步，不应修改 `SKILL.md` 内容或触发 rename。
 
 ### 3.8 UI 特性
 
@@ -441,10 +473,10 @@ interface ToolInfo {
 ├── settings.json          ← MCP 配置（context_servers 字段）
 │                            + 信任列表（trusted_workspaces 字段）
 
-~/.agents/skills/          ← 全局 SKILL
+~/.gold-band/skills/       ← 全局 SKILL
   └── <name>/SKILL.md
 
-<workspace>/.agents/skills/ ← 项目级 SKILL（每 workspace 独立）
+<workspace>/.gold-band/skills/ ← 项目级 SKILL（每 workspace 独立）
   └── <name>/SKILL.md
 ```
 
@@ -505,7 +537,7 @@ settings.json
 ### 7.2 SKILL 运行时数据流
 
 ```
-磁盘 (.agents/skills/<name>/SKILL.md)
+磁盘 (.gold-band/skills/<name>/SKILL.md)
   → scan_skills_dir()                           [扫描目录 + 解析前置元数据]
     → SkillManager::list()                      [global + project 分离]
       → catalog_skills_for_agent_workspace()    [按 workspace 过滤]

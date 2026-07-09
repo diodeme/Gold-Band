@@ -7,13 +7,14 @@ import {
   createProfile, deleteProfile, getProfiles, updateProfile,
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
-  listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill,
-  getConversationSidebar,
+  listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
+  checkSkillNameConflict, updateSkillSyncTargets,
+  getConversationSidebar, getAgentRegistry,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
   AppErrorVm, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
-  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, ToolInfo,
+  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EntitySection } from '@/components/EntitySection';
@@ -37,6 +38,18 @@ import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgent } from '@/lib/skill-agent-display';
+import {
+  buildSkillSaveRequest,
+  createEmptySkillForm,
+  createSkillFormFromContent,
+  filterSkillSyncTargets,
+  type SkillFormState,
+  type SkillSheetMode,
+} from '@/lib/skill-sheet-form';
+import { skillStorageHint } from '@/lib/skill-storage-hint';
+import { readRememberedSkillProjectWorkspace, rememberSkillProjectWorkspace } from '@/lib/skill-workspace-memory';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles' | 'mcp' | 'skills';
@@ -110,17 +123,45 @@ export function ContextManagementPage() {
   const [projectSkills, setProjectSkills] = useState<SkillMetaVm[]>([]);
   const [skillLoading, setSkillLoading] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
-  const [skillSheetMode, setSkillSheetMode] = useState<'view' | 'create' | 'edit' | null>(null);
+  const skillErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [skillSheetMode, setSkillSheetMode] = useState<SkillSheetMode | null>(null);
   const [skillEditTarget, setSkillEditTarget] = useState<SkillMetaVm | null>(null);
-  const [skillForm, setSkillForm] = useState({ name: '', description: '', body: '', disableModelInvocation: false, source: 'global' as string });
-  const [skillSaving, setSkillSaving] = useState(false);
+  const [skillSheetContent, setSkillSheetContent] = useState<SkillContentVm | null>(null);
   const [skillDeleteTarget, setSkillDeleteTarget] = useState<SkillMetaVm | null>(null);
+  const [skillDeleting, setSkillDeleting] = useState(false);
+  const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
+  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
+  const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
+
+  useEffect(() => {
+    if (skillError) {
+      if (skillErrorTimerRef.current) clearTimeout(skillErrorTimerRef.current);
+      skillErrorTimerRef.current = setTimeout(() => setSkillError(null), 6000);
+    }
+    return () => {
+      if (skillErrorTimerRef.current) clearTimeout(skillErrorTimerRef.current);
+    };
+  }, [skillError]);
+
+  const configuredAgents = useMemo(
+    () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
+    [agentRegistry],
+  );
+
+  useEffect(() => {
+    if (skillAgentFilter === 'all') {
+      return;
+    }
+    if (!configuredAgents.some((agent) => agent.agentType === skillAgentFilter)) {
+      setSkillAgentFilter('all');
+    }
+  }, [configuredAgents, skillAgentFilter]);
 
   const filteredSkills = useMemo(() => {
     if (skillTab === 'project' && !selectedWorkspace) return [];
@@ -129,17 +170,11 @@ export function ContextManagementPage() {
     if (q) {
       items = items.filter((s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
     }
+    if (skillAgentFilter !== 'all') {
+      items = items.filter((skill) => skillAvailableAgentTypes(skill, configuredAgents).includes(skillAgentFilter));
+    }
     return items;
-  }, [skillList, projectSkills, skillTab, skillQuery, selectedWorkspace]);
-
-  const skillNameConflict = useMemo(() => {
-    if (skillSheetMode !== 'create' && skillSheetMode !== 'edit') return false;
-    const name = skillForm.name.trim();
-    if (!name) return false;
-    const isRename = name !== skillEditTarget?.name;
-    if (!isRename && skillSheetMode !== 'create') return false;
-    return (filteredSkills ?? []).some((s) => s.name === name);
-  }, [skillForm.name, skillSheetMode, skillEditTarget, filteredSkills]);
+  }, [configuredAgents, projectSkills, skillAgentFilter, skillList, skillQuery, skillTab, selectedWorkspace]);
 
   // 选择 workspace 时加载该项目 SKILL
   const loadProjectSkills = async (wsPath: string) => {
@@ -150,7 +185,60 @@ export function ContextManagementPage() {
   };
 
   useEffect(() => {
+    setSelectedWorkspace((current) => {
+      if (current && workspaces.some((workspace) => workspace.workspacePath === current)) {
+        return current;
+      }
+      return readRememberedSkillProjectWorkspace(workspaces);
+    });
+  }, [workspaces]);
+
+  useEffect(() => {
+    if (skillTab !== 'project') {
+      return;
+    }
+    if (!selectedWorkspace) {
+      setProjectSkills([]);
+      return;
+    }
+    void loadProjectSkills(selectedWorkspace);
+  }, [selectedWorkspace, skillTab]);
+
+  const handleSkillSyncToggle = async (skill: SkillMetaVm, agentType: string) => {
+    const pendingKey = `${skill.source}:${skill.directoryPath}:${agentType}`;
+    if (skillSyncPendingKey) {
+      return;
+    }
+    const wsPath = skill.source === 'project' ? selectedWorkspace || null : null;
+    const nextTargets = new Set(skill.syncedAgentTypes);
+    if (nextTargets.has(agentType)) {
+      nextTargets.delete(agentType);
+    } else {
+      nextTargets.add(agentType);
+    }
+    setSkillSyncPendingKey(pendingKey);
+    try {
+      const next = await updateSkillSyncTargets(
+        skill.name,
+        skill.source,
+        wsPath,
+        skill.directoryPath,
+        [...nextTargets],
+      );
+      setSkillList(next);
+      if (skillTab === 'project' && selectedWorkspace) {
+        await loadProjectSkills(selectedWorkspace);
+      }
+    } catch (err) {
+      setSkillError(displayAppError(t, err));
+    } finally {
+      setSkillSyncPendingKey(null);
+    }
+  };
+
+  useEffect(() => {
     getConversationSidebar().then((s) => setWorkspaces(s?.workspaces ?? [])).catch(() => {});
+    getAgentRegistry().then(setAgentRegistry).catch(() => {});
   }, []);
   // 切换到 SKILL Tab 或 Sheet 打开时刷新工作空间列表
   useEffect(() => {
@@ -588,16 +676,16 @@ export function ContextManagementPage() {
             <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Tabs value={skillTab} onValueChange={(v) => { setSkillTab(v as 'global' | 'project'); setSkillQuery(''); setSelectedWorkspace(''); setProjectSkills([]); }}>
+              <Tabs value={skillTab} onValueChange={(v) => { const nextTab = v as 'global' | 'project'; setSkillTab(nextTab); setSkillQuery(''); setSkillAgentFilter('all'); if (nextTab === 'global') setProjectSkills([]); }}>
                 <TabsList variant="line">
                   <TabsTrigger value="global">{t('contextManagement.skills.globalTab', '全局')}</TabsTrigger>
                   <TabsTrigger value="project">{t('contextManagement.skills.projectTab', '项目')}</TabsTrigger>
                 </TabsList>
               </Tabs>
               {skillTab === 'project' && workspaces.length > 0 && (
-                <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); setSkillQuery(''); void loadProjectSkills(v); }}>
+                <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); rememberSkillProjectWorkspace(v); setSkillQuery(''); }}>
                   <SelectTrigger className="h-8 w-44 text-xs">
-                    <SelectValue placeholder="选择项目..." />
+                    <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
                   </SelectTrigger>
                   <SelectContent>
                     {workspaces.map((w) => (
@@ -611,77 +699,190 @@ export function ContextManagementPage() {
               {(skillTab === 'global' || selectedWorkspace) && (
                 <div className="relative min-w-[160px]">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input className="h-8 pl-8 text-xs" placeholder="搜索 SKILL..." value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+                  <Input className="h-8 pl-8 text-xs" placeholder={t('contextManagement.skills.searchPlaceholder', '搜索 SKILL...')} value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
                 </div>
               )}
+              {(skillTab === 'global' || selectedWorkspace) && configuredAgents.length > 0 && (
+                <Select value={skillAgentFilter} onValueChange={setSkillAgentFilter}>
+                  <SelectTrigger className="h-8 w-40 text-xs">
+                    <SelectValue placeholder={t('contextManagement.skills.agentFilterPlaceholder', '按 Agent 筛选')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t('contextManagement.skills.allAgents', '全部 Agent')}</SelectItem>
+                    {configuredAgents.map((agent) => (
+                      <SelectItem key={agent.agentType} value={agent.agentType}>{agent.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Button variant="outline" size="sm" disabled={skillLoading} onClick={() => void refreshSkills()}><RefreshCw className={cn('size-4', skillLoading && 'animate-spin')} /></Button>
-              <Button size="sm" onClick={() => { setSkillSheetMode('create'); setSkillEditTarget(null); const defSrc = skillTab === 'global' ? 'global' : (selectedWorkspace ? `project:${selectedWorkspace}` : 'project'); setSkillForm({ name: '', description: '', body: '', disableModelInvocation: false, source: defSrc }); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
+              <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
             </div>
           </div>
           {skillError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{skillError}</div> : null}
           <ScrollArea className="min-h-0 flex-1">
             {skillLoading && !skillList ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>选择项目以查看项目级 SKILL</EmptyState> : null}
+            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState> : null}
             {skillTab === 'global' && skillList && skillList.global.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
             {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillList && filteredSkills && filteredSkills.length === 0 && skillQuery ? <EmptyState>无匹配结果</EmptyState> : null}
+            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState> : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {filteredSkills && filteredSkills.map((skill) => (
-                <Card key={`${skill.source}:${skill.name}`} className="group overflow-hidden border-border/50 transition-shadow hover:shadow-sm">
-                  <div className="px-4 py-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-semibold">{skill.name}</span>
-                          {skill.disableModelInvocation && (
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">manual only</Badge>
-                          )}
+              {filteredSkills && filteredSkills.map((skill) => {
+                const sourceAgent = skillSourceAgent(skill, configuredAgents);
+                const syncAgents = selectableSyncAgents(skill, configuredAgents);
+                const syncedAgentTypes = new Set(skill.syncedAgentTypes);
+                return (
+                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-40 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                    <div className="h-28 shrink-0 px-4 py-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold">{skill.name}</span>
+                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">no description</span>}</p>
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
-                      <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? 'Global' : 'Project'}</Badge>
                     </div>
-                  </div>
-                  <div className="flex items-center justify-end gap-1 border-t border-border/30 px-2 py-1.5">
-                    <TooltipProvider delayDuration={300}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath); setSkillEditTarget(skill); setSkillForm({ name: c.meta.name, description: c.meta.description, body: c.body, disableModelInvocation: c.meta.disableModelInvocation, source: skill.source as string }); setSkillEditWsPath(wsPath); setSkillSheetMode('view'); } catch { /* ignore */ } }}>
-                            <Eye className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">View</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                    <TooltipProvider delayDuration={300}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath); setSkillEditTarget(skill); setSkillForm({ name: c.meta.name, description: c.meta.description, body: c.body, disableModelInvocation: c.meta.disableModelInvocation, source: skill.source as string }); setSkillEditWsPath(wsPath); setSkillSheetMode('edit'); } catch { /* ignore */ } }}>
-                            <Pencil className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">Edit</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                    <TooltipProvider delayDuration={300}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => setSkillDeleteTarget(skill)}>
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">Delete</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </div>
-                </Card>
-              ))}
+                    <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
+                      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden px-2">
+                        {sourceAgent ? (
+                          <TooltipProvider delayDuration={300}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
+                                  <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : (
+                          <span className="truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span>
+                        )}
+                        {sourceAgent && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
+                        {syncAgents.length > 0 ? (
+                          <div className="flex min-w-0 items-center gap-0.5">
+                            {syncAgents.map((agent) => {
+                              const isSynced = syncedAgentTypes.has(agent.agentType);
+                              const pendingKey = `${skill.source}:${skill.directoryPath}:${agent.agentType}`;
+                              const isPending = skillSyncPendingKey === pendingKey;
+                              return (
+                                <TooltipProvider key={agent.agentType} delayDuration={300}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        size="icon"
+                                        variant="ghost"
+                                        className="relative size-6 rounded-full hover:bg-muted"
+                                        disabled={isPending}
+                                        onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
+                                      >
+                                        {isPending ? (
+                                          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                                        ) : (
+                                          <span className="relative grid size-5 place-items-center">
+                                            {isSynced ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
+                                            <img
+                                              src={agentIconSrc(agent.iconKey)}
+                                              alt={agent.label}
+                                              className={agentIconClass(agent.iconKey, cn('relative z-0 size-3.5 transition-opacity', !isSynced && 'grayscale opacity-35'))}
+                                            />
+                                          </span>
+                                        )}
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      {isSynced
+                                        ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
+                                        : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` })}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <TooltipProvider delayDuration={300}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath, skill.directoryPath); setSkillEditTarget(skill); setSkillSheetContent(c); setSkillEditWsPath(wsPath); setSkillSheetMode('view'); } catch { /* ignore */ } }}>
+                                <Eye className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">{t('common.detail')}</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider delayDuration={300}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button size="icon" variant="ghost" className="size-8" onClick={async () => { try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; const c = await readSkill(skill.name, skill.source, wsPath, skill.directoryPath); setSkillEditTarget(skill); setSkillSheetContent(c); setSkillEditWsPath(wsPath); setSkillSheetMode('edit'); } catch { /* ignore */ } }}>
+                                <Pencil className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">{t('contextManagement.skills.editSkillAction', '编辑')}</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider delayDuration={300}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button size="icon" variant="ghost" className="size-8 text-muted-foreground hover:text-destructive" onClick={() => setSkillDeleteTarget(skill)}>
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">{t('contextManagement.skills.deleteSkill', '删除 SKILL')}</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })}
             </div>
             </ScrollArea>
           </CardContent>
         </AppCard>
         </div>
       )}
+
+      <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => { if (!open && !skillDeleting) setSkillDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('contextManagement.skills.deleteSkill', '删除 SKILL')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('contextManagement.skills.deleteDescription', '确定要删除这个 SKILL 吗？').replace('{name}', skillDeleteTarget?.name ?? '')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={skillDeleting}>{t('common.close')}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={skillDeleting || !skillDeleteTarget}
+              onClick={(event) => {
+                event.preventDefault();
+                if (!skillDeleteTarget) return;
+                const wsPath = skillDeleteTarget.source === 'project' ? selectedWorkspace || null : null;
+                setSkillDeleting(true);
+                deleteSkill(skillDeleteTarget.name, skillDeleteTarget.source, wsPath, skillDeleteTarget.directoryPath)
+                  .then(async (next) => {
+                    setSkillList(next);
+                    if (skillTab === 'project' && selectedWorkspace) {
+                      await loadProjectSkills(selectedWorkspace);
+                    }
+                    setSkillDeleteTarget(null);
+                  })
+                  .catch((err) => {
+                    setSkillError(displayAppError(t, err));
+                  })
+                  .finally(() => setSkillDeleting(false));
+              }}
+            >
+              {t('contextManagement.skills.deleteSkill', '删除 SKILL')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ── MCP Sheet (JSON Editor) ── */}
       <Sheet open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
@@ -700,7 +901,7 @@ export function ContextManagementPage() {
             </div>
             ) : null}
             <textarea
-              className="min-h-72 w-full rounded-md border bg-muted/30 p-3 font-mono text-sm leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={mcpJsonContent}
               onChange={(e) => setMcpJsonContent(e.target.value)}
               spellCheck={false}
@@ -749,15 +950,15 @@ export function ContextManagementPage() {
             {toolsLoading ? (
               <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
-                正在获取工具列表…
+                {t('contextManagement.mcp.loadingTools', '正在获取工具列表…')}
               </div>
             ) : toolsError ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{toolsError}</div>
             ) : toolsList && toolsList.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">该服务器未提供任何工具</div>
+              <div className="py-12 text-center text-sm text-muted-foreground">{t('contextManagement.mcp.emptyTools', '该服务器未提供任何工具')}</div>
             ) : toolsList ? (
               <>
-                <p className="text-xs text-muted-foreground">共 {toolsList.length} 个工具</p>
+                <p className="text-xs text-muted-foreground">{t('contextManagement.mcp.toolCount', { count: toolsList.length, defaultValue: `共 ${toolsList.length} 个工具` })}</p>
                 <div className="space-y-2">
                   {toolsList.map((tool) => (
                     <div key={tool.name} className="rounded-lg border border-border/50 bg-card/40 px-4 py-3">
@@ -771,7 +972,7 @@ export function ContextManagementPage() {
                       </div>
                       {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">参数 Schema</summary>
+                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
                           <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
                         </details>
                       )}
@@ -782,125 +983,237 @@ export function ContextManagementPage() {
             ) : null}
           </div>
           <SheetFooter className="border-t px-5 py-4">
-            <Button variant="outline" onClick={() => { setToolsSheetServer(null); setToolsList(null); setToolsError(null); }}>关闭</Button>
+            <Button variant="outline" onClick={() => { setToolsSheetServer(null); setToolsList(null); setToolsError(null); }}>{t('common.close')}</Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>
 
-      {/* ── SKILL Sheet ── */}
-      <Sheet open={skillSheetMode !== null} onOpenChange={(open) => { if (!open) setSkillSheetMode(null); }}>
-        <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
-          <SheetHeader className="border-b px-5 py-4">
-            <SheetTitle>{skillSheetMode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : skillSheetMode === 'edit' ? `编辑 ${skillEditTarget?.name ?? ''}` : skillEditTarget?.name ?? t('common.detail')}</SheetTitle>
-          </SheetHeader>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
-            {skillSheetMode === 'view' ? (
-              <div className="space-y-4">
-                <div className="grid gap-2 text-sm">
-                  <div><span className="text-muted-foreground">{t('contextManagement.skills.name', '名称')}:</span> {skillForm.name}</div>
-                  <div><span className="text-muted-foreground">{t('contextManagement.skills.description', '描述')}:</span> {skillForm.description}</div>
-                  <div><span className="text-muted-foreground">Scope:</span> {skillForm.source === 'global' ? 'Global' : 'Project'}</div>
-                </div>
-                <div className="rounded-lg border bg-card/50 p-4">
-                  <Markdown>{skillForm.body || '_no content_'}</Markdown>
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* 对标 Zed Scope dropdown — 默认 Project，多工作空间可选 */}
-                <label className="block space-y-1">
-                  <span className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
-                  <select
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    value={skillSheetMode === 'edit' && skillEditWsPath ? `project:${skillEditWsPath}` : skillForm.source}
-                    onChange={(e) => setSkillForm({ ...skillForm, source: e.target.value })}
-                    disabled={skillSheetMode === 'edit'}
-                  >
-                    {skillSheetMode === 'edit' && skillEditWsPath ? (
-                      <option value={`project:${skillEditWsPath}`}>
-                        {workspaces.find((w) => w.workspacePath === skillEditWsPath)?.name ?? skillEditWsPath} (project)
-                      </option>
-                    ) : (
-                      <>
-                        {workspaces.map((w) => (
-                          <option key={w.projectId} value={`project:${w.workspacePath}`}>{w.name} (project)</option>
-                        ))}
-                        <option value="global">Global</option>
-                        {workspaces.length === 0 && <option value="project">Project</option>}
-                      </>
-                    )}
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    {skillForm.source === 'global'
-                      ? 'Available across every project. Saved to ~/.agents/skills/<name>/SKILL.md'
-                      : `Project-level. Saved to ${skillForm.source.startsWith('project:') ? skillForm.source.slice(8) : '<project>'}/.agents/skills/<name>/SKILL.md`}
-                  </p>
-                </label>
-                <label className="block space-y-1">
-                  <span className="text-sm font-medium">{t('contextManagement.skills.name', '名称')}</span>
-                  <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={skillForm.name} onChange={(e) => setSkillForm({ ...skillForm, name: e.target.value })} />
-                </label>
-                <label className="block space-y-1">
-                  <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
-                  <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={skillForm.description} onChange={(e) => setSkillForm({ ...skillForm, description: e.target.value })} />
-                </label>
-                {skillNameConflict && (
-                  <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                    名称 "{skillForm.name.trim()}" 已存在，请使用其他名称。
-                  </div>
-                )}
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={skillForm.disableModelInvocation} onChange={(e) => setSkillForm({ ...skillForm, disableModelInvocation: e.target.checked })} />
-                  <span className="text-sm">{t('contextManagement.skills.disableModelInvocation', '禁用自动调用')}</span>
-                </label>
-                <label className="block space-y-1">
-                  <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
-                  <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed" value={skillForm.body} onChange={(e) => setSkillForm({ ...skillForm, body: e.target.value })} />
-                </label>
-              </>
-            )}
-          </div>
-          <SheetFooter className="border-t px-5 py-4">
-            <Button variant="outline" onClick={() => setSkillSheetMode(null)}>{t('common.close')}</Button>
-            {(skillSheetMode === 'create' || skillSheetMode === 'edit') && (
-              <Button disabled={skillSaving || !skillForm.name.trim() || skillNameConflict} onClick={async () => {
-                setSkillSaving(true);
-                try {
-                  const scope = skillForm.source.startsWith('project:') ? 'project' : skillForm.source;
-                  // 编辑时使用原始 workspace 路径，创建时从 source 提取
-                  const wsPath = skillSheetMode === 'edit'
-                    ? skillEditWsPath
-                    : (skillForm.source.startsWith('project:') ? skillForm.source.slice(8) : null);
-                  const content = `---\nname: ${skillForm.name.trim()}\ndescription: ${skillForm.description.trim()}\n${skillForm.disableModelInvocation ? 'disable-model-invocation: true\n' : ''}---\n\n${skillForm.body}`;
-                  const oldName = skillSheetMode === 'edit' ? skillEditTarget?.name : null;
-                  await writeSkill(skillForm.name.trim(), scope, content, wsPath, oldName);
-                  setSkillList(await listSkills());
-                  if (skillTab === 'project' && selectedWorkspace) { void loadProjectSkills(selectedWorkspace); }
-                  setSkillSheetMode(null);
-                } catch (err) { setSkillError(displayAppError(t, err)); }
-                finally { setSkillSaving(false); }
-              }}>
-                {t('common.save')}
-              </Button>
-            )}
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+      <SkillSheet
+        mode={skillSheetMode}
+        content={skillSheetContent}
+        editTarget={skillEditTarget}
+        editWorkspacePath={skillEditWsPath}
+        createSource={skillTab === 'global' ? 'global' : (selectedWorkspace ? `project:${selectedWorkspace}` : 'project')}
+        workspaces={workspaces}
+        configuredAgents={configuredAgents}
+        skillTab={skillTab}
+        selectedWorkspace={selectedWorkspace}
+        onOpenChange={(open) => { if (!open) setSkillSheetMode(null); }}
+        onSaved={(next) => setSkillList(next)}
+        onReloadProjectSkills={loadProjectSkills}
+        onError={setSkillError}
+      />
 
-      {/* ── SKILL Delete Dialog ── */}
-      <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => !open && setSkillDeleteTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('contextManagement.skills.deleteSkill', '删除 SKILL')}</AlertDialogTitle>
-            <AlertDialogDescription>确定要删除 SKILL "{skillDeleteTarget?.name}" 吗？此操作不可恢复。</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={async () => { if (!skillDeleteTarget) return; try { const wsPath = skillTab === 'project' && selectedWorkspace ? selectedWorkspace : null; await deleteSkill(skillDeleteTarget.name, skillDeleteTarget.source, wsPath); setSkillList(await listSkills()); if (skillTab === 'project' && selectedWorkspace) { void loadProjectSkills(selectedWorkspace); } } catch { /* ignore */ } finally { setSkillDeleteTarget(null); } }}>{t('contextManagement.skills.deleteSkill', '删除')}</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Page>
+  );
+}
+
+type SkillWorkspaceOption = { projectId: string; workspacePath: string; name: string };
+
+function SkillSheet({
+  mode,
+  content,
+  editTarget,
+  editWorkspacePath,
+  createSource,
+  workspaces,
+  configuredAgents,
+  skillTab,
+  selectedWorkspace,
+  onOpenChange,
+  onSaved,
+  onReloadProjectSkills,
+  onError,
+}: {
+  mode: SkillSheetMode | null;
+  content: SkillContentVm | null;
+  editTarget: SkillMetaVm | null;
+  editWorkspacePath: string | null;
+  createSource: string;
+  workspaces: SkillWorkspaceOption[];
+  configuredAgents: AgentRegistryVm['supportedTypes'];
+  skillTab: 'global' | 'project';
+  selectedWorkspace: string;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (next: SkillListVm) => void;
+  onReloadProjectSkills: (workspacePath: string) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const { t } = useTranslation();
+  const open = mode !== null;
+  const [form, setForm] = useState<SkillFormState>(() => createEmptySkillForm(createSource));
+  const [syncTargets, setSyncTargets] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const availableSyncAgents = useMemo(
+    () => selectableSyncAgents(mode === 'edit' ? editTarget : null, configuredAgents),
+    [configuredAgents, editTarget, mode],
+  );
+  const currentSkillStorageHint = useMemo(() => skillStorageHint({
+    source: form.source.startsWith('project:') ? 'project' : form.source,
+    editing: mode === 'edit',
+    directoryPath: editTarget?.directoryPath ?? null,
+    workspacePath: editWorkspacePath,
+    translate: (key, params) => t(key, params),
+  }), [editTarget?.directoryPath, editWorkspacePath, form.source, mode, t]);
+
+  useEffect(() => {
+    if (!open || !mode) return;
+    setSaving(false);
+    if (mode === 'create') {
+      setForm(createEmptySkillForm(createSource));
+      setSyncTargets(configuredAgents.map((agent) => agent.agentType));
+      return;
+    }
+    setForm(createSkillFormFromContent(content, editTarget?.source ?? createSource));
+    if (mode === 'view' || !editTarget) {
+      setSyncTargets([]);
+      return;
+    }
+    let active = true;
+    setSyncTargets([]);
+    getSkillSyncStatus(editTarget.name, editTarget.directoryPath, editWorkspacePath)
+      .then((statuses) => {
+        if (!active) return;
+        const configured = new Set(configuredAgents.map((agent) => agent.agentType));
+        setSyncTargets(statuses.filter((status) => status.isSynced).map((status) => status.agentType).filter((agentType) => configured.has(agentType)));
+      })
+      .catch(() => {
+        if (active) setSyncTargets([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [configuredAgents, content, createSource, editTarget, editWorkspacePath, mode, open]);
+
+  useEffect(() => {
+    setSyncTargets((current) => filterSkillSyncTargets(current, availableSyncAgents));
+  }, [availableSyncAgents]);
+
+  const save = async () => {
+    if (mode !== 'create' && mode !== 'edit') return;
+    setSaving(true);
+    try {
+      const request = buildSkillSaveRequest({
+        form,
+        mode,
+        editTarget,
+        editWorkspacePath,
+        syncTargets,
+      });
+      const conflicts = await checkSkillNameConflict(
+        request.name,
+        request.scope,
+        request.wsPath,
+        request.oldName,
+        request.directoryPath,
+        request.syncTargets,
+      );
+      if (conflicts.length > 0) {
+        onError(t('errors.skill.sync-conflict', { skillName: request.name, conflicts: conflicts.join('、') }));
+        return;
+      }
+      const next = await writeSkill(request.name, request.scope, request.content, request.wsPath, request.oldName, request.directoryPath, request.syncTargets);
+      onSaved(next);
+      if (skillTab === 'project' && selectedWorkspace) {
+        await onReloadProjectSkills(selectedWorkspace);
+      }
+      onOpenChange(false);
+    } catch (err) {
+      onError(displayAppError(t, err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
+        <SheetHeader className="border-b px-5 py-4">
+          <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? t('contextManagement.skills.editSkillTitle', { name: editTarget?.name ?? '', defaultValue: `编辑 ${editTarget?.name ?? ''}` }) : editTarget?.name ?? t('common.detail')}</SheetTitle>
+        </SheetHeader>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          {mode === 'view' ? (
+            <div className="space-y-4">
+              <div className="grid gap-2 text-sm">
+                <div><span className="text-muted-foreground">{t('contextManagement.skills.name', '名称')}:</span> {form.name}</div>
+                <div><span className="text-muted-foreground">{t('contextManagement.skills.description', '描述')}:</span> {form.description}</div>
+                <div><span className="text-muted-foreground">{t('contextManagement.scope', '范围')}:</span> {form.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</div>
+              </div>
+              <div className="rounded-lg border bg-card/50 p-4">
+                <Markdown>{form.body || t('contextManagement.emptyContent', '暂无正文内容')}</Markdown>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
+                <select
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={mode === 'edit' && editWorkspacePath ? `project:${editWorkspacePath}` : form.source}
+                  onChange={(event) => setForm((current) => ({ ...current, source: event.target.value }))}
+                  disabled={mode === 'edit'}
+                >
+                  {mode === 'edit' && editWorkspacePath ? (
+                    <option value={`project:${editWorkspacePath}`}>
+                      {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
+                    </option>
+                  ) : (
+                    <>
+                      {workspaces.map((workspace) => (
+                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</option>
+                      ))}
+                      <option value="global">{t('contextManagement.skills.globalBadge', 'Global')}</option>
+                      {workspaces.length === 0 && <option value="project">{t('contextManagement.skills.projectBadge', 'Project')}</option>}
+                    </>
+                  )}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {currentSkillStorageHint}
+                </p>
+              </label>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium">{t('contextManagement.skills.name', '名称')}</span>
+                <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
+                <Textarea className="min-h-24 text-sm leading-relaxed" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
+              </label>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium">{t('contextManagement.skills.syncTargets', '同步到')}</span>
+                {availableSyncAgents.length > 0 ? (
+                  <div className="flex flex-wrap gap-x-4 gap-y-2">
+                    {availableSyncAgents.map((agent) => (
+                      <label key={agent.agentType} className="flex items-center gap-1.5">
+                        <input type="checkbox" checked={syncTargets.includes(agent.agentType)} onChange={(event) => {
+                          setSyncTargets((current) => event.target.checked ? [...current, agent.agentType] : current.filter((target) => target !== agent.agentType));
+                        }} />
+                        <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-4')} />
+                        <span className="text-sm">{agent.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{t('contextManagement.skills.noConfiguredAgents', 'No configured agent available for sync.')}</p>
+                )}
+              </label>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
+                <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />
+              </label>
+            </>
+          )}
+        </div>
+        <SheetFooter className="border-t px-5 py-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
+          {(mode === 'create' || mode === 'edit') && (
+            <Button disabled={saving || !form.name.trim()} onClick={() => void save()}>
+              {t('common.save')}
+            </Button>
+          )}
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -1093,7 +1406,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>{t('contextManagement.content')}</FormLabel>
-                          <FormControl><Textarea className="min-h-72 font-mono text-xs" {...field} /></FormControl>
+                          <FormControl><Textarea className="min-h-72 text-sm leading-relaxed" {...field} /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -1235,7 +1548,7 @@ function profileInputDefaults(profile: ProfileVm | null): ProfileInput {
   return {
     scope: profile?.scope === 'project' ? 'project' : 'user',
     name: profile?.name ?? '',
-    summary: profile?.summary ?? '',
+    summary: profile?.summarySource ?? profile?.summary ?? '',
     content: profile?.content ?? '',
   };
 }

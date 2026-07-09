@@ -9,6 +9,7 @@ pub mod control;
 pub mod domain;
 pub mod dsl;
 pub mod dynamic;
+pub mod frontmatter;
 pub mod inspect;
 pub mod mcp;
 pub mod observability;

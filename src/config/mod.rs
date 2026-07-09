@@ -531,6 +531,7 @@ pub struct ProjectAppConfig {
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
     pub conversation_auto_title_max_chars: Option<usize>,
+    pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
@@ -559,6 +560,7 @@ pub struct RuntimeConfig {
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
     pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
     pub use_local_claude: bool,
+    pub require_local_claude_executable: bool,
     pub desktop_metrics_enabled: bool,
     pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
@@ -594,6 +596,7 @@ impl Default for RuntimeConfig {
             desktop_available_update: None,
             agents,
             use_local_claude: false,
+            require_local_claude_executable: false,
             desktop_metrics_enabled: false,
             desktop_metrics_base_url: None,
             desktop_metrics_api_key: None,
@@ -670,6 +673,9 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.conversation_auto_title_max_chars = conversation_auto_title_max_chars;
+        }
+        if let Some(require_local_claude_executable) = app_config.require_local_claude_executable {
+            self.require_local_claude_executable = require_local_claude_executable;
         }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
@@ -884,6 +890,7 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            require_local_claude_executable: Some(true),
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
@@ -891,6 +898,7 @@ mod tests {
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
+        assert_eq!(roundtripped.require_local_claude_executable, Some(true));
     }
 
     #[test]
@@ -946,11 +954,13 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            require_local_claude_executable: Some(true),
             ..Default::default()
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
+        assert!(config.require_local_claude_executable);
     }
 
     #[test]

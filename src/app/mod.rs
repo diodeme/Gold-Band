@@ -1604,6 +1604,7 @@ impl App {
             agent_type,
             config,
             self.config.use_local_claude,
+            self.config.require_local_claude_executable,
             self.config.acp_session_title_refresh_enabled,
             self.config.acp_raw_max_size_bytes,
             self.config.acp_raw_target_size_bytes,
@@ -1623,6 +1624,7 @@ impl App {
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
+            self.config.require_local_claude_executable,
         ) {
             Ok(capabilities) => Ok(DoctorResult {
                 available: true,

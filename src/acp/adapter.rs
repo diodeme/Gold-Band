@@ -10,6 +10,8 @@ use anyhow::{Result, anyhow, ensure};
 use crate::config::AcpAdapterConfig;
 use crate::process::{background_command, find_executable_in_paths};
 
+const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
+
 #[derive(Debug, Clone)]
 pub struct ResolvedAcpAdapter {
     pub adapter_id: String,
@@ -35,6 +37,7 @@ pub fn spawn_adapter(
     config: &AcpAdapterConfig,
     cwd: &std::path::Path,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
 ) -> Result<(ResolvedAcpAdapter, Child)> {
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
@@ -51,8 +54,21 @@ pub fn spawn_adapter(
     for (key, value) in &resolved_env {
         command.env(key, value);
     }
-    if let Some(claude_path) = local_claude_executable_for_env(use_local_claude, &resolved_env) {
-        command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+    match local_claude_executable_for_env(use_local_claude, &resolved_env) {
+        Some(claude_path) => {
+            command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
+        }
+        None if should_require_local_claude_resolution(
+            use_local_claude,
+            require_local_claude_executable,
+            &resolved_env,
+        ) =>
+        {
+            return Err(anyhow!(
+                "local Claude executable is required but could not be resolved"
+            ));
+        }
+        None => {}
     }
     let child = command
         .spawn()
@@ -113,6 +129,30 @@ fn local_claude_executable_for_env(
     resolve_local_claude_executable(resolved_env.get("PATH").map(String::as_str))
 }
 
+fn should_require_local_claude_resolution(
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    resolved_env: &BTreeMap<String, String>,
+) -> bool {
+    use_local_claude
+        && !resolved_env.contains_key("CLAUDE_CODE_EXECUTABLE")
+        && (require_local_claude_executable
+            || require_local_claude_env_enabled(resolved_env.get(REQUIRE_LOCAL_CLAUDE_ENV)))
+}
+
+fn require_local_claude_env_enabled(config_value: Option<&String>) -> bool {
+    if let Some(value) = config_value {
+        return bool_flag_enabled(value);
+    }
+    std::env::var(REQUIRE_LOCAL_CLAUDE_ENV)
+        .ok()
+        .is_some_and(|value| bool_flag_enabled(&value))
+}
+
+fn bool_flag_enabled(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true")
+}
+
 fn resolve_local_claude_executable(path: Option<&str>) -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -133,15 +173,68 @@ fn resolve_local_claude_executable_windows(path: Option<&str>) -> Option<PathBuf
             return Some(native);
         }
 
-        let has_claude_shim = dir.join("claude.cmd").is_file() || dir.join("claude").is_file();
-        if has_claude_shim {
-            let npm_native = dir.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
-            if npm_native.is_file() {
-                return Some(npm_native);
-            }
+        let cmd = dir.join("claude.cmd");
+        if let Some(native) = resolve_windows_cmd_to_exe(&cmd) {
+            return Some(native);
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn resolve_windows_cmd_to_exe(cmd_path: &Path) -> Option<PathBuf> {
+    if !cmd_path.is_file()
+        || !cmd_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
+        return None;
+    }
+
+    let contents = std::fs::read_to_string(cmd_path).ok()?;
+    let cmd_dir = cmd_path.parent()?;
+    for line in contents.lines().rev() {
+        if let Some(path) = resolve_cmd_line_exe_reference(line, cmd_dir) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn resolve_cmd_line_exe_reference(line: &str, cmd_dir: &Path) -> Option<PathBuf> {
+    let lower = line.to_ascii_lowercase();
+    let token_start = lower.find("%dp0%").or_else(|| lower.find("%~dp0"))?;
+    let exe_end = lower[token_start..].find(".exe")? + token_start + ".exe".len();
+    let raw = extract_cmd_path_reference(line, token_start, exe_end);
+    let raw_lower = raw.to_ascii_lowercase();
+    let token = if raw_lower.contains("%dp0%") {
+        "%dp0%"
+    } else if raw_lower.contains("%~dp0") {
+        "%~dp0"
+    } else {
+        return None;
+    };
+    let token_index = raw_lower.find(token)?;
+    let suffix = &raw[token_index + token.len()..];
+    let suffix = suffix.trim_start_matches(['\\', '/']);
+    let resolved = if suffix.is_empty() {
+        cmd_dir.to_path_buf()
+    } else {
+        cmd_dir.join(suffix)
+    };
+    resolved.is_file().then_some(resolved)
+}
+
+#[cfg(windows)]
+fn extract_cmd_path_reference(line: &str, token_start: usize, exe_end: usize) -> &str {
+    if let Some(quote_start) = line[..token_start].rfind('"')
+        && let Some(quote_end) = line[exe_end..].find('"')
+    {
+        return &line[quote_start + 1..exe_end + quote_end];
+    }
+    &line[token_start..exe_end]
 }
 
 fn augment_path_with_dirs(base_path: Option<&str>, suggested_dirs: &[PathBuf]) -> Option<String> {
@@ -257,13 +350,27 @@ mod tests {
     #[test]
     fn local_claude_resolves_npm_package_binary_on_windows() {
         let temp = tempdir().unwrap();
-        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        let cmd_path = temp.path().join("claude.cmd");
         fs::write(temp.path().join("claude"), "").unwrap();
         let npm_bin = temp
             .path()
             .join("node_modules/@anthropic-ai/claude-code/bin");
         fs::create_dir_all(&npm_bin).unwrap();
         fs::write(npm_bin.join("claude.exe"), "").unwrap();
+        fs::write(
+            cmd_path,
+            r#"@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+"#,
+        )
+        .unwrap();
 
         let path = std::env::join_paths([temp.path()]).unwrap();
         let resolved = resolve_local_claude_executable(path.to_str());
@@ -275,13 +382,18 @@ mod tests {
     #[test]
     fn local_claude_env_uses_npm_package_binary_on_windows() {
         let temp = tempdir().unwrap();
-        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        let cmd_path = temp.path().join("claude.cmd");
         fs::write(temp.path().join("claude"), "").unwrap();
         let npm_bin = temp
             .path()
             .join("node_modules/@anthropic-ai/claude-code/bin");
         fs::create_dir_all(&npm_bin).unwrap();
         fs::write(npm_bin.join("claude.exe"), "").unwrap();
+        fs::write(
+            cmd_path,
+            r#""%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*"#,
+        )
+        .unwrap();
 
         let path = std::env::join_paths([temp.path()]).unwrap();
         let env = BTreeMap::from([("PATH".to_string(), path.to_string_lossy().into_owned())]);
@@ -319,15 +431,51 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn local_claude_skips_windows_shims_without_native_binary() {
+    fn local_claude_skips_bare_windows_shim_without_cmd_wrapper() {
         let temp = tempdir().unwrap();
-        fs::write(temp.path().join("claude.cmd"), "").unwrap();
         fs::write(temp.path().join("claude"), "").unwrap();
 
         let path = std::env::join_paths([temp.path()]).unwrap();
         let resolved = resolve_local_claude_executable(path.to_str());
 
         assert_eq!(resolved, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_skips_cmd_wrapper_when_target_is_missing() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("claude.cmd"),
+            r#""%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*"#,
+        )
+        .unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_resolves_cmd_wrapper_with_tilde_dp0_token() {
+        let temp = tempdir().unwrap();
+        let npm_bin = temp
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin");
+        fs::create_dir_all(&npm_bin).unwrap();
+        fs::write(npm_bin.join("claude.exe"), "").unwrap();
+        fs::write(
+            temp.path().join("claude.cmd"),
+            r#"%~dp0\node_modules\@anthropic-ai\claude-code\bin\claude.exe %*"#,
+        )
+        .unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let resolved = resolve_local_claude_executable(path.to_str());
+
+        assert_eq!(resolved, Some(npm_bin.join("claude.exe")));
     }
 
     #[cfg(not(windows))]
@@ -352,13 +500,34 @@ mod tests {
             env: Default::default(),
         };
 
-        let error = spawn_adapter(&config, temp.path(), false).unwrap_err();
+        let error = spawn_adapter(&config, temp.path(), false, false).unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("missing-acp-command-for-test"));
         assert_ne!(
             message,
             "failed to start ACP adapter `missing-acp-command-for-test`"
+        );
+    }
+
+    #[test]
+    fn spawn_adapter_requires_local_claude_when_configured() {
+        let temp = tempdir().unwrap();
+        let config = AcpAdapterConfig {
+            command: "missing-acp-command-for-test".to_string(),
+            args: Vec::new(),
+            display_name: "Missing".to_string(),
+            env: BTreeMap::from([(
+                "PATH".to_string(),
+                temp.path().to_string_lossy().into_owned(),
+            )]),
+        };
+
+        let error = spawn_adapter(&config, temp.path(), true, true).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "local Claude executable is required but could not be resolved"
         );
     }
 }

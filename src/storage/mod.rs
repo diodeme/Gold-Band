@@ -220,13 +220,13 @@ impl GoldBandPaths {
         let home = dirs::home_dir()
             .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
-        home.join(crate::config::AGENTS_DIR_NAME)
+        home.join(crate::config::GOLD_BAND_DIR_NAME)
             .join(crate::config::SKILLS_DIR_NAME)
     }
 
     pub fn project_skills_dir(&self) -> Utf8PathBuf {
         self.repo_root
-            .join(crate::config::AGENTS_DIR_NAME)
+            .join(crate::config::GOLD_BAND_DIR_NAME)
             .join(crate::config::SKILLS_DIR_NAME)
     }
 

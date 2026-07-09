@@ -65,3 +65,6 @@ system prompt / user prompt 的固定区分标准：
 - ACP 工具/思考结构化行不显示头像，但保留横向位置。
 - ACP 工具卡片高度压缩，标题左对齐，展示操作名和关键参数。
 - ACP 的“发送中 / 处理中 / 计时”状态放 composer 内，不作为消息流卡片。
+
+## 命令 / 终端 调用约束
+在 Gold Band 桌面端中，所有不需要用户交互的外部命令或终端调用都必须通过 process::background_command() 创建进程，不能直接使用 std::process::Command::new()。该 helper 会在 Windows 上统一应用隐藏控制台窗口的启动参数，避免 cmd.exe、git.exe、taskkill、mklink、MCP/ACP helper 等后台子进程弹出黑色终端窗口，保证产品保持桌面应用心智而不是 terminal 心智。

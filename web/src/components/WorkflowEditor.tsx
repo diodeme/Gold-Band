@@ -54,19 +54,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 function providerToIconKey(provider: string): string | undefined {
   const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode' };
   return mapping[provider];
-}
-
-function workflowIconClass(iconKey: string) {
-  const scale: Record<string, string> = {
-    codex: 'scale-125',
-    gemini: 'scale-110',
-    opencode: 'scale-110',
-  };
-  return cn('size-4 object-contain', scale[iconKey]);
 }
 
 const DEFAULT_PERMISSION_MODE = '__default_permission_mode__';
@@ -109,7 +101,7 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
       <div className="flex items-center gap-1.5">
         {data.iconKey ? (
           <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border/60 bg-muted/30 shadow-sm">
-            <img src={`/agent-icons/${data.iconKey}.svg`} alt="" className={workflowIconClass(data.iconKey)} />
+            <img src={agentIconSrc(data.iconKey)} alt="" className={agentIconClass(data.iconKey, 'size-4')} />
           </span>
         ) : null}
         <span className="text-[13px] font-medium text-foreground">{data.label}</span>

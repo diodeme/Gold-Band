@@ -7,6 +7,7 @@ agent卡片支持删除、修改、环境诊断操作（检查agent环境是否�
 补充诊断环境要求：
 - 桌面端在启动 ACP adapter 之前，需要为子进程自动补全常见用户 bin 目录到 PATH，例如 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.opencode/bin`、`/opt/homebrew/bin`、`/usr/local/bin`，避免 macOS GUI 进程未继承 shell PATH 时 `npx`、`node`、`claude`、`codex` 启动失败
 - “使用本地 Claude”只影响 Claude ACP adapter 的 `CLAUDE_CODE_EXECUTABLE` 注入。Windows 上需要同时兼容原生安装和 npm 安装：原生安装优先使用 PATH 中的 `claude.exe`；npm 安装若 PATH 目录暴露 `claude` / `claude.cmd` shim，则按标准 npm global prefix 结构反查同 prefix 下的 `node_modules/@anthropic-ai/claude-code/bin/claude.exe` 并注入该原生 binary，不能把 extensionless `claude` shell shim 传给 adapter；若找不到原生 binary，则不注入环境变量。macOS / Linux 继续按 PATH 查找 `claude`。
+- 本地 Claude 注入调用点必须复用统一解析函数，并通过单元测试覆盖 Windows npm shim 反查场景，避免后续合并时只保留 helper/测试却把 adapter 启动调用点回退成仅查 `claude.exe`。
 - 若 adapter 启动失败，doctor 结果必须保留底层 OS 错误文本，例如 `No such file or directory (os error 2)`，不能只显示泛化失败文案
 新增agent按钮点击后，可以下拉栏选择 `claude-acp`、`codex-acp`、`cursor`、`gemini`、`opencode`；新增表单按 registry 推荐命令和参数预填，npx 类 agent 使用 registry package，Cursor/OpenCode 默认使用 PATH 中的 `cursor-agent acp` / `opencode acp`，已新增过的类型不可重复新增
 agent需要有对应icon标识，参考 `docs\gold-band\资源\icon` 目录；应用打包实际读取 `web\public\agent-icons`，Cursor 图标也必须同步复制到该目录

@@ -434,6 +434,16 @@ export function deleteSkill(name: string, source: string, workspacePath?: string
   return getRuntimeApi().deleteSkill(name, source, workspacePath, directoryPath);
 }
 
+export function updateSkillSyncTargets(
+  name: string,
+  source: string,
+  workspacePath: string | null | undefined,
+  directoryPath: string,
+  syncTargets: string[],
+) {
+  return getRuntimeApi().updateSkillSyncTargets(name, source, workspacePath, directoryPath, syncTargets);
+}
+
 export function getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null) {
   return getRuntimeApi().getSkillSyncStatus(name, directoryPath, workspacePath);
 }

@@ -3680,6 +3680,28 @@ pub fn delete_skill(
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
+#[tauri::command]
+pub fn update_skill_sync_targets(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    workspace_path: Option<String>,
+    directory_path: String,
+    sync_targets: Vec<String>,
+) -> CommandResult<SkillListVm> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+    app.reconcile_skill_instance_links(
+        &name,
+        &directory_path,
+        skill_source,
+        workspace_path.as_deref(),
+        Some(sync_targets.as_slice()),
+    )
+    .map_err(command_error)?;
+    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
 /// 查询指定 SKILL 在各 agent 目录中的同步状态（软链即状态）
 #[tauri::command]
 pub fn get_skill_sync_status(

@@ -320,6 +320,8 @@ const resources = {
           syncCursor: "Cursor",
           syncGemini: "Gemini",
           syncOpenCode: "OpenCode",
+          syncAgent: "同步到 {{agent}}",
+          unsyncAgent: "取消同步 {{agent}}",
           nameConflictTitle: "名称冲突",
           nameConflictDescription:
             "同名 SKILL 已存在于 {{location}}。创建后 .gold-band 版本将优先显示。",
@@ -1518,6 +1520,8 @@ const resources = {
           syncCursor: "Cursor",
           syncGemini: "Gemini",
           syncOpenCode: "OpenCode",
+          syncAgent: "Sync to {{agent}}",
+          unsyncAgent: "Stop syncing to {{agent}}",
           nameConflictTitle: "Name Conflict",
           nameConflictDescription:
             "A SKILL named {{location}} already exists. The .gold-band version will take priority after creation.",

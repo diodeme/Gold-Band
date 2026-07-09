@@ -20,6 +20,7 @@
 - 保存流程收敛为后端单一事务入口：先计算目标目录并完成同目录与同步目标冲突预检，再执行目录移动/写入，最后按目标集合 reconcile 软链。若写入或同步失败，后端恢复旧内容、旧目录和已记录的旧同步目标，避免 UI 报错但磁盘已半成功。
 - Rename 是真实目录 rename：编辑已有 skill 且 `name` 变化时，后端将旧 `directoryPath` 移动到同父目录的新目录名，删除旧目录名下的已配置 agent 同步链接，再按新目录名建立新链接；frontmatter `name:` 只作为展示/运行时名称，不再代替目录身份。
 - 前端冲突检查必须同时传入 `oldName`、`directoryPath` 与 `syncTargets`，由后端按最终目标目录名判断新目录冲突和多 Agent 同步冲突，避免编辑原生 skill 时仅按 frontmatter 名误判。
+- SKILL 卡片底部将“来源实例”和“同步目标”分区展示：来源 icon 不可点击；同步目标 icon 列表与创建/编辑抽屉的 `syncTargets` 枚举一致。已同步目标用原色 icon + 左上角绿色状态点，未同步目标用灰色 icon；点击目标 icon 通过 `update_skill_sync_targets` 只更新软链对账，不重写 `SKILL.md` 正文，单 icon 显示加载态，失败复用页面错误横幅并自动消失。
 
 
 ---
@@ -363,10 +364,12 @@ You have access to the following Skills — modular capabilities...
 | `read_skill` | `name, source, workspacePath?` | `SkillContentVm` |
 | `write_skill` | `name, source, content, workspacePath?, oldName?, directoryPath?, syncTargets?` | `SkillListVm` |
 | `delete_skill` | `name, source, workspacePath?, directoryPath?` | `SkillListVm` |
+| `update_skill_sync_targets` | `name, source, workspacePath?, directoryPath, syncTargets` | `SkillListVm` |
 | `get_skill_sync_status` | `name, directoryPath, workspacePath?` | `Vec<SyncStatusEntryVm>` |
 | `check_skill_name_conflict` | `name, source, workspacePath?, oldName?, directoryPath?, syncTargets?` | `Vec<String>` |
 
 `write_skill` 不直接分散执行创建、覆盖、rename 和同步。Tauri command 只解析入参并委托 `SkillManager::write_instance`，由后端统一执行“预检 → 文件系统变更 → 同步链接 reconcile → 失败回滚”。
+`update_skill_sync_targets` 只处理已有 SKILL 实例的同步链接 reconcile，用于卡片上的快速同步/取消同步，不应修改 `SKILL.md` 内容或触发 rename。
 
 ### 3.8 UI 特性
 

@@ -78,6 +78,8 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 
 下一轮保留原始 requirement，并把上一轮失败节点的输出摘要作为反馈上下文提供给新的 worker 调用。
 
+历史 task / run 可能创建于 `new_round_entry` 字段引入之前。运行启动或重跑在冻结本次 `workflow.snapshot.json` 前，会对读取到的历史 workflow 做 snapshot legacy 规范化：仅对 `to="$new-round"` 且缺失 `new_round_entry` 的边补为 `$entry`，再执行严格校验，并只把规范化结果写入本次 run 的 snapshot；`authoring/workflow.json` 不回写。运行态读取历史 frozen snapshot 时也使用同一规范化入口。作者态新建、保存 workflow 和模板时仍必须显式声明 `new_round_entry`，不能依赖该兼容默认值。
+
 ## 8. 校验要求
 - `entry` 必须存在。
 - 所有 edge source 必须是真实 worker 节点。

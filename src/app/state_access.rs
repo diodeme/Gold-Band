@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 
-use crate::dsl::WorkflowDsl;
+use crate::dsl::{WorkflowDsl, normalize_legacy_workflow_snapshot};
 use crate::runtime::{NodeState, RoundState, RunState};
 use crate::storage::{read_json, write_json};
 
@@ -33,6 +33,7 @@ pub(crate) fn current_attempt_state(
 
 pub(crate) fn load_run_workflow(app: &App, task_id: &str, run_id: &str) -> Result<WorkflowDsl> {
     read_json(&app.paths.workflow_snapshot_file(task_id, run_id))
+        .map(normalize_legacy_workflow_snapshot)
 }
 
 pub(crate) fn persist_runtime_state(

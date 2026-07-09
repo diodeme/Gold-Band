@@ -80,6 +80,7 @@
 - 2026-05-08：任务工作流页将工作流入口从页面内折叠条升级为顶部“工作流”生命周期卡片，按未创建/有效/无效提供新建、查看、修复动作；完整蓝图和 control 规则条进入右侧非模态抽屉。
 - 2026-07-07：会话继续/追问语义补齐：`codex-acp` 仅在同一 ACP session 首轮将 stable system prompt 作为 hidden user block 内联并持久化审计，后续停止后继续、恢复继续和完成后追问不再重复发送或记录该 system prompt；普通 worker 与 AI-DYNAMIC internal worker 的继续输入统一支持本次新附件，且不重带任务输入附件或历史附件；会话消息流中的附件预览按 timeline `raw.attachments[].path` 分流，`task-inputs/` 继续读取 task 级 `authoring/inputs`，`user-inputs/` 按 attempt locator 读取本轮新附件。
 - 2026-07-07：`$new-round` 控制边新增必填 `new_round_entry`。作者态在指向 `$new-round` 的 failure 边上展示“新 Round 起点”下拉，可选 `$entry` 或真实节点；`$entry` 表示当前 workflow entry。runtime 打开新 round 后按该字段选择首个节点，不再固定从 workflow entry 重入；保存规范化只在 `$new-round` 边输出该字段。
+- 2026-07-09：历史 task / run 兼容旧 `$new-round` 边：运行启动、重跑冻结 snapshot、以及运行态读取 frozen snapshot 时，若 `$new-round` 边缺失 `new_round_entry`，snapshot 专用规范化会补为 `$entry` 后再走严格校验，并只把补齐结果写入本次 `workflow.snapshot.json`；`authoring/workflow.json` 不回写，作者态新建/保存 workflow 仍保持必填校验。
 - 2026-07-08：默认工作流的 `accept.failure -> $new-round` 起点从 `$entry` 调整为 `dev`，避免验收失败后重复执行方案节点；默认 workflow 节点 goal 改为按桌面语言生成中英文文案，不再硬编码英文。
 - 2026-07-08：工作流控制默认分支语义调整：节点产生 `success` 或 `failure` 后若没有匹配同类型 edge，runtime 不再进入 `error-blocked`，而是等价于隐式指向 `$end`，按当前 outcome 完成 run；显式 edge 仍优先。
 - 2026-07-07：作者态工作流入口改为由画布拓扑自动派生：没有普通入边的真实节点显示“入口”标识；唯一入口候选自动写入 `workflow.entry`，多个或零个入口候选会阻止保存。`new_round_entry` 仅表示下一轮 Round 起点，不参与初始入口推导，也不会在拖线到 `$new-round` 时自动补默认值。

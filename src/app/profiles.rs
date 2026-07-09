@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::DesktopLanguage;
+use crate::frontmatter::{
+    FrontmatterUpdate, parse_frontmatter_document, render_frontmatter_document,
+    update_frontmatter_document,
+};
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
     PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
@@ -41,6 +45,7 @@ pub struct ProfileEntry {
     pub id: String,
     pub name: String,
     pub summary: String,
+    pub summary_source: String,
     pub content: String,
     pub scope: ProfileScope,
     pub is_built_in: bool,
@@ -59,6 +64,7 @@ struct ParsedProfile {
     id: String,
     name: String,
     summary: String,
+    summary_source: String,
     created_at: String,
     updated_at: String,
     content: String,
@@ -201,6 +207,7 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
         id: next_profile_id(paths)?,
         name: input.name.trim().to_string(),
         summary: input.summary.trim().to_string(),
+        summary_source: input.summary.trim().to_string(),
         content: input.content,
         scope: input.scope,
         is_built_in: false,
@@ -227,6 +234,7 @@ pub(crate) fn update_profile(
         id: existing.id.clone(),
         name: input.name.trim().to_string(),
         summary: input.summary.trim().to_string(),
+        summary_source: input.summary.trim().to_string(),
         content: input.content,
         scope: input.scope,
         is_built_in: false,
@@ -235,13 +243,15 @@ pub(crate) fn update_profile(
         path: String::new(),
     };
     entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id)?.to_string();
-    if existing.path != entry.path {
-        let old_path = Utf8PathBuf::from(existing.path);
+    let old_profile_path = existing.path.clone();
+    let old_path = Utf8PathBuf::from(old_profile_path.as_str());
+    let old_content = fs::read_to_string(old_path.as_std_path()).ok();
+    if old_profile_path != entry.path {
         if old_path.exists() {
             fs::remove_file(old_path.as_std_path())?;
         }
     }
-    write_profile(paths, &entry)?;
+    write_profile_preserving_frontmatter(paths, &entry, old_content.as_deref())?;
     show_profile(paths, &entry.id, DesktopLanguage::ZhCn)
 }
 
@@ -286,6 +296,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
             id: seed.id.to_string(),
             name: seed.name.to_string(),
             summary: seed.summary.to_string(),
+            summary_source: seed.summary.to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -304,6 +315,7 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
             id: seed.id.to_string(),
             name: seed.name.to_string(),
             summary: seed.summary.to_string(),
+            summary_source: seed.summary.to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
@@ -348,6 +360,7 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
             id: parsed.id,
             name: parsed.name,
             summary: parsed.summary,
+            summary_source: parsed.summary_source,
             content: parsed.content,
             scope,
             is_built_in: false,
@@ -361,17 +374,12 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
 
 fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
     let content = fs::read_to_string(path.as_std_path())?;
-    let Some(rest) = content.strip_prefix("---\n") else {
-        bail!("profile `{path}` is missing front matter");
-    };
-    let Some((front_matter, body)) = rest.split_once("\n---") else {
-        bail!("profile `{path}` has invalid front matter");
-    };
-    let body = body.strip_prefix('\n').unwrap_or(body).to_string();
-    let fields = parse_front_matter(front_matter);
+    let document =
+        parse_frontmatter_document(&content).with_context(|| format!("profile `{path}`"))?;
+    let fields = document.fields;
     let id = fields
         .get("id")
-        .cloned()
+        .map(|value| value.trim().to_string())
         .or_else(|| {
             path.file_stem()
                 .and_then(|stem| stem.rsplit_once('-').map(|(_, id)| id.to_string()))
@@ -382,38 +390,28 @@ fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
         id,
         name: fields
             .get("name")
-            .cloned()
+            .map(|value| value.trim().to_string())
             .unwrap_or_else(|| "未命名角色".to_string()),
-        summary: fields.get("summary").cloned().unwrap_or_default(),
+        summary: fields
+            .get("summary")
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default(),
+        summary_source: document
+            .field_sources
+            .get("summary")
+            .cloned()
+            .or_else(|| fields.get("summary").cloned())
+            .unwrap_or_default(),
         created_at: fields
             .get("createdAt")
-            .cloned()
+            .map(|value| value.trim().to_string())
             .unwrap_or_else(|| now.clone()),
-        updated_at: fields.get("updatedAt").cloned().unwrap_or(now),
-        content: body,
+        updated_at: fields
+            .get("updatedAt")
+            .map(|value| value.trim().to_string())
+            .unwrap_or(now),
+        content: document.body,
     })
-}
-
-fn parse_front_matter(front_matter: &str) -> BTreeMap<String, String> {
-    front_matter
-        .lines()
-        .filter_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            Some((key.trim().to_string(), unquote(value.trim()).to_string()))
-        })
-        .collect()
-}
-
-fn unquote(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|value| value.strip_suffix('\''))
-        })
-        .unwrap_or(value)
 }
 
 fn write_profile(paths: &GoldBandPaths, profile: &ProfileEntry) -> Result<()> {
@@ -426,20 +424,61 @@ fn write_profile(paths: &GoldBandPaths, profile: &ProfileEntry) -> Result<()> {
     Ok(())
 }
 
-fn profile_markdown(profile: &ProfileEntry) -> String {
-    format!(
-        "---\nid: {}\nname: {}\nsummary: {}\ncreatedAt: {}\nupdatedAt: {}\n---\n{}",
-        yaml_scalar(&profile.id),
-        yaml_scalar(&profile.name),
-        yaml_scalar(&profile.summary),
-        yaml_scalar(&profile.created_at),
-        yaml_scalar(&profile.updated_at),
-        profile.content
-    )
+fn write_profile_preserving_frontmatter(
+    paths: &GoldBandPaths,
+    profile: &ProfileEntry,
+    old_content: Option<&str>,
+) -> Result<()> {
+    if profile.is_built_in || profile.scope == ProfileScope::BuiltIn {
+        return Err(ProfileCommandError::ReadonlyBuiltIn.into());
+    }
+    let path = profile_path(paths, profile.scope, &profile.name, &profile.id)?;
+    ensure_parent_dir(&path)?;
+    let markdown = if let Some(old_content) = old_content {
+        update_frontmatter_document(
+            old_content,
+            &profile_frontmatter_updates(profile),
+            &profile.content,
+        )?
+    } else {
+        profile_markdown(profile)
+    };
+    fs::write(path.as_std_path(), markdown)?;
+    Ok(())
 }
 
-fn yaml_scalar(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+fn profile_markdown(profile: &ProfileEntry) -> String {
+    render_frontmatter_document(&profile_frontmatter_updates(profile), &profile.content)
+}
+
+fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>; 5] {
+    [
+        FrontmatterUpdate {
+            key: "id",
+            value: &profile.id,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "name",
+            value: &profile.name,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "summary",
+            value: &profile.summary,
+            source: Some(&profile.summary_source),
+        },
+        FrontmatterUpdate {
+            key: "createdAt",
+            value: &profile.created_at,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "updatedAt",
+            value: &profile.updated_at,
+            source: None,
+        },
+    ]
 }
 
 fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
@@ -531,5 +570,71 @@ fn scope_rank(scope: ProfileScope) -> u8 {
         ProfileScope::BuiltIn => 0,
         ProfileScope::Project => 1,
         ProfileScope::User => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn parse_profile_file_supports_folded_summary_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(tmp.path().join("review-pf-test.md")).unwrap();
+        fs::write(
+            path.as_std_path(),
+            r#"---
+id: pf-test
+name: review
+summary: >
+  审查角色，
+  用于检查实现质量。
+createdAt: 2026-07-09 10:00:00
+updatedAt: 2026-07-09 10:00:00
+---
+profile body
+"#,
+        )
+        .unwrap();
+
+        let profile = parse_profile_file(&path).unwrap();
+
+        assert_eq!(profile.id, "pf-test");
+        assert_eq!(profile.name, "review");
+        assert_eq!(profile.summary, "审查角色， 用于检查实现质量。");
+        assert_eq!(profile.summary_source, "审查角色，\n用于检查实现质量。");
+        assert_eq!(profile.content, "profile body\n");
+    }
+
+    #[test]
+    fn update_profile_preserves_unknown_frontmatter_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+        let path = paths.user_context_profiles_dir().join("review-pf-test.md");
+        fs::write(
+            path.as_std_path(),
+            "---\nid: pf-test\nname: review\nsummary: >\n  审查角色，\n  用于检查实现质量。\nextra: keep-me\ncreatedAt: 2026-07-09 10:00:00\nupdatedAt: 2026-07-09 10:00:00\n---\nold body\n",
+        )
+        .unwrap();
+
+        update_profile(
+            &paths,
+            "pf-test",
+            ProfileInput {
+                scope: ProfileScope::User,
+                name: "review".to_string(),
+                summary: "审查角色，\n用于检查输出质量。".to_string(),
+                content: "new body\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let saved = fs::read_to_string(path.as_std_path()).unwrap();
+        assert!(saved.contains("extra: keep-me"));
+        assert!(saved.contains("summary: >\n  审查角色，\n  用于检查输出质量。\n"));
+        assert!(saved.ends_with("---\nnew body\n"));
     }
 }

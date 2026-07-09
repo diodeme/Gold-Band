@@ -17,6 +17,7 @@ use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, Session
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::{collections::BTreeSet, str::FromStr, sync::Arc};
@@ -43,11 +44,11 @@ use crate::view_models::{
     AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
-    SkillListVm, SkillMetaVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
-    acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
-    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
-    task_detail_vm, task_list_vm, workflow_vm,
+    SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
+    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
+    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm,
+    run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm,
+    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
@@ -1304,11 +1305,11 @@ pub(crate) fn acp_live_update_emitter(
     })
 }
 
-/// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
+/// ?? B????? `permissionRequest` ?????? `PermissionRequested` ??????
 ///
-/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。文案用一般性
-/// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
-/// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
+/// ?? `event.kind == "permissionRequest" && status == "pending"` ??????????
+/// ???node_label ? node_id?task_title ? None???? App????? context???
+/// ?6.2/?9.4??dedup ??? A ???? `DesktopState.notification_dedup` ???
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
     context: &gold_band::app::AcpLiveEventContext,
@@ -2744,6 +2745,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
+    if let Some(error) = error.downcast_ref::<SkillCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
@@ -3533,9 +3537,26 @@ pub fn read_skill(
     name: String,
     source: String,
     workspace_path: Option<String>,
+    directory_path: Option<String>,
 ) -> CommandResult<SkillContentVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
+
+    // ???? directory_path??? agent ?????? SKILL?
+    if let Some(ref dir_path) = directory_path {
+        let dir = camino::Utf8PathBuf::from(dir_path);
+        // ??????? agent_source: <home>/<agent_dir>/skills/<name>?agent_dir ?????
+        let agent_source = dir
+            .parent() // <home>/<agent_dir>/skills/
+            .and_then(|p| p.parent()) // <home>/<agent_dir>/
+            .and_then(|p| p.file_name()) // "<agent_dir>"
+            .unwrap_or(".gold-band");
+        let result = app
+            .skill_manager()
+            .read_by_path(&dir, &name, skill_source, agent_source);
+        return Ok(skill_content_vm(&result.map_err(command_error)?));
+    }
+
     if let Some(ref ws_path) = workspace_path {
         if skill_source == gold_band::config::SkillSource::Project {
             let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path);
@@ -3547,9 +3568,22 @@ pub fn read_skill(
                 &name,
                 skill_source,
                 skill_path.as_str(),
+                ".gold-band",
             );
+            let description_source =
+                gold_band::frontmatter::parse_optional_frontmatter_document(&raw)
+                    .ok()
+                    .and_then(|document| {
+                        document
+                            .field_sources
+                            .get("description")
+                            .cloned()
+                            .or_else(|| document.fields.get("description").cloned())
+                    })
+                    .unwrap_or_else(|| meta.description.clone());
             return Ok(skill_content_vm(&gold_band::skill::SkillContent {
                 meta,
+                description_source,
                 body,
             }));
         }
@@ -3567,46 +3601,23 @@ pub fn write_skill(
     content: String,
     workspace_path: Option<String>,
     old_name: Option<String>,
+    directory_path: Option<String>,
+    sync_targets: Option<Vec<String>>,
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
 
-    // 写入新 SKILL
-    if let Some(ref ws_path) = workspace_path {
-        if skill_source == gold_band::config::SkillSource::Project {
-            app.skill_manager()
-                .write_to_workspace(&name, ws_path, &content)
-                .map_err(command_error)?;
-        } else {
-            app.write_skill(&name, skill_source, &content)
-                .map_err(command_error)?;
-        }
-    } else {
-        app.write_skill(&name, skill_source, &content)
-            .map_err(command_error)?;
-    }
-
-    // 同步 symlink 到 .claude/skills/
-    app.sync_skill_symlinks(workspace_path.as_deref());
-
-    // 如果改名了，删除旧 SKILL
-    if let Some(old) = old_name {
-        if old != name {
-            if let Some(ref ws_path) = workspace_path {
-                if skill_source == gold_band::config::SkillSource::Project {
-                    let dir =
-                        gold_band::skill::SkillManager::workspace_skills_dir(ws_path).join(&old);
-                    if dir.exists() {
-                        let _ = std::fs::remove_dir_all(dir.as_std_path());
-                    }
-                }
-            } else {
-                let _ = app.delete_skill(&old, skill_source);
-            }
-            // 改名后旧目录已删，再次 sync 清理旧名 symlink
-            app.sync_skill_symlinks(workspace_path.as_deref());
-        }
-    }
+    app.skill_manager()
+        .write_instance(
+            &name,
+            skill_source,
+            &content,
+            workspace_path.as_deref(),
+            old_name.as_deref(),
+            directory_path.as_deref(),
+            sync_targets.as_deref(),
+        )
+        .map_err(command_error)?;
 
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
@@ -3617,9 +3628,26 @@ pub fn delete_skill(
     name: String,
     source: String,
     workspace_path: Option<String>,
+    directory_path: Option<String>,
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
+
+    if let Some(ref dir_path) = directory_path {
+        app.cleanup_skill_instance_links(
+            &name,
+            dir_path,
+            skill_source,
+            workspace_path.as_deref(),
+            None,
+        );
+        let dir = Utf8PathBuf::from(dir_path);
+        app.skill_manager()
+            .delete_at_path(&dir)
+            .map_err(command_error)?;
+        return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
+    }
+
     if let Some(ref ws_path) = workspace_path {
         if skill_source == gold_band::config::SkillSource::Project {
             let dir = gold_band::skill::SkillManager::workspace_skills_dir(ws_path);
@@ -3627,16 +3655,148 @@ pub fn delete_skill(
             if !skill_dir.exists() {
                 return Err(command_error(anyhow::anyhow!("SKILL `{name}` not found")));
             }
+            app.cleanup_skill_instance_links(
+                &name,
+                skill_dir.as_str(),
+                skill_source,
+                workspace_path.as_deref(),
+                None,
+            );
             std::fs::remove_dir_all(skill_dir.as_std_path())
                 .map_err(|e| command_error(anyhow::anyhow!(e)))?;
-            app.sync_skill_symlinks(workspace_path.as_deref());
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
+
+    let source_dir = match skill_source {
+        gold_band::config::SkillSource::Global => {
+            gold_band::storage::GoldBandPaths::global_skills_dir().join(&name)
+        }
+        gold_band::config::SkillSource::Project => app.paths.project_skills_dir().join(&name),
+        gold_band::config::SkillSource::BuiltIn => {
+            return Err(CommandErrorVm::new(
+                "skill.invalid-source",
+                serde_json::json!({ "source": source }),
+            ));
+        }
+    };
+    app.cleanup_skill_instance_links(
+        &name,
+        source_dir.as_str(),
+        skill_source,
+        workspace_path.as_deref(),
+        None,
+    );
     app.delete_skill(&name, skill_source)
         .map_err(command_error)?;
-    app.sync_skill_symlinks(workspace_path.as_deref());
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+#[tauri::command]
+pub fn update_skill_sync_targets(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    workspace_path: Option<String>,
+    directory_path: String,
+    sync_targets: Vec<String>,
+) -> CommandResult<SkillListVm> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+    app.reconcile_skill_instance_links(
+        &name,
+        &directory_path,
+        skill_source,
+        workspace_path.as_deref(),
+        Some(sync_targets.as_slice()),
+    )
+    .map_err(command_error)?;
+    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+/// 查询指定 SKILL 在各 agent 目录中的同步状态（软链即状态）
+#[tauri::command]
+pub fn get_skill_sync_status(
+    state: State<'_, DesktopState>,
+    _name: String,
+    directory_path: String,
+    workspace_path: Option<String>,
+) -> CommandResult<Vec<SyncStatusEntryVm>> {
+    let app = state.app().map_err(command_error)?;
+    let home = gold_band::storage::GoldBandPaths::global_skills_dir()
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.as_std_path().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let src_path = std::path::Path::new(&directory_path);
+    // ??????????????junction ???????????
+    let canonical_src = std::fs::canonicalize(src_path).unwrap_or_else(|_| src_path.to_path_buf());
+    let skill_dir_name =
+        gold_band::skill::skill_dir_name_from_str(&directory_path).ok_or_else(|| {
+            command_error(anyhow::anyhow!("invalid skill directory: {directory_path}"))
+        })?;
+    let mut statuses = Vec::new();
+
+    for (agent_type, config) in &app.config.agents {
+        let dir_name = config.skills_dir_name(*agent_type);
+
+        // 检查全局 agent 目录
+        let global_link = home.join(dir_name).join("skills").join(skill_dir_name);
+        let global_synced = is_link_pointing_to(&global_link, &canonical_src);
+
+        // ????? agent ?????? workspace_path?
+        let project_synced = workspace_path.as_deref().map_or(false, |ws| {
+            let project_link = std::path::Path::new(ws)
+                .join(dir_name)
+                .join("skills")
+                .join(skill_dir_name);
+            is_link_pointing_to(&project_link, &canonical_src)
+        });
+
+        statuses.push(SyncStatusEntryVm {
+            agent_type: agent_type.as_str().to_string(),
+            is_synced: global_synced || project_synced,
+        });
+    }
+
+    Ok(statuses)
+}
+
+/// ????????? expected ????
+fn is_link_pointing_to(link_path: &std::path::Path, expected: &std::path::Path) -> bool {
+    if !link_path.exists() {
+        return false;
+    }
+    let Ok(target) = link_path.read_link() else {
+        return false;
+    };
+    let canonical_target = std::fs::canonicalize(&target).unwrap_or(target);
+    canonical_target == expected
+}
+
+/// ???? SKILL ???? agent ?????? SKILL ??
+#[tauri::command]
+pub fn check_skill_name_conflict(
+    state: State<'_, DesktopState>,
+    name: String,
+    source: String,
+    workspace_path: Option<String>,
+    old_name: Option<String>,
+    directory_path: Option<String>,
+    sync_targets: Option<Vec<String>>,
+) -> CommandResult<Vec<String>> {
+    let app = state.app().map_err(command_error)?;
+    let skill_source = parse_skill_source(&source)?;
+    app.skill_manager()
+        .check_save_conflict(
+            &name,
+            skill_source,
+            workspace_path.as_deref(),
+            old_name.as_deref(),
+            directory_path.as_deref(),
+            sync_targets.as_deref(),
+        )
+        .map_err(command_error)
 }
 
 fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, CommandErrorVm> {

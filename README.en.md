@@ -228,6 +228,7 @@ Gold Band is not yet a good fit for:
 - shadcn/ui
 - Agent Client Protocol / ACP
 
+
 ## Community
 
 This project actively participates in and supports the [linux.do community](https://linux.do).

@@ -1115,6 +1115,7 @@ const resources = {
           configureNow: "去配置",
           configureAuto: "修改 AUTO",
           configureWorkflow: "修改工作流",
+          includeInterview: "需求采访",
         },
         runtime: {
           justNow: "刚刚",
@@ -2373,6 +2374,7 @@ const resources = {
           configureNow: "Configure",
           configureAuto: "Edit AUTO",
           configureWorkflow: "Edit Workflow",
+          includeInterview: "Requirement Interview",
         },
         runtime: {
           justNow: "Just now",

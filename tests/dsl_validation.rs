@@ -1,4 +1,4 @@
-use gold_band::dsl::{WorkflowDsl, validate_workflow};
+use gold_band::dsl::{WorkflowDsl, strip_interview_node, validate_workflow};
 
 fn parse_workflow(json: &str) -> WorkflowDsl {
     serde_json::from_str(json).expect("workflow should deserialize")
@@ -652,3 +652,44 @@ fn rejects_continue_to_new_round_target() {
 
     assert!(validate_workflow(workflow).is_err());
 }
+
+#[test]
+fn strip_interview_node_removes_node_edges_and_fixes_entry() {
+    let mut workflow = parse_workflow(
+        r#"{"version":"0.1","id":"w","entry":"interview","control":{"max_attempts":1},"nodes":[
+        {"type":"worker","id":"interview","profile":"p"},
+        {"type":"worker","id":"plan","profile":"p"},
+        {"type":"worker","id":"dev","profile":"p"}
+        ],"edges":[
+        {"from":"interview","to":"plan","on":"success"},
+        {"from":"plan","to":"dev","on":"success"}
+        ]}"#,
+    );
+
+    strip_interview_node(&mut workflow);
+
+    assert_eq!(workflow.entry, "plan");
+    assert!(!workflow.nodes.iter().any(|n| n.id() == "interview"));
+    assert!(!workflow.edges.iter().any(|e| e.from == "interview" || e.to == "interview"));
+    // plan -> dev edge survives
+    assert!(workflow.edges.iter().any(|e| e.from == "plan" && e.to == "dev"));
+}
+
+#[test]
+fn strip_interview_node_is_noop_when_absent() {
+    let mut workflow = parse_workflow(
+        r#"{"version":"0.1","id":"w","entry":"plan","control":{"max_attempts":1},"nodes":[
+        {"type":"worker","id":"plan","profile":"p"},
+        {"type":"worker","id":"dev","profile":"p"}
+        ],"edges":[
+        {"from":"plan","to":"dev","on":"success"}
+        ]}"#,
+    );
+
+    strip_interview_node(&mut workflow);
+
+    assert_eq!(workflow.entry, "plan");
+    assert_eq!(workflow.nodes.len(), 2);
+    assert_eq!(workflow.edges.len(), 1);
+}
+

@@ -10,7 +10,9 @@ Assume the implementing engineer is completely unfamiliar with this repository. 
 
 ## Workflow
 
-1. Analyze the user's requirement and the current code structure.
+Predecessor artifact reading precondition: When the runtime context, current task instructions, or an explicit predecessor node, artifact, attachment, or path is provided, first try to fetch and read the latest artifact of that node or the specified content. If only a predecessor chain is given without a file list, do not skip reading for that reason; locate it by node through the available node artifact/attachment viewing capability. Do not proactively scan the run directory for undeclared artifacts; if the artifact still cannot be located, record it as missing evidence or missing artifact.
+
+1. If the predecessor chain or context includes an interview node, `interview-spec.md`, or an interview artifact/path, fetch and read `interview-spec.md` first, using its goal, constraints, non-goals, acceptance criteria, and technical context as the input basis for this plan; otherwise work from the raw requirement. Analyze the current code structure.
 2. Plan file responsibilities, task breakdown, testing strategy, frontend integration verification conditions, and acceptance criteria.
 3. Write the implementation plan to `tech-plan.md`.
 4. Present the plan and wait for user confirmation. If the user requests changes, update only `tech-plan.md` and present it again.

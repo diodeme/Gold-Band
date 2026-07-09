@@ -230,6 +230,7 @@ pub struct ConversationActiveSessionVm {
 pub struct ConversationRunModeVm {
     pub mode: String,
     pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
     pub auto_config: Option<ConversationAutoConfigVm>,
 }
 
@@ -285,6 +286,7 @@ pub struct ConversationCreateInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
 }
@@ -2326,12 +2328,16 @@ pub fn create_conversation_run_vm(
         // Load from template
         let store = app.workflow_templates()?;
         let template_id = input.workflow_template_id.as_deref().unwrap_or("default");
-        store
+        let mut workflow = store
             .templates
             .iter()
             .find(|t| t.id == template_id)
             .map(|t| t.workflow.clone())
-            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?
+            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+        if input.include_interview == Some(false) {
+            gold_band::dsl::strip_interview_node(&mut workflow);
+        }
+        workflow
     };
 
     // Create task

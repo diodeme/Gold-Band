@@ -13,7 +13,7 @@ use crate::frontmatter::{
     update_frontmatter_document,
 };
 use crate::prompts::{
-    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
+    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_DEV_EN,
     PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
     PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language,
 };
@@ -164,6 +164,12 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         id: "pf-builtin-cleanup",
         name: "清理",
         summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+    },
+    DefaultProfileSeed {
+        key: "interview",
+        id: "pf-builtin-interview",
+        name: "访谈",
+        summary: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
     },
 ];
 
@@ -333,6 +339,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static st
         "test" => prompt_by_language(language, PROFILE_TEST_ZH_CN, PROFILE_TEST_EN),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN_ZH_CN, PROFILE_CLEAN_EN),
+        "interview" => prompt_by_language(language, PROFILE_INTERVIEW_ZH_CN, PROFILE_INTERVIEW_EN),
         _ => "",
     }
 }

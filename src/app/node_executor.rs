@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
+use std::collections::HashSet;
 
 use tracing::warn;
 
+use crate::acp::events::annotate_latest_runtime_control_output;
 use crate::artifacts::parse_json_artifact;
 use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
@@ -10,14 +12,15 @@ use crate::dsl::{
 };
 use crate::observability::{ProgressStage, progress};
 use crate::provider::{
-    PromptArtifactRef, PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
-    WorkerInvocation,
+    PromptArtifactRef, PromptAttachmentRef, PromptOutputContract, PromptPredecessorContext,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
+    UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
     validate_worker_ref_state,
 };
+use crate::runtime_error::runtime_error;
 use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 use crate::storage::{read_json, write_json};
 
@@ -133,30 +136,142 @@ fn load_rounds_through_current(
     rounds
 }
 
-fn flatten_trace_until_current(
-    rounds: &[RoundState],
-    current_round_id: &str,
+fn trace_refs_before_current_attempt(
+    round: &RoundState,
     current_node_id: &str,
     current_attempt_id: &str,
 ) -> Vec<TraceRef> {
     let mut refs = Vec::new();
-    for round in rounds {
-        let mut trace = round.trace.clone();
-        trace.sort_by_key(|step| step.sequence);
-        for step in trace {
-            if round.id == current_round_id
-                && step.node_id == current_node_id
-                && step.attempt_id == current_attempt_id
-            {
-                return refs;
-            }
-            refs.push(TraceRef {
-                round_id: round.id.clone(),
-                step,
-            });
+    let mut trace = round.trace.clone();
+    trace.sort_by_key(|step| step.sequence);
+    for step in trace {
+        if step.node_id == current_node_id && step.attempt_id == current_attempt_id {
+            return refs;
         }
+        refs.push(TraceRef {
+            round_id: round.id.clone(),
+            step,
+        });
     }
     refs
+}
+
+fn current_round_entry_step(round: &RoundState) -> Option<RoundTraceStep> {
+    round.trace.iter().min_by_key(|step| step.sequence).cloned()
+}
+
+fn is_current_round_entry_attempt(
+    round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> bool {
+    current_round_entry_step(round)
+        .map(|entry| entry.node_id == current_node_id && entry.attempt_id == current_attempt_id)
+        .unwrap_or(false)
+}
+
+fn stable_prefix_node_ids(rounds: &[RoundState], current_round: &RoundState) -> Vec<String> {
+    if current_round.trigger != crate::domain::RoundTrigger::NewRound {
+        return Vec::new();
+    }
+    let Some(entry_step) = current_round_entry_step(current_round) else {
+        return Vec::new();
+    };
+    let mut best = Vec::new();
+    for round in rounds
+        .iter()
+        .filter(|round| round.index < current_round.index)
+    {
+        let mut trace = round.trace.clone();
+        trace.sort_by_key(|step| step.sequence);
+        let Some(entry_index) = trace
+            .iter()
+            .position(|step| step.node_id == entry_step.node_id)
+        else {
+            continue;
+        };
+        let mut candidate = Vec::new();
+        for step in trace.iter().take(entry_index) {
+            if !candidate.contains(&step.node_id) {
+                candidate.push(step.node_id.clone());
+            }
+        }
+        if candidate.len() >= best.len() {
+            best = candidate;
+        }
+    }
+    best
+}
+
+fn scoped_predecessor_trace_refs(
+    rounds: &[RoundState],
+    current_round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+) -> Vec<TraceRef> {
+    let current_round_refs =
+        trace_refs_before_current_attempt(current_round, current_node_id, current_attempt_id);
+    let current_round_node_ids = current_round_refs
+        .iter()
+        .map(|trace_ref| trace_ref.step.node_id.clone())
+        .collect::<HashSet<_>>();
+    let prefix_node_ids =
+        if is_current_round_entry_attempt(current_round, current_node_id, current_attempt_id) {
+            stable_prefix_node_ids(rounds, current_round)
+        } else {
+            Vec::new()
+        };
+    let mut scoped = Vec::new();
+
+    for node_id in prefix_node_ids {
+        if current_round_node_ids.contains(&node_id) {
+            continue;
+        }
+        let latest = rounds
+            .iter()
+            .filter(|round| round.index < current_round.index)
+            .flat_map(|round| {
+                let mut trace = round.trace.clone();
+                trace.sort_by_key(|step| step.sequence);
+                trace
+                    .into_iter()
+                    .filter(|step| step.node_id == node_id)
+                    .map(|step| TraceRef {
+                        round_id: round.id.clone(),
+                        step,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .last();
+        if let Some(trace_ref) = latest {
+            scoped.push(trace_ref);
+        }
+    }
+
+    scoped.extend(current_round_refs);
+    scoped
+}
+
+fn new_round_trigger_trace_ref(
+    rounds: &[RoundState],
+    current_round: &RoundState,
+) -> Option<TraceRef> {
+    if current_round.trigger != crate::domain::RoundTrigger::NewRound {
+        return None;
+    }
+    let previous_round = rounds
+        .iter()
+        .filter(|round| round.index < current_round.index)
+        .max_by_key(|round| round.index)?;
+    let step = previous_round
+        .trace
+        .iter()
+        .max_by_key(|step| step.sequence)?
+        .clone();
+    Some(TraceRef {
+        round_id: previous_round.id.clone(),
+        step,
+    })
 }
 
 fn branch_kind_for_node(node: &NodeDsl) -> String {
@@ -221,6 +336,81 @@ fn output_artifact_for_predecessor(
     })
 }
 
+fn predecessor_attachments(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    trace: &RoundTraceStep,
+) -> Vec<PromptAttachmentRef> {
+    let dir =
+        app.paths
+            .attachments_dir(task_id, run_id, round_id, &trace.node_id, &trace.attempt_id);
+    let mut refs = std::fs::read_dir(dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = Utf8PathBuf::from_path_buf(entry.path()).ok()?;
+                    let name = path.file_name()?.to_string();
+                    (path.is_file() && !name.starts_with('.')).then(|| PromptAttachmentRef { name })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    refs.sort_by(|a, b| a.name.cmp(&b.name));
+    refs
+}
+
+fn predecessor_context_from_trace_ref(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    trace_ref: &TraceRef,
+    node_dsl: &NodeDsl,
+    branch_direction: Option<String>,
+) -> PromptPredecessorContext {
+    let node = read_json::<NodeState>(&app.paths.node_file(
+        task_id,
+        run_id,
+        &trace_ref.round_id,
+        &trace_ref.step.node_id,
+        &trace_ref.step.attempt_id,
+    ))
+    .ok();
+    let branch_reason = match node_dsl {
+        NodeDsl::Worker(worker) => output_contract_reason(worker),
+        NodeDsl::AiDynamic(_) => None,
+    };
+    PromptPredecessorContext {
+        round_id: trace_ref.round_id.clone(),
+        node_id: trace_ref.step.node_id.clone(),
+        attempt_id: trace_ref.step.attempt_id.clone(),
+        node_type: format!("{:?}", node_dsl.node_type()).to_ascii_lowercase(),
+        branch_kind: branch_kind_for_node(node_dsl),
+        outcome: node
+            .and_then(|node| node.outcome)
+            .map(|outcome| format!("{:?}", outcome).to_ascii_lowercase()),
+        branch_direction,
+        output_artifact: output_artifact_for_predecessor(
+            app,
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step,
+            node_dsl,
+        ),
+        branch_reason,
+        attachments: predecessor_attachments(
+            app,
+            task_id,
+            run_id,
+            &trace_ref.round_id,
+            &trace_ref.step,
+        ),
+    }
+}
+
 fn build_predecessor_contexts(
     app: &App,
     task_id: &str,
@@ -231,26 +421,14 @@ fn build_predecessor_contexts(
     workflow: &ValidatedWorkflow,
 ) -> Vec<PromptPredecessorContext> {
     let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
-    let traces = flatten_trace_until_current(
-        &rounds,
-        &current_round.id,
-        current_node_id,
-        current_attempt_id,
-    );
+    let traces =
+        scoped_predecessor_trace_refs(&rounds, current_round, current_node_id, current_attempt_id);
 
     traces
         .iter()
         .enumerate()
         .filter_map(|(index, trace_ref)| {
             let node_dsl = workflow.get_node(&trace_ref.step.node_id)?;
-            let node = read_json::<NodeState>(&app.paths.node_file(
-                task_id,
-                run_id,
-                &trace_ref.round_id,
-                &trace_ref.step.node_id,
-                &trace_ref.step.attempt_id,
-            ))
-            .ok();
             let next = traces.get(index + 1);
             let branch_direction = next
                 .and_then(|next| next.step.edge_outcome.clone())
@@ -270,32 +448,41 @@ fn build_predecessor_contexts(
                         None
                     }
                 });
-            let branch_reason = match node_dsl {
-                NodeDsl::Worker(worker) => output_contract_reason(worker),
-                NodeDsl::AiDynamic(_) => None,
-            };
-            Some(PromptPredecessorContext {
-                round_id: trace_ref.round_id.clone(),
-                node_id: trace_ref.step.node_id.clone(),
-                attempt_id: trace_ref.step.attempt_id.clone(),
-                node_type: format!("{:?}", node_dsl.node_type()).to_ascii_lowercase(),
-                branch_kind: branch_kind_for_node(node_dsl),
-                outcome: node
-                    .and_then(|node| node.outcome)
-                    .map(|outcome| format!("{:?}", outcome).to_ascii_lowercase()),
+            Some(predecessor_context_from_trace_ref(
+                app,
+                task_id,
+                run_id,
+                trace_ref,
+                node_dsl,
                 branch_direction,
-                output_artifact: output_artifact_for_predecessor(
-                    app,
-                    task_id,
-                    run_id,
-                    &trace_ref.round_id,
-                    &trace_ref.step,
-                    node_dsl,
-                ),
-                branch_reason,
-            })
+            ))
         })
         .collect()
+}
+
+fn build_new_round_trigger_context(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    current_round: &RoundState,
+    current_node_id: &str,
+    current_attempt_id: &str,
+    workflow: &ValidatedWorkflow,
+) -> Option<PromptPredecessorContext> {
+    if !is_current_round_entry_attempt(current_round, current_node_id, current_attempt_id) {
+        return None;
+    }
+    let rounds = load_rounds_through_current(app, task_id, run_id, current_round);
+    let trigger = new_round_trigger_trace_ref(&rounds, current_round)?;
+    let node_dsl = workflow.get_node(&trigger.step.node_id)?;
+    Some(predecessor_context_from_trace_ref(
+        app,
+        task_id,
+        run_id,
+        &trigger,
+        node_dsl,
+        Some("$new-round".to_string()),
+    ))
 }
 
 pub(crate) fn build_worker_invocation(
@@ -312,13 +499,16 @@ pub(crate) fn build_worker_invocation(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    resume_input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<WorkerInvocation> {
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
         profile,
         permission_mode,
-        model,
+        configured_model,
         output_contract,
         task_instruction,
         invocation_kind,
@@ -339,6 +529,14 @@ pub(crate) fn build_worker_invocation(
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
         }
     };
+    let model = model_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(configured_model);
+    let permission_mode = permission_mode_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(permission_mode);
 
     let profile_content = profile
         .as_deref()
@@ -349,10 +547,11 @@ pub(crate) fn build_worker_invocation(
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let input_attachment_paths = if matches!(session_mode, SessionMode::New) {
-        super::task_input_attachment_paths(app, task_id)
-    } else {
-        Vec::new()
+    let new_round_trigger =
+        build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
+    let input_attachment_paths = match session_mode {
+        SessionMode::New => super::task_input_attachment_paths(app, task_id),
+        SessionMode::Continue => resume_input_attachment_paths,
     };
 
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
@@ -373,8 +572,12 @@ pub(crate) fn build_worker_invocation(
         output_contract,
         runtime_context,
         predecessors,
+        new_round_trigger,
         extra_system_sections: Vec::new(),
+        extra_hidden_sections: Vec::new(),
         task_instruction,
+        user_tips_instruction: None,
+        resume_task_instruction: None,
         session_mode,
         user_prompt_render_mode,
         permission_mode,
@@ -412,6 +615,9 @@ pub(crate) fn execute_ai_node(
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    resume_input_attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
     let invocation = build_worker_invocation(
@@ -428,6 +634,9 @@ pub(crate) fn execute_ai_node(
         resume_prompt_id,
         resume_prompt_visibility,
         user_prompt_render_mode,
+        resume_input_attachment_paths,
+        model_override,
+        permission_mode_override,
     )?;
 
     progress(&format!(
@@ -721,24 +930,40 @@ pub(crate) fn finalize_ai_attempt(
         )?;
     }
 
+    if let Some(info) = result.runtime_error {
+        return Err(runtime_error(info));
+    }
+
     match result.status {
         ProviderRunStatus::Success => {
             if let Some(payload) = result.result_payload {
                 if let Some(output_artifact) = payload.output_artifact {
-                    let artifact_path = app.paths.artifact_file(
-                        task_id,
-                        run_id,
-                        round_id,
-                        node_id,
-                        attempt_id,
-                        &output_artifact.name,
-                    );
-                    std::fs::create_dir_all(
-                        app.paths
-                            .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
-                            .as_std_path(),
-                    )?;
-                    std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
+                    if !output_artifact.content.trim().is_empty() {
+                        annotate_runtime_control_output_best_effort(
+                            app,
+                            task_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            &output_artifact.name,
+                            "workflow-output",
+                        );
+                        let artifact_path = app.paths.artifact_file(
+                            task_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            &output_artifact.name,
+                        );
+                        std::fs::create_dir_all(
+                            app.paths
+                                .artifacts_dir(task_id, run_id, round_id, node_id, attempt_id)
+                                .as_std_path(),
+                        )?;
+                        std::fs::write(artifact_path.as_std_path(), output_artifact.content)?;
+                    }
                 }
             }
 
@@ -782,6 +1007,33 @@ pub(crate) fn finalize_ai_attempt(
     }
     validate_node_state(&node)?;
     Ok(node)
+}
+
+fn annotate_runtime_control_output_best_effort(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    artifact_name: &str,
+    kind: &str,
+) {
+    let path = app
+        .paths
+        .acp_timeline_file(task_id, run_id, round_id, node_id, attempt_id);
+    if let Err(error) = annotate_latest_runtime_control_output(&path, artifact_name, kind) {
+        warn!(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            artifact_name,
+            error = %error,
+            "failed to annotate runtime control output display"
+        );
+    }
 }
 
 pub(crate) fn re_evaluate_attempt(
@@ -838,6 +1090,7 @@ pub(crate) fn re_evaluate_attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info};
 
     #[test]
     fn selects_nested_array_json_path() {
@@ -872,5 +1125,357 @@ mod tests {
         let value = serde_json::json!({ "reason": "ok" });
         let schema = serde_json::json!({ "reason": "String", "result": "boolean" });
         assert!(!matches_simple_schema(&value, &schema).expect("schema should not match"));
+    }
+
+    #[test]
+    fn provider_runtime_error_does_not_become_business_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path"),
+            crate::config::RuntimeConfig::default(),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "node-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        let result = ProviderRunResult {
+            status: ProviderRunStatus::Failure,
+            exit_code: None,
+            result_payload: None,
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: Some(manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "provider.execution-error",
+                "provider failed before business result",
+                serde_json::json!({}),
+            )),
+        };
+
+        let error = finalize_ai_attempt(
+            &app,
+            "task-001",
+            "run-001",
+            "round-001",
+            "attempt-001",
+            "node-001",
+            node,
+            result,
+        )
+        .expect_err("runtime error should bubble to orchestrator");
+
+        assert!(
+            error
+                .to_string()
+                .contains("provider failed before business result")
+        );
+    }
+
+    #[test]
+    fn finalize_ai_attempt_marks_invalid_runtime_control_output() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path"),
+            crate::config::RuntimeConfig::default(),
+        );
+        let content = "好的\n```json\n{\"reason\":\"unterminated,\"result\":true}\n```";
+        let timeline_path = app.paths.acp_timeline_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        crate::acp::events::write_timeline_items(
+            &timeline_path,
+            &[crate::acp::events::AcpUiEvent {
+                id: "assistant-message-1".to_string(),
+                seq: 10,
+                timestamp: "10Z".to_string(),
+                kind: "textDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some(content.to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: Some(10),
+                ended_seq: Some(10),
+                started_at: Some("10Z".to_string()),
+                ended_at: Some("10Z".to_string()),
+                timing: None,
+                raw: None,
+            }],
+        )
+        .unwrap();
+        let mut resolved_config = crate::domain::ResolvedConfig::new();
+        resolved_config.insert(
+            "outputArtifact".to_string(),
+            serde_json::Value::String("node-result".to_string()),
+        );
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "node-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config,
+            uuid: None,
+        };
+        let result = ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: None,
+            result_payload: Some(crate::provider::ProviderResultPayload {
+                output_artifact: Some(crate::provider::OutputArtifactPayload {
+                    name: "node-result".to_string(),
+                    content: content.to_string(),
+                }),
+            }),
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: None,
+        };
+
+        let node = finalize_ai_attempt(
+            &app,
+            "task-001",
+            "run-001",
+            "round-001",
+            "attempt-001",
+            "node-001",
+            node,
+            result,
+        )
+        .expect("attempt should finalize as invalid business output");
+
+        assert_eq!(node.outcome, Some(NodeOutcome::Invalid));
+        let items = crate::acp::events::load_timeline_items(&timeline_path).unwrap();
+        let display = items[0]
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+            .unwrap();
+        assert_eq!(
+            display
+                .get("artifactName")
+                .and_then(serde_json::Value::as_str),
+            Some("node-result")
+        );
+        assert_eq!(
+            display
+                .get("parseStatus")
+                .and_then(serde_json::Value::as_str),
+            Some("invalid")
+        );
+    }
+
+    fn attachment_test_workflow() -> ValidatedWorkflow {
+        crate::dsl::validate_workflow(crate::dsl::WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-001".to_string(),
+            entry: "dev".to_string(),
+            control: Default::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                provider: Some("claude-acp".to_string()),
+                model: None,
+                profile: None,
+                goal: Some("Do the work".to_string()),
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                manual_check: None,
+            })],
+            edges: vec![crate::dsl::EdgeDsl {
+                from: "dev".to_string(),
+                to: crate::dsl::END_NODE.to_string(),
+                on: crate::dsl::EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            }],
+        })
+        .expect("workflow should validate")
+    }
+
+    fn attachment_test_round() -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        }
+    }
+
+    fn trace_step(sequence: u32, node_id: &str, from_node_id: Option<&str>) -> RoundTraceStep {
+        RoundTraceStep {
+            sequence,
+            node_id: node_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            from_node_id: from_node_id.map(str::to_string),
+            edge_outcome: from_node_id.map(|_| "success".to_string()),
+            entered_at: format!("2026-07-01T00:00:0{sequence}Z"),
+        }
+    }
+
+    fn traced_round(
+        id: &str,
+        index: u32,
+        trigger: crate::domain::RoundTrigger,
+        trace: Vec<RoundTraceStep>,
+    ) -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            run_id: "run-001".to_string(),
+            index,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            trace,
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn new_round_predecessors_use_stable_prefix_and_current_round_only() {
+        let round1 = traced_round(
+            "round-001",
+            1,
+            crate::domain::RoundTrigger::Initial,
+            vec![
+                trace_step(1, "plan", None),
+                trace_step(2, "dev", Some("plan")),
+                trace_step(3, "accept", Some("dev")),
+            ],
+        );
+        let round2 = traced_round(
+            "round-002",
+            2,
+            crate::domain::RoundTrigger::NewRound,
+            vec![
+                trace_step(1, "dev", None),
+                trace_step(2, "accept", Some("dev")),
+            ],
+        );
+        let rounds = vec![round1, round2.clone()];
+
+        let dev_predecessors =
+            scoped_predecessor_trace_refs(&rounds, &round2, "dev", "attempt-001");
+        assert_eq!(dev_predecessors.len(), 1);
+        assert_eq!(dev_predecessors[0].round_id, "round-001");
+        assert_eq!(dev_predecessors[0].step.node_id, "plan");
+
+        let accept_predecessors =
+            scoped_predecessor_trace_refs(&rounds, &round2, "accept", "attempt-001");
+        let locators = accept_predecessors
+            .iter()
+            .map(|trace_ref| format!("{}/{}", trace_ref.round_id, trace_ref.step.node_id))
+            .collect::<Vec<_>>();
+        assert_eq!(locators, vec!["round-002/dev"]);
+    }
+
+    #[test]
+    fn continue_worker_invocation_uses_only_resume_attachments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let task_id = "task-001";
+        let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
+        std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
+        let original_input = task_input_dir.join("original.txt");
+        std::fs::write(original_input.as_std_path(), "original").unwrap();
+        let resume_input = temp.path().join("resume.txt");
+        std::fs::write(&resume_input, "resume").unwrap();
+        let resume_input = resume_input.to_string_lossy().to_string();
+
+        let invocation = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            Some("prompt-001".to_string()),
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            vec![resume_input.clone()],
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(invocation.input_attachment_paths, vec![resume_input]);
+        assert!(
+            !invocation
+                .input_attachment_paths
+                .iter()
+                .any(|path| path.ends_with("original.txt"))
+        );
+    }
+
+    #[test]
+    fn new_worker_invocation_uses_task_input_attachments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let task_id = "task-001";
+        let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
+        std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
+        let original_input = task_input_dir.join("original.txt");
+        std::fs::write(original_input.as_std_path(), "original").unwrap();
+
+        let invocation = build_worker_invocation(
+            &app,
+            task_id,
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            vec!["ignored-on-new.txt".to_string()],
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(
+            invocation.input_attachment_paths,
+            vec![original_input.to_string()]
+        );
     }
 }

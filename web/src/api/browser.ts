@@ -273,6 +273,9 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve({ ...mockContent, title: name, kind: 'input-attachment' });
   },
+  showConversationMessageAttachment(_projectId: string, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _path: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return this.showConversationAttachment(_projectId, _taskId, name);
+  },
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },

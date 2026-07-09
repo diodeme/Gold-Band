@@ -8,8 +8,10 @@ use crate::prompts::{
     RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, prompt_by_language,
     render as render_template,
 };
+use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
@@ -122,9 +124,17 @@ pub struct WorkerInvocation {
     pub output_contract: Option<PromptOutputContract>,
     pub runtime_context: PromptRuntimeContext,
     pub predecessors: Vec<PromptPredecessorContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_round_trigger: Option<PromptPredecessorContext>,
     #[serde(default)]
     pub extra_system_sections: Vec<String>,
+    #[serde(default)]
+    pub extra_hidden_sections: Vec<PromptHiddenSection>,
     pub task_instruction: Option<String>,
+    #[serde(default)]
+    pub user_tips_instruction: Option<String>,
+    #[serde(default)]
+    pub resume_task_instruction: Option<String>,
     pub session_mode: SessionMode,
     #[serde(default)]
     pub user_prompt_render_mode: UserPromptRenderMode,
@@ -175,6 +185,12 @@ pub struct PromptRuntimeContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptHiddenSection {
+    pub title: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptPredecessorContext {
     pub round_id: String,
     pub node_id: String,
@@ -185,6 +201,7 @@ pub struct PromptPredecessorContext {
     pub branch_direction: Option<String>,
     pub output_artifact: Option<PromptArtifactRef>,
     pub branch_reason: Option<String>,
+    pub attachments: Vec<PromptAttachmentRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +209,11 @@ pub struct PromptArtifactRef {
     pub name: String,
     pub path: Utf8PathBuf,
     pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptAttachmentRef {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +246,8 @@ pub struct ProviderRunResult {
     pub result_payload: Option<ProviderResultPayload>,
     pub worker_ref_seed: Option<SessionRef>,
     pub stream_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_error: Option<RuntimeErrorInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -720,21 +744,21 @@ impl ProviderAdapter for AcpProvider {
             Some("refusal" | "error") => ProviderRunStatus::Failure,
             _ => ProviderRunStatus::Success,
         };
-        let result_payload = req.output_contract.as_ref().map(|contract| {
-            let uses_json_output =
-                contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
-            let content = if uses_json_output {
-                json_artifact_text_from_outputs(&run.final_outputs, &run.final_text)
-                    .unwrap_or_else(|| run.final_text.clone())
-            } else {
-                run.final_text.clone()
-            };
-            ProviderResultPayload {
-                output_artifact: Some(OutputArtifactPayload {
-                    name: contract.artifact.clone(),
-                    content,
-                }),
-            }
+        let runtime_error = (status == ProviderRunStatus::Failure)
+            .then(|| {
+                normalize_provider_failure(
+                    run.stop_reason.as_deref(),
+                    run.final_text.clone(),
+                    Some(serde_json::json!({
+                        "adapterId": run.adapter_id,
+                        "adapterDisplayName": run.adapter_display_name,
+                        "stopReason": run.stop_reason,
+                    })),
+                )
+            })
+            .flatten();
+        let result_payload = req.output_contract.as_ref().and_then(|contract| {
+            output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
         });
         Ok(ProviderRunResult {
             status,
@@ -742,6 +766,7 @@ impl ProviderAdapter for AcpProvider {
             result_payload,
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error,
         })
     }
 
@@ -755,6 +780,30 @@ impl ProviderAdapter for AcpProvider {
     fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
         Ok(None)
     }
+}
+
+fn output_artifact_payload_from_run(
+    contract: &PromptOutputContract,
+    final_outputs: &[String],
+    final_text: &str,
+) -> Option<ProviderResultPayload> {
+    let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
+    let content = if uses_json_output {
+        json_artifact_text_from_outputs(final_outputs, final_text)
+    } else {
+        non_empty_artifact_text(final_text)
+    }?;
+
+    Some(ProviderResultPayload {
+        output_artifact: Some(OutputArtifactPayload {
+            name: contract.artifact.clone(),
+            content,
+        }),
+    })
+}
+
+fn non_empty_artifact_text(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
 }
 
 pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
@@ -838,7 +887,7 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                 }
             });
 
-            render_template(
+            let content = render_template(
                 prompt_by_language(
                     req.runtime_context.language,
                     RUNTIME_USER_ZH_CN,
@@ -853,25 +902,63 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(str::to_string),
+                    user_tips: req
+                        .user_tips_instruction
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    resume_task: req
+                        .resume_task_instruction
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
                     continue_goal,
                 },
             )
-            .expect("prompt template renders")
+            .expect("prompt template renders");
+            compact_hidden_context_spacing(&content)
         }
     }
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {
-    let content = render_template(
-        prompt_by_language(
-            req.runtime_context.language,
-            RUNTIME_HIDDEN_CONTEXT_ZH_CN,
-            RUNTIME_HIDDEN_CONTEXT_EN,
-        ),
-        runtime_hidden_context(req),
-    )
-    .expect("prompt template renders");
+    let extra_sections = req
+        .extra_hidden_sections
+        .iter()
+        .filter(|section| !section.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    let suppress_base_context = extra_sections
+        .iter()
+        .any(|section| section.title == "Gold Band AI-DYNAMIC runtime context");
+    let mut content = if suppress_base_context {
+        String::new()
+    } else {
+        render_template(
+            prompt_by_language(
+                req.runtime_context.language,
+                RUNTIME_HIDDEN_CONTEXT_ZH_CN,
+                RUNTIME_HIDDEN_CONTEXT_EN,
+            ),
+            runtime_hidden_context(req),
+        )
+        .expect("prompt template renders")
+    };
+    for section in extra_sections {
+        content.push_str("\n\n");
+        content.push_str(section.content.trim());
+    }
+    let content = compact_hidden_context_spacing(&content);
     gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+fn compact_hidden_context_spacing(content: &str) -> String {
+    let mut compacted = content.replace("\r\n", "\n");
+    while compacted.contains("\n\n\n") {
+        compacted = compacted.replace("\n\n\n", "\n\n");
+    }
+    compacted.trim().to_string()
 }
 
 pub(crate) fn gold_band_hidden_block(title: &str, content: &str) -> String {
@@ -912,6 +999,8 @@ struct RuntimeUserTemplateContext {
     hidden_context: String,
     requirement: String,
     task: Option<String>,
+    user_tips: Option<String>,
+    resume_task: Option<String>,
     continue_goal: Option<String>,
 }
 
@@ -921,6 +1010,8 @@ struct RuntimePredecessorTemplateContext {
     chain: String,
     reason_lines: String,
     reason_lines_empty: bool,
+    attachment_lines: String,
+    attachment_lines_empty: bool,
 }
 
 #[derive(Serialize)]
@@ -973,7 +1064,11 @@ fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplat
         attempt_dir: req.runtime_context.attempt_dir.to_string(),
         attachments_dir: req.runtime_context.attachments_dir.to_string(),
         invocation_reason: runtime_invocation_reason(req),
-        predecessors: runtime_predecessor_context(&req.predecessors, &req.runtime_context),
+        predecessors: runtime_predecessor_context(
+            &req.predecessors,
+            req.new_round_trigger.as_ref(),
+            &req.runtime_context,
+        ),
     }
 }
 
@@ -1025,14 +1120,18 @@ fn predecessor_ref(predecessor: &PromptPredecessorContext) -> String {
 
 fn runtime_predecessor_context(
     predecessors: &[PromptPredecessorContext],
+    new_round_trigger: Option<&PromptPredecessorContext>,
     ctx: &PromptRuntimeContext,
 ) -> RuntimePredecessorTemplateContext {
-    let reason_lines = predecessor_reason_lines(predecessors);
+    let reason_lines = predecessor_reason_lines(predecessors, new_round_trigger);
+    let attachment_lines = predecessor_attachment_lines(predecessors);
     RuntimePredecessorTemplateContext {
         is_empty: predecessors.is_empty(),
         chain: predecessor_chain_text(predecessors, ctx),
         reason_lines_empty: reason_lines.is_empty(),
         reason_lines,
+        attachment_lines_empty: attachment_lines.is_empty(),
+        attachment_lines,
     }
 }
 
@@ -1066,8 +1165,11 @@ fn predecessor_chain_text(
     chain
 }
 
-fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String {
-    predecessors
+fn predecessor_reason_lines(
+    predecessors: &[PromptPredecessorContext],
+    new_round_trigger: Option<&PromptPredecessorContext>,
+) -> String {
+    let mut lines = predecessors
         .iter()
         .filter_map(|predecessor| {
             let is_ordinary = predecessor.branch_kind == "普通"
@@ -1102,6 +1204,62 @@ fn predecessor_reason_lines(predecessors: &[PromptPredecessorContext]) -> String
                 parts.join("；")
             ))
         })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(trigger) = new_round_trigger {
+        if !lines.is_empty() {
+            lines.push('\n');
+        }
+        lines.push_str(&new_round_trigger_reason_line(trigger));
+    }
+    lines
+}
+
+fn new_round_trigger_reason_line(trigger: &PromptPredecessorContext) -> String {
+    let mut parts = vec![format!(
+        "$new-round 由该节点触发；节点类型={}；结果={}",
+        trigger.node_type,
+        trigger.outcome.as_deref().unwrap_or("unknown")
+    )];
+    if let Some(reason) = trigger.branch_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(artifact) = &trigger.output_artifact {
+        parts.push(format!(
+            "输出 artifact={}: {}",
+            artifact.name, artifact.path
+        ));
+        if let Some(preview) = artifact.preview.as_deref() {
+            parts.push(format!("输出预览={}", preview.trim()));
+        }
+    }
+    if !trigger.attachments.is_empty() {
+        let files = trigger
+            .attachments
+            .iter()
+            .map(|attachment| format!("attachments/{}", attachment.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("附件={}", files));
+    }
+    format!("- {}：{}。", predecessor_ref(trigger), parts.join("；"))
+}
+
+fn predecessor_attachment_lines(predecessors: &[PromptPredecessorContext]) -> String {
+    let mut seen = IndexMap::<String, Vec<String>>::new();
+    for p in predecessors {
+        if p.attachments.is_empty() {
+            continue;
+        }
+        let entry = seen
+            .entry(format!("{}/{}/{}", p.round_id, p.node_id, p.attempt_id))
+            .or_insert_with(Vec::new);
+        for a in &p.attachments {
+            entry.push(format!("attachments/{}", a.name));
+        }
+    }
+    seen.iter()
+        .map(|(locator, files)| format!("- {}: {}", locator, files.join(", ")))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1269,8 +1427,12 @@ mod tests {
             output_contract: None,
             runtime_context,
             predecessors: Vec::new(),
+            new_round_trigger: None,
             extra_system_sections: Vec::new(),
+            extra_hidden_sections: Vec::new(),
             task_instruction: Some("Create a structured result".to_string()),
+            user_tips_instruction: None,
+            resume_task_instruction: None,
             session_mode: SessionMode::New,
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
@@ -1291,6 +1453,64 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+    }
+
+    #[test]
+    fn output_contract_without_final_content_does_not_create_empty_artifact_payload() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        let payload = output_artifact_payload_from_run(&contract, &[], "");
+
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn output_contract_with_json_final_output_creates_artifact_payload() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+        let outputs = vec![
+            "planning text".to_string(),
+            r#"{"kind":"dynamic-node-completion","status":"success"}"#.to_string(),
+        ];
+
+        let payload = output_artifact_payload_from_run(&contract, &outputs, "").unwrap();
+
+        let artifact = payload.output_artifact.unwrap();
+        assert_eq!(artifact.name, "dynamic-node-completion");
+        assert_eq!(
+            artifact.content,
+            r#"{"kind":"dynamic-node-completion","status":"success"}"#
+        );
+    }
+
+    #[test]
+    fn json_output_contract_without_json_does_not_fallback_to_text_artifact() {
+        let contract = PromptOutputContract {
+            artifact: "accept-result".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        let payload = output_artifact_payload_from_run(
+            &contract,
+            &["I can see the requirement.".to_string()],
+            "I can see the requirement.",
+        );
+
+        assert!(payload.is_none());
     }
 
     #[test]

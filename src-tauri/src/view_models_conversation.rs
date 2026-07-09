@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_vm, dynamic_acp_session_vm,
-    dynamic_runtime_graph_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
+    workflow_graph_vm,
 };
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
@@ -79,6 +80,7 @@ pub struct ConversationRunSummaryVm {
 pub struct ConversationRunVm {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub title: String,
     pub auto_title: bool,
@@ -487,7 +489,10 @@ fn display_pause_reason_for_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
-    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+    if run_pause_reason.is_some_and(|reason| {
+        normalize_lifecycle_code(reason) == "error-blocked"
+            || is_runtime_continue_pause_reason(Some(reason))
+    }) {
         return run_pause_reason.map(str::to_string);
     }
     let snapshot_path = app
@@ -514,7 +519,10 @@ fn display_pause_reason_for_dynamic_attempt(
     attempt_id: &str,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
-    if run_pause_reason.is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked") {
+    if run_pause_reason.is_some_and(|reason| {
+        normalize_lifecycle_code(reason) == "error-blocked"
+            || is_runtime_continue_pause_reason(Some(reason))
+    }) {
         return run_pause_reason.map(str::to_string);
     }
     let attempt_dir = app.paths.dynamic_node_attempt_dir(
@@ -803,12 +811,30 @@ fn runtime_error_message(
     task_id: &str,
     run_id: &str,
     pause_reason: Option<&str>,
+    run_outcome: Option<&str>,
 ) -> Option<String> {
-    if pause_reason.map(normalize_lifecycle_code).as_deref() != Some("error-blocked") {
+    if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("error-blocked") {
+        let progress = app.run_progress(task_id, run_id).ok().flatten()?;
+        return runtime_error_message_from_summary(progress.get("summary")?.as_str()?);
+    }
+
+    if !matches!(
+        run_outcome.map(normalize_lifecycle_code).as_deref(),
+        Some("failure" | "failed" | "error")
+    ) {
         return None;
     }
-    let progress = app.run_progress(task_id, run_id).ok().flatten()?;
-    runtime_error_message_from_summary(progress.get("summary")?.as_str()?)
+
+    latest_control_failure_vm(app, task_id, run_id)
+        .ok()
+        .flatten()
+        .map(|failure| {
+            if failure.title.trim().is_empty() || failure.message.trim().is_empty() {
+                failure.message
+            } else {
+                format!("{}：{}", failure.title, failure.message)
+            }
+        })
 }
 
 fn runtime_error_message_from_summary(summary: &str) -> Option<String> {
@@ -909,7 +935,7 @@ fn is_terminal_session_status(status: &str) -> bool {
 fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
     matches!(
         pause_reason.map(normalize_lifecycle_code).as_deref(),
-        Some("process-interrupted")
+        Some("process-interrupted" | "runtime-abnormal")
     )
 }
 
@@ -926,7 +952,7 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted") => Some("input".to_string()),
+        Some("process-interrupted" | "runtime-abnormal") => Some("input".to_string()),
         _ => None,
     }
 }
@@ -1027,7 +1053,18 @@ fn derive_conversation_attempt_lifecycle(
         .filter(|status| !status.is_empty() && !status.eq_ignore_ascii_case("unknown"))
         .map(str::to_string);
     let normalized_runtime_status = normalize_lifecycle_code(runtime_status);
-    let runtime_active = is_active_session_status(runtime_status);
+    let runtime_paused = normalized_runtime_status == "paused";
+    let unexplained_provider_failure = runtime_paused
+        && runtime_outcome.is_none()
+        && pause_reason.is_none()
+        && matches!(
+            session_status
+                .as_deref()
+                .map(normalize_lifecycle_code)
+                .as_deref(),
+            Some("failed" | "failure" | "error")
+        );
+    let runtime_active = is_active_session_status(runtime_status) || unexplained_provider_failure;
     let acp_stopping = session_status
         .as_deref()
         .is_some_and(is_stopping_session_status);
@@ -1053,9 +1090,10 @@ fn derive_conversation_attempt_lifecycle(
         || session_status
             .as_deref()
             .is_some_and(is_terminal_session_status);
-    let runtime_paused = normalize_lifecycle_code(runtime_status) == "paused";
     let runtime_pause_overrides_session = runtime_paused
-        && (manual_check_pending
+        && runtime_outcome.is_none()
+        && (pause_reason.is_none()
+            || manual_check_pending
             || matches!(
                 pause_reason
                     .as_deref()
@@ -1190,15 +1228,17 @@ pub fn conversation_attempt_lifecycle_vm(
         let runtime_status = if run.status == RunStatus::Paused
             && raw_runtime_status == "running"
             && dynamic_node.outcome.is_none()
-            && pause_reason
-                .as_deref()
-                .is_some_and(|reason| normalize_lifecycle_code(reason) == "process-interrupted")
+            && is_runtime_continue_pause_reason(pause_reason.as_deref())
         {
             "paused".to_string()
         } else {
             raw_runtime_status
         };
         let outcome = dynamic_node.outcome.as_ref().map(enum_label);
+        let run_paused_for_current_leaf = run_pause_reason.as_deref().is_some_and(|reason| {
+            normalize_lifecycle_code(reason) == "error-blocked"
+                || is_runtime_continue_pause_reason(Some(reason))
+        });
         let current = run.current_round.as_deref() == Some(round_id)
             && run.current_node.as_deref() == Some(outer_node_id)
             && run.current_attempt.as_deref() == Some(outer_attempt_id)
@@ -1207,20 +1247,12 @@ pub fn conversation_attempt_lifecycle_vm(
                 .current_node_ids
                 .iter()
                 .any(|id| id == node_id)
-                || (run_pause_reason
-                    .as_deref()
-                    .is_some_and(|reason| normalize_lifecycle_code(reason) == "error-blocked")
+                || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
         let leaf_resumable = runtime_status == "paused"
             && outcome.is_none()
-            && matches!(
-                pause_reason
-                    .as_deref()
-                    .map(normalize_lifecycle_code)
-                    .as_deref(),
-                Some("process-interrupted")
-            );
+            && is_runtime_continue_pause_reason(pause_reason.as_deref());
         return Ok(derive_conversation_attempt_lifecycle(
             session_vm.as_ref().map(|session| session.status.as_str()),
             &runtime_status,
@@ -1349,6 +1381,10 @@ pub fn conversation_run_vm(
     let task_state = app
         .task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
+    let task_uuid = task_state
+        .uuid
+        .clone()
+        .or_else(|| Some(task_id.to_string()));
     let title = task_state.title.unwrap_or_else(|| task_id.to_string());
 
     // Read conversation metadata if exists
@@ -1393,12 +1429,28 @@ pub fn conversation_run_vm(
     for round in &rounds {
         // List all nodes for this round (latest attempt per node)
         let mut nodes = app.node_list(task_id, run_id, &round.id)?;
-        // Sort by workflow DSL order so the session tree matches the intended workflow sequence
+        let trace_node_order: HashMap<String, usize> = {
+            let mut order = HashMap::new();
+            let mut trace = round.trace.clone();
+            trace.sort_by_key(|step| step.sequence);
+            for (index, step) in trace.iter().enumerate() {
+                order.entry(step.node_id.clone()).or_insert(index);
+            }
+            order
+        };
+        // Prefer the actual per-round execution trace. Workflow DSL order is only a fallback for
+        // legacy or synthetic nodes that do not have trace entries.
         nodes.sort_by_key(|n| {
-            workflow_node_order
-                .get(&n.node_id)
-                .copied()
-                .unwrap_or(usize::MAX)
+            (
+                trace_node_order
+                    .get(&n.node_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                workflow_node_order
+                    .get(&n.node_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+            )
         });
         let mut tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
 
@@ -1451,6 +1503,11 @@ pub fn conversation_run_vm(
 
                             let mut dyn_leafs: Vec<ConversationSessionLeafVm> = Vec::new();
                             let dyn_outcome = dyn_node.outcome.as_ref().map(enum_label);
+                            let run_paused_for_dyn_leaf =
+                                run_pause_reason.as_deref().is_some_and(|reason| {
+                                    normalize_lifecycle_code(reason) == "error-blocked"
+                                        || is_runtime_continue_pause_reason(Some(reason))
+                                });
                             let dyn_current = run.current_round.as_deref() == Some(&round.id)
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
@@ -1460,17 +1517,15 @@ pub fn conversation_run_vm(
                                     .current_node_ids
                                     .iter()
                                     .any(|id| id == &dyn_node.id)
-                                    || (run_pause_reason.as_deref().is_some_and(|reason| {
-                                        normalize_lifecycle_code(reason) == "error-blocked"
-                                    }) && dyn_node.status
-                                        == gold_band::dynamic::DynamicNodeStatus::Paused
+                                    || (run_paused_for_dyn_leaf
+                                        && dyn_node.status
+                                            == gold_band::dynamic::DynamicNodeStatus::Paused
                                         && dyn_node.outcome.is_none()));
                             let dyn_base_status = if run.status == RunStatus::Paused
                                 && dyn_runtime_status == "running"
                                 && dyn_node.outcome.is_none()
-                                && run_pause_reason.as_deref().is_some_and(|reason| {
-                                    normalize_lifecycle_code(reason) == "process-interrupted"
-                                }) {
+                                && is_runtime_continue_pause_reason(run_pause_reason.as_deref())
+                            {
                                 "paused".to_string()
                             } else {
                                 dyn_runtime_status.clone()
@@ -1502,21 +1557,16 @@ pub fn conversation_run_vm(
                                 let dyn_status = if run.status == RunStatus::Paused
                                     && dyn_runtime_status == "running"
                                     && dyn_node.outcome.is_none()
-                                    && dyn_pause_reason.as_deref().is_some_and(|reason| {
-                                        normalize_lifecycle_code(reason) == "process-interrupted"
-                                    }) {
+                                    && is_runtime_continue_pause_reason(dyn_pause_reason.as_deref())
+                                {
                                     "paused".to_string()
                                 } else {
                                     dyn_runtime_status.clone()
                                 };
                                 let dyn_leaf_resumable = dyn_status == "paused"
                                     && dyn_outcome.is_none()
-                                    && matches!(
-                                        dyn_pause_reason
-                                            .as_deref()
-                                            .map(normalize_lifecycle_code)
-                                            .as_deref(),
-                                        Some("process-interrupted")
+                                    && is_runtime_continue_pause_reason(
+                                        dyn_pause_reason.as_deref(),
                                     );
                                 let lifecycle = derive_conversation_attempt_lifecycle(
                                     dyn_session_vm
@@ -1842,11 +1892,16 @@ pub fn conversation_run_vm(
 
     let input_attachments = input_attachments_vm(app, task_id);
 
+    let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
-    let runtime_error_message =
-        runtime_error_message(app, task_id, run_id, run_pause_reason.as_deref());
-    let run_outcome = run.outcome.map(|o| enum_label(&o));
+    let runtime_error_message = runtime_error_message(
+        app,
+        task_id,
+        run_id,
+        run_pause_reason.as_deref(),
+        run_outcome.as_deref(),
+    );
 
     let (workflow_valid, workflow_json) = if let Some(ref dsl) = workflow_snapshot {
         (true, Some(serde_json::to_string(dsl).unwrap_or_default()))
@@ -1888,6 +1943,7 @@ pub fn conversation_run_vm(
         workflow_graph,
         project_id: project_id.to_string(),
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         title,
         auto_title,
@@ -2113,6 +2169,20 @@ pub fn validate_conversation_create_vm(
 
 // ── Real create ──
 
+fn conversation_auto_title(content: &str, max_chars: usize) -> String {
+    if content.is_empty() {
+        "New Task".to_string()
+    } else {
+        content
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(max_chars.max(1))
+            .collect()
+    }
+}
+
 fn dynamic_control_from_vm(control: Option<&ConversationDynamicControlVm>) -> DynamicControlDsl {
     control
         .map(|control| DynamicControlDsl {
@@ -2237,6 +2307,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             to: END_NODE.to_string(),
             on: EdgeOutcome::Success,
             session: None,
+            new_round_entry: None,
         }],
     }
 }
@@ -2245,18 +2316,8 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationRunVm> {
-    let title = if input.content.is_empty() {
-        "New Task".to_string()
-    } else {
-        input
-            .content
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(12)
-            .collect()
-    };
+    let title =
+        conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
     // Build workflow
     let workflow = if input.run_mode == "auto" {
@@ -2284,6 +2345,7 @@ pub fn create_conversation_run_vm(
     })?;
 
     let task_id = summary.task.id.clone();
+    let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
@@ -2324,6 +2386,7 @@ pub fn create_conversation_run_vm(
         Ok(ConversationRunVm {
             project_id: input.project_id.clone(),
             task_id: task_id.clone(),
+            task_uuid: task_uuid.clone(),
             run_id: run.id,
             title,
             auto_title: true,
@@ -2380,6 +2443,11 @@ pub fn rerun_conversation_task_vm(
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
             task_id: task_id.to_string(),
+            task_uuid: app
+                .task_show(task_id)
+                .ok()
+                .and_then(|task| task.uuid)
+                .or_else(|| Some(task_id.to_string())),
             run_id: run.id,
             title: String::new(),
             auto_title: false,
@@ -2469,7 +2537,7 @@ mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationDynamicAgentRefVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, build_auto_workflow, conversation_attempt_lifecycle_vm,
-        conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, derive_conversation_attempt_lifecycle,
         lifecycle_is_active, switch_conversation_session_vm,
     };
@@ -2477,6 +2545,18 @@ mod tests {
     use gold_band::app::App;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl};
     use serde_json::json;
+
+    #[test]
+    fn conversation_auto_title_uses_configured_character_limit() {
+        let content = "在.claude下输出两个python类，一个输出hello，一个输出good bye";
+
+        assert_eq!(conversation_auto_title(content, 12), "在.claude下输出两");
+        assert_eq!(
+            conversation_auto_title(content, 20),
+            "在.claude下输出两个python类"
+        );
+        assert_eq!(conversation_auto_title("", 20), "New Task");
+    }
 
     #[test]
     fn paused_runtime_keeps_paused_status_after_process_interrupt() {
@@ -2629,6 +2709,70 @@ mod tests {
     }
 
     #[test]
+    fn runtime_abnormal_pause_is_input_continue_even_when_acp_failed() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            true,
+            Some("runtime-abnormal"),
+            true,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert!(lifecycle.runtime.continuable);
+        assert_eq!(
+            lifecycle.runtime.pause_reason.as_deref(),
+            Some("runtime-abnormal")
+        );
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn current_unexplained_paused_provider_failure_stays_runtime_active() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            true,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert!(lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn unexplained_paused_provider_failure_stays_runtime_active_without_current_marker() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("failed"),
+            "paused",
+            None,
+            false,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert!(lifecycle.composer.lock_input);
+    }
+
+    #[test]
     fn manual_check_waiting_for_user_input_keeps_acp_prompt_available() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             None,
@@ -2771,6 +2915,94 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+    }
+
+    #[test]
+    fn paused_parent_runtime_abnormal_dynamic_leaf_is_runtime_continue() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("runtime-abnormal"),
+            "paused",
+            Vec::new(),
+        );
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.runtime.status, "paused");
+        assert_eq!(
+            lifecycle.runtime.pause_reason.as_deref(),
+            Some("runtime-abnormal")
+        );
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn dynamic_leaf_provider_failure_does_not_flash_runtime_error_before_pause_reason() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "running",
+            json!(null),
+            "paused",
+            vec!["good-morning"],
+            false,
+        );
+        gold_band::storage::write_json(
+            &app.paths
+                .dynamic_node_attempt_dir(
+                    "task-dyn",
+                    "run-dyn",
+                    "round-001",
+                    "ai-dynamic",
+                    "attempt-001",
+                    "good-morning",
+                    "attempt-001",
+                )
+                .join("acp.session.json"),
+            &json!({
+                "status": "failed",
+                "stopReason": "error",
+                "sessionId": "session-good-morning",
+                "messages": []
+            }),
+        )
+        .unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime_display.blocking_error);
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
     }
 
     #[test]
@@ -3042,6 +3274,7 @@ mod tests {
         assert_eq!(vm.artifacts[0].name, "测试-result");
         assert_eq!(vm.attachments.len(), 1);
         assert_eq!(vm.attachments[0].name, "test-report.md");
+        assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
             .attempts
@@ -3050,6 +3283,43 @@ mod tests {
             .unwrap();
         assert_eq!(leaf.artifact_count, 1);
         assert_eq!(leaf.attachment_count, 1);
+    }
+
+    #[test]
+    fn conversation_session_tree_orders_nodes_by_round_trace() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        let node_ids = vm.session_tree.rounds[0]
+            .nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(node_ids, vec!["方案", "开发", "验收"]);
+    }
+
+    #[test]
+    fn conversation_run_vm_exposes_terminal_control_failure_message() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"workflow_control_limit_exceeded","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","roundId":"round-001","nodeId":"验收","attemptId":"attempt-001","stage":"completed","status":"completed","summary":"max rounds exceeded for $new-round: 2 > 1","pauseReason":null,"controlFailure":{"limit":1,"message":"max rounds exceeded for $new-round: 2 > 1","proposedCount":2,"reasonKind":"max_rounds_exceeded","target":"$new-round"}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("Round 数已达上限：max rounds exceeded for $new-round: 2 > 1")
+        );
     }
 
     #[test]
@@ -3378,6 +3648,7 @@ mod tests {
             &json!({
                 "version": gold_band::domain::VERSION,
                 "id": task_id,
+                "uuid": "task-046-fixture-uuid",
                 "title": "中文节点资源回归",
                 "description": null
             }),
@@ -3461,6 +3732,105 @@ mod tests {
             .attachments_dir(task_id, run_id, round_id, node_id, attempt_id);
         std::fs::create_dir_all(attachments_dir.as_std_path()).unwrap();
         std::fs::write(attachments_dir.join("test-report.md").as_std_path(), "ok").unwrap();
+    }
+
+    fn write_trace_order_fixture(app: &App) {
+        let task_id = "task-trace";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &app.paths.task_file(task_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": task_id,
+                "title": "Trace order",
+                "description": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "completed",
+                "outcome": "failure",
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &json!({
+                "version": "0.1",
+                "id": "workflow-trace-order",
+                "entry": "方案",
+                "nodes": [
+                    { "type": "worker", "id": "开发", "provider": "claude-acp" },
+                    { "type": "worker", "id": "验收", "provider": "claude-acp" },
+                    { "type": "worker", "id": "方案", "provider": "claude-acp" }
+                ],
+                "edges": [
+                    { "from": "方案", "to": "开发", "on": "success" },
+                    { "from": "开发", "to": "验收", "on": "success" },
+                    { "from": "验收", "to": "$end", "on": "success" }
+                ]
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "failure",
+                "trigger": "initial",
+                "started_at": "2026-07-08T00:00:00Z",
+                "trace": [
+                    { "sequence": 1, "node_id": "方案", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-07-08T00:00:00Z" },
+                    { "sequence": 2, "node_id": "开发", "attempt_id": "attempt-001", "from_node_id": "方案", "edge_outcome": "success", "entered_at": "2026-07-08T00:00:01Z" },
+                    { "sequence": 3, "node_id": "验收", "attempt_id": "attempt-001", "from_node_id": "开发", "edge_outcome": "success", "entered_at": "2026-07-08T00:00:02Z" }
+                ]
+            }),
+        )
+        .unwrap();
+        for (node_id, status, outcome) in [
+            ("方案", "completed", "success"),
+            ("开发", "completed", "success"),
+            ("验收", "completed", "failure"),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, node_id, "attempt-001"),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "node_id": node_id,
+                    "node_type": "worker",
+                    "run_id": run_id,
+                    "round_id": round_id,
+                    "attempt_id": "attempt-001",
+                    "status": status,
+                    "outcome": outcome,
+                    "started_at": "2026-07-08T00:00:00Z",
+                    "finished_at": "2026-07-08T00:00:01Z",
+                    "manual_check_pending": false,
+                    "resolved_config": {}
+                }),
+            )
+            .unwrap();
+        }
     }
 
     fn write_manual_check_pause_overrides(app: &App) {

@@ -610,7 +610,7 @@ fn dynamic_next_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Va
             "groupId": string_schema(),
             "nodes": {
                 "type": "array",
-                "minItems": 1,
+                "minItems": 2,
                 "maxItems": max_items,
                 "items": schema_ref("DynamicNodeSpec")
             },
@@ -743,7 +743,6 @@ pub fn validate_dynamic_group_state(state: &DynamicGroupState) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,7 +765,8 @@ mod tests {
             "workspace": { "mode": "readonly" },
             "sessionMode": "new"
         }"#;
-        let node: DynamicNodeState = serde_json::from_str(json).expect("legacy node must deserialize");
+        let node: DynamicNodeState =
+            serde_json::from_str(json).expect("legacy node must deserialize");
         assert!(node.uuid.is_none());
     }
 

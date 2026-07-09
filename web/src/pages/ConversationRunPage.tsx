@@ -30,8 +30,16 @@ function activeSessionKey(session: {
   return `${session.roundId}/${session.nodeId}/${session.attemptId}`;
 }
 
-function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
-  if (!session || !leaf || !session.cwd) return true;
+export function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, run: ConversationRunVm, leaf: ConversationSessionLeafVm | null) {
+  if (!session || !leaf) return true;
+  if (session.roundId && session.nodeId && session.attemptId) {
+    return session.roundId === leaf.roundId &&
+      session.nodeId === leaf.nodeId &&
+      session.attemptId === leaf.attemptId &&
+      (session.outerNodeId ?? null) === (leaf.outerNodeId ?? null) &&
+      (session.outerAttemptId ?? null) === (leaf.outerAttemptId ?? null);
+  }
+  if (!session.cwd) return true;
   const cwd = normalizeSessionPath(session.cwd);
   const expected = leaf.outerNodeId && leaf.outerAttemptId
     ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
@@ -267,12 +275,19 @@ export function ConversationRunPage({
   const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
   const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
+  const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
+    selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
+  )
+    ? run.runtimeErrorMessage
+    : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
   const selectedSessionErrorBlocked = selectedSessionDisplay?.code === 'error-blocked';
-  const selectedRuntimeErrorMessage = selectedSessionDisplay?.blockingError || selectedSessionErrorBlocked
-    ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
-    : null;
+  const selectedSessionRuntimeError = selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionErrorBlocked;
+  const selectedRuntimeErrorMessage = selectedSessionRuntimeControlError
+    ?? (selectedSessionRuntimeError
+      ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
+      : null);
   const canViewWorkflow = canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
@@ -359,7 +374,7 @@ export function ConversationRunPage({
         {selectedLeaf ? (
           <ACPChatDialog
             ref={chatDialogRef}
-            key={selectedSessionKey ?? 'empty'}
+            key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             projectId={run.projectId}
             taskId={run.taskId}
@@ -381,6 +396,7 @@ export function ConversationRunPage({
             allArtifacts={run.artifacts}
             allAttachments={run.attachments}
             usageCompact
+            cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />
         ) : (
           <ConversationEmptySessionState

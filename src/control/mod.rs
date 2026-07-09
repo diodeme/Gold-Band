@@ -1,5 +1,5 @@
 use crate::domain::{PauseReason, RunOutcome, SessionMode};
-use crate::dsl::{END_NODE, EdgeOutcome, NEW_ROUND_NODE, ValidatedWorkflow};
+use crate::dsl::{END_NODE, ENTRY_NODE, EdgeOutcome, NEW_ROUND_NODE, ValidatedWorkflow};
 use crate::provider::supports_continue_session;
 use crate::runtime::{NodeState, RoundState};
 
@@ -9,7 +9,9 @@ pub enum ControlDecision {
         node_id: String,
         session: SessionMode,
     },
-    OpenNewRound,
+    OpenNewRound {
+        entry_node_id: String,
+    },
     CompleteRun(RunOutcome),
     PauseRun(PauseReason),
 }
@@ -23,12 +25,12 @@ pub fn decide_next_step(
     match node.outcome {
         Some(crate::domain::NodeOutcome::Success) => {
             match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Success, || {
-                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                ControlDecision::CompleteRun(RunOutcome::Success)
             })
         }
         Some(crate::domain::NodeOutcome::Failure) => {
             match_edge_or_default(workflow, &node.node_id, EdgeOutcome::Failure, || {
-                ControlDecision::PauseRun(PauseReason::ErrorBlocked)
+                ControlDecision::CompleteRun(RunOutcome::Failure)
             })
         }
         Some(crate::domain::NodeOutcome::Invalid) => {
@@ -70,7 +72,16 @@ fn find_edge_decision(
                     EdgeOutcome::Failure => RunOutcome::Failure,
                 })
             } else if edge.to == NEW_ROUND_NODE {
-                ControlDecision::OpenNewRound
+                let new_round_entry = edge
+                    .new_round_entry
+                    .as_deref()
+                    .expect("validated `$new-round` edge declares new_round_entry");
+                let entry_node_id = if new_round_entry == ENTRY_NODE {
+                    workflow.raw.entry.clone()
+                } else {
+                    new_round_entry.to_string()
+                };
+                ControlDecision::OpenNewRound { entry_node_id }
             } else {
                 ControlDecision::TransitionToNode {
                     node_id: edge.to.clone(),

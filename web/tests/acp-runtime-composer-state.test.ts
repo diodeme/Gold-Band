@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { deriveAcpRuntimeComposerState, type AcpRuntimeComposerStateInput } from '@/lib/acp-runtime-composer-state';
+import {
+  deriveAcpRuntimeComposerState,
+  shouldKeepLocalRuntimeLifecycleOverride,
+  type AcpRuntimeComposerStateInput,
+} from '@/lib/acp-runtime-composer-state';
 import type { ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
 
 const pausedDisplay: RuntimeDisplayVm = {
@@ -218,6 +222,64 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
+  it('ignores stale runtime error messages unless backend composer is runtime-error', () => {
+    const activeState = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: null,
+          resumable: false,
+          current: true,
+          active: true,
+          continuable: false,
+          phase: 'provider-running',
+        },
+        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        displayStatus: 'paused',
+        runtimeDisplay: pausedDisplay,
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'processing',
+          statusKey: 'conversation.runtime.runtimeActive',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'failed',
+      runtimeErrorMessage: '当前会话运行失败，请查看错误原因',
+    }));
+
+    expect(activeState.mode).toBe('runtime-active');
+    expect(activeState.externalKind).toBeNull();
+
+    const abnormalState = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'runtime-abnormal',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        displayStatus: 'runtime-abnormal',
+        runtimeDisplay: runtimeAbnormalDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'failed',
+      runtimeErrorMessage: '当前会话运行失败，请查看错误原因',
+    }));
+
+    expect(abnormalState.mode).toBe('interrupted-input');
+    expect(abnormalState.submitTarget).toBe('runtime-continue');
+    expect(abnormalState.externalKind).toBeNull();
+    expect(abnormalState.inputDisabled).toBe(false);
+  });
+
   it('does not treat stale ACP cancelled as runtime error after continue starts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -344,6 +406,26 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.inputDisabled).toBe(false);
     expect(state.showExternalState).toBe(false);
     expect(state.canSubmit).toBe(true);
+  });
+
+  it('keeps permission waits as a locked runtime composer state', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle(),
+      waitingForPermission: true,
+      prompt: 'allow?',
+    }));
+
+    expect(state.mode).toBe('permission-blocked');
+    expect(state.submitTarget).toBe('permission-response');
+    expect(state.sessionActive).toBe(true);
+    expect(state.composerLocked).toBe(true);
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(true);
+    expect(state.showExternalState).toBe(false);
+    expect(state.placeholderKind).toBe('runtime-controlled');
+    expect(state.hintKind).toBe('permission-pending');
+    expect(state.showStatus).toBe(false);
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {
@@ -499,5 +581,118 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(completed.submitTarget).toBe('acp-prompt');
     expect(interrupted.mode).toBe('invalid-workflow');
     expect(interrupted.submitTarget).toBe('none');
+  });
+});
+
+describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
+  it('keeps continue-started lifecycle over stale paused parent snapshots', () => {
+    const localActive = lifecycle({
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: true,
+        continuable: false,
+        phase: 'provider-running',
+      },
+      acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+      displayStatus: 'running',
+      runtimeDisplay: runningDisplay,
+      continueKind: null,
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        statusKey: 'conversation.runtime.runtimeActive',
+        canStop: true,
+        lockInput: true,
+      },
+    });
+    const stalePaused = lifecycle({
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'process-interrupted',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'paused',
+      },
+      acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+      displayStatus: 'paused',
+      runtimeDisplay: pausedDisplay,
+      continueKind: 'input',
+      composer: {
+        mode: 'interrupted-input',
+        submitTarget: 'runtime-continue',
+        processingKind: 'processing',
+        statusKey: null,
+        canStop: false,
+        lockInput: false,
+      },
+    });
+
+    expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, stalePaused)).toBe(true);
+  });
+
+  it('releases continue-started lifecycle once parent catches up or errors', () => {
+    const localActive = lifecycle({
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: true,
+        continuable: false,
+        phase: 'provider-running',
+      },
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        statusKey: 'conversation.runtime.runtimeActive',
+        canStop: true,
+        lockInput: true,
+      },
+    });
+    const parentActive = lifecycle({
+      runtime: {
+        status: 'running',
+        outcome: null,
+        pauseReason: null,
+        resumable: false,
+        current: true,
+        active: true,
+        continuable: false,
+        phase: 'provider-running',
+      },
+    });
+    const parentError = lifecycle({
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: 'runtime-abnormal',
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'paused',
+      },
+      composer: {
+        mode: 'runtime-error',
+        submitTarget: 'none',
+        processingKind: 'processing',
+        statusKey: null,
+        canStop: false,
+        lockInput: true,
+      },
+    });
+
+    expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, parentActive)).toBe(false);
+    expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, parentError)).toBe(false);
   });
 });

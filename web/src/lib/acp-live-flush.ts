@@ -196,7 +196,7 @@ export function decideAcpLiveEventFlush(
     return {
       buffer: false,
       applyImmediately: true,
-      flushPendingBeforeApply: !input.paused,
+      flushPendingBeforeApply: true,
       scheduleFlush: false,
       scheduleDelayMs: null,
     };

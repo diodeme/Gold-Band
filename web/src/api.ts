@@ -216,6 +216,10 @@ export function showConversationAttachment(projectId: string, taskId: string, na
   return getRuntimeApi().showConversationAttachment(projectId, taskId, name);
 }
 
+export function showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showConversationMessageAttachment(projectId, taskId, runId, roundId, nodeId, attemptId, name, path, outerNodeId, outerAttemptId);
+}
+
 export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }

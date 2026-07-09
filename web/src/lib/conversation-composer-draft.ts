@@ -52,6 +52,10 @@ export interface ConversationComposerDraftContextValue {
   reset: () => void;
 }
 
+export interface ConversationComposerDraftBoundaryHandle {
+  reset: () => void;
+}
+
 const ConversationComposerDraftContext = createContext<ConversationComposerDraftContextValue | null>(null);
 
 export function useConversationComposerDraft(): ConversationComposerDraftContextValue {
@@ -64,8 +68,20 @@ export function useConversationComposerDraft(): ConversationComposerDraftContext
 
 export const ConversationComposerDraftProvider = ConversationComposerDraftContext.Provider;
 
+export function createConversationComposerDraftBoundaryHandle(
+  owner: ConversationComposerDraftContextValue,
+): ConversationComposerDraftBoundaryHandle {
+  return { reset: owner.reset };
+}
+
+export function resetConversationComposerDraft(
+  handle: ConversationComposerDraftBoundaryHandle | null | undefined,
+) {
+  handle?.reset();
+}
+
 /**
- * 管理首页 composer 草稿的 owner hook。由 App 层调用一次，
+ * 管理首页 composer 草稿的 owner hook。由局部 boundary 调用一次，
  * 产生的 context value 通过 ConversationComposerDraftProvider 下发。
  * 草稿存活期独立于 ConversationComposer 的挂载/卸载，从而在离开
  * 会话主页再返回时保留正文与附件。

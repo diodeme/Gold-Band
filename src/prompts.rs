@@ -44,6 +44,10 @@ pub const AI_DYNAMIC_NODE_TASK_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/node_task.md");
 pub const AI_DYNAMIC_NODE_TASK_EN: &str =
     include_str!("prompts/en/runtime/ai-dynamic/node_task.md");
+pub const AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/ai-dynamic/hidden_context.md");
+pub const AI_DYNAMIC_HIDDEN_CONTEXT_EN: &str =
+    include_str!("prompts/en/runtime/ai-dynamic/hidden_context.md");
 pub const AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/workflow_invocation.md");
 pub const AI_DYNAMIC_WORKFLOW_INVOCATION_EN: &str =

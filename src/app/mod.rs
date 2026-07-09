@@ -117,18 +117,59 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
-fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
+fn default_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: "default".to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
 }
 
-fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> WorkflowDsl {
+fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
+    match (language, key) {
+        (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
+        (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
+        (DesktopLanguage::ZhCn, "review") => {
+            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "test") => {
+            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "accept") => {
+            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::En, "plan") => {
+            "Analyze the imported requirement and produce an implementation plan."
+        }
+        (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
+        (DesktopLanguage::En, "review") => {
+            "Review the implementation and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "test") => {
+            "Run or describe verification and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "accept") => {
+            "Validate acceptance and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "cleanup") => {
+            "Clean up resources, finalize handoff notes, and clean up the Git workspace."
+        }
+        _ => "Execute this workflow node.",
+    }
+}
+
+fn default_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
     fn worker(
         provider: &str,
         profiles: &DefaultProfileIds,
@@ -180,7 +221,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "plan",
                 "plan",
-                "Analyze the imported requirement and produce an implementation plan.",
+                default_workflow_goal(language, "plan"),
                 false,
                 true,
             ),
@@ -189,7 +230,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "dev",
                 "dev",
-                "Implement the requirement in the workspace.",
+                default_workflow_goal(language, "dev"),
                 false,
                 false,
             ),
@@ -198,7 +239,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "review",
                 "review",
-                "Review the implementation and return JSON with result and reason fields.",
+                default_workflow_goal(language, "review"),
                 true,
                 false,
             ),
@@ -207,7 +248,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "test",
                 "test",
-                "Run or describe verification and return JSON with result and reason fields.",
+                default_workflow_goal(language, "test"),
                 true,
                 false,
             ),
@@ -216,7 +257,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "accept",
                 "accept",
-                "Validate acceptance and return JSON with result and reason fields.",
+                default_workflow_goal(language, "accept"),
                 true,
                 false,
             ),
@@ -225,7 +266,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "cleanup",
                 "cleanup",
-                "Clean up resources, finalize handoff notes, clean up Git workspace",
+                default_workflow_goal(language, "cleanup"),
                 false,
                 false,
             ),
@@ -236,54 +277,63 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 to: "dev".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "dev".to_string(),
                 to: "review".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "test".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "accept".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: "cleanup".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "cleanup".to_string(),
                 to: END_NODE.to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: NEW_ROUND_NODE.to_string(),
                 on: EdgeOutcome::Failure,
                 session: None,
+                new_round_entry: Some("dev".to_string()),
             },
         ],
     }
@@ -1438,7 +1488,8 @@ impl App {
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
-        let default_template = default_workflow_template(&default_profiles);
+        let default_template =
+            default_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -2577,6 +2628,9 @@ impl App {
             prompt_id,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
         )?;
         render_prompt_bundle(&invocation)
     }
@@ -2616,7 +2670,57 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    pub fn run_continue_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            permission_mode_override,
+        )
     }
 
     pub fn run_continue_background(
@@ -2626,7 +2730,58 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    pub fn run_continue_background_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_background_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        attachment_paths: Vec<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            attachment_paths,
+            model_override,
+            permission_mode_override,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2642,6 +2797,8 @@ impl App {
         prompt_id: Option<String>,
         prompt: String,
         attachment_paths: Vec<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
     ) -> Result<RunState> {
         orchestrator::run_continue_dynamic_inner_background(
             self,
@@ -2655,6 +2812,8 @@ impl App {
             prompt_id,
             prompt,
             attachment_paths,
+            model_override,
+            permission_mode_override,
         )
     }
 
@@ -3146,6 +3305,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         }
@@ -3315,6 +3475,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         };

@@ -4,11 +4,9 @@
 
 # Gold Band
 
-> Local · Workflow-Driven · AI Agent Orchestration
+> Local-first desktop workflow client for AI Coding
 >
-> Harness Engineering | Loop Engineering
->
-> Making long-running AI Coding tasks more controllable, observable, and reliable
+> Orchestrate, observe, verify, and recover long-running Agent tasks
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
@@ -17,275 +15,233 @@
 
 [Download](https://github.com/diodeme/Gold-Band/releases)
 
-[中文](README.md)
+<!-- README-I18N:START -->
+
+[中文](./README.md) | **English**
+
+<!-- README-I18N:END -->
 
 </div>
 
 ---
 
-Gold Band is currently in **Developer Preview**.
+Gold Band is a desktop AI Agent workflow client for local projects. It starts local Agents through Agent Client Protocol / ACP and turns long-running AI Coding work into an orchestrated, observable, verifiable, and recoverable runtime process.
 
-The project is inspired by the idea of the "gold band" from *Journey to the West*: AI Agents are powerful and creative, but in complex engineering tasks they also need boundaries, orchestration, verification, and context management. Gold Band aims to provide that engineering layer so Agents can work more steadily across long-running tasks.
+Gold Band does not try to replace Claude Code, Codex, Cursor, Gemini, or OpenCode. It is a local runtime and desktop shell above those Agents: it owns workflow control, context injection, artifact archival, state convergence, failure recovery, and runtime observability.
 
-In simpler terms, Gold Band can be understood as a **local Agent workflow version of Dify**, but focused on developer workflows, local execution, Agent orchestration, and AI Coding reliability.
+> [!NOTE]
+> Gold Band is still in **Developer Preview**. The core path is usable, but AUTO / AI-DYNAMIC, multi-Agent compatibility, complex-task stability, and product experience are still moving quickly. Claude Code and Codex are currently the recommended starting points.
 
-## Status
+## Why Gold Band
 
-Gold Band is still at an early stage.
+The hard part of AI Coding is often not asking an Agent to write code once. The hard part is keeping it reliable in longer and more complex tasks:
 
-The current MVP can already run through the core workflow, but product experience, edge cases, stability, and engineering details are still being actively improved. APIs, UX, workflow behavior, and internal implementation may change before a stable release.
+- **Control flow drifts**: in long-running tasks, the main session may forget the original orchestration plan or declare completion before validation.
+- **Self-verification is weak**: when the same Agent acts as both worker and judge, `completed` does not always mean the requirement is actually satisfied.
+- **Context management is fragmented**: profiles, rules, skills, MCP tools, runtime constraints, and repair instructions are scattered across tools and become hard to maintain.
+- **The process is hard to replay**: without unified runs, rounds, nodes, attempts, artifacts, and raw events, failures are difficult to diagnose and resume.
 
-At this stage, feedback from early users is especially valuable. Issues related to the core workflow will be prioritized first.
+Gold Band's core idea is: **make the control plane deterministic, let Agents handle the execution plane, and decide completion from state, artifacts, and validation instead of Agent self-reporting alone.**
+
+## Core Capabilities
+
+- **Conversation mode**: start tasks like an Agent IDE, inspect streaming sessions, switch sessions, continue conversations, and view input attachments and runtime outputs.
+- **Workflow mode**: visually orchestrate nodes such as plan, dev, review, test, accept, and cleanup, with failure loops and new rounds.
+- **AUTO / AI-DYNAMIC**: let the runtime dynamically split work, create internal nodes, fan out in parallel, merge, accept, and return to the outer workflow under strict constraints.
+- **Multi-Agent management**: configure and diagnose ACP providers such as Claude Code, Codex, Cursor, Gemini, and OpenCode.
+- **Runtime observability**: inspect canonical state, ACP session events, raw frames, system prompts, node status, token / duration metrics, artifacts, and attachments.
+- **Attachments and artifacts**: support file picking, drag-and-drop, pasted images, input reuse, image preview, node artifacts, and free-form attachments.
+- **Context management**: manage user-level and project-level profiles, MCP, and SKILL assets, then reuse them in workflows and dynamic nodes.
+
+## Quick Start
+
+1. Download a desktop package from [Releases](https://github.com/diodeme/Gold-Band/releases), or build from source.
+2. Open Gold Band and add a local workspace.
+3. Configure an available Agent in Agent Management. Claude Code and Codex are currently recommended first.
+4. Return to the conversation home and enter a requirement.
+5. Choose a run mode:
+   - `WORKFLOW`: use a fixed workflow template for tasks with clear stages and stronger validation.
+   - `AUTO`: let AI-DYNAMIC dynamically split and schedule work within runtime constraints.
+6. Start the run, then inspect Agent output, node transitions, artifacts, attachments, and runtime state in the conversation detail view.
+
+### Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+Common verification commands:
+
+```bash
+cargo check
+npm run web:test
+npm run web:build
+```
+
+## Run Modes
+
+### WORKFLOW
+
+WORKFLOW mode uses an explicit workflow. Each node represents one Agent execution, and edges define how the run moves after success, failure, or manual confirmation.
+
+Typical default workflow:
+
+```mermaid
+flowchart LR
+      PLAN["plan<br/><i>方案</i><br/>manual_check"] -->|success| DEV["dev<br/><i>开发</i>"]
+      DEV -->|success| REVIEW["review<br/><i>审查</i><br/>output: review-result"]
+      REVIEW -->|success| TEST["test<br/><i>测试</i><br/>output: test-result"]
+      REVIEW -->|"failure<br/><i>continue</i>"| DEV
+      TEST -->|success| ACCEPT["accept<br/><i>验收</i><br/>output: accept-result"]
+      TEST -->|"failure<br/><i>continue</i>"| DEV
+      ACCEPT -->|success| CLEANUP["cleanup<br/><i>清理</i>"]
+      ACCEPT -->|failure| NEW_ROUND["$new-round<br/><i>新轮次</i>"]
+      CLEANUP -->|success| END["$end"]
+```
+
+This mode is useful when:
+
+- The requirement has clear development, review, testing, and acceptance stages.
+- Failures should loop back to a specific node for repair.
+- Acceptance criteria should be enforced through structured artifacts and validation rules.
+
+### AUTO / AI-DYNAMIC
+
+AUTO mode generates a runtime workflow shaped like `AI-DYNAMIC -> end`. AI-DYNAMIC is a special compound node: the outer workflow is still controlled by the Gold Band runtime, while internal Agents propose next steps under schema and budget constraints.
+
+AI-DYNAMIC can:
+
+- Create one successor node.
+- Create fan-out branches for parallel subtasks.
+- Create isolated git worktrees for writable parallel branches.
+- Create a merge node after branches finish.
+- Create an acceptance node to verify results.
+- Continue with repair nodes when acceptance fails.
+- Invoke allowed workflow snapshots.
+
+AI-DYNAMIC cannot directly mutate runtime state. It can only output structured proposals that Gold Band validates and materializes into real nodes.
+
+## Core Concepts
+
+| Concept | Meaning |
+|---|---|
+| `workspace` | A local project directory and the execution workspace. |
+| `task` | One requirement or goal. |
+| `run` | One execution attempt for a task. |
+| `round` | One workflow pass inside a run; acceptance failure can open a new round. |
+| `node` | One Agent execution or compound execution unit in the workflow. |
+| `attempt` | One try for a node; retries or failure loops create new attempts. |
+| `artifact` | A normalized node output with an explicit output contract. |
+| `attachment` | A free-form file from a user or Agent, such as reports, screenshots, logs, or intermediate material. |
+| `provider` | An Agent implementation launched by Gold Band through ACP. |
+
+Runtime data is stored under Gold Band's `.gold-band` project area in the user directory, for example:
+
+```txt
+~/.gold-band/projects/<project-id>/tasks/<task-id>/runs/<run-id>/rounds/<round-id>/nodes/<node-id>/attempt-001/artifacts
+~/.gold-band/projects/<project-id>/tasks/<task-id>/runs/<run-id>/rounds/<round-id>/nodes/<node-id>/attempt-001/attachments
+```
+
+## Interface
+
+### Agent Management
+
+Configure ACP providers, models, permission modes, and environment diagnostics. Claude Code, Codex, Cursor, Gemini, OpenCode, and other Agent types are represented; actual availability depends on the local environment and each provider's ACP support.
+
+![Agent Management](docs/images/agent-management.png)
+
+### Workflow Orchestration
+
+Create, inspect, and edit workflow templates on a canvas. Configure node providers, profiles, permission modes, output contracts, and edge session strategy.
+
+![Workflow Orchestration](docs/images/wf-orchestration.png)
+
+### Quick Chat
+
+Start an ACP session by choosing a workspace and run mode.
+
+![Quick Chat](docs/images/quick-chat.png)
+
+### Session Observation
+
+Inspect ACP sessions, system prompts, raw frames, artifacts, and attachments. During execution, you can switch between sessions and attempts.
+
+![Session Observation](docs/images/session-observation.png)
+
+### Context Management
+
+Manage user-level and project-level profiles, then reuse them in workflows or dynamic nodes.
+
+![Context Management](docs/images/context-management.png)
+
+## Current Status
+
+Main paths that are already usable:
+
+- Desktop conversation mode and workbench mode.
+- Fixed WORKFLOW execution.
+- AUTO / AI-DYNAMIC mode.
+- Claude Code ACP and Codex main paths.
+- Multi-workspace conversation sidebar.
+- Input attachments, image preview, artifacts, and attachment viewing.
+- run / round / node / attempt state observation.
+- Workflow template and AUTO template management.
+- Unified role, MCP, and SKILL management.
+
+Areas still being improved:
+
+- Compatibility for Cursor, Gemini, OpenCode, and other Agents.
+- A more stable runtime lifecycle.
+- More elegant and lightweight built-in prompts.
+- Smoother and friendlier UI experience.
+- Better-looking themes.
+
+Features in development:
+
+- Integrations with IM tools.
+- Scheduled task capability.
+- Local data dashboard capability.
+
+
+## Good Fit
+
+Gold Band is a good fit for:
+
+- Long-running AI Coding tasks.
+- Tasks where development, review, testing, and acceptance should be separated.
+- Workflows that need process artifacts and failure recovery.
+- Users who want to coordinate multiple local Agents through one workflow runtime.
+
+Gold Band is not yet a good fit for:
+
+- One-off simple Q&A.
+- Production environments that require stable commercial SLA.
+- Users who do not want Developer Preview UI and behavior to change quickly.
 
 ## Tech Stack
 
 - Rust
 - React
 - Tauri 2
+- Tailwind CSS
+- shadcn/ui
 - Agent Client Protocol / ACP
-
-## Why Gold Band
-
-During AI Coding practice, I repeatedly ran into several problems:
-
-1. **Long-running tasks are hard to orchestrate reliably.**
-   Even with strategies such as subagents or agent teams, the main orchestrator can still make routing mistakes when the task becomes too long. Sometimes it may even skip orchestration and directly start doing the work itself.
-
-2. **Agent self-verification is not always trustworthy.**
-   In loop-based workflows, the same Agent may act as both player and judge. Without cross-validation, a `completed` result does not always mean the output is actually reliable.
-
-3. **Context and capability loading are fragmented.**
-   Skills, constitutions, MCP tools, rules, and other context sources are often managed differently across Agents. Maintaining and migrating these configurations can become painful over time.
-
-4. **Agent platform limitations can block workflow design.**
-   For example, Claude Code subagents previously could not inherit the skill list from the main session and had to rely on the main Agent to pass information or predefine capabilities. This issue has been fixed in newer versions, but it was one of the triggers that made me want to build an external orchestration and context-management layer.
-
-Gold Band is built around the belief that good AI applications should use engineering methods to reduce instability while preserving the creative power of AI.
-
-## Core Ideas
-
-Gold Band focuses on four core capabilities:
-
-- **Workflow orchestration**: define how Agents move through planning, development, review, testing, acceptance, and cleanup.
-- **Context management**: manage roles and, in the future, skills, rules, MCP, and other reusable context assets.
-- **Cross-validation**: separate development, review, testing, and acceptance so results can be checked by different nodes.
-- **Observability**: inspect Agent sessions, system prompts, raw ACP frames, artifacts, attachments, rounds, and attempts.
-
-## Features
-
-### Workflow Orchestration
-
-Users can assign a workflow when creating a task. Workflows can be created visually on the canvas or reused from existing templates. Gold Band also ships with a built-in workflow.
-
-![Workflow Orchestration](docs/images/wf-orchestration.png)
-
-#### Concepts
-
-**Node**
-
-A node represents one Agent execution. Users can configure Agents in Agent Management. In theory, any ACP-compatible Agent can be started, but because different Agents vary in ACP support quality, Gold Band only adds Agents to the recommended list after testing. At the current stage, **Claude Code** has been verified.
-
-**Role**
-
-Each node can have a role. The role is appended to the system prompt. If an ACP Agent does not support appending system prompts, Gold Band currently appends it to the user prompt instead. Roles can be managed in Context Management. Built-in roles are provided, and users can save modified versions as custom roles.
-
-**Permission Mode**
-
-Permission modes are obtained during the ACP handshake. Users can select the supported permission mode in node settings.
-
-**Result Evaluation**
-
-Result evaluation determines the branch direction after a node finishes.
-
-Gold Band currently supports two approaches:
-
-1. **Manual check**: the user manually marks a node as success or failure. This is suitable for plan-review or other human-audited stages.
-2. **AI output validation**: the Agent is asked to output a structured DSL, and Gold Band evaluates the result using an expression.
-
-Example:
-
-```json
-{
-  "reason": "String",
-  "result": "boolean"
-}
-```
-
-```js
-$.result == true
-```
-
-**Edge**
-
-Edges define how nodes are connected. Users can edit the target node and session mode:
-
-- `new`: start a new session
-- `continue`: continue in the previous session
-
-### Built-in Workflow
-
-Gold Band currently includes the following default workflow:
-
-```mermaid
-flowchart LR
-      PLAN["plan<br/><i>Plan</i><br/>manual_check"] -->|success| DEV["dev<br/><i>Development</i>"]
-      DEV -->|success| REVIEW["review<br/><i>Review</i><br/>output: review-result"]
-      REVIEW -->|success| TEST["test<br/><i>Test</i><br/>output: test-result"]
-      REVIEW -->|"failure<br/><i>continue</i>"| DEV
-      TEST -->|success| ACCEPT["accept<br/><i>Acceptance</i><br/>output: accept-result"]
-      TEST -->|"failure<br/><i>continue</i>"| DEV
-      ACCEPT -->|success| CLEANUP["cleanup<br/><i>Cleanup</i>"]
-      ACCEPT -->|failure| NEW_ROUND["$new-round<br/><i>New Round</i>"]
-      CLEANUP -->|success| END["$end"]
-```
-
-Important behavior:
-
-- If review or testing fails, the workflow loops back to the development node using `continue` mode.
-- The acceptance node verifies whether the requirement has truly been completed.
-- If acceptance fails, Gold Band generates a report and starts a new round.
-- After acceptance, the cleanup node organizes process artifacts and persists them to the project directory.
-- Users are not required to use the built-in workflow and can create their own preferred workflows.
-
-### Task Execution
-
-Users can start a new run from a task directory. A single requirement can be executed multiple times. After a run starts, users can inspect the execution details of each round.
-
-![Task Execution](docs/images/task-execution.png)
-
-#### Concepts
-
-**Attempt**
-
-A loop between two nodes counts as one attempt. For example, `test -> failure -> dev` is one attempt. Workflows can limit the maximum number of attempts per node pair at runtime.
-
-**Round**
-
-A node can specify an ending state that starts a new round. A new round restarts the workflow from the beginning, and Gold Band informs the Agent of the current round and the artifact directory from the previous round. Workflows can limit the maximum number of rounds at runtime.
-
-**Artifact Directory**
-
-Process artifacts are stored under:
-
-```txt
-~/.gold-band/projects/<project-path>
-```
-
-Example:
-
-```txt
-# artifacts
-~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts
-
-# attachments
-~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/attachments
-```
-
-**Artifact**
-
-For nodes with explicit output requirements, Gold Band automatically places the node output under `artifacts`. This is related to AI output validation.
-
-**Attachments**
-
-Agents can freely output files and reports under `attachments`, such as test reports or intermediate notes.
-
-### Session Observation
-
-During node execution, users can observe the real-time session state. After the session ends, users can also open the corresponding CLI session. When a node finishes, users can continue chatting in the same window using `continue` mode.
-
-![Session Observation](docs/images/session-observation.png)
-
-Supported observations include:
-
-- **System prompt**: the system prompt appended by Gold Band at runtime.
-- **Raw frames**: raw ACP session frames for debugging and troubleshooting.
-
-### Agent Management
-
-Gold Band starts Agents through ACP and provides configuration and environment diagnostics in Agent Management.
-
-Although Gold Band theoretically supports all ACP-compatible Agents, the current recommendation is to start with **Claude Code**, because it has been verified in the current implementation.
-
-![Agent Management](docs/images/agent-management.png)
-
-### Context Management
-
-Gold Band currently supports role management. Built-in roles cannot be directly modified or deleted, but they can be copied and saved as custom roles.
-
-Future versions may expand this area to support skills, rules, MCP, and other reusable context assets.
-
-![Context Management](docs/images/context-management.png)
-
-### Settings
-
-Current settings include:
-
-- Chinese / English language switching
-- Theme switching
-- Font switching
-- Update mechanism
-- Local Claude Code switch
-
-The local Claude switch is temporary and may be optimized later. When enabled, Gold Band uses the local Claude Code executable. When disabled, the Claude Code ACP component pulls the `claude.exe` bundled in the Claude Code SDK.
-
-## Trade-offs
-
-The built-in workflow is more suitable for large, complex, long-running development tasks.
-
-By splitting work into plan, development, review, testing, acceptance, and cleanup stages, Gold Band can provide stronger constraints and cross-validation. The trade-off is that execution time and token consumption may increase. This is a common trade-off for workflow-based Agent systems.
-
-For small daily tasks, users can define a lighter workflow, such as:
-
-- `plan -> dev`
-- `dev -> review`
-
-In the future, Gold Band will explore AI dynamic routing so the system can choose a suitable execution path based on task complexity: simple tasks can pass quickly, while complex tasks can be decomposed, validated, and looped automatically.
-
-## Roadmap
-
-### High Priority
-
-1. **Multi-Agent support**
-
-   Test and integrate Codex, Cursor, Gemini CLI, OpenCode, and potentially more Agents depending on compatibility and stability.
-
-2. **System notifications**
-
-   Notify the user when an Agent requests permission or when a workflow error occurs. This will be configurable in settings.
-
-3. **Adaptive workflow orchestration and concurrent execution**
-
-   Support more flexible execution strategies so Gold Band is not limited to fixed workflow paths.
-
-   - **Node-level concurrency**: one node can dispatch work to multiple downstream nodes and process subtasks in parallel. The maximum concurrency can be configured as an experimental feature.
-   - **Requirement-level concurrency**: multiple requirements can be imported at once and executed through the same workflow in parallel. The requirement concurrency limit can be configured as an experimental feature.
-   - **AI dynamic routing**: during workflow execution, AI can decide which nodes to enter next, what subtasks to split, and whether parallel execution is needed based on the current goal, context, intermediate artifacts, and execution results.
-
-### Medium Priority
-
-1. Add support and management for skills.
-2. Add support and management for MCP.
-3. Improve ACP session observation performance, UI, usability, and known issues.
-4. Add metrics and dashboards, including session duration and token consumption. Improve accuracy of current session timing.
 
 ## Community
 
 This project actively participates in and supports the [linux.do community](https://linux.do).
 
-## Contributing
+## Feedback
 
-Gold Band is in Developer Preview, and feedback from real usage is very welcome.
+Gold Band needs feedback from real usage most. These are especially valuable:
 
-Useful feedback includes:
-
-- Where the core workflow fails or becomes confusing.
-- Whether the orchestration model is useful in real AI Coding scenarios.
-- Which Agent integrations are most important.
-- Which missing capabilities block practical usage.
-- Any bugs, rough edges, or unreasonable design choices.
+- Whether AUTO mode splits tasks reasonably.
+- Whether WORKFLOW failure loops and acceptance are useful in practice.
+- Where multi-Agent integration feels rough.
+- Whether sessions, artifacts, attachments, and runtime state are understandable.
+- Which errors should be caught earlier, explained more clearly, or made easier to recover from.
 
 Issues and pull requests are welcome.
 
-## License
-
-AGPL-3.0-only — see [LICENSE](LICENSE).
+AGPL-3.0-only. See [LICENSE](LICENSE).

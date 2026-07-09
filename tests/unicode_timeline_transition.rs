@@ -66,6 +66,7 @@ impl ProviderAdapter for UnicodeTimelineProvider {
                 open_command: Some("claude -c session-123".to_string()),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

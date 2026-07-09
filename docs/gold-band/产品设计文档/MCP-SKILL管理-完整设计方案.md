@@ -72,7 +72,7 @@ src/
 | 9 | 状态缓存 | `RefCell<HashMap<String, McpServerState>>` 内存缓存 | ✅ |
 | 10 | 保存策略 | 先保存 → 再验证（"先存后验"） | ✅ |
 | 11 | enabled 开关 | 独立于健康状态，始终可手动切换 | ✅ |
-| 12 | 工具发现 | `initialize` 成功后可调用 `tools/list` | 🔜 后续 PR |
+| 12 | 工具发现 | `initialize` 成功后立即调用 `tools/list`，将工具清单写入健康结果与状态缓存 | ✅ |
 | 13 | 工具订阅 | 订阅 `notifications/tools/list_changed` | 🔜 后续 PR |
 
 ### 2.2 数据模型
@@ -133,7 +133,7 @@ fn parse_initialize_response(&str) -> Result<McpServerHealthResult>  // 解析�
 
 **Stdio 流程：**
 ```
-spawn command → stdin.write(initialize) → stdout.read_line(10s timeout + 多行处理) → parse → kill
+spawn command → stdin.write(initialize) → 读取匹配 id=1 的 initialize 响应 → stdin.write(tools/list) → 读取匹配 id=2 的工具响应 → kill
 ```
 
 **HTTP 流程：**
@@ -149,6 +149,7 @@ pub fn to_acp_mcp_servers(&self) -> Result<Vec<Value>> {
     // 1. 检查 state_cache: Running → 直接通过
     // 2. 缓存未命中 → verify_server() → 更新缓存
     // 3. 仅返回 status=="healthy" 的服务器
+    // 4. 将内部 McpServerConfig 转换为 ACP mcpServers wire format
 }
 
 // check_health() — 手动刷新并更新缓存
@@ -166,10 +167,17 @@ pub fn invalidate_health(&self, id: &str);
 ```
 1. UI 配置 MCP → settings.json
 2. node_executor 创建 McpManager → render_mcp_tools_catalog() → {{mcp_tools}}
-3. node_executor 调用 to_acp_mcp_servers() → 健康门控 → mcp_servers
+3. node_executor 调用 to_acp_mcp_servers() → 健康门控 → ACP schema mcp_servers
 4. provider 传递 &req.mcp_servers → ACP session/new { mcpServers: [...] }
 5. ACP Agent 直连 MCP 服务器（路径 B — 不经过 Gold-Band 中转）
 ```
+
+`settings.json` / UI VM 允许使用 Gold Band 内部结构保存 `id`、`transport`、`env` map 和 `headers` map；ACP 出站层必须按协议转换：
+
+- stdio：`{ name, command, args, env: [{ name, value }] }`，不带 `type`。
+- HTTP：`{ type: "http", name, url, headers: [{ name, value }] }`。
+- SSE：`{ type: "sse", name, url, headers: [{ name, value }] }`。
+- 不向 ACP `mcpServers` 透传内部 `id`、`transport`、OAuth 配置或对象 map。
 
 ### 2.6 Tauri Commands
 
@@ -207,7 +215,7 @@ pub fn invalidate_health(&self, id: &str);
 | System prompt 渲染工具列表（缓存优先） | ✅ |
 | 多行响应处理 + 10s 超时保护 | ✅ |
 | 长期进程管理 | 🔜 |
-| `tools/list` 自动发现 | 🔜 |
+| `tools/list` 自动发现 | ✅ |
 | `tools/list_changed` 订阅 | 🔜 |
 
 ---

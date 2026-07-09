@@ -27,8 +27,10 @@ enum DynamicScenario {
     MultiValidationRepair,
     MergeAcceptanceProfileRepair,
     ParseRepair,
+    MissingArtifactRepair,
     SessionContinuePrompt,
     InvalidSessionContinue,
+    MergePauseThenContinue,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
     WorkflowInvocationPauseThenContinue { workflow_id: Arc<Mutex<String>> },
 }
@@ -83,12 +85,20 @@ impl DynamicProvider {
         Self::new(DynamicScenario::ParseRepair)
     }
 
+    fn missing_artifact_repair() -> Self {
+        Self::new(DynamicScenario::MissingArtifactRepair)
+    }
+
     fn session_continue_prompt() -> Self {
         Self::new(DynamicScenario::SessionContinuePrompt)
     }
 
     fn invalid_session_continue() -> Self {
         Self::new(DynamicScenario::InvalidSessionContinue)
+    }
+
+    fn merge_pause_then_continue() -> Self {
+        Self::new(DynamicScenario::MergePauseThenContinue)
     }
 
     fn workflow_invocation(workflow_id: Arc<Mutex<String>>) -> Self {
@@ -137,6 +147,9 @@ impl ProviderAdapter for DynamicProvider {
                 "child",
                 SessionMode::New,
             ) => (ProviderRunStatus::Interrupted, None),
+            (DynamicScenario::MergePauseThenContinue, _, "group-core-merge", SessionMode::New) => {
+                (ProviderRunStatus::Interrupted, None)
+            }
             _ => {
                 let output_artifact = match self.dynamic_artifact_for(&req) {
                     Some(content) => Some(OutputArtifactPayload {
@@ -171,6 +184,7 @@ impl ProviderAdapter for DynamicProvider {
                 )),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -258,6 +272,16 @@ impl DynamicProvider {
                     Some(missing_merge_task_completion())
                 }
             }
+            (DynamicScenario::MissingArtifactRepair, "bootstrap") => {
+                if req.session_mode == SessionMode::Continue {
+                    Some(fanout_completion(profile))
+                } else {
+                    Some(String::new())
+                }
+            }
+            (DynamicScenario::MissingArtifactRepair, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
+            }
             (DynamicScenario::MultiValidationRepair, "branch-a" | "branch-b") => {
                 Some(end_completion("branch done"))
             }
@@ -282,12 +306,19 @@ impl DynamicProvider {
             (DynamicScenario::InvalidSessionContinue, "bootstrap") => {
                 Some(invalid_session_continue_completion())
             }
+            (DynamicScenario::MergePauseThenContinue, "bootstrap") => {
+                Some(fanout_completion(profile))
+            }
+            (DynamicScenario::MergePauseThenContinue, "branch-a" | "branch-b") => {
+                Some(end_completion("branch done"))
+            }
             (DynamicScenario::WorkflowInvocation { workflow_id }, "bootstrap")
             | (DynamicScenario::WorkflowInvocationPauseThenContinue { workflow_id }, "bootstrap") =>
             {
                 let workflow_id = workflow_id.lock().unwrap().clone();
                 Some(workflow_invocation_completion(&workflow_id))
             }
+            (_, node_id) if node_id.ends_with("-accept") => Some(end_completion("accepted")),
             _ => None,
         }
     }
@@ -866,6 +897,17 @@ fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
     .unwrap()
 }
 
+fn wait_for_invocation_count(provider: &DynamicProvider, expected: usize) {
+    for _ in 0..1000 {
+        if provider.invocations.lock().unwrap().len() >= expected {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let actual = provider.invocations.lock().unwrap().len();
+    panic!("expected at least {expected} invocations, got {actual}");
+}
+
 fn init_git_repo(repo_root: &camino::Utf8Path) {
     let init = std::process::Command::new("git")
         .arg("-C")
@@ -929,8 +971,8 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     );
     assert_eq!(graph.groups.len(), 1);
     assert_eq!(graph.groups[0].status, DynamicGroupStatus::Closed);
-    assert_eq!(graph.groups[0].terminal_node_ids.len(), 2);
-    assert_eq!(graph.proposals.len(), 3);
+    assert_eq!(graph.groups[0].terminal_node_ids.len(), 3);
+    assert_eq!(graph.proposals.len(), 4);
     assert!(graph.proposals.iter().all(|proposal| {
         proposal.validation_status == DynamicProposalValidationStatus::Accepted
     }));
@@ -947,24 +989,94 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(branch_nodes.contains(&"branch-a"));
     assert!(branch_nodes.contains(&"branch-b"));
     let bootstrap = render_prompt_bundle(&invocations[0]).unwrap();
-    assert!(bootstrap.system_prompt.contains("dynamic-run-001"));
-    assert!(bootstrap.system_prompt.contains("bootstrap"));
-    assert!(bootstrap.system_prompt.contains("claude-acp"));
+    assert!(!bootstrap.system_prompt.contains("dynamic-run-001"));
+    assert!(bootstrap.user_prompt.contains("dynamic-run-001"));
+    assert!(bootstrap.user_prompt.contains("bootstrap"));
+    assert!(bootstrap.user_prompt.contains("claude-acp"));
     assert!(bootstrap.system_prompt.contains("dynamic-node-completion"));
     assert!(
         bootstrap
             .user_prompt
-            .contains("# Requirement\nExercise AI-DYNAMIC")
+            .contains("# 需求\nExercise AI-DYNAMIC")
     );
     assert!(
         bootstrap
             .user_prompt
-            .contains("# Task\nDesign the first internal dynamic step")
+            .contains("Design the first internal dynamic step")
     );
     let merge = render_prompt_bundle(&invocations[3]).unwrap();
-    assert!(merge.system_prompt.contains("group-core"));
-    assert!(merge.system_prompt.contains("branch-a"));
-    assert!(merge.system_prompt.contains("branch-b"));
+    assert!(merge.user_prompt.contains("group-core"));
+    assert!(merge.user_prompt.contains("branch-a"));
+    assert!(merge.user_prompt.contains("branch-b"));
+}
+
+#[test]
+fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-merge-pause-continue";
+    let provider = DynamicProvider::merge_pause_then_continue();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+
+    let graph = dynamic_graph(&app, task_id);
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "group-core-merge")
+        .unwrap();
+    assert_eq!(merge.status, DynamicNodeStatus::Paused);
+
+    app.run_continue_dynamic_inner_background(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "group-core-merge",
+        "attempt-001",
+        Some("merge-resume-001".to_string()),
+        "继续".to_string(),
+        Vec::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    wait_for_invocation_count(&provider, 5);
+
+    let invocations = provider.invocations.lock().unwrap();
+    let merge_continue = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.node_id == "group-core-merge"
+                && invocation.session_mode == SessionMode::Continue
+        })
+        .unwrap();
+    assert_eq!(
+        merge_continue.user_prompt_render_mode,
+        UserPromptRenderMode::UserMessage
+    );
+    assert_eq!(merge_continue.resume_prompt.as_deref(), Some("继续"));
+    assert_eq!(
+        merge_continue.resume_prompt_id.as_deref(),
+        Some("merge-resume-001")
+    );
+
+    let prompt = render_prompt_bundle(merge_continue).unwrap();
+    assert_eq!(prompt.user_prompt, "继续");
+    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert!(!prompt.user_prompt.contains("# 目标"));
+    assert!(!prompt.user_prompt.contains("# Goal"));
+    assert!(!prompt.user_prompt.contains("# 用户提示"));
+    assert!(!prompt.user_prompt.contains("# User Tips"));
+    assert!(!prompt.user_prompt.contains("# 任务"));
+    assert!(!prompt.user_prompt.contains("# Task"));
 }
 
 #[test]
@@ -1119,35 +1231,22 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         merge_invocation.user_prompt_render_mode,
         UserPromptRenderMode::RequirementTask
     );
-    assert!(merge.user_prompt.contains("# Requirement"));
-    assert!(merge.user_prompt.contains("# Task"));
-    assert!(!merge.user_prompt.contains("# Goal"));
-    assert!(merge.system_prompt.contains("branch workspaces"));
+    assert!(merge.user_prompt.contains("# 需求"));
+    assert!(merge.user_prompt.contains("# 任务"));
+    assert!(!merge.user_prompt.contains("# 目标"));
+    assert!(merge.user_prompt.contains("branch workspaces"));
     let branch_lines = merge
-        .system_prompt
+        .user_prompt
         .lines()
         .filter(|line| line.contains("branch=gb-dyn-task-ai-dynamic-worktree-fanout-run-001-dyn-"))
         .collect::<Vec<_>>();
     assert_eq!(branch_lines.len(), 2);
     assert_ne!(branch_lines[0], branch_lines[1]);
-    assert!(merge.system_prompt.contains("head="));
-    assert!(merge.system_prompt.contains("mergeBase="));
-    assert!(merge.system_prompt.contains("status=?? branch-a.txt"));
-    assert!(merge.system_prompt.contains("status=?? branch-b.txt"));
-    assert!(
-        merge_invocation
-            .task_instruction
-            .as_deref()
-            .unwrap()
-            .contains("Main workspace:")
-    );
-    assert!(
-        merge_invocation
-            .task_instruction
-            .as_deref()
-            .unwrap()
-            .contains(repo_root.as_str())
-    );
+    assert!(merge.user_prompt.contains("head="));
+    assert!(merge.user_prompt.contains("mergeBase="));
+    assert!(merge.user_prompt.contains("status=?? branch-a.txt"));
+    assert!(merge.user_prompt.contains("status=?? branch-b.txt"));
+    assert!(merge.user_prompt.contains(repo_root.as_str()));
 }
 
 #[test]
@@ -1601,6 +1700,43 @@ fn ai_dynamic_parse_repair_prompt_includes_json_path() {
 }
 
 #[test]
+fn ai_dynamic_repairs_missing_completion_without_empty_artifact() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-missing-artifact-repair";
+    let provider = DynamicProvider::missing_artifact_repair();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let repair_invocation = invocations
+        .iter()
+        .find(|invocation| invocation.session_mode == SessionMode::Continue)
+        .unwrap();
+    let resume_prompt = repair_invocation.resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.contains("did not produce dynamic-node-completion"));
+
+    let artifact_path = app.paths.dynamic_node_artifact_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "router",
+        "attempt-001",
+        "bootstrap",
+        "attempt-001",
+        "dynamic-node-completion",
+    );
+    let metadata = std::fs::metadata(artifact_path.as_std_path()).unwrap();
+    assert!(metadata.len() > 0);
+}
+
+#[test]
 fn ai_dynamic_effective_schema_reflects_runtime_policy() {
     let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
         provider_required: false,
@@ -1617,6 +1753,10 @@ fn ai_dynamic_effective_schema_reflects_runtime_policy() {
     assert!(schema.pointer("/properties/source").is_none());
     assert_eq!(
         schema.pointer("/definitions/DynamicNext/properties/nodes/maxItems"),
+        Some(&json!(2))
+    );
+    assert_eq!(
+        schema.pointer("/definitions/DynamicNext/properties/nodes/minItems"),
         Some(&json!(2))
     );
     assert_eq!(
@@ -1700,8 +1840,8 @@ fn ai_dynamic_lists_resumable_session_nodes_and_uses_continue_session() {
             .unwrap(),
     )
     .unwrap();
-    assert!(branch_b.system_prompt.contains("branch-a"));
-    assert!(branch_b.system_prompt.contains("branch-b"));
+    assert!(branch_b.user_prompt.contains("branch-a"));
+    assert!(branch_b.user_prompt.contains("branch-b"));
     assert!(!branch_b.system_prompt.contains("bootstrap title="));
     let branch_c = invocations
         .iter()
@@ -2132,6 +2272,6 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
     assert!(
         child_invocation
             .user_prompt
-            .contains("# Requirement\nExercise AI-DYNAMIC")
+            .contains("# 需求\nExercise AI-DYNAMIC")
     );
 }

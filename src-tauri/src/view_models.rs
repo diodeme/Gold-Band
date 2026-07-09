@@ -10,7 +10,8 @@ use anyhow::Result;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, McpServerState, RuntimeConfig,
+    RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -137,6 +138,8 @@ pub struct McpServerVm {
     pub env: Option<Vec<AgentEnvEntryVm>>,
     pub url: Option<String>,
     pub headers: Option<Vec<AgentEnvEntryVm>>,
+    pub managed: bool,
+    pub help_message: Option<String>,
     pub health_status: Option<String>, // "healthy" | "unhealthy" | "unknown"
     pub health_message: Option<String>,
 }
@@ -613,14 +616,24 @@ pub struct AcpUsageVm {
 pub struct AcpSessionVm {
     pub session_id: Option<String>,
     pub title: Option<String>,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outer_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outer_attempt_id: Option<String>,
     pub provider: String,
     pub adapter_id: Option<String>,
     pub adapter_display_name: Option<String>,
     pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cwd: Option<String>,
     pub status: String,
     pub session_started_at: Option<String>,
     pub session_updated_at: Option<String>,
     pub session_elapsed_seconds: Option<u64>,
+    pub timing: Option<AcpSessionTimingVm>,
     pub restored: bool,
     pub stop_reason: Option<String>,
     pub system_prompt_append: Option<String>,
@@ -687,7 +700,37 @@ pub struct AcpUiEventVm {
     pub ended_seq: Option<u64>,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    pub timing: Option<AcpTimingPatchVm>,
     pub raw: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimingPatchVm {
+    pub session_elapsed_seconds: u64,
+    pub revision: Option<u64>,
+    pub observed_at: Option<String>,
+    pub active_turn_started_at: Option<String>,
+    pub active_turn_last_activity_at: Option<String>,
+    pub permission_wait_started_at: Option<String>,
+    pub user_wait_started_at: Option<String>,
+    pub wait_reason: Option<String>,
+    pub paused: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSessionTimingVm {
+    pub session_elapsed_seconds: u64,
+    pub revision: Option<u64>,
+    pub observed_at: Option<String>,
+    pub active_turn_started_at: Option<String>,
+    pub active_turn_last_activity_at: Option<String>,
+    pub permission_wait_started_at: Option<String>,
+    pub user_wait_started_at: Option<String>,
+    pub wait_reason: Option<String>,
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1286,6 +1329,16 @@ fn workflow_error_vm(summary: &TaskSummary) -> Option<WorkflowErrorVm> {
             code: "workflow.success-new-round-target".to_string(),
             params: serde_json::json!({ "from": from }),
         }),
+        Some(WorkflowValidationError::MissingNewRoundEntry { from }) => Some(WorkflowErrorVm {
+            code: "workflow.missing-new-round-entry".to_string(),
+            params: serde_json::json!({ "from": from }),
+        }),
+        Some(WorkflowValidationError::InvalidNewRoundEntry { from, entry }) => {
+            Some(WorkflowErrorVm {
+                code: "workflow.invalid-new-round-entry".to_string(),
+                params: serde_json::json!({ "from": from, "entry": entry }),
+            })
+        }
         Some(WorkflowValidationError::DuplicateWorkflowId {
             workflow_name,
             workflow_id,
@@ -1412,7 +1465,7 @@ fn workflow_control_vm(workflow: &WorkflowDsl) -> WorkflowControlVm {
     }
 }
 
-fn latest_control_failure_vm(
+pub(crate) fn latest_control_failure_vm(
     app: &App,
     task_id: &str,
     run_id: &str,
@@ -3250,7 +3303,8 @@ pub fn dynamic_acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if stopping {
+    let active_status = is_acp_session_active_status(&status);
+    let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
         event_scan
@@ -3278,6 +3332,21 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let session_timing = resolve_acp_session_timing(
+        &status,
+        acp_session_timing_from_snapshot(&session),
+        event_scan.session_timing.clone(),
+        event_scan.session_elapsed_seconds,
+    );
+    let provider_cwd = continue_ref
+        .and_then(|value| value.get("cwd"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let cwd = session
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| Some(attempt_dir.to_string()));
     let result = AcpSessionVm {
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
@@ -3293,6 +3362,11 @@ pub fn dynamic_acp_session_vm(
             .get("title")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: Some(outer_node_id.to_string()),
+        outer_attempt_id: Some(outer_attempt_id.to_string()),
         provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
@@ -3300,11 +3374,8 @@ pub fn dynamic_acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
-        cwd: continue_ref
-            .and_then(|value| value.get("cwd"))
-            .and_then(|value| value.as_str())
-            .or_else(|| session.get("cwd").and_then(|value| value.as_str()))
-            .map(str::to_string),
+        cwd,
+        provider_cwd,
         status,
         session_started_at: session
             .get("createdAt")
@@ -3315,6 +3386,7 @@ pub fn dynamic_acp_session_vm(
             .and_then(|value| value.as_str())
             .map(str::to_string),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        timing: session_timing,
         restored: session
             .get("restored")
             .and_then(|value| value.as_bool())
@@ -3489,7 +3561,8 @@ pub fn acp_session_vm(
             default_event_limit,
         )?
     };
-    let pending_permissions = if stopping {
+    let active_status = is_acp_session_active_status(&status);
+    let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
         event_scan
@@ -3519,6 +3592,21 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let session_timing = resolve_acp_session_timing(
+        &status,
+        acp_session_timing_from_snapshot(&session),
+        event_scan.session_timing.clone(),
+        event_scan.session_elapsed_seconds,
+    );
+    let provider_cwd = continue_ref
+        .and_then(|value| value.get("cwd"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let cwd = session
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
 
     let result = AcpSessionVm {
         session_id: continue_ref
@@ -3535,6 +3623,11 @@ pub fn acp_session_vm(
             .get("title")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        round_id: round_id.to_string(),
+        node_id: node_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        outer_node_id: None,
+        outer_attempt_id: None,
         provider,
         adapter_id: continue_ref
             .and_then(|value| value.get("adapterId"))
@@ -3542,11 +3635,8 @@ pub fn acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
-        cwd: continue_ref
-            .and_then(|value| value.get("cwd"))
-            .and_then(|value| value.as_str())
-            .or_else(|| session.get("cwd").and_then(|value| value.as_str()))
-            .map(str::to_string),
+        cwd,
+        provider_cwd,
         status,
         session_started_at: session
             .get("createdAt")
@@ -3557,6 +3647,7 @@ pub fn acp_session_vm(
             .and_then(|value| value.as_str())
             .map(str::to_string),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        timing: session_timing,
         restored: session
             .get("restored")
             .and_then(|value| value.as_bool())
@@ -3619,6 +3710,7 @@ struct AcpEventScan {
     event_page: AcpEventPageVm,
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
+    session_timing: Option<AcpSessionTimingVm>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
@@ -3958,6 +4050,7 @@ fn paginate_timeline(
     limit: usize,
 ) -> Result<AcpEventScan> {
     let total = all_events.len();
+    let session_timing = latest_session_timing_from_events(all_events);
     let filtered = if let Some(cursor) = after_seq {
         all_events
             .iter()
@@ -3981,7 +4074,7 @@ fn paginate_timeline(
         all_events.to_vec()
     };
     // Compact only the events in the final window (not all events)
-    let filtered: Vec<_> = filtered
+    let mut filtered: Vec<_> = filtered
         .into_iter()
         .map(|event| {
             if matches!(event.kind.as_str(), "permissionRequest") {
@@ -3991,6 +4084,7 @@ fn paginate_timeline(
             }
         })
         .collect();
+    include_latest_permission_events(&mut filtered, latest_permission_events);
     let oldest_seq = filtered
         .first()
         .map(|event| event.started_seq.unwrap_or(event.seq));
@@ -4023,10 +4117,114 @@ fn paginate_timeline(
         event_page,
         event_count,
         session_elapsed_seconds,
+        session_timing,
         latest_permission_events: latest_permission_events.clone(),
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
+    all_events.iter().rev().find_map(|event| {
+        event.timing.as_ref().map(|timing| AcpSessionTimingVm {
+            session_elapsed_seconds: timing.session_elapsed_seconds,
+            revision: timing.revision,
+            observed_at: timing.observed_at.clone(),
+            active_turn_started_at: timing.active_turn_started_at.clone(),
+            active_turn_last_activity_at: timing.active_turn_last_activity_at.clone(),
+            permission_wait_started_at: timing.permission_wait_started_at.clone(),
+            user_wait_started_at: timing.user_wait_started_at.clone(),
+            wait_reason: timing.wait_reason.clone(),
+            paused: timing.paused,
+        })
+    })
+}
+
+fn acp_session_timing_from_snapshot(session: &serde_json::Value) -> Option<AcpSessionTimingVm> {
+    session
+        .get("timing")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<AcpSessionTimingVm>(value).ok())
+}
+
+fn resolve_acp_session_timing(
+    status: &str,
+    snapshot_timing: Option<AcpSessionTimingVm>,
+    event_timing: Option<AcpSessionTimingVm>,
+    session_elapsed_seconds: Option<u64>,
+) -> Option<AcpSessionTimingVm> {
+    if is_acp_session_active_status(status) {
+        return active_session_timing(event_timing, session_elapsed_seconds).or(snapshot_timing);
+    }
+    snapshot_timing
+        .or(event_timing)
+        .or_else(|| legacy_session_timing(session_elapsed_seconds))
+}
+
+fn active_session_timing(
+    event_timing: Option<AcpSessionTimingVm>,
+    session_elapsed_seconds: Option<u64>,
+) -> Option<AcpSessionTimingVm> {
+    let Some(seconds) = session_elapsed_seconds else {
+        return event_timing;
+    };
+    if let Some(mut timing) = event_timing {
+        timing.session_elapsed_seconds = seconds;
+        return Some(timing);
+    }
+    Some(AcpSessionTimingVm {
+        session_elapsed_seconds: seconds,
+        revision: None,
+        observed_at: None,
+        active_turn_started_at: None,
+        active_turn_last_activity_at: None,
+        permission_wait_started_at: None,
+        user_wait_started_at: None,
+        wait_reason: None,
+        paused: false,
+    })
+}
+
+fn legacy_session_timing(session_elapsed_seconds: Option<u64>) -> Option<AcpSessionTimingVm> {
+    session_elapsed_seconds.map(|seconds| AcpSessionTimingVm {
+        session_elapsed_seconds: seconds,
+        revision: None,
+        observed_at: None,
+        active_turn_started_at: None,
+        active_turn_last_activity_at: None,
+        permission_wait_started_at: None,
+        user_wait_started_at: None,
+        wait_reason: None,
+        paused: true,
+    })
+}
+
+fn include_latest_permission_events(
+    events: &mut Vec<AcpUiEventVm>,
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+) {
+    if latest_permission_events.is_empty() {
+        return;
+    }
+
+    let mut changed = false;
+    for (request_id, latest) in latest_permission_events {
+        if let Some(existing) = events.iter_mut().find(|event| {
+            event.kind == "permissionRequest"
+                && permission_request_id_from_event(event) == *request_id
+        }) {
+            if latest.seq >= existing.seq {
+                *existing = latest.clone();
+                changed = true;
+            }
+            continue;
+        }
+        events.push(latest.clone());
+        changed = true;
+    }
+    if changed {
+        events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+    }
 }
 
 fn scan_acp_events(
@@ -4235,6 +4433,9 @@ fn apply_stale_session_completion_fuse(
     let pid_path = app
         .paths
         .provider_pid_file(task_id, run_id, round_id, node_id, attempt_id);
+    let raw_path = app
+        .paths
+        .acp_raw_file(task_id, run_id, round_id, node_id, attempt_id);
     let node_status = if node_path.exists() {
         read_json::<NodeState>(node_path)
             .ok()
@@ -4244,6 +4445,7 @@ fn apply_stale_session_completion_fuse(
     };
     let fused = apply_stale_session_completion_fuse_common(
         &pid_path,
+        &raw_path,
         session,
         node_status
             .map(|status| status == RunStatus::Completed)
@@ -4264,6 +4466,7 @@ fn apply_stale_session_completion_fuse_dynamic(
     session: &mut serde_json::Value,
 ) -> Result<()> {
     let pid_path = attempt_dir.join("provider.pid");
+    let raw_path = attempt_dir.join("acp.raw.jsonl");
     let node_completed = if node_path.exists() {
         read_json::<gold_band::dynamic::DynamicNodeState>(node_path)
             .ok()
@@ -4272,7 +4475,8 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    let fused = apply_stale_session_completion_fuse_common(&pid_path, session, node_completed)?;
+    let fused =
+        apply_stale_session_completion_fuse_common(&pid_path, &raw_path, session, node_completed)?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -4282,6 +4486,7 @@ fn apply_stale_session_completion_fuse_dynamic(
 
 fn apply_stale_session_completion_fuse_common(
     pid_path: &camino::Utf8Path,
+    raw_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
 ) -> Result<bool> {
@@ -4291,6 +4496,12 @@ fn apply_stale_session_completion_fuse_common(
         .unwrap_or("unknown");
     if !is_acp_session_active_status(metadata_status) {
         return Ok(false);
+    }
+    if raw_has_successful_session_close(raw_path) {
+        session["status"] = serde_json::json!("cancelled");
+        session["stopReason"] = serde_json::json!("cancelled");
+        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
+        return Ok(true);
     }
     if pid_path.exists() && !node_completed {
         return Ok(false);
@@ -4309,6 +4520,55 @@ fn apply_stale_session_completion_fuse_common(
     Ok(true)
 }
 
+fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
+    let Ok(content) = fs::read_to_string(raw_path.as_std_path()) else {
+        return false;
+    };
+    let mut close_request_ids = HashSet::new();
+    let mut close_completed_after_last_session_start = false;
+    for line in content.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(frame) = value.get("frame") else {
+            continue;
+        };
+        let method = frame.get("method").and_then(|method| method.as_str());
+        if matches!(
+            method,
+            Some("session/new" | "session/load" | "session/prompt")
+        ) {
+            close_request_ids.clear();
+            close_completed_after_last_session_start = false;
+        }
+        let is_close_request = method.is_some_and(|method| method == "session/close");
+        let Some(id) = raw_frame_rpc_id_key(frame) else {
+            continue;
+        };
+        if is_close_request {
+            close_request_ids.insert(id);
+            continue;
+        }
+        if frame.get("result").is_some() && close_request_ids.contains(&id) {
+            close_completed_after_last_session_start = true;
+        }
+    }
+    close_completed_after_last_session_start
+}
+
+fn raw_frame_rpc_id_key(frame: &serde_json::Value) -> Option<String> {
+    let id = frame.get("id")?;
+    if let Some(value) = id.as_str() {
+        return Some(format!("s:{value}"));
+    }
+    if let Some(value) = id.as_u64() {
+        return Some(format!("n:{value}"));
+    }
+    id.as_i64()
+        .filter(|value| *value >= 0)
+        .map(|value| format!("n:{value}"))
+}
+
 fn parse_epoch_timestamp(value: &str) -> Option<u64> {
     value.trim_end_matches('Z').parse::<u64>().ok()
 }
@@ -4320,8 +4580,9 @@ struct AcpSessionElapsedState {
     active_turn_last_event_at: Option<u64>,
     saw_turn: bool,
     pending_permission_ids: HashSet<String>,
-    permission_wait_started_at: Option<u64>,
-    permission_wait_seconds: u64,
+    pending_elicitation_ids: HashSet<String>,
+    user_wait_started_at: Option<u64>,
+    user_wait_seconds: u64,
 }
 
 impl AcpSessionElapsedState {
@@ -4333,8 +4594,9 @@ impl AcpSessionElapsedState {
             self.active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
             self.active_turn_last_event_at = None;
             self.pending_permission_ids.clear();
-            self.permission_wait_started_at = None;
-            self.permission_wait_seconds = 0;
+            self.pending_elicitation_ids.clear();
+            self.user_wait_started_at = None;
+            self.user_wait_seconds = 0;
             self.saw_turn = true;
             return;
         }
@@ -4345,7 +4607,10 @@ impl AcpSessionElapsedState {
             return;
         };
         self.observe_permission_event(event, timestamp);
-        self.active_turn_last_event_at = Some(timestamp);
+        self.observe_elicitation_event(event, timestamp);
+        if is_session_elapsed_progress_event(event) {
+            self.active_turn_last_event_at = Some(timestamp);
+        }
     }
 
     fn finish(&self, session_active: bool) -> Option<u64> {
@@ -4370,13 +4635,13 @@ impl AcpSessionElapsedState {
         };
         let base_elapsed = end_at.saturating_sub(started_at);
         base_elapsed.saturating_sub(
-            self.permission_wait_seconds
-                .saturating_add(self.open_permission_wait(end_at)),
+            self.user_wait_seconds
+                .saturating_add(self.open_user_wait(end_at)),
         )
     }
 
-    fn open_permission_wait(&self, end_at: u64) -> u64 {
-        self.permission_wait_started_at
+    fn open_user_wait(&self, end_at: u64) -> u64 {
+        self.user_wait_started_at
             .map(|started_at| end_at.saturating_sub(started_at))
             .unwrap_or_default()
     }
@@ -4391,24 +4656,96 @@ impl AcpSessionElapsedState {
             .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
         if is_pending {
             let request_id = permission_request_id_from_event(event);
-            let was_empty = self.pending_permission_ids.is_empty();
-            if self.pending_permission_ids.insert(request_id) && was_empty {
-                self.permission_wait_started_at = Some(timestamp);
+            let was_waiting = self.is_waiting_for_user();
+            if self.pending_permission_ids.insert(request_id) && !was_waiting {
+                self.user_wait_started_at = Some(timestamp);
             }
             return;
         }
         let request_id = permission_request_id_from_event(event);
         if !self.pending_permission_ids.remove(&request_id) {
+            if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                self.add_closed_user_wait(started_at, timestamp);
+            }
             return;
         }
-        if self.pending_permission_ids.is_empty() {
-            if let Some(started_at) = self.permission_wait_started_at.take() {
-                self.permission_wait_seconds = self
-                    .permission_wait_seconds
-                    .saturating_add(timestamp.saturating_sub(started_at));
+        self.close_user_wait_if_idle(timestamp);
+    }
+
+    fn observe_elicitation_event(&mut self, event: &AcpUiEventVm, timestamp: u64) {
+        match event.kind.as_str() {
+            "elicitationRequest"
+                if event
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("pending")) =>
+            {
+                let was_waiting = self.is_waiting_for_user();
+                if self.pending_elicitation_ids.insert(event.id.clone()) && !was_waiting {
+                    self.user_wait_started_at = Some(timestamp);
+                }
             }
+            "elicitationResponse" => {
+                let elicitation_id = event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| event.id.trim_end_matches("-response").to_string());
+                if self.pending_elicitation_ids.remove(&elicitation_id) {
+                    self.close_user_wait_if_idle(timestamp);
+                } else if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            "elicitationRequest" => {
+                if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            _ => {}
         }
     }
+
+    fn is_waiting_for_user(&self) -> bool {
+        !self.pending_permission_ids.is_empty() || !self.pending_elicitation_ids.is_empty()
+    }
+
+    fn close_user_wait_if_idle(&mut self, timestamp: u64) {
+        if self.is_waiting_for_user() {
+            return;
+        }
+        if let Some(started_at) = self.user_wait_started_at.take() {
+            self.user_wait_seconds = self
+                .user_wait_seconds
+                .saturating_add(timestamp.saturating_sub(started_at));
+        }
+    }
+
+    fn add_closed_user_wait(&mut self, started_at: u64, ended_at: u64) {
+        if ended_at <= started_at {
+            return;
+        }
+        let effective_end = self
+            .user_wait_started_at
+            .map(|open_started_at| ended_at.min(open_started_at))
+            .unwrap_or(ended_at);
+        if effective_end <= started_at {
+            return;
+        }
+        self.user_wait_seconds = self
+            .user_wait_seconds
+            .saturating_add(effective_end.saturating_sub(started_at));
+    }
+}
+
+fn compacted_wait_started_at(event: &AcpUiEventVm, ended_at: u64) -> Option<u64> {
+    let started_at = event
+        .started_at
+        .as_deref()
+        .and_then(parse_epoch_timestamp)?;
+    (started_at < ended_at).then_some(started_at)
 }
 
 fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
@@ -4419,6 +4756,18 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
             .and_then(|raw| raw.get("source"))
             .and_then(|value| value.as_str())
             == Some("goldBandPrompt")
+}
+
+fn is_session_elapsed_progress_event(event: &AcpUiEventVm) -> bool {
+    let session_update = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(|value| value.as_str());
+    !matches!(
+        session_update,
+        Some("available_commands_update" | "current_mode_update" | "session_info_update")
+    )
 }
 
 fn current_epoch_timestamp() -> String {
@@ -5394,7 +5743,10 @@ fn newest_first<T>(mut items: Vec<T>) -> Vec<T> {
 
 // ── MCP Server VM ──
 
-pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec<McpServerVm> {
+pub fn mcp_server_list_vm(
+    servers: &[gold_band::config::McpServerConfig],
+    health: &std::collections::BTreeMap<String, McpServerState>,
+) -> Vec<McpServerVm> {
     servers
         .iter()
         .map(|s| {
@@ -5421,6 +5773,26 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                     Some(u.clone()),
                     Some(env_to_entries(h)),
                 ),
+                gold_band::config::McpTransportConfig::Sse { url: u, headers: h } => (
+                    "sse".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(u.clone()),
+                    Some(env_to_entries(h)),
+                ),
+            };
+            let (health_status, health_message) = match health.get(&s.id) {
+                Some(McpServerState::Running { .. }) => (Some("healthy".to_string()), None),
+                Some(McpServerState::Error { message }) => {
+                    (Some("unhealthy".to_string()), Some(message.clone()))
+                }
+                Some(McpServerState::AuthRequired { auth_url }) => {
+                    (Some("auth_required".to_string()), auth_url.clone())
+                }
+                Some(McpServerState::Stopped) => (Some("stopped".to_string()), None),
+                Some(McpServerState::Starting) => (Some("checking".to_string()), None),
+                None => (None, None),
             };
             McpServerVm {
                 id: s.id.clone(),
@@ -5432,8 +5804,10 @@ pub fn mcp_server_list_vm(servers: &[gold_band::config::McpServerConfig]) -> Vec
                 env,
                 url,
                 headers,
-                health_status: None,
-                health_message: None,
+                managed: s.managed,
+                help_message: s.help_message.clone(),
+                health_status,
+                health_message,
             }
         })
         .collect()
@@ -5497,6 +5871,7 @@ pub struct SyncStatusEntryVm {
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::app::App;
     use serde_json::json;
 
     fn test_event(kind: &str, content: &str) -> AcpUiEventVm {
@@ -5514,6 +5889,7 @@ mod tests {
             ended_seq: None,
             started_at: None,
             ended_at: None,
+            timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
     }
@@ -5539,6 +5915,7 @@ mod tests {
             ended_seq: None,
             started_at: None,
             ended_at: None,
+            timing: None,
             raw,
         }
     }
@@ -5560,6 +5937,16 @@ mod tests {
             Some("completed"),
             timestamp,
             None,
+        )
+    }
+
+    fn metadata_update_at(kind: &str, session_update: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("{kind}-{timestamp}"),
+            kind,
+            None,
+            timestamp,
+            Some(json!({ "sessionUpdate": session_update })),
         )
     }
 
@@ -5592,6 +5979,26 @@ mod tests {
                     { "optionId": "accept-plan", "name": "Accept plan", "kind": "accept" }
                 ]
             })),
+        )
+    }
+
+    fn elicitation_request_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            elicitation_id,
+            "elicitationRequest",
+            Some("pending"),
+            timestamp,
+            Some(json!({ "type": "object" })),
+        )
+    }
+
+    fn elicitation_response_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
+        acp_event_at(
+            &format!("{elicitation_id}-response"),
+            "elicitationResponse",
+            Some("completed"),
+            timestamp,
+            Some(json!({ "elicitationId": elicitation_id, "action": "accept" })),
         )
     }
 
@@ -5903,11 +6310,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
+                .unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -5926,11 +6335,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, false).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -5951,16 +6362,172 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
         let mut session = json!({ "status": "failed" });
 
         let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &mut session, true).unwrap();
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
+                .unwrap();
 
         assert!(!fused);
         assert_eq!(
             session.get("status").and_then(|value| value.as_str()),
             Some("failed")
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raw_session_close_detection_requires_matching_result() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-detection-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raw_session_close_detection_ignores_unrelated_results() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-unrelated-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":4,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raw_session_close_detection_ignores_close_before_later_prompt() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-resume-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_cancels_after_logged_session_close() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut session = json!({ "status": "running", "stopReason": null });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
+
+        assert!(fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert_eq!(
+            session.get("stopReason").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert!(pid_path.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_keeps_running_after_prompt_following_close() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-raw-close-resumed-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        fs::write(pid_path.as_std_path(), "12345").unwrap();
+        fs::write(
+            raw_path.as_std_path(),
+            [
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mut session = json!({ "status": "running", "stopReason": null });
+
+        let fused =
+            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
+                .unwrap();
+
+        assert!(!fused);
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("running")
+        );
+        assert!(pid_path.exists());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -5973,6 +6540,75 @@ mod tests {
     #[test]
     fn explicit_cancelling_session_is_stopping() {
         assert!(is_acp_session_stopping_status("cancelling"));
+    }
+
+    #[test]
+    fn active_session_timing_prefers_scanned_elapsed_over_stale_snapshot() {
+        let snapshot = AcpSessionTimingVm {
+            session_elapsed_seconds: 22,
+            revision: Some(220),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: Some("1782985079Z".to_string()),
+            active_turn_last_activity_at: Some("1782985079Z".to_string()),
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+        let event_timing = AcpSessionTimingVm {
+            session_elapsed_seconds: 22,
+            revision: Some(221),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: Some("1782985079Z".to_string()),
+            active_turn_last_activity_at: Some("1782985079Z".to_string()),
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+
+        let resolved =
+            resolve_acp_session_timing("running", Some(snapshot), Some(event_timing), Some(32))
+                .unwrap();
+
+        assert_eq!(resolved.session_elapsed_seconds, 32);
+        assert_eq!(
+            resolved.active_turn_started_at.as_deref(),
+            Some("1782985079Z")
+        );
+    }
+
+    #[test]
+    fn terminal_session_timing_keeps_snapshot_as_persisted_truth() {
+        let snapshot = AcpSessionTimingVm {
+            session_elapsed_seconds: 37,
+            revision: Some(348),
+            observed_at: Some("1782985094Z".to_string()),
+            active_turn_started_at: None,
+            active_turn_last_activity_at: None,
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: true,
+        };
+        let event_timing = AcpSessionTimingVm {
+            session_elapsed_seconds: 32,
+            revision: Some(221),
+            observed_at: Some("1782985079Z".to_string()),
+            active_turn_started_at: None,
+            active_turn_last_activity_at: None,
+            permission_wait_started_at: None,
+            user_wait_started_at: None,
+            wait_reason: None,
+            paused: false,
+        };
+
+        let resolved =
+            resolve_acp_session_timing("cancelled", Some(snapshot), Some(event_timing), Some(32))
+                .unwrap();
+
+        assert_eq!(resolved.session_elapsed_seconds, 37);
+        assert!(resolved.paused);
     }
 
     #[test]
@@ -6113,6 +6749,42 @@ mod tests {
     }
 
     #[test]
+    fn session_elapsed_reconstructs_compacted_permission_wait() {
+        let mut selected = permission_event_at("permission-1", "selected", 170);
+        selected.started_at = Some("120Z".to_string());
+        selected.ended_at = Some("170Z".to_string());
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(110),
+                selected,
+                text_event_at(180),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(30));
+    }
+
+    #[test]
+    fn session_elapsed_excludes_elicitation_wait() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(100),
+                text_event_at(105),
+                elicitation_request_event_at("elicit-1", 110),
+                elicitation_response_event_at("elicit-1", 160),
+                text_event_at(190),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(40));
+    }
+
+    #[test]
     fn session_elapsed_does_not_double_count_overlapping_permission_waits() {
         let elapsed = elapsed_for(
             vec![
@@ -6160,6 +6832,54 @@ mod tests {
         );
 
         assert_eq!(elapsed, Some(40));
+    }
+
+    #[test]
+    fn session_elapsed_excludes_idle_resume_gaps_between_prompt_turns() {
+        let elapsed = elapsed_for(
+            vec![
+                gold_band_prompt_at(1_782_903_916),
+                text_event_at(1_782_903_917),
+                gold_band_prompt_at(1_782_904_743),
+                text_event_at(1_782_904_746),
+                gold_band_prompt_at(1_782_905_348),
+                text_event_at(1_782_905_355),
+                gold_band_prompt_at(1_782_905_444),
+                text_event_at(1_782_905_448),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_906_094,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_906_094),
+                gold_band_prompt_at(1_782_906_094),
+                text_event_at(1_782_906_106),
+                gold_band_prompt_at(1_782_906_114),
+                text_event_at(1_782_906_115),
+                gold_band_prompt_at(1_782_906_120),
+                text_event_at(1_782_906_121),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_907_082,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_907_082),
+                gold_band_prompt_at(1_782_907_082),
+                text_event_at(1_782_907_085),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_907_091,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_907_091),
+                gold_band_prompt_at(1_782_907_091),
+                text_event_at(1_782_907_091),
+            ],
+            false,
+            None,
+        );
+
+        assert_eq!(elapsed, Some(32));
     }
 
     #[test]
@@ -6280,6 +7000,30 @@ mod tests {
         path
     }
 
+    fn write_timeline_patch_file(
+        dir: &Utf8PathBuf,
+        name: &str,
+        patches: &[(u64, &str, AcpUiEventVm)],
+    ) -> Utf8PathBuf {
+        let path = dir.join(name);
+        let mut content = String::new();
+        for (revision, item_id, item) in patches {
+            content.push_str(
+                &serde_json::to_string(&json!({
+                    "patchType": "timelinePatch",
+                    "itemId": item_id,
+                    "revision": revision,
+                    "op": "upsert",
+                    "item": item,
+                }))
+                .unwrap(),
+            );
+            content.push('\n');
+        }
+        fs::write(path.as_std_path(), &content).unwrap();
+        path
+    }
+
     fn write_events_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
         let path = dir.join(name);
         let mut content = String::new();
@@ -6307,6 +7051,7 @@ mod tests {
                 ended_seq: Some(i as u64 + 1),
                 started_at: Some(format!("{}Z", base_ts + i as u64)),
                 ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                timing: None,
                 raw: None,
             })
             .collect()
@@ -6328,6 +7073,7 @@ mod tests {
                 ended_seq: Some(i as u64 + 1),
                 started_at: Some(format!("{}Z", base_ts + i as u64)),
                 ended_at: Some(format!("{}Z", base_ts + i as u64)),
+                timing: None,
                 raw: None,
             })
             .collect()
@@ -6347,6 +7093,146 @@ mod tests {
         assert_eq!(count, 50);
         assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
         assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_timeline_file_uses_latest_patch_for_stable_stream_item() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-patch-latest-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut first = text_event_at(1_000);
+        first.id = "assistant-message-1".to_string();
+        first.content = Some("partial".to_string());
+        first.started_seq = Some(10);
+        first.ended_seq = Some(10);
+        let mut latest = first.clone();
+        latest.content = Some("partial complete".to_string());
+        latest.seq = 20;
+        latest.timestamp = "1020Z".to_string();
+        latest.ended_seq = Some(20);
+        latest.ended_at = Some("1020Z".to_string());
+        let path = write_timeline_patch_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                (1, "assistant-message-1", first),
+                (2, "assistant-message-1", latest),
+            ],
+        );
+
+        let (events, count, _, _, _, _) = parse_timeline_file(&path, true).unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "assistant-message-1");
+        assert_eq!(events[0].content.as_deref(), Some("partial complete"));
+        assert_eq!(events[0].ended_seq, Some(20));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_timeline_elapsed_ignores_metadata_updates_before_next_prompt() {
+        let dir = std::env::temp_dir().join(format!("gb-tl-elapsed-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let path = write_timeline_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                gold_band_prompt_at(1_782_903_916),
+                text_event_at(1_782_903_917),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
+                gold_band_prompt_at(1_782_904_743),
+                text_event_at(1_782_904_746),
+                metadata_update_at(
+                    "availableCommands",
+                    "available_commands_update",
+                    1_782_905_348,
+                ),
+                metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
+                gold_band_prompt_at(1_782_905_348),
+                text_event_at(1_782_905_355),
+            ],
+        );
+
+        let (_, _, elapsed, _, _, _) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(elapsed, Some(11));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dynamic_acp_session_vm_keeps_attempt_cwd_separate_from_provider_cwd() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-dynamic-session-cwd-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.clone()).unwrap());
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            "task-081",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "goodbye-output",
+            "attempt-001",
+        );
+        let workspace_cwd = "D:\\Projects\\code\\ai\\Gold-Band";
+        gold_band::storage::write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": attempt_dir.to_string(),
+                "status": "completed",
+                "restored": true
+            }),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": "0.1",
+                "provider": "codex-acp",
+                "mode": "continue",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": {
+                    "acpSessionId": "session-continue-1",
+                    "adapterId": "npx",
+                    "adapterDisplayName": "Codex",
+                    "cwd": workspace_cwd
+                },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+
+        let session = dynamic_acp_session_vm(
+            &app,
+            "task-081",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "goodbye-output",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(session.cwd.as_deref(), Some(attempt_dir.as_str()));
+        assert_eq!(session.provider_cwd.as_deref(), Some(workspace_cwd));
+        assert_eq!(session.round_id, "round-001");
+        assert_eq!(session.node_id, "goodbye-output");
+        assert_eq!(session.attempt_id, "attempt-001");
+        assert_eq!(session.outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(session.outer_attempt_id.as_deref(), Some("attempt-001"));
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -6372,6 +7258,7 @@ mod tests {
                 ended_seq: None,
                 started_at: None,
                 ended_at: None,
+                timing: None,
                 raw: None,
             },
             AcpUiEventVm {
@@ -6388,6 +7275,7 @@ mod tests {
                 ended_seq: None,
                 started_at: None,
                 ended_at: None,
+                timing: None,
                 raw: None,
             },
         ];
@@ -6515,6 +7403,46 @@ mod tests {
         assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_includes_latest_permission_event_outside_window() {
+        let mut latest = HashMap::new();
+        latest.insert(
+            "req-1".to_string(),
+            permission_event_at("req-1", "selected", 3000),
+        );
+        let events = vec![
+            permission_event_at("req-1", "pending", 1000),
+            text_event_at(1100),
+            text_event_at(1200),
+        ];
+
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &latest,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+
+        let permission = scan
+            .events
+            .iter()
+            .find(|event| event.kind == "permissionRequest")
+            .unwrap();
+        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert_eq!(
+            scan.latest_permission_events
+                .get("req-1")
+                .and_then(|event| event.status.as_deref()),
+            Some("selected")
+        );
     }
 
     #[test]

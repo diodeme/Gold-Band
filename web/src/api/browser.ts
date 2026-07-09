@@ -234,6 +234,9 @@ export const browserApi: RuntimeApi = {
   respondAcpPermission(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _requestId, _optionId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
+  respondElicitation(_projectId: string | null | undefined, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _elicitationId: string, _action: string, _content?: Record<string, unknown> | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return Promise.resolve();
+  },
   cancelAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
@@ -269,6 +272,9 @@ export const browserApi: RuntimeApi = {
       });
     }
     return Promise.resolve({ ...mockContent, title: name, kind: 'input-attachment' });
+  },
+  showConversationMessageAttachment(_projectId: string, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, name: string, _path: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
+    return this.showConversationAttachment(_projectId, _taskId, name);
   },
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
@@ -470,6 +476,7 @@ export const browserApi: RuntimeApi = {
   deleteMcpServer(_id: string) { return Promise.resolve([]); },
   toggleMcpServer(_id: string, _enabled: boolean) { return Promise.resolve([]); },
   checkMcpServerHealth(_id: string) { return Promise.resolve({ status: 'unknown' }); },
+  listMcpTools(_id: string) { return Promise.resolve([]); },
   listSkills() { return Promise.resolve({ global: [], project: [] }); },
   listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
   readSkill(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null) { return Promise.resolve({ meta: { name: '', description: '', source: 'global' as const, directoryPath: '', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: [] }, body: '' }); },

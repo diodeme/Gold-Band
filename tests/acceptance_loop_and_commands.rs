@@ -73,6 +73,7 @@ impl ProviderAdapter for LoopingProvider {
                 open_command: Some(format!("claude -c session-{}", *count)),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -134,7 +135,7 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
           "edges": [
             {{"from":"dev","to":"accept","on":"success"}},
             {{"from":"accept","to":"$end","on":"success"}},
-            {{"from":"accept","to":"$new-round","on":"failure"}}
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"$entry"}}
           ]
         }}"#,
             dev_profile, accept_profile

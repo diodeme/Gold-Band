@@ -2,6 +2,7 @@ acpSessionTitleRefreshEnabled = false
 acpChatEventPageSize = 200
 acpRawMaxSizeBytes = 2097152
 acpRawTargetSizeBytes = 1048576
+conversationAutoTitleMaxChars = 18
 
 [permissionModeMapping.claude-acp]
 read_only = "plan"

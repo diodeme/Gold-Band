@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import { GOLD_THEMED_SCROLLBAR_CLASS } from "@/lib/themed-scrollbar"
 import { StickToBottom, type StickToBottomProps } from "use-stick-to-bottom"
 
 export type ChatContainerRootProps = {
@@ -31,7 +32,7 @@ function ChatContainerRoot({
 }: ChatContainerRootProps) {
   return (
     <StickToBottom
-      className={cn("flex overflow-y-auto", className)}
+      className={cn("flex overflow-y-auto", GOLD_THEMED_SCROLLBAR_CLASS, className)}
       resize={resize}
       initial={initial}
       contextRef={contextRef}

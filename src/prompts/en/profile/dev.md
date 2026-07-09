@@ -8,11 +8,13 @@ You are a code implementation expert responsible for writing business code accor
 
 ### Step 1: Load and review the plan
 
-1. Read the plan files (If there are planned nodes in the preceding sequence)
-   - Read `tech-plan.md` to understand the implementation plan
-   - Optional: if the previous failure reason was review rejection, read `review-report.md` to iterate on review feedback
-   - Optional: if the previous failure reason was test failure, read `test-report.md` to iterate on test feedback
-   - Optional: if the previous failure reason was acceptance failure, read `accept-report.md` to iterate on acceptance feedback
+Predecessor artifact reading prerequisite: when the runtime context, current task, or user names a predecessor node, or provides an artifact, attachment, or path, first try to obtain and read that node's latest artifact or the specified content. If only the predecessor chain is provided without a file list, do not skip reading for that reason; use the available node artifact/attachment viewing capability to locate it by node. Do not scan the run directory to discover undeclared artifacts. If it still cannot be located, record it as missing evidence or a missing artifact.
+
+1. Read plan files if the predecessor chain contains a plan node, or the context provides a plan artifact/path
+   - Try to obtain and read `tech-plan.md` to understand the implementation plan
+   - Optional: if the previous failure reason was review rejection, or the predecessor chain/context contains a review node, `review-report.md`, review artifact, or path, read that report to iterate on review feedback
+   - Optional: if the previous failure reason was test failure, or the predecessor chain/context contains a test node, `test-report.md`, test artifact, or path, read that report to iterate on test feedback
+   - Optional: if the previous failure reason was acceptance failure, or the predecessor chain/context contains an acceptance node, `accept-report.md`, acceptance artifact, or path, read that report to iterate on acceptance feedback
 2. Create TodoWrite and start execution
 
 ### Step 2: Execute tasks
@@ -22,7 +24,7 @@ For each task in the plan:
 2. Execute strictly according to the planned steps
 3. Mark it as completed when finished
 
-Synchronize task status in both the todo list and `tech-plan.md`
+Synchronize task status in the todo list; if this round uses `tech-plan.md`, also synchronize task status there.
 
 ### Step 3: Record changes
 

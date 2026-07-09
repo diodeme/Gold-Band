@@ -112,6 +112,10 @@ const resources = {
           "unreachable-node": "节点 {{nodeId}} 不可达，请把它接入当前工作流。",
           "success-new-round-target":
             "{{from}} 的 success 边不能指向 new round。",
+          "missing-new-round-entry":
+            "{{from}} 指向 new round 的边必须选择下一轮 Round 起点。",
+          "invalid-new-round-entry":
+            "{{from}} 指向 new round 的边选择了不存在的起点 {{entry}}。",
           "duplicate-id":
             "工作流模板 {{workflowName}} 的 workflow.id（{{workflowId}}）与 {{conflicts}} 重复，请修改 JSON 后重试。",
           "ai-dynamic-invalid-workflow":
@@ -289,6 +293,8 @@ const resources = {
         tabs: { mcp: "MCP 管理", skills: "SKILL 管理" },
         mcp: {
           addServer: "添加 MCP 服务器",
+          customSectionTitle: "自定义 MCP",
+          builtInSectionTitle: "内置 MCP",
           editServer: "配置 MCP 服务器",
           deleteServer: "删除 MCP 服务器",
           deleteDescription: "确定要删除 MCP 服务器 {{name}} 吗？",
@@ -615,9 +621,14 @@ const resources = {
           "请先处理以下问题。关闭弹窗后，对应字段会以红色标出。",
         validationDialogClose: "查看并修正",
         unnamedNode: "未命名节点",
+        entryBadge: "入口",
         validationWorkflowIdRequired: "工作流 ID 不能为空。",
         validationEntryRequired: "入口节点不能为空。",
         validationEntryMissingTarget: "入口节点 {{node}} 不存在。",
+        validationEntryCandidateMissing:
+          "工作流必须存在且只能存在一个没有入边的入口节点。",
+        validationEntryCandidateMultiple:
+          "工作流存在多个入口节点：{{entries}}。请通过连线收敛为唯一入口。",
         validationNodesRequired: "工作流至少需要一个节点。",
         validationEndNodeRequired: "工作流必须包含结束节点。",
         validationMaxAttemptsPositive: "Attempt 最大次数必须大于 0。",
@@ -673,6 +684,10 @@ const resources = {
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
           "{{node}} 的 success 边不能指向 new round。",
+        validationNewRoundEntryRequired:
+          "{{node}} 指向 new round 的边必须选择下一轮 Round 起点。",
+        validationNewRoundEntryMissing:
+          "{{node}} 指向 new round 的边选择了不存在的起点 {{entry}}。",
         validationTerminalEdgeSource: "终止节点 {{node}} 不能作为边的来源。",
         validationContinueTerminalTarget:
           "第 {{index}} 条边的 continue session 不能指向终止节点。",
@@ -695,6 +710,10 @@ const resources = {
         successEquals: "期望值",
         edgeOutcome: "边类型",
         edgeTarget: "目标",
+        newRoundEntry: "新 Round 起点",
+        newRoundEntryHelp:
+          "选择下一轮 Round 的起点；$entry 表示当前工作流的起点。",
+        selectNewRoundEntry: "选择起点",
         sessionMode: "Session",
         enable: "启用",
         disable: "关闭",
@@ -773,6 +792,9 @@ const resources = {
         systemPromptEmpty: "本次会话没有记录追加的 system prompt。",
         viewArtifacts: "查看产物",
         artifactsTitle: "产物与附件",
+        renderMarkdown: "渲染 Markdown",
+        assetSummaryArtifact: "产物 {{count}}",
+        assetSummaryAttachment: "附件 {{count}}",
         artifacts: "产物",
         attachments: "附件",
         rawFrames: "原始帧",
@@ -843,7 +865,6 @@ const resources = {
         responding: "回复生成中",
         stepElapsed: "当前 {{duration}}",
         sessionElapsed: "会话累计 {{duration}}",
-        timingStep: "当前用时",
         timingSession: "会话累计",
         sessionFailed: "ACP 会话失败",
         missingSessionReason:
@@ -857,6 +878,9 @@ const resources = {
         toolQuery: "查询",
         toolReady: "已就绪",
         toolNoOutput: "暂无工具输出",
+        runtimeControlTitle: "GOLD BAND 工作流控制",
+        runtimeControlWorkflow: "AI 输出判定",
+        runtimeControlDynamic: "AI-DYNAMIC 路由",
         subAgent: "子 Agent",
         subAgentRunning: "子 Agent 运行中",
         subAgentEvents: "{{count}} 条子事件",
@@ -865,6 +889,16 @@ const resources = {
         subAgentDescription: "任务说明",
         subAgentType: "Agent 类型",
         unknownStatus: "未知状态",
+        elicitation: {
+          submit: "提交",
+          next: "下一步",
+          skip: "跳过",
+          back: "返回",
+          step: "步骤 {{current}}/{{total}}",
+          questionFallback: "请选择一个答案",
+          customPlaceholder: "其他答案...",
+          backToOptions: "返回选项",
+        },
         usagePanel: {
           contextWindow: "上下文窗口",
           tokenUsage: "Token 用量",
@@ -1269,6 +1303,10 @@ const resources = {
             "Node {{nodeId}} is unreachable and must be connected to the workflow.",
           "success-new-round-target":
             "{{from}} success edge cannot target new round.",
+          "missing-new-round-entry":
+            "{{from}} edge targeting new round must choose the next round start.",
+          "invalid-new-round-entry":
+            "{{from}} edge targeting new round selected missing start node {{entry}}.",
           "duplicate-id":
             "Workflow template {{workflowName}} uses workflow.id {{workflowId}}, which duplicates {{conflicts}}. Update the JSON and try again.",
           "ai-dynamic-invalid-workflow":
@@ -1452,6 +1490,8 @@ const resources = {
         tabs: { mcp: "MCP", skills: "SKILLs" },
         mcp: {
           addServer: "Add MCP Server",
+          customSectionTitle: "Custom MCP",
+          builtInSectionTitle: "Built-in MCP",
           editServer: "Configure MCP Server",
           deleteServer: "Delete MCP Server",
           deleteDescription: "Delete MCP server {{name}}?",
@@ -1792,9 +1832,14 @@ const resources = {
           "Fix these issues first. After closing, invalid fields are highlighted in red.",
         validationDialogClose: "Review and fix",
         unnamedNode: "Unnamed node",
+        entryBadge: "Entry",
         validationWorkflowIdRequired: "Workflow ID is required.",
         validationEntryRequired: "Entry node is required.",
         validationEntryMissingTarget: "Entry node {{node}} does not exist.",
+        validationEntryCandidateMissing:
+          "Workflow must have exactly one entry node with no incoming edge.",
+        validationEntryCandidateMultiple:
+          "Workflow has multiple entry nodes: {{entries}}. Connect the graph so there is exactly one entry.",
         validationNodesRequired: "Workflow requires at least one node.",
         validationEndNodeRequired: "Workflow must include an end node.",
         validationMaxAttemptsPositive: "Max attempts must be greater than 0.",
@@ -1861,6 +1906,10 @@ const resources = {
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:
           "{{node}} success edge cannot target new round.",
+        validationNewRoundEntryRequired:
+          "{{node}} edge targeting new round must choose the next round start.",
+        validationNewRoundEntryMissing:
+          "{{node}} edge targeting new round selected missing start node {{entry}}.",
         validationTerminalEdgeSource:
           "Terminal node {{node}} cannot be an edge source.",
         validationContinueTerminalTarget:
@@ -1884,6 +1933,10 @@ const resources = {
         successEquals: "Expected Value",
         edgeOutcome: "Edge Type",
         edgeTarget: "Target",
+        newRoundEntry: "New Round Start",
+        newRoundEntryHelp:
+          "Choose where the next round starts; $entry means the current workflow entry.",
+        selectNewRoundEntry: "Select start",
         sessionMode: "Session",
         enable: "Enable",
         disable: "Disable",
@@ -1963,6 +2016,9 @@ const resources = {
           "This session has no recorded appended system prompt.",
         viewArtifacts: "View Artifacts",
         artifactsTitle: "Artifacts & Attachments",
+        renderMarkdown: "Render Markdown",
+        assetSummaryArtifact: "Artifacts {{count}}",
+        assetSummaryAttachment: "Attachments {{count}}",
         artifacts: "Artifacts",
         attachments: "Attachments",
         rawFrames: "Raw frames",
@@ -2033,7 +2089,6 @@ const resources = {
         responding: "Generating response",
         stepElapsed: "Current {{duration}}",
         sessionElapsed: "Session {{duration}}",
-        timingStep: "Step",
         timingSession: "Session",
         sessionFailed: "ACP session failed",
         missingSessionReason:
@@ -2047,6 +2102,9 @@ const resources = {
         toolQuery: "Query",
         toolReady: "Ready",
         toolNoOutput: "No tool output yet",
+        runtimeControlTitle: "Gold Band Workflow Control",
+        runtimeControlWorkflow: "AI output decision",
+        runtimeControlDynamic: "AI-DYNAMIC routing",
         subAgent: "Sub-agent",
         subAgentRunning: "Sub-agent running",
         subAgentEvents: "{{count}} child events",
@@ -2055,6 +2113,16 @@ const resources = {
         subAgentDescription: "Task description",
         subAgentType: "Agent type",
         unknownStatus: "Unknown status",
+        elicitation: {
+          submit: "Submit",
+          next: "Next",
+          skip: "Skip",
+          back: "Back",
+          step: "Step {{current}}/{{total}}",
+          questionFallback: "Choose an answer",
+          customPlaceholder: "Other...",
+          backToOptions: "Back to options",
+        },
         usagePanel: {
           contextWindow: "Context Window",
           tokenUsage: "Token Usage",

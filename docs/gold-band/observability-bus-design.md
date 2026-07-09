@@ -756,3 +756,65 @@ Bus:   orchestrator → bus.emit(event)
 | 结构体数量 | 5 个 | 2 个（`WorkflowEvent` + `NodeMetricItem`） |
 | 测试性 | callback 耦合 `AppHandle` | subscriber 依赖 `WorkflowEvent` + `AppHandle`（不变） |
 | 净代码量 | — | **-34 行** |
+
+---
+
+
+---
+
+## 4. 补充：UUID 字段对齐与哨兵策略澄清（2026-06-29）
+
+### 4.1 问题
+
+指标统计实践中发现的数据缺陷，根因来自「隐藏 UUID 字段」在设计覆盖上的遗漏：
+
+| 现象 | 根因 |
+|---|---|
+| `taskId` 上报为 `task-001` 等业务编号 | `TaskState::new()` 不生成 uuid；旧 task.json 无 uuid 字段，上报层回退到业务 ID |
+| AI-DYNAMIC 子节点 `nodeId` 为 `bootstrap`/`morning-class` 等 slug | `DynamicNodeState` 结构本身缺少 `uuid` 字段，`emit_dynamic_worker_completed` 硬编码 `node_uuid: None`，回退到业务 slug |
+
+注：方案节点（外层 AiDynamic 节点）`NodeStarted` 行的 token 为 0 是正确语义——节点刚开始时尚未产生 token，并非缺陷。
+
+### 4.2 数据结构修复
+
+**`DynamicNodeState`（src/dynamic.rs）新增 `uuid` 字段**：
+
+```rust
+#[serde(default)]
+pub uuid: Option<String>,
+```
+
+所有 `DynamicNodeState` 生产构造点（bootstrap / 动态 worker / merge / acceptance）统一赋值 `uuid: Some(generate_uuid())`；测试 helper 赋 `None` 以保持确定性。`emit_dynamic_worker_completed` 的 `node_uuid` 由硬编码 `None` 改为 `node.uuid.clone()`。
+
+**`TaskState::new()`（src/runtime/mod.rs）从源头生成 uuid**：
+
+```rust
+impl TaskState {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            // ...
+            uuid: Some(Uuid::new_v4().simple().to_string()),
+        }
+    }
+}
+```
+
+`runtime` 为底层模块，不能反向依赖 `app::ids::generate_uuid`，故直接在 runtime 内使用 `uuid` crate（与 `app::ids::generate_uuid` 保持 `simple()` 格式一致）。新创建的 task 不再产生 `task-001` 兜底；旧 task.json 仍由 `#[serde(default)]` 容错为 `None`。
+
+### 4.3 哨兵策略澄清（一个 AUTO 流程只有一对开始/结束）
+
+**设计原则**：一个 AUTO 流程（即一个 AiDynamic 节点及其内部所有子节点）整体只产生**一对**「开始/结束」哨兵行，由外层 AiDynamic 节点唯一负责。内部子节点（bootstrap / worker / merge / acceptance）**不各自**上报开始/结束哨兵。
+
+实现机制（原有设计，本次未改动该部分）：
+
+- **外层 AiDynamic 节点**的 `NodeStarted`：其 `predecessor` 为 None（或为上一个工作流节点），走正常的开始哨兵 / 前序节点逻辑。
+- **外层 AiDynamic 节点**的 `NodeCompleted`：`suppress_sentinel = false`，产出「结束」哨兵。
+- **内部子节点**的 `NodeCompleted`：`suppress_sentinel = true`，只产出该节点自身的一条完成态业务记录（SUCCESS/FAILED，携带 token），**不**产出「结束」哨兵。
+- **内部子节点不发布 `NodeStarted` 事件**，因此**不**产出 RUNNING 行，也**不**产出「开始」哨兵。
+
+结果：一个 AUTO 流程的指标数据形态为——1 条开始哨兵 + 1 条外层节点 RUNNING + 外层节点完成态 + 各子节点完成态（每子节点 1 条）+ 1 条结束哨兵。子节点各自只有一条完成态记录，不会因为节点数量增加而放大开始/结束哨兵。
+
+### 4.4 不做的事
+
+- 不迁移旧数据（符合开发阶段破坏式更新原则），`#[serde(default)]` 仅用于避免读取旧文件崩溃。
+- 不给 AI-DYNAMIC 子节点发布 `NodeStarted`（曾尝试引入，会破坏上述哨兵策略，已回退）。

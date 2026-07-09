@@ -26,6 +26,8 @@ pub const NOTIFICATION_DEDUP_SOFT_CAP: usize = 5000;
 pub enum InterventionType {
     /// 人工确认 → `submit_manual_check`。
     ManualCheck,
+    /// 提问卡片 → `respond_elicitation`。
+    ElicitationRequest,
     /// 权限请求 → `respond_acp_permission`。
     PermissionRequest,
     /// 执行错误 / 进程中断 → 查看详情或继续处理。
@@ -91,30 +93,48 @@ impl InterventionNotification {
         kind: RuntimeInterventionKind,
     ) -> Self {
         let pause_reason = pause_reason_for_intervention(kind);
-        let (title, body_template, intervention_type) = match kind {
+        let (title, body_template, intervention_type, dedup_suffix) = match kind {
             RuntimeInterventionKind::ManualDecisionRequired => (
                 "人工确认",
                 "需要判断是否成功",
                 InterventionType::ManualCheck,
+                None,
             ),
-            RuntimeInterventionKind::PermissionRequested => {
-                ("权限请求", "需要授权", InterventionType::PermissionRequest)
-            }
+            RuntimeInterventionKind::ElicitationRequested => (
+                "需要回答问题",
+                "等待你的回答",
+                InterventionType::ElicitationRequest,
+                Some("elicitation-requested"),
+            ),
+            RuntimeInterventionKind::PermissionRequested => (
+                "权限请求",
+                "需要授权",
+                InterventionType::PermissionRequest,
+                None,
+            ),
             RuntimeInterventionKind::RuntimeAbnormal => (
                 "运行异常",
                 "运行异常，可继续处理",
                 InterventionType::ErrorBlocked,
+                None,
             ),
             RuntimeInterventionKind::ErrorBlocked => (
                 "执行错误",
                 "执行出错，需要处理",
                 InterventionType::ErrorBlocked,
+                None,
             ),
-            RuntimeInterventionKind::ProcessInterrupted => {
-                ("进程中断", "进程异常中断", InterventionType::ErrorBlocked)
-            }
+            RuntimeInterventionKind::ProcessInterrupted => (
+                "进程中断",
+                "进程异常中断",
+                InterventionType::ErrorBlocked,
+                None,
+            ),
         };
-        let dedup_key = make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason);
+        let dedup_key = dedup_suffix.map_or_else(
+            || make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason),
+            |suffix| make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, suffix),
+        );
         let task_label = task_title.unwrap_or(task_id);
         let body = format!("{} · {} {}", task_label, node_label, body_template);
 
@@ -194,13 +214,19 @@ pub fn make_dedup_key(
     attempt_id: &str,
     reason: PauseReason,
 ) -> String {
+    make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, reason_key(reason))
+}
+
+pub fn make_dedup_key_with_suffix(
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    suffix: &str,
+) -> String {
     format!(
         "{}:{}:{}:{}:{}",
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        reason_key(reason)
+        run_id, round_id, node_id, attempt_id, suffix
     )
 }
 
@@ -337,6 +363,22 @@ mod tests {
             sample(PauseReason::PermissionRequested).intervention_type,
             InterventionType::PermissionRequest
         );
+        let elicitation = InterventionNotification::from_intervention_kind(
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+        assert_eq!(elicitation.title, "需要回答问题");
+        assert!(elicitation.body.contains("等待你的回答"));
+        assert_eq!(
+            elicitation.intervention_type,
+            InterventionType::ElicitationRequest
+        );
         assert_eq!(sample(PauseReason::RuntimeAbnormal).title, "运行异常");
         assert_eq!(
             sample(PauseReason::RuntimeAbnormal).intervention_type,
@@ -400,6 +442,27 @@ mod tests {
         let a = sample(PauseReason::ErrorBlocked).dedup_key;
         let b = sample(PauseReason::WaitingForUserInput).dedup_key;
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn elicitation_notification_uses_distinct_dedup_suffix() {
+        let manual = sample(PauseReason::WaitingForUserInput).dedup_key;
+        let elicitation = InterventionNotification::from_intervention_kind(
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            RuntimeInterventionKind::ElicitationRequested,
+        )
+        .dedup_key;
+        assert_eq!(
+            elicitation,
+            "run-1:round-1:node-1:attempt-1:elicitation-requested"
+        );
+        assert_ne!(manual, elicitation);
     }
 
     #[test]

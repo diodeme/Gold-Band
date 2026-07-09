@@ -22,7 +22,8 @@ Constraint reminders:
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
 - Do not use `workspace.mode="worktree"` on a `next.type="single"` node; only `fanout` branches may use worktrees because runtime only creates merge / acceptance after fanout.
-- When `next.type="fanout"`, you must provide `groupId / nodes / merge / acceptance` together.
+- When `next.type="fanout"`, you must provide `groupId / nodes / merge / acceptance` together, and `nodes` must contain at least two branches; use `next.type="single"` for one successor node.
+- Do not use `workspace.mode="main"` for `next.type="fanout"` branch nodes; use `readonly` for read-only branches and `worktree` for writable parallel branches when the workspace supports it. Use `next.type="single"` for serial main-workspace writes.
 - `profile` is only allowed on worker nodes and is optional. If present, use an ID from the schema enum or the ID after `profileId=...` in this prompt, not the displayName.
 - Do not output `profile` for `merge` / `acceptance`; runtime uses the built-in AI-DYNAMIC merge / acceptance prompts.
 {% if agent_strategy_mode == "dynamic" %}- If `provider` is present, it must be one of the available providers listed in the schema enum or this prompt.
@@ -30,5 +31,5 @@ Constraint reminders:
 - When `sessionMode="continue"`, you must provide `continueFromNodeId`, and it must reference one of the resumable session nodes listed in this prompt.
 - Do not use `sessionMode="continue"` for `workflow-invocation`.
 - If `workflowId` is present, it must be one of the allowed workflow DSL IDs listed in the schema enum or this prompt.
-- Fanout node count must stay within the schema `maxItems`, `maxFanout`, and remaining-budget constraints shown in this prompt.
+- Fanout node count must satisfy the schema `minItems/maxItems`, `maxFanout`, and remaining-budget constraints shown in this prompt.
 - Output only the final JSON. Do not output pseudocode, commentary, or wrapped examples.

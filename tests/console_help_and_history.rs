@@ -69,6 +69,7 @@ impl ProviderAdapter for StartTaskProvider {
                 open_command: Some("claude -c session-1".to_string()),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

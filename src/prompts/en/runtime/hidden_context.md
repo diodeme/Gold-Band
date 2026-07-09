@@ -4,7 +4,7 @@
 - Round: {{ round_id }}
 - Attempt: {{ attempt_id }}
 - Attempt directory: {{ attempt_dir }}
-- Attachments directory: {{ attachments_dir }}
+- Attachments directory (default location for this node's reports, temporary scripts, process notes, and other free-form outputs): {{ attachments_dir }}
 {% if invocation_reason %}
 - Invocation reason: {{ invocation_reason }}
 {% endif %}
@@ -17,13 +17,20 @@ Previous executed nodes: none. This node is the entry node for the current round
 {{ predecessors.chain }}
 {% endif %}
 
+{% if predecessors.reason_lines_empty %}
 {% if predecessors.is_empty %}
 ## Latest predecessor transition reasons
 None.
-{% elif predecessors.reason_lines_empty %}
+{% else %}
 ## Latest predecessor transition reasons
 All previous nodes were ordinary transitions based on node outcome.
+{% endif %}
 {% else %}
 ## Latest predecessor transition reasons
 {{ predecessors.reason_lines }}
+{% endif %}
+
+{% if not predecessors.attachment_lines_empty %}
+## Latest predecessor attachments
+{{ predecessors.attachment_lines }}
 {% endif %}

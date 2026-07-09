@@ -19,14 +19,22 @@ struct AcpTimelineStreamState {
 }
 
 use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
+use crate::acp::elicitation::{
+    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
+    elicitation_response_result, remove_elicitation_signal_files,
+    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+};
 use crate::acp::events::{
-    AcpAttemptPaths, AcpSessionMetadata, AcpUiEvent, append_diagnostic, append_raw_frame,
-    append_timeline_patch, append_ui_event, current_timestamp, initial_acp_event_seq,
-    latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-    permission_request_event, user_prompt_event, write_session_metadata, write_timeline_items,
+    AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
+    append_diagnostic, append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
+    initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
+    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    write_timeline_items,
 };
 use crate::acp::permission::{
-    acp_permission_response_result, wait_for_permission_response, write_pending_permission,
+    PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
+    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
+    write_pending_permission,
 };
 use crate::config::AcpAdapterConfig;
 use crate::domain::{SessionMode, VERSION};
@@ -38,6 +46,7 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, wr
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
+const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
@@ -146,6 +155,7 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
 }
 
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
     AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
 }
 
@@ -336,9 +346,12 @@ struct AcpRuntime<'a> {
     active_text_stream: Option<AcpTimelineStreamState>,
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
+    timing_state: AcpTimingState,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     pending_live_update: Option<AcpUiEvent>,
     last_live_update_at: Option<Instant>,
+    last_live_timing_update_at: Option<Instant>,
+    last_live_timing: Option<crate::acp::events::AcpTimingPatch>,
     pending_timeline_patch: Option<(u64, AcpUiEvent)>,
     last_timeline_patch_at: Option<Instant>,
     raw_max_size: u64,
@@ -481,7 +494,7 @@ pub fn run_prompt(
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(provider_id, prompt, session_update.is_none())?;
+    runtime.record_user_prompt_event(provider_id, prompt, restored, session_update.is_none())?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -515,15 +528,21 @@ pub fn run_prompt(
             } else {
                 "completed"
             };
+            if status == "cancelled" {
+                let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            }
             (status, stop_reason)
         }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
         Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("interrupted".to_string()))
         }
         Err(error) => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -578,6 +597,11 @@ pub fn run_prompt(
     Ok(run)
 }
 
+fn cancel_pending_prompt_interactions(attempt_dir: &Utf8Path, decided_at: String) -> Result<()> {
+    cancel_pending_permission_requests(attempt_dir, decided_at.clone())?;
+    cancel_pending_elicitation_requests(attempt_dir, decided_at)
+}
+
 fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]) -> Value {
     let mut params = json!({
         "cwd": cwd.as_str(),
@@ -614,7 +638,12 @@ fn session_load_params(
     params
 }
 
-fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBundle) -> Value {
+fn session_prompt_params(
+    provider_id: &str,
+    session_id: &str,
+    prompt: &PromptBundle,
+    restored: bool,
+) -> Value {
     let mut prompt_blocks: Vec<Value> = Vec::new();
 
     // Add attachment content blocks first (images, resources)
@@ -623,7 +652,7 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
     }
 
     // Add the text block with user prompt
-    let text = session_prompt_text(provider_id, prompt);
+    let text = session_prompt_text(provider_id, prompt, restored);
     if !text.is_empty() {
         prompt_blocks.push(json!({
             "type": "text",
@@ -637,8 +666,9 @@ fn session_prompt_params(provider_id: &str, session_id: &str, prompt: &PromptBun
     })
 }
 
-fn session_prompt_text(provider_id: &str, prompt: &PromptBundle) -> String {
-    if !supports_system_prompt(provider_id).unwrap_or(false)
+fn session_prompt_text(provider_id: &str, prompt: &PromptBundle, restored: bool) -> String {
+    if !restored
+        && !supports_system_prompt(provider_id).unwrap_or(false)
         && !prompt.system_prompt.trim().is_empty()
     {
         let system_prompt =
@@ -662,7 +692,101 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
         })
 }
 
+fn is_runtime_session_active(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "running" | "active" | "pending" | "permission_requested" | "permission-requested"
+    )
+}
+
+fn parse_event_epoch_seconds(value: &str) -> Option<u64> {
+    value.trim_end_matches('Z').parse::<u64>().ok()
+}
+
+fn timing_patch_reason(event: &AcpUiEvent) -> &'static str {
+    if event.kind == "permissionRequest"
+        && event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+    {
+        return "permission-wait";
+    }
+    if event.kind == "elicitationRequest"
+        && event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+    {
+        return "elicitation-wait";
+    }
+    let session_update = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(Value::as_str);
+    if matches!(
+        session_update,
+        Some("available_commands_update" | "current_mode_update" | "session_info_update")
+    ) {
+        return "metadata";
+    }
+    "active"
+}
+
+fn should_sync_timing_state_from_timeline(event: &AcpUiEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "permissionRequest" | "elicitationRequest" | "elicitationResponse"
+    )
+}
+
+fn is_pending_user_wait_event(event: &AcpUiEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "permissionRequest" | "elicitationRequest"
+    ) && event
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
+}
+
+fn timing_state_from_timeline_items_with_replacement(
+    timeline_items: &HashMap<String, AcpUiEvent>,
+    replacement: &AcpUiEvent,
+) -> AcpTimingState {
+    let mut items = timeline_items
+        .values()
+        .filter(|item| item.id != replacement.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(replacement.clone());
+    AcpTimingState::from_timeline_items(items)
+}
+
+fn timing_patch_display_values_equal(
+    left: &crate::acp::events::AcpTimingPatch,
+    right: &crate::acp::events::AcpTimingPatch,
+) -> bool {
+    left.session_elapsed_seconds == right.session_elapsed_seconds
+        && left.active_turn_started_at == right.active_turn_started_at
+        && left.active_turn_last_activity_at == right.active_turn_last_activity_at
+        && left.permission_wait_started_at == right.permission_wait_started_at
+        && left.user_wait_started_at == right.user_wait_started_at
+        && left.wait_reason == right.wait_reason
+        && left.paused == right.paused
+}
+
 impl<'a> AcpRuntime<'a> {
+    fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
+        cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
+        self.timeline_items = load_timeline_items(&self.paths.timeline)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        Ok(())
+    }
+
     fn append_timing_diagnostic(&self, event: &str, data: Value) {
         let _ = append_diagnostic(
             &self.paths.diagnostics,
@@ -789,7 +913,9 @@ impl<'a> AcpRuntime<'a> {
         )?;
         let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
-        let timeline_items = load_timeline_items(&paths.timeline)?
+        let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
+        let timing_state = AcpTimingState::from_timeline_items(loaded_timeline_items.clone());
+        let timeline_items = loaded_timeline_items
             .into_iter()
             .map(|item| (item.id.clone(), item))
             .collect::<HashMap<_, _>>();
@@ -824,9 +950,12 @@ impl<'a> AcpRuntime<'a> {
             active_text_stream: None,
             active_thought_stream: None,
             active_plan_stream: None,
+            timing_state,
             live_update,
             pending_live_update: None,
             last_live_update_at: None,
+            last_live_timing_update_at: None,
+            last_live_timing: None,
             pending_timeline_patch: None,
             last_timeline_patch_at: None,
             raw_max_size,
@@ -882,7 +1011,11 @@ impl<'a> AcpRuntime<'a> {
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": {
+                    "elicitation": {
+                        "form": {}
+                    }
+                },
                 "clientInfo": {
                     "name": "gold-band",
                     "title": "Gold Band",
@@ -1250,6 +1383,7 @@ impl<'a> AcpRuntime<'a> {
         &mut self,
         provider_id: &str,
         prompt: &PromptBundle,
+        restored: bool,
         emit_live_update: bool,
     ) -> Result<()> {
         let session_id = self
@@ -1260,7 +1394,7 @@ impl<'a> AcpRuntime<'a> {
         let user_event = user_prompt_event(
             self.seq,
             session_id,
-            session_prompt_text(provider_id, prompt),
+            session_prompt_text(provider_id, prompt, restored),
             prompt.prompt_id.clone(),
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
@@ -1289,6 +1423,7 @@ impl<'a> AcpRuntime<'a> {
             provider_id,
             &session_id,
             prompt,
+            restored,
             acp_session_title_refresh_enabled.then_some((
                 workspace_dir,
                 "running",
@@ -1461,6 +1596,7 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         session_id: &str,
         prompt: &PromptBundle,
+        restored: bool,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
         if self.is_prompt_cancel_requested() {
@@ -1479,7 +1615,7 @@ impl<'a> AcpRuntime<'a> {
         );
         let request = self.connection.begin_request(
             "session/prompt",
-            session_prompt_params(provider_id, session_id, prompt),
+            session_prompt_params(provider_id, session_id, prompt, restored),
         )?;
         self.append_outbound_frame(&request.frame)?;
         self.connection.mark_prompt_active();
@@ -1496,10 +1632,12 @@ impl<'a> AcpRuntime<'a> {
                     .map(|remaining| remaining.min(STOP_CHECK_INTERVAL))
                     .unwrap_or(STOP_CHECK_INTERVAL);
                 self.drain_available_inbound()?;
+                self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                 match request.recv_timeout(wait_for) {
                     Ok(value) => {
                         self.append_inbound_frame(&value)?;
                         self.drain_available_inbound()?;
+                        self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if let Some(error) = value.get("error") {
                             if cancel_started_at.is_some() {
                                 break Err(anyhow!(AcpCancelled));
@@ -1517,6 +1655,7 @@ impl<'a> AcpRuntime<'a> {
                             &title_refresh,
                             &mut last_title_refresh_at,
                         );
+                        self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if cancel_started_at
                             .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
                         {
@@ -1593,6 +1732,7 @@ impl<'a> AcpRuntime<'a> {
         match value.get("method").and_then(Value::as_str) {
             Some("session/update") => self.handle_session_update(value),
             Some("session/request_permission") => self.handle_permission_request(value),
+            Some("elicitation/create") => self.handle_elicitation_request(value),
             Some(method) => {
                 append_diagnostic(
                     &self.paths.diagnostics,
@@ -1671,9 +1811,28 @@ impl<'a> AcpRuntime<'a> {
             params.clone(),
             current_timestamp(),
         )?;
-        let event = permission_request_event(self.seq, request_id.clone(), params);
+        let mut event = permission_request_event(self.seq, request_id.clone(), params);
+        if read_json::<PermissionResponseState>(&permission_response_file(
+            &self.paths.attempt_dir,
+            &request_id,
+        ))
+        .ok()
+        .is_some_and(|response| response.cancelled)
+        {
+            event.status = Some("cancelled".to_string());
+            event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
+        }
         self.persist_event(&event)?;
         let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        self.seq += 1;
+        let decision_event = permission_decision_timeline_event(
+            self.seq,
+            &request_id,
+            &response,
+            self.timeline_items.get(&format!("permission-{request_id}")),
+        );
+        self.persist_event(&decision_event)?;
+        let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
         let frame = json!({
             "jsonrpc": "2.0",
@@ -1726,6 +1885,85 @@ impl<'a> AcpRuntime<'a> {
                 Some(frame),
             );
         }
+    }
+
+    fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        let rpc_id = value
+            .get("id")
+            .cloned()
+            .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let schema = params
+            .get("requestedSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+
+        // 1. 持久化请求到 attempt dir
+        write_pending_elicitation(
+            &self.paths.attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.clone(),
+                jsonrpc_id: rpc_id.clone(),
+                message: message.clone(),
+                requested_schema: schema.clone(),
+                created_at: current_timestamp(),
+            },
+        )?;
+
+        // 2. 发送 UI 事件给前端
+        self.seq += 1;
+        let event = crate::acp::events::elicitation_request_event(
+            self.seq,
+            elicitation_id.clone(),
+            message,
+            schema.clone(),
+        );
+        self.persist_event(&event)?;
+
+        // 3. 同步阻塞等待用户响应（含超时保护）
+        let response = wait_for_elicitation_response(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            ELICITATION_DEFAULT_TIMEOUT,
+        )?;
+        upsert_elicitation_response_event(
+            &self.paths.attempt_dir,
+            &elicitation_id,
+            &response.action,
+            response.content.clone(),
+        )?;
+
+        // 4. 构造 JSON-RPC response 并发送
+        let result = elicitation_response_result(&response);
+        let response_frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": result,
+        });
+        self.append_outbound_frame(&response_frame)?;
+        self.connection.send_response(rpc_id, result)?;
+
+        self.seq += 1;
+        let response_event = crate::acp::events::elicitation_response_event(
+            self.seq,
+            elicitation_id.clone(),
+            match response.action {
+                crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
+                crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+            },
+            response.content.clone(),
+        );
+        self.persist_event(&response_event)?;
+        let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
+
+        Ok(())
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {
@@ -1851,9 +2089,33 @@ impl<'a> AcpRuntime<'a> {
             cached_read_tokens: self.cached_read_tokens,
             cached_write_tokens: self.cached_write_tokens,
             total_tokens: self.total_tokens,
+            timing: self.session_timing_snapshot(status, &now),
             created_at,
             updated_at: now,
         }
+    }
+
+    fn session_timing_snapshot(&self, status: &str, observed_at: &str) -> Option<AcpSessionTiming> {
+        let observed_epoch = parse_event_epoch_seconds(observed_at);
+        let revision = Some(self.next_timing_revision());
+        if is_runtime_session_active(status) {
+            self.timing_state.snapshot_at_with_revision(
+                true,
+                observed_epoch,
+                revision,
+                Some(observed_at.to_string()),
+            )
+        } else {
+            self.timing_state.terminal_snapshot_at_with_revision(
+                observed_epoch,
+                revision,
+                Some(observed_at.to_string()),
+            )
+        }
+    }
+
+    fn next_timing_revision(&self) -> u64 {
+        self.seq.saturating_add(1)
     }
 
     fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
@@ -1875,7 +2137,20 @@ impl<'a> AcpRuntime<'a> {
         if should_write_legacy_events(&self.paths) {
             append_ui_event(&self.paths.events, event)?;
         }
-        let timeline_item = self.timeline_item_for_event(event);
+        let mut timeline_item = self.timeline_item_for_event(event);
+        if should_sync_timing_state_from_timeline(&timeline_item) {
+            self.timing_state = timing_state_from_timeline_items_with_replacement(
+                &self.timeline_items,
+                &timeline_item,
+            );
+        } else {
+            self.timing_state.observe_event(&timeline_item);
+        }
+        if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
+            timeline_item.timing = self
+                .timing_state
+                .patch_at(timestamp, timing_patch_reason(&timeline_item));
+        }
         self.timeline_items
             .insert(timeline_item.id.clone(), timeline_item.clone());
         self.timeline_revision = self.timeline_revision.saturating_add(1);
@@ -1956,6 +2231,11 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if is_streaming_timeline_update(&item) {
+            if let Some(pending) =
+                take_pending_live_update_for_stream_switch(&mut self.pending_live_update, &item)
+            {
+                self.emit_live_update_now(&pending, Instant::now())?;
+            }
             let now = Instant::now();
             let should_emit = self
                 .last_live_update_at
@@ -1980,6 +2260,69 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    fn maybe_emit_live_timing_update(&mut self, now: Instant, reason: &'static str) -> Result<()> {
+        if self.live_update.is_none() {
+            return Ok(());
+        }
+        if self
+            .last_live_timing_update_at
+            .is_some_and(|last| now.duration_since(last) < LIVE_TIMING_UPDATE_INTERVAL)
+        {
+            return Ok(());
+        }
+        if self.timeline_has_pending_user_wait() {
+            self.timing_state = AcpTimingState::from_timeline_items(
+                self.timeline_items.values().cloned().collect::<Vec<_>>(),
+            );
+        }
+        let timestamp = current_timestamp();
+        let Some(epoch_seconds) = parse_event_epoch_seconds(&timestamp) else {
+            return Ok(());
+        };
+        let Some(timing) = self.timing_state.patch_at_with_revision(
+            epoch_seconds,
+            reason,
+            Some(self.next_timing_revision()),
+            Some(timestamp.clone()),
+        ) else {
+            return Ok(());
+        };
+        if self
+            .last_live_timing
+            .as_ref()
+            .is_some_and(|last| timing_patch_display_values_equal(last, &timing))
+        {
+            self.last_live_timing_update_at = Some(now);
+            return Ok(());
+        }
+        let event = AcpUiEvent {
+            id: format!("acp-timing-{}-{epoch_seconds}", self.seq),
+            seq: self.seq,
+            timestamp,
+            kind: "timingUpdate".to_string(),
+            session_id: self.session_id.clone(),
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: Some("active".to_string()),
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: Some(timing),
+            raw: Some(json!({
+                "source": "acpTiming",
+                "reason": reason,
+            })),
+        };
+        self.flush_pending_live_update()?;
+        self.emit_live_update_now(&event, now)
+    }
+
+    fn timeline_has_pending_user_wait(&self) -> bool {
+        self.timeline_items.values().any(is_pending_user_wait_event)
+    }
+
     fn emit_live_update_now(
         &mut self,
         item: &crate::acp::events::AcpUiEvent,
@@ -1988,6 +2331,10 @@ impl<'a> AcpRuntime<'a> {
         if let Some(live_update) = self.live_update {
             live_update(item)?;
             self.last_live_update_at = Some(now);
+            if let Some(timing) = item.timing.as_ref() {
+                self.last_live_timing_update_at = Some(now);
+                self.last_live_timing = Some(timing.clone());
+            }
         }
         Ok(())
     }
@@ -2120,6 +2467,21 @@ impl<'a> AcpRuntime<'a> {
                     &timestamp,
                 );
             }
+            "elicitationRequest" => {
+                // 不关闭 text/thought/plan 流 — elicitation 穿插在对话中
+                // 不设 ended_at/ended_seq，保持"进行中"状态，等待用户响应
+                item.started_seq = Some(item.started_seq.unwrap_or(seq));
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+            }
+            "elicitationResponse" => {
+                // 关闭对应的 elicitationRequest
+                item.started_seq = Some(seq);
+                item.ended_seq = Some(seq);
+                item.started_at =
+                    Some(item.started_at.clone().unwrap_or_else(|| timestamp.clone()));
+                item.ended_at = Some(timestamp);
+            }
             _ => {
                 Self::finalize_non_streaming_event(
                     (
@@ -2240,6 +2602,19 @@ fn should_write_legacy_events(paths: &AcpAttemptPaths) -> bool {
 
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
+}
+
+fn take_pending_live_update_for_stream_switch(
+    pending: &mut Option<crate::acp::events::AcpUiEvent>,
+    item: &crate::acp::events::AcpUiEvent,
+) -> Option<crate::acp::events::AcpUiEvent> {
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.id != item.id)
+    {
+        return pending.take();
+    }
+    None
 }
 
 fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
@@ -2379,22 +2754,377 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
+fn permission_decision_timeline_event(
+    seq: u64,
+    request_id: &str,
+    response: &PermissionResponseState,
+    existing: Option<&AcpUiEvent>,
+) -> AcpUiEvent {
+    let mut raw = existing
+        .and_then(|event| event.raw.clone())
+        .unwrap_or_else(|| json!({}));
+    if !raw.is_object() {
+        raw = json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("requestId".to_string(), json!(request_id));
+        if response.cancelled {
+            object.insert("cancelled".to_string(), json!(true));
+            object.remove("optionId");
+        } else {
+            object.insert("optionId".to_string(), json!(response.option_id.clone()));
+            object.remove("cancelled");
+        }
+    }
+
+    AcpUiEvent {
+        id: request_id.to_string(),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "permissionRequest".to_string(),
+        session_id: existing.and_then(|event| event.session_id.clone()),
+        content: None,
+        title: existing
+            .and_then(|event| event.title.clone())
+            .or_else(|| Some("Permission answered".to_string())),
+        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
+        status: Some(if response.cancelled {
+            "cancelled".to_string()
+        } else {
+            "selected".to_string()
+        }),
+        started_seq: existing.and_then(|event| event.started_seq),
+        ended_seq: None,
+        started_at: existing.and_then(|event| event.started_at.clone()),
+        ended_at: None,
+        timing: None,
+        raw: Some(raw),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::HashMap;
+
+    use serde_json::{Value, json};
 
     use super::{
-        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility, RuntimeStopProbe,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, resolve_permission_mode,
+        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility,
+        RuntimeStopProbe, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        permission_decision_timeline_event, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
-        session_prompt_params, session_prompt_text,
+        session_prompt_params, session_prompt_text, take_pending_live_update_for_stream_switch,
+        timing_state_from_timeline_items_with_replacement,
     };
+    use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
         assert!(contributes_to_final_text("textDelta"));
         assert!(!contributes_to_final_text("userTextDelta"));
         assert!(!contributes_to_final_text("thoughtDelta"));
+    }
+
+    #[test]
+    fn streaming_delta_accumulates_content_and_sequence_bounds() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "event-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("hello".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-message-1",
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut second = AcpUiEvent {
+            id: "event-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(" world".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-message-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(first.id, "assistant-message-1");
+        assert_eq!(first.content.as_deref(), Some("hello"));
+        assert_eq!(first.started_seq, Some(10));
+        assert_eq!(first.ended_seq, Some(10));
+        assert_eq!(second.id, "assistant-message-1");
+        assert_eq!(second.content.as_deref(), Some("hello world"));
+        assert_eq!(second.started_seq, Some(10));
+        assert_eq!(second.ended_seq, Some(11));
+        assert_eq!(second.started_at.as_deref(), Some("10Z"));
+        assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn stream_switch_takes_pending_live_update_before_overwrite() {
+        let mut pending = Some(AcpUiEvent {
+            id: "assistant-message-1".to_string(),
+            seq: 20,
+            timestamp: "20Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("完整文本快照".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(10),
+            ended_seq: Some(20),
+            started_at: Some("10Z".to_string()),
+            ended_at: Some("20Z".to_string()),
+            timing: None,
+            raw: None,
+        });
+        let next_stream = AcpUiEvent {
+            id: "session-plan-1".to_string(),
+            seq: 21,
+            timestamp: "21Z".to_string(),
+            kind: "plan".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some(String::new()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(21),
+            ended_seq: Some(21),
+            started_at: Some("21Z".to_string()),
+            ended_at: Some("21Z".to_string()),
+            timing: None,
+            raw: None,
+        };
+
+        let flushed =
+            take_pending_live_update_for_stream_switch(&mut pending, &next_stream).unwrap();
+
+        assert_eq!(flushed.id, "assistant-message-1");
+        assert_eq!(flushed.content.as_deref(), Some("完整文本快照"));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn same_stream_keeps_pending_live_update_buffered() {
+        let mut pending = Some(AcpUiEvent {
+            id: "assistant-message-1".to_string(),
+            seq: 20,
+            timestamp: "20Z".to_string(),
+            kind: "textDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("partial".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(10),
+            ended_seq: Some(20),
+            started_at: Some("10Z".to_string()),
+            ended_at: Some("20Z".to_string()),
+            timing: None,
+            raw: None,
+        });
+        let same_stream = pending.as_ref().unwrap().clone();
+
+        let flushed = take_pending_live_update_for_stream_switch(&mut pending, &same_stream);
+
+        assert!(flushed.is_none());
+        assert_eq!(
+            pending.and_then(|event| event.content),
+            Some("partial".to_string())
+        );
+    }
+
+    #[test]
+    fn permission_decision_event_preserves_pending_timeline_identity() {
+        let existing = AcpUiEvent {
+            id: "permission-0".to_string(),
+            seq: 10,
+            timestamp: "1Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(10),
+            ended_seq: Some(10),
+            started_at: Some("1Z".to_string()),
+            ended_at: Some("1Z".to_string()),
+            timing: None,
+            raw: Some(json!({
+                "requestId": "0",
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            })),
+        };
+        let response = PermissionResponseState {
+            request_id: "0".to_string(),
+            option_id: Some("allow".to_string()),
+            cancelled: false,
+            decided_at: "2Z".to_string(),
+        };
+
+        let event = permission_decision_timeline_event(11, "0", &response, Some(&existing));
+
+        assert_eq!(event.id, "0");
+        assert_eq!(event.kind, "permissionRequest");
+        assert_eq!(event.status.as_deref(), Some("selected"));
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(event.title.as_deref(), Some("Write file"));
+        assert_eq!(event.started_seq, Some(10));
+        assert_eq!(event.started_at.as_deref(), Some("1Z"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("optionId"))
+                .and_then(Value::as_str),
+            Some("allow")
+        );
+    }
+
+    #[test]
+    fn timing_rebuild_with_permission_decision_excludes_wait_interval() {
+        let prompt_1 = AcpUiEvent {
+            id: "gold-band-user-prompt-1".to_string(),
+            seq: 1,
+            timestamp: "100Z".to_string(),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("first".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(1),
+            ended_seq: Some(1),
+            started_at: Some("100Z".to_string()),
+            ended_at: Some("100Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "source": "goldBandPrompt" })),
+        };
+        let usage_1 = AcpUiEvent {
+            id: "acp-event-2".to_string(),
+            seq: 2,
+            timestamp: "130Z".to_string(),
+            kind: "usageUpdate".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: Some(2),
+            ended_seq: Some(2),
+            started_at: Some("130Z".to_string()),
+            ended_at: Some("130Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "sessionUpdate": "usage_update" })),
+        };
+        let prompt_2 = AcpUiEvent {
+            id: "gold-band-user-prompt-3".to_string(),
+            seq: 3,
+            timestamp: "200Z".to_string(),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("second".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(3),
+            ended_seq: Some(3),
+            started_at: Some("200Z".to_string()),
+            ended_at: Some("200Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "source": "goldBandPrompt" })),
+        };
+        let pending_permission = AcpUiEvent {
+            id: "permission-1".to_string(),
+            seq: 4,
+            timestamp: "214Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("pending".to_string()),
+            started_seq: Some(4),
+            ended_seq: Some(4),
+            started_at: Some("214Z".to_string()),
+            ended_at: Some("214Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "requestId": "1" })),
+        };
+        let selected_permission = AcpUiEvent {
+            id: "permission-1".to_string(),
+            seq: 5,
+            timestamp: "230Z".to_string(),
+            kind: "permissionRequest".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: Some("Write file".to_string()),
+            tool_call_id: Some("tool-1".to_string()),
+            status: Some("selected".to_string()),
+            started_seq: Some(4),
+            ended_seq: Some(5),
+            started_at: Some("214Z".to_string()),
+            ended_at: Some("230Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "requestId": "1", "optionId": "allow" })),
+        };
+        let timeline_items = HashMap::from([
+            (prompt_1.id.clone(), prompt_1),
+            (usage_1.id.clone(), usage_1),
+            (prompt_2.id.clone(), prompt_2),
+            (pending_permission.id.clone(), pending_permission),
+        ]);
+
+        let timing_state = timing_state_from_timeline_items_with_replacement(
+            &timeline_items,
+            &selected_permission,
+        );
+        let snapshot = timing_state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 44);
     }
 
     #[test]
@@ -2430,16 +3160,37 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        let text = session_prompt_text("codex-acp", &prompt);
+        let text = session_prompt_text("codex-acp", &prompt, false);
         assert!(text.contains(
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
         ));
         assert!(text.contains("node constraints"));
         assert!(text.ends_with("do the task"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt);
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, false);
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], text);
+    }
+
+    #[test]
+    fn codex_restored_session_prompt_does_not_inline_system_prompt() {
+        let prompt = PromptBundle {
+            system_prompt: "node constraints".to_string(),
+            user_prompt: "follow up".to_string(),
+            prompt_id: Some("prompt-002".to_string()),
+            visibility: PromptVisibility::Visible,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
+        };
+
+        let text = session_prompt_text("codex-acp", &prompt, true);
+        assert_eq!(text, "follow up");
+        assert!(!text.contains("Gold Band stable system prompt"));
+        assert!(!text.contains("node constraints"));
+
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, true);
+        assert_eq!(params["sessionId"], "session-123");
+        assert_eq!(params["prompt"][0]["text"], "follow up");
     }
 
     #[test]
@@ -2453,7 +3204,14 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        assert_eq!(session_prompt_text("claude-acp", &prompt), "do the task");
+        assert_eq!(
+            session_prompt_text("claude-acp", &prompt, false),
+            "do the task"
+        );
+        assert_eq!(
+            session_prompt_text("claude-acp", &prompt, true),
+            "do the task"
+        );
     }
 
     #[test]

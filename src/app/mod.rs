@@ -10,10 +10,12 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key, reason_key,
+    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key,
+    make_dedup_key_with_suffix, reason_key,
 };
 
 use crate::acp::client as acp_client;
+use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
@@ -115,18 +117,59 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
-fn default_workflow_template(profiles: &DefaultProfileIds) -> WorkflowTemplate {
+fn default_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: "default".to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles),
+        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
 }
 
-fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> WorkflowDsl {
+fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
+    match (language, key) {
+        (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
+        (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
+        (DesktopLanguage::ZhCn, "review") => {
+            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "test") => {
+            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "accept") => {
+            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
+        }
+        (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::En, "plan") => {
+            "Analyze the imported requirement and produce an implementation plan."
+        }
+        (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
+        (DesktopLanguage::En, "review") => {
+            "Review the implementation and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "test") => {
+            "Run or describe verification and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "accept") => {
+            "Validate acceptance and return JSON with result and reason fields."
+        }
+        (DesktopLanguage::En, "cleanup") => {
+            "Clean up resources, finalize handoff notes, and clean up the Git workspace."
+        }
+        _ => "Execute this workflow node.",
+    }
+}
+
+fn default_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
     fn worker(
         provider: &str,
         profiles: &DefaultProfileIds,
@@ -178,7 +221,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "plan",
                 "plan",
-                "Analyze the imported requirement and produce an implementation plan.",
+                default_workflow_goal(language, "plan"),
                 false,
                 true,
             ),
@@ -187,7 +230,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "dev",
                 "dev",
-                "Implement the requirement in the workspace.",
+                default_workflow_goal(language, "dev"),
                 false,
                 false,
             ),
@@ -196,7 +239,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "review",
                 "review",
-                "Review the implementation and return JSON with result and reason fields.",
+                default_workflow_goal(language, "review"),
                 true,
                 false,
             ),
@@ -205,7 +248,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "test",
                 "test",
-                "Run or describe verification and return JSON with result and reason fields.",
+                default_workflow_goal(language, "test"),
                 true,
                 false,
             ),
@@ -214,7 +257,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "accept",
                 "accept",
-                "Validate acceptance and return JSON with result and reason fields.",
+                default_workflow_goal(language, "accept"),
                 true,
                 false,
             ),
@@ -223,7 +266,7 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 profiles,
                 "cleanup",
                 "cleanup",
-                "Clean up resources, finalize handoff notes, clean up Git workspace",
+                default_workflow_goal(language, "cleanup"),
                 false,
                 false,
             ),
@@ -234,54 +277,63 @@ fn default_workflow_dsl(provider: &str, profiles: &DefaultProfileIds) -> Workflo
                 to: "dev".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "dev".to_string(),
                 to: "review".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "test".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "review".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "accept".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "test".to_string(),
                 to: "dev".to_string(),
                 on: EdgeOutcome::Failure,
                 session: Some(SessionMode::Continue),
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: "cleanup".to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "cleanup".to_string(),
                 to: END_NODE.to_string(),
                 on: EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             },
             EdgeDsl {
                 from: "accept".to_string(),
                 to: NEW_ROUND_NODE.to_string(),
                 on: EdgeOutcome::Failure,
                 session: None,
+                new_round_entry: Some("dev".to_string()),
             },
         ],
     }
@@ -441,6 +493,7 @@ pub struct NodeRuntimeSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeInterventionKind {
     ManualDecisionRequired,
+    ElicitationRequested,
     PermissionRequested,
     RuntimeAbnormal,
     ErrorBlocked,
@@ -463,6 +516,7 @@ impl From<RuntimeInterventionKind> for PauseReason {
     fn from(kind: RuntimeInterventionKind) -> Self {
         match kind {
             RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
+            RuntimeInterventionKind::ElicitationRequested => Self::WaitingForUserInput,
             RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
             RuntimeInterventionKind::RuntimeAbnormal => Self::RuntimeAbnormal,
             RuntimeInterventionKind::ErrorBlocked => Self::ErrorBlocked,
@@ -1100,6 +1154,10 @@ impl App {
         self.mcp_manager().check_health(id)
     }
 
+    pub fn list_mcp_tools(&self, id: &str) -> Result<Vec<crate::config::ToolInfo>> {
+        self.mcp_manager().list_tools(id)
+    }
+
     pub fn enabled_mcp_servers(&self) -> Result<Vec<McpServerConfig>> {
         self.mcp_manager().enabled_servers()
     }
@@ -1452,7 +1510,8 @@ impl App {
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
-        let default_template = default_workflow_template(&default_profiles);
+        let default_template =
+            default_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -2152,12 +2211,15 @@ impl App {
 
     pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
         let paused = self.pause_all_running_sessions()?;
+        self.cancel_all_active_acp_attempts_best_effort();
         acp_client::close_all_connections_bounded()?;
         Ok(paused)
     }
 
     pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
-        self.pause_all_running_sessions()
+        let paused = self.pause_all_running_sessions()?;
+        self.cancel_all_active_acp_attempts_best_effort();
+        Ok(paused)
     }
 
     fn interrupt_run_descendants_best_effort(
@@ -2401,7 +2463,9 @@ impl App {
     }
 
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = cancel_pending_permission_requests(attempt_dir, now_rfc3339_like());
+        let decided_at = now_rfc3339_like();
+        let _ = cancel_pending_permission_requests(attempt_dir, decided_at.clone());
+        let _ = cancel_pending_elicitation_requests(attempt_dir, decided_at);
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
@@ -2449,6 +2513,72 @@ impl App {
         }
         ensure_parent_dir(path)?;
         write_json(path, &session)
+    }
+
+    pub fn cancel_all_active_acp_attempts_best_effort(&self) {
+        let Ok(tasks) = self.task_list() else {
+            return;
+        };
+        for task in tasks {
+            let Ok(runs) = self.run_list(&task.id) else {
+                continue;
+            };
+            for run in runs {
+                let Ok(rounds) = self.round_list(&task.id, &run.id) else {
+                    continue;
+                };
+                for round in rounds {
+                    let Ok(nodes) = self.node_list(&task.id, &run.id, &round.id) else {
+                        continue;
+                    };
+                    for node in nodes {
+                        let Ok(attempts) =
+                            self.attempt_list(&task.id, &run.id, &round.id, &node.node_id)
+                        else {
+                            continue;
+                        };
+                        for attempt in attempts {
+                            let attempt_dir = self.paths.attempt_dir(
+                                &task.id,
+                                &run.id,
+                                &round.id,
+                                &node.node_id,
+                                &attempt.attempt_id,
+                            );
+                            if !attempt_dir.exists()
+                                || !self.attempt_has_active_acp_session(attempt_dir.as_path())
+                            {
+                                continue;
+                            }
+                            self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                            self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                            self.persist_cancelled_session_snapshot_best_effort(
+                                attempt_dir.as_path(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn attempt_has_active_acp_session(&self, attempt_dir: &Utf8Path) -> bool {
+        let snapshot_path = attempt_dir.join("acp.snapshot.json");
+        let session_path = attempt_dir.join("acp.session.json");
+        let metadata = if snapshot_path.exists() {
+            read_json::<serde_json::Value>(&snapshot_path).ok()
+        } else if session_path.exists() {
+            read_json::<serde_json::Value>(&session_path).ok()
+        } else {
+            None
+        };
+        let Some(metadata) = metadata else {
+            return false;
+        };
+        let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
+            return false;
+        };
+        is_acp_session_active_status(status)
     }
 
     pub fn run_open_session(
@@ -2520,6 +2650,9 @@ impl App {
             prompt_id,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
         )?;
         render_prompt_bundle(&invocation)
     }
@@ -2559,7 +2692,57 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    pub fn run_continue_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            permission_mode_override,
+        )
     }
 
     pub fn run_continue_background(
@@ -2569,7 +2752,58 @@ impl App {
         prompt_id: Option<String>,
         prompt: Option<String>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_background(self, task_id, run_id, prompt_id, prompt)
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            None,
+            None,
+        )
+    }
+
+    pub fn run_continue_background_with_model_override(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        model_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            Vec::new(),
+            model_override,
+            None,
+        )
+    }
+
+    pub fn run_continue_background_with_config_overrides(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        prompt: Option<String>,
+        attachment_paths: Vec<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_background(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            prompt,
+            attachment_paths,
+            model_override,
+            permission_mode_override,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2585,6 +2819,8 @@ impl App {
         prompt_id: Option<String>,
         prompt: String,
         attachment_paths: Vec<String>,
+        model_override: Option<String>,
+        permission_mode_override: Option<String>,
     ) -> Result<RunState> {
         orchestrator::run_continue_dynamic_inner_background(
             self,
@@ -2598,6 +2834,8 @@ impl App {
             prompt_id,
             prompt,
             attachment_paths,
+            model_override,
+            permission_mode_override,
         )
     }
 
@@ -2979,9 +3217,21 @@ impl App {
     }
 }
 
+fn is_acp_session_active_status(status: &str) -> bool {
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str(),
+        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
+    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
         ProviderDiagnosticSnapshot, RuntimeConfig,
@@ -2998,7 +3248,7 @@ mod tests {
         DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
     };
     use crate::observability::touch_log_file_best_effort;
-    use crate::runtime::{NodeState, RoundState, RunState};
+    use crate::runtime::{NodeState, RoundState, RunState, TaskState};
     use crate::storage::{StoragePathConfig, read_json, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
@@ -3077,6 +3327,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         }
@@ -3246,6 +3497,7 @@ mod tests {
                 to: crate::dsl::END_NODE.to_string(),
                 on: crate::dsl::EdgeOutcome::Success,
                 session: None,
+                new_round_entry: None,
             }],
             control: WorkflowControl::default(),
         };
@@ -3384,6 +3636,7 @@ mod tests {
             child_run_id: None,
             started_at: Some("2026-06-16T00:00:00Z".to_string()),
             finished_at: None,
+            uuid: None,
         }
     }
 
@@ -3725,6 +3978,116 @@ mod tests {
             Some(PauseReason::ProcessInterrupted)
         );
         assert!(graph.run.current_node_ids.is_empty());
+    }
+
+    #[test]
+    fn cancel_all_active_acp_attempts_also_cancels_follow_up_session_on_completed_run() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let node_id = "plan";
+        let attempt_id = "attempt-001";
+
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: None,
+                status: RunStatus::Completed,
+                outcome: Some(crate::domain::RunOutcome::Success),
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                updated_at: "2026-06-28T00:00:01Z".to_string(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(node_id.to_string()),
+                current_attempt: Some(attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: None,
+                uuid: None,
+                last_executed_node: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: RunStatus::Completed,
+                outcome: Some(crate::domain::RunOutcome::Success),
+                trigger: RoundTrigger::Initial,
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, node_id, attempt_id),
+            &NodeState {
+                version: VERSION.to_string(),
+                node_id: node_id.to_string(),
+                node_type: NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(NodeOutcome::Success),
+                started_at: "2026-06-28T00:00:00Z".to_string(),
+                finished_at: Some("2026-06-28T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let attempt_dir = app
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "sessionId": "session-follow-up",
+                "status": "running"
+            }),
+        )
+        .unwrap();
+        write_json(
+            &pending_elicitation_file(&attempt_dir, "elicit-001"),
+            &PendingElicitationState {
+                elicitation_id: "elicit-001".to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                message: "继续吗".to_string(),
+                requested_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        app.cancel_all_active_acp_attempts_best_effort();
+
+        let session: serde_json::Value = read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        assert_eq!(
+            session.get("status").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert!(
+            attempt_dir
+                .join("acp.elicitation-response.elicit-001.json")
+                .exists()
+        );
     }
 
     #[test]

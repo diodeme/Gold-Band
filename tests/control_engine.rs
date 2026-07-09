@@ -124,6 +124,66 @@ fn worker_invalid_completes_run_as_failure() {
 }
 
 #[test]
+fn worker_success_without_matching_edge_completes_run_as_success() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-success-no-edge",
+            "entry": "review",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "review", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "review", "to": "$end", "on": "failure" }
+            ]
+        }"#,
+    );
+
+    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
+    let decision = decide_next_step(
+        &validated,
+        &sample_run(),
+        &sample_round(),
+        &sample_node("review", NodeOutcome::Success),
+    );
+    assert!(matches!(
+        decision,
+        ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Success)
+    ));
+}
+
+#[test]
+fn worker_failure_without_matching_edge_completes_run_as_failure() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "worker-failure-no-edge",
+            "entry": "review",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "review", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "review", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
+    let decision = decide_next_step(
+        &validated,
+        &sample_run(),
+        &sample_round(),
+        &sample_node("review", NodeOutcome::Failure),
+    );
+    assert!(matches!(
+        decision,
+        ControlDecision::CompleteRun(gold_band::domain::RunOutcome::Failure)
+    ));
+}
+
+#[test]
 fn worker_manual_check_rejects_output_validation() {
     let workflow = parse_workflow(
         r#"{
@@ -188,7 +248,7 @@ fn edge_to_new_round_opens_round() {
                 { "id": "accept", "type": "worker", "provider": "claude-acp", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
             ],
             "edges": [
-                { "from": "accept", "to": "$new-round", "on": "failure" },
+                { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" },
                 { "from": "accept", "to": "$end", "on": "success" }
             ]
         }"#,
@@ -201,5 +261,39 @@ fn edge_to_new_round_opens_round() {
         &sample_round(),
         &sample_node("accept", NodeOutcome::Failure),
     );
-    assert!(matches!(decision, ControlDecision::OpenNewRound));
+    assert!(
+        matches!(decision, ControlDecision::OpenNewRound { entry_node_id } if entry_node_id == "accept")
+    );
+}
+
+#[test]
+fn edge_to_new_round_uses_configured_entry_node() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "new-round-custom-entry",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } },
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "dev" },
+                { "from": "accept", "to": "$end", "on": "success" },
+                { "from": "dev", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
+    let decision = decide_next_step(
+        &validated,
+        &sample_run(),
+        &sample_round(),
+        &sample_node("accept", NodeOutcome::Failure),
+    );
+    assert!(
+        matches!(decision, ControlDecision::OpenNewRound { entry_node_id } if entry_node_id == "dev")
+    );
 }

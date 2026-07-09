@@ -20,14 +20,16 @@ import { useTranslation } from 'react-i18next';
 import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
+  ENTRY_NODE,
   NEW_ROUND_NODE,
   NODE_WIDTH,
   NODE_HEIGHT,
   TERMINAL_NODE_WIDTH,
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
-  workflowNodeOrder,
+  workflowSuccessTopologyOrder,
   computeBackwardLanes,
+  isBackwardEdge,
   authoringEdgeColor,
   layoutSuccessPath,
   topLeft,
@@ -72,9 +74,9 @@ const DEFAULT_PERMISSION_MODE = '__default_permission_mode__';
 type EditorTab = 'canvas' | 'json';
 type EdgeOutcome = 'success' | 'failure';
 type SessionMode = 'new' | 'continue';
-type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string };
+type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string; entryCandidate?: boolean; entryLabel?: string };
 type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; lane?: number };
-export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; edgeIndex?: number };
+export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; nodeIds?: string[]; edgeIndex?: number };
 export type WorkflowValidationResult = {
   valid: boolean;
   issues: WorkflowValidationIssue[];
@@ -96,7 +98,12 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
     );
   }
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+    <div className="relative flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+      {data.entryCandidate ? (
+        <Badge variant="outline" className="pointer-events-none absolute -left-1 -top-2 z-10 h-5 rounded-full bg-background px-1.5 text-[10px] font-medium">
+          {data.entryLabel}
+        </Badge>
+      ) : null}
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <div className="flex items-center gap-1.5">
@@ -133,7 +140,7 @@ interface WorkflowEditorProps {
 
 export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
   const { t } = useTranslation();
-  const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
+  const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
   const [tab, setTab] = useState<EditorTab>('canvas');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialWorkflow.nodes[0]?.id ?? null);
@@ -148,6 +155,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [invalidNodeIds, setInvalidNodeIds] = useState<Set<string>>(new Set());
   const [jsonDraft, setJsonDraft] = useState(() => JSON.stringify(initialWorkflow, null, 2));
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(initialWorkflow));
   const handledValidationRequestIdRef = useRef(0);
   const agents = useMemo(() => agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [], [agentRegistry]);
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
@@ -165,6 +173,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setSelectedEdgeId(null);
     setVisibleTerminalIds(new Set());
     setTerminalMenu(null);
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(initialWorkflow));
   }, [initialWorkflow]);
 
   useEffect(() => {
@@ -189,27 +198,30 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   }, [flowInstance, nodes, pendingFocusNodeId]);
 
   const syncWorkflow = (next: WorkflowDsl) => {
+    const normalizedNext = normalizeWorkflowEntryFromTopology(next);
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     setJsonError(null);
-    setWorkflow(next);
-    setJsonDraft(JSON.stringify(next, null, 2));
-    onChange?.(next);
+    setWorkflow(normalizedNext);
+    setJsonDraft(JSON.stringify(normalizedNext, null, 2));
+    onChange?.(normalizedNext);
   };
 
   const closeValidationDialog = (open: boolean) => {
     setValidationDialogOpen(open);
     if (open || !pendingValidation) return;
     setFieldErrors(pendingValidation.fieldErrors);
-    setInvalidNodeIds(new Set(pendingValidation.issues.map((issue) => issue.nodeId).filter(Boolean) as string[]));
+    setInvalidNodeIds(new Set(pendingValidation.issues.flatMap((issue) => issue.nodeIds ?? (issue.nodeId ? [issue.nodeId] : []))));
     setWorkflow(pendingValidation.sanitizedWorkflow);
     setJsonDraft(JSON.stringify(pendingValidation.sanitizedWorkflow, null, 2));
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(pendingValidation.sanitizedWorkflow));
     onChange?.(pendingValidation.sanitizedWorkflow);
-    const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.edgeIndex !== undefined);
-    if (firstIssue?.nodeId) {
-      setSelectedNodeId(firstIssue.nodeId);
+    const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.nodeIds?.length || issue.edgeIndex !== undefined);
+    const firstIssueNodeId = firstIssue?.nodeId ?? firstIssue?.nodeIds?.[0];
+    if (firstIssueNodeId) {
+      setSelectedNodeId(firstIssueNodeId);
       setSelectedEdgeId(null);
-      setPendingFocusNodeId(firstIssue.nodeId);
+      setPendingFocusNodeId(firstIssueNodeId);
     } else if (firstIssue?.edgeIndex !== undefined) {
       const edge = pendingValidation.sanitizedWorkflow.edges[firstIssue.edgeIndex];
       if (edge) {
@@ -244,6 +256,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     if (!defaultWorkflow) return;
     const next = normalizeWorkflowSchemas(cloneWorkflow(defaultWorkflow));
     syncWorkflow(next);
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(next));
     onApplyDefaultTemplate?.(next);
     setSelectedNodeId(next.nodes[0]?.id ?? null);
     setSelectedEdgeId(null);
@@ -257,8 +270,9 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
         setJsonError(t('workflowEditor.outputSchemaInvalid'));
         return;
       }
-      workflowToSave = normalizeWorkflowSchemas(parsed);
+      workflowToSave = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(parsed));
       setWorkflow(workflowToSave);
+      setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       onChange?.(workflowToSave);
     }
     const validation = validateWorkflowForSave(workflowToSave, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
@@ -324,7 +338,14 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       ...workflow,
       entry: workflow.entry === selectedNodeId ? nodes[0]?.id ?? '' : workflow.entry,
       nodes,
-      edges: workflow.edges.filter((edge) => edge.from !== selectedNodeId && edge.to !== selectedNodeId),
+      edges: workflow.edges
+        .filter((edge) => edge.from !== selectedNodeId && edge.to !== selectedNodeId)
+        .map((edge) => {
+          if (edge.new_round_entry !== selectedNodeId) return edge;
+          const updated = { ...edge };
+          delete updated.new_round_entry;
+          return updated;
+        }),
     };
     syncWorkflow(next);
     setSelectedNodeId(next.nodes[0]?.id ?? null);
@@ -336,7 +357,12 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       ...workflow,
       entry: nextId && workflow.entry === nodeId ? nextId : workflow.entry,
       nodes: workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl : node),
-      edges: nextId ? workflow.edges.map((edge) => ({ ...edge, from: edge.from === nodeId ? nextId : edge.from, to: edge.to === nodeId ? nextId : edge.to })) : workflow.edges,
+      edges: nextId ? workflow.edges.map((edge) => ({
+        ...edge,
+        from: edge.from === nodeId ? nextId : edge.from,
+        to: edge.to === nodeId ? nextId : edge.to,
+        new_round_entry: edge.new_round_entry === nodeId ? nextId : edge.new_round_entry,
+      })) : workflow.edges,
     };
     syncWorkflow(next);
     if (nextId) setSelectedNodeId(nextId);
@@ -346,7 +372,16 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     const currentEdge = workflow.edges[index];
     if (!currentEdge) return;
     const updatedEdge = { ...currentEdge, ...patch };
+    const draftValue = (patch.new_round_entry ?? currentEdge.new_round_entry)?.trim();
+    if (draftValue) {
+      setNewRoundEntryDrafts((current) => ({ ...current, [index]: draftValue }));
+    }
+    if (patch.to === NEW_ROUND_NODE && !updatedEdge.new_round_entry?.trim()) {
+      const restored = newRoundEntryDrafts[index];
+      if (restored) updatedEdge.new_round_entry = restored;
+    }
     if (updatedEdge.on === 'success' && updatedEdge.to === NEW_ROUND_NODE) updatedEdge.to = END_NODE;
+    if (updatedEdge.to !== NEW_ROUND_NODE) delete updatedEdge.new_round_entry;
     const next = {
       ...workflow,
       edges: workflow.edges.map((edge, edgeIndex) => edgeIndex === index ? updatedEdge : edge),
@@ -366,6 +401,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     if (selectedEdgeIndex < 0) return;
     const next = { ...workflow, edges: workflow.edges.filter((_, index) => index !== selectedEdgeIndex) };
     syncWorkflow(next);
+    setNewRoundEntryDrafts((current) => shiftNewRoundEntryDraftsAfterDelete(current, selectedEdgeIndex));
     setSelectedEdgeId(null);
   };
 
@@ -495,6 +531,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
                   if (!parsed) return;
                   const nextWorkflow = normalizeWorkflowSchemas(parsed);
                   setWorkflow(nextWorkflow);
+                  setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
                   onChange?.(nextWorkflow);
                 }}
                 className="h-full min-h-full resize-none font-mono text-xs"
@@ -1623,6 +1660,7 @@ function workflowCommandScore(itemValue: string, search: string) {
 function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete, t }: { edge: WorkflowEdgeDsl; index: number; workflow: WorkflowDsl; fieldErrors: Record<string, string[]>; onUpdate: (index: number, patch: Partial<WorkflowEdgeDsl>) => void; onDelete: () => void; t: (key: string) => string }) {
   const errorsFor = (field: string) => fieldErrors[`edge:${index}:${field}`] ?? [];
   const targetOptions = edge.on === 'success' ? [END_NODE] : [END_NODE, NEW_ROUND_NODE];
+  const newRoundEntryOptions = [ENTRY_NODE, ...workflow.nodes.map((node) => node.id)];
   return (
     <div className="space-y-3 rounded-xl border bg-card/45 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1644,6 +1682,20 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete,
           </SelectContent>
         </Select>
       </Field>
+      {edge.to === NEW_ROUND_NODE ? (
+        <Field label={<HelpLabel label={t('workflowEditor.newRoundEntry')} help={t('workflowEditor.newRoundEntryHelp')} />} required errors={errorsFor('new_round_entry')}>
+          <Select value={edge.new_round_entry?.trim() || undefined} onValueChange={(new_round_entry) => onUpdate(index, { new_round_entry })}>
+            <SelectTrigger className={errorClass(errorsFor('new_round_entry'))}><SelectValue placeholder={t('workflowEditor.selectNewRoundEntry')} /></SelectTrigger>
+            <SelectContent>
+              {newRoundEntryOptions.map((target) => (
+                <SelectItem value={target} key={target}>
+                  {target === ENTRY_NODE ? `${ENTRY_NODE} · ${workflow.entry || '-'}` : target}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
       <Field label={t('workflowEditor.sessionMode')} errors={errorsFor('session')}>
         <Select value={edge.session ?? 'new'} onValueChange={(session) => onUpdate(index, { session: session as SessionMode })}>
           <SelectTrigger className={errorClass(errorsFor('session'))}><SelectValue /></SelectTrigger>
@@ -1774,6 +1826,26 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
   );
 }
 
+export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nodes' | 'edges'>): string[] {
+  const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
+  const nodeOrder = workflowSuccessTopologyOrder({ ...workflow, entry: '' });
+  const incomingNodeIds = new Set<string>();
+  workflow.edges.forEach((edge) => {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return;
+    if (edge.on !== 'success' && isBackwardEdge(edge.from, edge.to, nodeOrder)) return;
+    incomingNodeIds.add(edge.to);
+  });
+  return workflow.nodes
+    .map((node) => node.id)
+    .filter((id) => Boolean(id) && !incomingNodeIds.has(id));
+}
+
+function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl {
+  const entryCandidateIds = deriveWorkflowEntryCandidateIds(workflow);
+  const entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
+  return workflow.entry === entry ? workflow : { ...workflow, entry };
+}
+
 function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
@@ -1782,7 +1854,8 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
     ...Array.from(visibleTerminalIds).filter((id) => !collectedIds.has(id)).map((id) => ({ id, terminal: true })),
   ];
   const nodeIds = new Set(allNodes.map((n) => n.id));
-  const nodeOrder = workflowNodeOrder(workflow);
+  const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
+  const nodeOrder = workflowSuccessTopologyOrder(workflow);
   const retryLaneByEdgeIndex = computeBackwardLanes(workflow.edges as Array<{ from: string; to: string; on: string }>, nodeOrder);
   const layoutPositions = layoutSuccessPath(
     allNodes.map((n) => ({ id: n.id, width: n.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: n.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT })),
@@ -1806,7 +1879,15 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       position: topLeft(pos.x, pos.y, width, height),
       sourcePosition: SOURCE_POS,
       targetPosition: TARGET_POS,
-      data: { label: workflowNodeLabel(item.id, item.terminal, node?.type, t), kind: item.terminal ? 'terminal' : node?.type ?? 'node', detail, terminal: item.terminal, iconKey },
+      data: {
+        label: workflowNodeLabel(item.id, item.terminal, node?.type, t),
+        kind: item.terminal ? 'terminal' : node?.type ?? 'node',
+        detail,
+        terminal: item.terminal,
+        iconKey,
+        entryCandidate: !item.terminal && entryCandidateIds.has(item.id),
+        entryLabel: t('workflowEditor.entryBadge'),
+      },
       className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected', invalid && 'ring-1 ring-destructive'),
       selected: !item.terminal && item.id === selectedNodeId,
       draggable: false,
@@ -1933,6 +2014,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
   return {
     ...workflow,
     control,
+    edges: normalizeWorkflowEdges(workflow.edges ?? []),
     nodes: workflow.nodes.map((node) => {
       if (node.type === 'ai-dynamic') {
         const rawNode = node as WorkflowAiDynamicNodeDsl & {
@@ -1985,6 +2067,38 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
       };
     }),
   };
+}
+
+function normalizeWorkflowEdges(edges: WorkflowEdgeDsl[]): WorkflowEdgeDsl[] {
+  return edges.map((edge) => {
+    const normalized = { ...edge };
+    const newRoundEntry = normalized.new_round_entry?.trim();
+    if (normalized.to === NEW_ROUND_NODE) {
+      if (newRoundEntry) normalized.new_round_entry = newRoundEntry;
+      else delete normalized.new_round_entry;
+    } else {
+      delete normalized.new_round_entry;
+    }
+    return normalized;
+  });
+}
+
+function newRoundEntryDraftsFromWorkflow(workflow: WorkflowDsl): Record<number, string> {
+  return workflow.edges.reduce<Record<number, string>>((drafts, edge, index) => {
+    const newRoundEntry = edge.new_round_entry?.trim();
+    if (newRoundEntry) drafts[index] = newRoundEntry;
+    return drafts;
+  }, {});
+}
+
+function shiftNewRoundEntryDraftsAfterDelete(drafts: Record<number, string>, deletedIndex: number): Record<number, string> {
+  const next: Record<number, string> = {};
+  Object.entries(drafts).forEach(([key, value]) => {
+    const index = Number(key);
+    if (!Number.isFinite(index) || index === deletedIndex) return;
+    next[index > deletedIndex ? index - 1 : index] = value;
+  });
+  return next;
 }
 
 function normalizeControlLimit(value: unknown): number {
@@ -2054,12 +2168,8 @@ export function validateWorkflowForSave(
     : [];
   const duplicateConflictTemplates = duplicateWorkflowTemplates.filter((template) => template.id !== currentTemplateId);
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
-  const incomingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
-    if (edge.to.trim() && ![END_NODE, NEW_ROUND_NODE].includes(edge.to)) {
-      counts[edge.to] = (counts[edge.to] ?? 0) + 1;
-    }
-    return counts;
-  }, {});
+  const entryCandidateIds = deriveWorkflowEntryCandidateIds(sanitizedWorkflow);
+  sanitizedWorkflow.entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
   const outgoingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim()) {
       counts[edge.from] = (counts[edge.from] ?? 0) + 1;
@@ -2079,8 +2189,8 @@ export function validateWorkflowForSave(
     return counts;
   }, {});
 
-  const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number) => {
-    issues.push({ message, fieldKey, nodeId, edgeIndex });
+  const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number, nodeIds?: string[]) => {
+    issues.push({ message, fieldKey, nodeId, edgeIndex, nodeIds });
     if (fieldKey) fieldErrors[fieldKey] = [...(fieldErrors[fieldKey] ?? []), message];
   };
   const nodeField = (node: WorkflowNodeDsl, field: string) => `node:${node.id}:${field}`;
@@ -2096,9 +2206,12 @@ export function validateWorkflowForSave(
       }),
     );
   }
-  if (!workflow.entry.trim()) addIssue(t('workflowEditor.validationEntryRequired'));
-  else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
+  else if (entryCandidateIds.length === 0) {
+    addIssue(t('workflowEditor.validationEntryCandidateMissing'));
+  } else if (entryCandidateIds.length > 1) {
+    addIssue(t('workflowEditor.validationEntryCandidateMultiple', { entries: entryCandidateIds.join(', ') }), undefined, undefined, undefined, entryCandidateIds);
+  }
   if (!workflow.edges.some((edge) => edge.to === END_NODE)) addIssue(t('workflowEditor.validationEndNodeRequired'));
   if (sanitizedWorkflow.control.max_attempts != null && sanitizedWorkflow.control.max_attempts <= 0) {
     addIssue(t('workflowEditor.validationMaxAttemptsPositive'), controlField('max_attempts'));
@@ -2110,11 +2223,8 @@ export function validateWorkflowForSave(
   workflow.nodes.forEach((node, nodeIndex) => {
     const nodeLabel = node.id || t('workflowEditor.unnamedNode');
     if (!node.id.trim()) addIssue(t('workflowEditor.validationNodeIdRequired', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    if ([END_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
+    if ([END_NODE, ENTRY_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    if (node.id !== workflow.entry && (incomingEdgeCounts[node.id] ?? 0) === 0) {
-      addIssue(t('workflowEditor.validationUnreachableNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    }
     if ((outgoingEdgeCounts[node.id] ?? 0) === 0) {
       addIssue(t('workflowEditor.validationDanglingNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     }
@@ -2179,6 +2289,14 @@ export function validateWorkflowForSave(
       if (edgeOutcomeCount > 1 && !reportedDuplicateEdgeOutcomes.has(edgeOutcomeKey)) {
         addIssue(t('workflowEditor.validationDuplicateEdgeOutcome', { node: edge.from, outcome: edge.on, num: edgeOutcomeCount }), edgeField(index, 'on'), edge.from, index);
         reportedDuplicateEdgeOutcomes.add(edgeOutcomeKey);
+      }
+    }
+    if (edge.to === NEW_ROUND_NODE) {
+      const newRoundEntry = edge.new_round_entry?.trim();
+      if (!newRoundEntry) {
+        addIssue(t('workflowEditor.validationNewRoundEntryRequired', { node: edge.from }), edgeField(index, 'new_round_entry'), edge.from, index);
+      } else if (newRoundEntry !== ENTRY_NODE && !nodeIds.has(newRoundEntry)) {
+        addIssue(t('workflowEditor.validationNewRoundEntryMissing', { node: edge.from, entry: newRoundEntry }), edgeField(index, 'new_round_entry'), edge.from, index);
       }
     }
     if ([END_NODE, NEW_ROUND_NODE].includes(edge.from)) addIssue(t('workflowEditor.validationTerminalEdgeSource', { node: edge.from }), edgeField(index, 'from'), undefined, index);

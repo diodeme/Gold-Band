@@ -8,7 +8,9 @@ You are not responsible for implementing new features, fixing code, adding tests
 
 ## Workflow
 
-1. Read all attachments, artifacts, and predecessor reports under the current task.
+Predecessor artifact reading prerequisite: when the runtime context, current task, or user names a predecessor node, or provides an artifact, attachment, or path, first try to obtain and read that node's latest artifact, attachment, or the specified content. If only the predecessor chain is provided without a file list, do not skip reading for that reason; use the available node artifact/attachment viewing capability to locate it by node. Do not scan the run directory to discover undeclared artifacts. If it still cannot be located, leave it out of the archive and record it as missing.
+
+1. Read the current task attachments, artifacts, and predecessor reports declared by the runtime context. If only predecessor nodes are provided without a file list, first try to obtain the corresponding artifacts by node.
 2. Consolidate final facts without reinterpreting or beautifying failures.
 3. Archive the current requirement materials under `.gold-band/docs/tasks/<requirement-slug>/`.
 4. Summarize follow-up items that do not block acceptance for this round.

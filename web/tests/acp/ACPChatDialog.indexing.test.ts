@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAcpTimeline, isTopLevelPlanEvent, limitAcpEvents, mergeAcpEvents, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
+import { buildAcpTimeline, createAcpSessionCacheKey, isTopLevelPlanEvent, limitAcpEvents, mergeAcpEvents, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
@@ -190,5 +190,28 @@ describe('ACPChatDialog event cache', () => {
     expect(restored).toHaveLength(30);
     // Should keep only the last 30
     expect(restored[0]!.id).toBe('e170');
+  });
+
+  it('separates reused task and run ids by cache namespace', () => {
+    const oldKey = createAcpSessionCacheKey(
+      'task-uuid-old',
+      'task-021',
+      'run-001',
+      'round-001',
+      'bootstrap',
+      'attempt-001',
+    );
+    const newKey = createAcpSessionCacheKey(
+      'task-uuid-new',
+      'task-021',
+      'run-001',
+      'round-001',
+      'bootstrap',
+      'attempt-001',
+    );
+    storeAcpLoadedEvents(oldKey, [makeEvent('old-event', 'deleted task content')], 360);
+
+    expect(restoreAcpLoadedEvents(newKey, [], 360)).toEqual([]);
+    expect(restoreAcpLoadedEvents(oldKey, [], 360)).toHaveLength(1);
   });
 });

@@ -731,8 +731,8 @@ export function ContextManagementPage() {
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
-                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group overflow-hidden border-border/50 transition-shadow hover:shadow-sm">
-                    <div className="px-4 py-3">
+                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-36 flex-col overflow-hidden border-border/50 transition-shadow hover:shadow-sm">
+                    <div className="h-24 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -744,8 +744,8 @@ export function ContextManagementPage() {
                         <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? 'Global' : 'Project'}</Badge>
                       </div>
                     </div>
-                    <div className="flex items-center justify-between gap-2 border-t border-border/30 px-2 py-1.5">
-                      <div className="flex min-w-0 items-center gap-1.5 px-2">
+                    <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
+                      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden px-2">
                         {sourceAgent ? (
                           <TooltipProvider delayDuration={300}>
                             <Tooltip>

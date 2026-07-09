@@ -731,8 +731,8 @@ export function ContextManagementPage() {
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
-                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-36 flex-col overflow-hidden border-border/50 transition-shadow hover:shadow-sm">
-                    <div className="h-24 shrink-0 px-4 py-3">
+                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-40 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                    <div className="h-28 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">

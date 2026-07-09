@@ -21,6 +21,8 @@
 - Rename 是真实目录 rename：编辑已有 skill 且 `name` 变化时，后端将旧 `directoryPath` 移动到同父目录的新目录名，删除旧目录名下的已配置 agent 同步链接，再按新目录名建立新链接；frontmatter `name:` 只作为展示/运行时名称，不再代替目录身份。
 - 前端冲突检查必须同时传入 `oldName`、`directoryPath` 与 `syncTargets`，由后端按最终目标目录名判断新目录冲突和多 Agent 同步冲突，避免编辑原生 skill 时仅按 frontmatter 名误判。
 - SKILL 卡片底部将“来源实例”和“同步目标”分区展示：来源 icon 不可点击；同步目标 icon 列表与创建/编辑抽屉的 `syncTargets` 枚举一致。已同步目标用原色 icon + 左上角绿色状态点，未同步目标用灰色 icon；点击目标 icon 通过 `update_skill_sync_targets` 只更新软链对账，不重写 `SKILL.md` 正文，单 icon 显示加载态，失败复用页面错误横幅并自动消失。
+- SKILL 管理页的项目级 workspace 选择会记忆上一次有效选择。切回“项目 SKILL”或重新进入上下文管理页时，如果该 workspace 仍存在于当前 workspace 列表中，自动恢复并加载项目 SKILL；如果 workspace 已不存在，清除本地记忆并保持未选择状态。
+- SKILL 创建/编辑抽屉拥有独立表单状态，正文 Markdown 输入、名称/描述编辑和同步目标勾选只重渲染抽屉自身；`ContextManagementPage` 列表页只负责打开目标、接收保存后的列表刷新，避免每个字符触发背后的 SKILL 卡片网格、筛选栏和 tooltip 树重新 render。
 
 
 ---

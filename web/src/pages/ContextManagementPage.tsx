@@ -38,6 +38,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgent } from '@/lib/skill-agent-display';
 import {
   buildSkillSaveRequest,
@@ -204,7 +205,7 @@ export function ContextManagementPage() {
   }, [selectedWorkspace, skillTab]);
 
   const handleSkillSyncToggle = async (skill: SkillMetaVm, agentType: string) => {
-    const pendingKey = `${skill.directoryPath}:${agentType}`;
+    const pendingKey = `${skill.source}:${skill.directoryPath}:${agentType}`;
     if (skillSyncPendingKey) {
       return;
     }
@@ -751,7 +752,7 @@ export function ContextManagementPage() {
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
-                                  <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className="size-3.5 object-contain" />
+                                  <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
@@ -765,7 +766,7 @@ export function ContextManagementPage() {
                           <div className="flex min-w-0 items-center gap-0.5">
                             {syncAgents.map((agent) => {
                               const isSynced = syncedAgentTypes.has(agent.agentType);
-                              const pendingKey = `${skill.directoryPath}:${agent.agentType}`;
+                              const pendingKey = `${skill.source}:${skill.directoryPath}:${agent.agentType}`;
                               const isPending = skillSyncPendingKey === pendingKey;
                               return (
                                 <TooltipProvider key={agent.agentType} delayDuration={300}>
@@ -776,18 +777,18 @@ export function ContextManagementPage() {
                                         size="icon"
                                         variant="ghost"
                                         className="relative size-6 rounded-full hover:bg-muted"
-                                        disabled={Boolean(skillSyncPendingKey)}
+                                        disabled={isPending}
                                         onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
                                       >
                                         {isPending ? (
                                           <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
                                         ) : (
-                                          <span className="relative flex size-4 items-center justify-center">
-                                            {isSynced ? <span className="absolute -left-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
+                                          <span className="relative grid size-5 place-items-center">
+                                            {isSynced ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
                                             <img
                                               src={agentIconSrc(agent.iconKey)}
                                               alt={agent.label}
-                                              className={cn('size-3.5 object-contain transition-opacity', !isSynced && 'grayscale opacity-35')}
+                                              className={agentIconClass(agent.iconKey, cn('relative z-0 size-3.5 transition-opacity', !isSynced && 'grayscale opacity-35'))}
                                             />
                                           </span>
                                         )}
@@ -1007,13 +1008,6 @@ export function ContextManagementPage() {
   );
 }
 
-function agentIconSrc(iconKey: string) {
-  if (iconKey === 'gold-band') {
-    return '/logo.svg';
-  }
-  return `/agent-icons/${iconKey}.svg`;
-}
-
 type SkillWorkspaceOption = { projectId: string; workspacePath: string; name: string };
 
 function SkillSheet({
@@ -1193,7 +1187,7 @@ function SkillSheet({
                         <input type="checkbox" checked={syncTargets.includes(agent.agentType)} onChange={(event) => {
                           setSyncTargets((current) => event.target.checked ? [...current, agent.agentType] : current.filter((target) => target !== agent.agentType));
                         }} />
-                        <img src={agentIconSrc(agent.iconKey)} alt="" className="size-4 object-contain" />
+                        <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-4')} />
                         <span className="text-sm">{agent.label}</span>
                       </label>
                     ))}

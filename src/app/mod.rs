@@ -210,12 +210,21 @@ fn default_workflow_dsl(
     WorkflowDsl {
         version: "0.1".to_string(),
         id: "task-workflow".to_string(),
-        entry: "plan".to_string(),
+        entry: "interview".to_string(),
         control: WorkflowControl {
             max_attempts: None,
             max_rounds: None,
         },
         nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "interview",
+                "interview",
+                "Conduct a deep interview to clarify the requirement and produce a clear specification.",
+                false,
+                true,
+            ),
             worker(
                 provider,
                 profiles,
@@ -272,6 +281,13 @@ fn default_workflow_dsl(
             ),
         ],
         edges: vec![
+            EdgeDsl {
+                from: "interview".to_string(),
+                to: "plan".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
             EdgeDsl {
                 from: "plan".to_string(),
                 to: "dev".to_string(),

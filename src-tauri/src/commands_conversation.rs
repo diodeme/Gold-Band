@@ -24,6 +24,7 @@ use crate::view_models::ContentVm;
 pub struct ConversationRunModeSettingsVm {
     pub mode: String,
     pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
     pub auto_config: Option<crate::view_models_conversation::ConversationAutoConfigVm>,
 }
 
@@ -485,6 +486,7 @@ pub fn get_conversation_run_mode(
         crate::view_models_conversation::ConversationRunModeVm {
             mode: entry.mode.clone(),
             workflow_template_id: entry.workflow_template_id.clone(),
+            include_interview: entry.include_interview,
             auto_config: entry.auto_config.as_ref().map(|cfg| {
                 crate::view_models_conversation::ConversationAutoConfigVm {
                     agent_strategy: cfg.agent_strategy.clone(),
@@ -550,6 +552,7 @@ pub fn save_conversation_run_mode(
         ConversationRunModeEntry {
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
+            include_interview: settings.include_interview,
             auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
                 agent_strategy: cfg.agent_strategy,
                 agent_type: cfg.agent_type,
@@ -1543,6 +1546,7 @@ mod tests {
             gold_band::config::ConversationRunModeEntry {
                 mode: "auto".to_string(),
                 workflow_template_id: None,
+                include_interview: None,
                 auto_config: None,
             },
         );

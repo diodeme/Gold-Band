@@ -528,6 +528,18 @@ pub fn workflow_contains_ai_dynamic(workflow: &WorkflowDsl) -> bool {
         .any(|node| matches!(node, NodeDsl::AiDynamic(_)))
 }
 
+/// 从工作流中移除 interview 节点及其相关边。
+/// 如果入口节点是 interview，则将入口改为 plan。
+pub fn strip_interview_node(workflow: &mut WorkflowDsl) {
+    workflow.nodes.retain(|node| node.id() != "interview");
+    workflow
+        .edges
+        .retain(|edge| edge.from != "interview" && edge.to != "interview");
+    if workflow.entry == "interview" {
+        workflow.entry = "plan".to_string();
+    }
+}
+
 impl ValidatedWorkflow {
     pub fn get_node(&self, id: &str) -> Option<&NodeDsl> {
         self.nodes_by_id.get(id)

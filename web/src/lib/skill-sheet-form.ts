@@ -29,7 +29,7 @@ export function createSkillFormFromContent(
 ): SkillFormState {
   return {
     name: content?.meta.name ?? '',
-    description: content?.meta.description ?? '',
+    description: content?.descriptionSource ?? content?.meta.description ?? '',
     body: content?.body ?? '',
     source: (content?.meta.source as string | undefined) ?? fallbackSource,
   };
@@ -59,9 +59,18 @@ export function buildSkillSaveRequest(input: {
     name,
     scope,
     wsPath,
-    content: `---\nname: ${name}\ndescription: ${input.form.description.trim()}\n---\n\n${input.form.body}`,
+    content: `---\nname: ${frontmatterScalar(name)}\ndescription: ${frontmatterScalar(input.form.description.trim())}\n---\n\n${input.form.body}`,
     oldName: input.mode === 'edit' ? input.editTarget?.name ?? null : null,
     directoryPath: input.mode === 'edit' ? input.editTarget?.directoryPath ?? null : null,
     syncTargets: input.syncTargets,
   };
+}
+
+function frontmatterScalar(value: string): string {
+  if (value.includes('\n')) {
+    const lines = value.split(/\r?\n/);
+    return `|\n${lines.map((line) => `  ${line}`).join('\n')}`;
+  }
+  if (/^[A-Za-z0-9_.-]+$/.test(value)) return value;
+  return JSON.stringify(value);
 }

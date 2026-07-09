@@ -3570,8 +3570,20 @@ pub fn read_skill(
                 skill_path.as_str(),
                 ".gold-band",
             );
+            let description_source =
+                gold_band::frontmatter::parse_optional_frontmatter_document(&raw)
+                    .ok()
+                    .and_then(|document| {
+                        document
+                            .field_sources
+                            .get("description")
+                            .cloned()
+                            .or_else(|| document.fields.get("description").cloned())
+                    })
+                    .unwrap_or_else(|| meta.description.clone());
             return Ok(skill_content_vm(&gold_band::skill::SkillContent {
                 meta,
+                description_source,
                 body,
             }));
         }

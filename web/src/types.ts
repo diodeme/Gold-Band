@@ -339,6 +339,7 @@ export interface ProfileVm {
   id: string;
   name: string;
   summary: string;
+  summarySource?: string;
   content: string;
   scope: ProfileScope;
   isBuiltIn: boolean;
@@ -1170,5 +1171,6 @@ export interface SkillListVm {
 
 export interface SkillContentVm {
   meta: SkillMetaVm;
+  descriptionSource?: string;
   body: string;
 }

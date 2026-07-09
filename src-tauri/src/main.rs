@@ -32,7 +32,7 @@ use commands::{
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
     stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
     update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_workflow_template, write_skill,
+    update_profile, update_skill_sync_targets, update_workflow_template, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
@@ -243,6 +243,7 @@ fn run() -> anyhow::Result<()> {
             read_skill,
             write_skill,
             delete_skill,
+            update_skill_sync_targets,
             get_skill_sync_status,
             check_skill_name_conflict,
         ])

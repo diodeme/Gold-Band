@@ -8,7 +8,7 @@ import {
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
-  checkSkillNameConflict,
+  checkSkillNameConflict, updateSkillSyncTargets,
   getConversationSidebar, getAgentRegistry,
 } from '../api';
 import { displayAppError } from '../i18n';
@@ -38,7 +38,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
-import { selectableSyncAgents, skillAvailableAgentTypes, skillDisplayAgents } from '@/lib/skill-agent-display';
+import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgent } from '@/lib/skill-agent-display';
 import { skillStorageHint } from '@/lib/skill-storage-hint';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
@@ -113,6 +113,7 @@ export function ContextManagementPage() {
   const [projectSkills, setProjectSkills] = useState<SkillMetaVm[]>([]);
   const [skillLoading, setSkillLoading] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
+  const skillErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [skillSheetMode, setSkillSheetMode] = useState<'view' | 'create' | 'edit' | null>(null);
   const [skillEditTarget, setSkillEditTarget] = useState<SkillMetaVm | null>(null);
   const [skillForm, setSkillForm] = useState({ name: '', description: '', body: '', source: 'global' as string });
@@ -120,6 +121,7 @@ export function ContextManagementPage() {
   const [skillSaving, setSkillSaving] = useState(false);
   const [skillDeleteTarget, setSkillDeleteTarget] = useState<SkillMetaVm | null>(null);
   const [skillDeleting, setSkillDeleting] = useState(false);
+  const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
 
@@ -128,6 +130,16 @@ export function ContextManagementPage() {
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
+
+  useEffect(() => {
+    if (skillError) {
+      if (skillErrorTimerRef.current) clearTimeout(skillErrorTimerRef.current);
+      skillErrorTimerRef.current = setTimeout(() => setSkillError(null), 6000);
+    }
+    return () => {
+      if (skillErrorTimerRef.current) clearTimeout(skillErrorTimerRef.current);
+    };
+  }, [skillError]);
 
   const configuredAgents = useMemo(
     () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
@@ -178,6 +190,38 @@ export function ContextManagementPage() {
     setSkillLoading(true);
     try { setProjectSkills(await listProjectSkills(wsPath)); } catch { setProjectSkills([]); }
     finally { setSkillLoading(false); }
+  };
+
+  const handleSkillSyncToggle = async (skill: SkillMetaVm, agentType: string) => {
+    const pendingKey = `${skill.directoryPath}:${agentType}`;
+    if (skillSyncPendingKey) {
+      return;
+    }
+    const wsPath = skill.source === 'project' ? selectedWorkspace || null : null;
+    const nextTargets = new Set(skill.syncedAgentTypes);
+    if (nextTargets.has(agentType)) {
+      nextTargets.delete(agentType);
+    } else {
+      nextTargets.add(agentType);
+    }
+    setSkillSyncPendingKey(pendingKey);
+    try {
+      const next = await updateSkillSyncTargets(
+        skill.name,
+        skill.source,
+        wsPath,
+        skill.directoryPath,
+        [...nextTargets],
+      );
+      setSkillList(next);
+      if (skillTab === 'project' && selectedWorkspace) {
+        await loadProjectSkills(selectedWorkspace);
+      }
+    } catch (err) {
+      setSkillError(displayAppError(t, err));
+    } finally {
+      setSkillSyncPendingKey(null);
+    }
   };
 
   useEffect(() => {
@@ -672,7 +716,9 @@ export function ContextManagementPage() {
             {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>无匹配结果</EmptyState> : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {filteredSkills && filteredSkills.map((skill) => {
-                const displayAgents = skillDisplayAgents(skill, configuredAgents);
+                const sourceAgent = skillSourceAgent(skill, configuredAgents);
+                const syncAgents = selectableSyncAgents(skill, configuredAgents);
+                const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
                   <Card key={`${skill.source}:${skill.directoryPath}`} className="group overflow-hidden border-border/50 transition-shadow hover:shadow-sm">
                     <div className="px-4 py-3">
@@ -689,22 +735,64 @@ export function ContextManagementPage() {
                     </div>
                     <div className="flex items-center justify-between gap-2 border-t border-border/30 px-2 py-1.5">
                       <div className="flex min-w-0 items-center gap-1.5 px-2">
-                        {displayAgents.length > 0 ? (
-                          <div className="flex items-center gap-1">
-                            {displayAgents.map((meta) => (
-                              <TooltipProvider key={meta.agentType} delayDuration={300}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <img src={agentIconSrc(meta.iconKey)} alt={meta.label} className="size-3.5 shrink-0 object-contain" />
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">{meta.label}</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            ))}
-                          </div>
+                        {sourceAgent ? (
+                          <TooltipProvider delayDuration={300}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
+                                  <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className="size-3.5 object-contain" />
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         ) : (
                           <span className="truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span>
                         )}
+                        {sourceAgent && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
+                        {syncAgents.length > 0 ? (
+                          <div className="flex min-w-0 items-center gap-0.5">
+                            {syncAgents.map((agent) => {
+                              const isSynced = syncedAgentTypes.has(agent.agentType);
+                              const pendingKey = `${skill.directoryPath}:${agent.agentType}`;
+                              const isPending = skillSyncPendingKey === pendingKey;
+                              return (
+                                <TooltipProvider key={agent.agentType} delayDuration={300}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        size="icon"
+                                        variant="ghost"
+                                        className="relative size-6 rounded-full hover:bg-muted"
+                                        disabled={Boolean(skillSyncPendingKey)}
+                                        onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
+                                      >
+                                        {isPending ? (
+                                          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                                        ) : (
+                                          <span className="relative flex size-4 items-center justify-center">
+                                            {isSynced ? <span className="absolute -left-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
+                                            <img
+                                              src={agentIconSrc(agent.iconKey)}
+                                              alt={agent.label}
+                                              className={cn('size-3.5 object-contain transition-opacity', !isSynced && 'grayscale opacity-35')}
+                                            />
+                                          </span>
+                                        )}
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      {isSynced
+                                        ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
+                                        : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` })}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-1">
                         <TooltipProvider delayDuration={300}>

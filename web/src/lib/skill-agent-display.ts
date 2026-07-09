@@ -12,7 +12,7 @@ export const GOLD_BAND_AGENT_META: SkillAgentDisplayMeta = {
   iconKey: 'gold-band',
 };
 
-function sourceAgentMeta(
+export function skillSourceAgent(
   skill: SkillMetaVm,
   configuredAgents: SupportedAgentTypeVm[],
 ) {
@@ -28,7 +28,7 @@ export function skillAvailableAgentTypes(
   configuredAgents: SupportedAgentTypeVm[],
 ) {
   const available = new Set(skill.syncedAgentTypes);
-  const sourceMeta = sourceAgentMeta(skill, configuredAgents);
+  const sourceMeta = skillSourceAgent(skill, configuredAgents);
   if (sourceMeta && sourceMeta.agentType !== GOLD_BAND_AGENT_META.agentType) {
     available.add(sourceMeta.agentType);
   }
@@ -42,7 +42,7 @@ export function skillDisplayAgents(
   const display: SkillAgentDisplayMeta[] = [];
   const seen = new Set<string>();
 
-  const sourceMeta = sourceAgentMeta(skill, configuredAgents);
+  const sourceMeta = skillSourceAgent(skill, configuredAgents);
   if (sourceMeta) {
     display.push(sourceMeta);
     seen.add(sourceMeta.agentType);
@@ -64,7 +64,7 @@ export function selectableSyncAgents(
   skill: SkillMetaVm | null,
   configuredAgents: SupportedAgentTypeVm[],
 ) {
-  const sourceMeta = skill ? sourceAgentMeta(skill, configuredAgents) : null;
+  const sourceMeta = skill ? skillSourceAgent(skill, configuredAgents) : null;
   if (!sourceMeta || sourceMeta.agentType === GOLD_BAND_AGENT_META.agentType) {
     return configuredAgents;
   }

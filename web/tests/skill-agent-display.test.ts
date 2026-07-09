@@ -6,6 +6,7 @@ import {
   selectableSyncAgents,
   skillAvailableAgentTypes,
   skillDisplayAgents,
+  skillSourceAgent,
 } from '../src/lib/skill-agent-display';
 
 const configuredAgents: SupportedAgentTypeVm[] = [
@@ -45,6 +46,7 @@ describe('skill agent display helpers', () => {
       syncedAgentTypes: ['claude-acp'],
     });
 
+    expect(skillSourceAgent(skill, configuredAgents)).toEqual(GOLD_BAND_AGENT_META);
     expect(skillDisplayAgents(skill, configuredAgents)).toEqual([
       GOLD_BAND_AGENT_META,
       configuredAgents[0],

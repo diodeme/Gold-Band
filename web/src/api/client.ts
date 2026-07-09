@@ -216,6 +216,13 @@ export interface RuntimeApi {
     syncTargets?: string[] | null,
   ): Promise<SkillListVm>;
   deleteSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null): Promise<SkillListVm>;
+  updateSkillSyncTargets(
+    name: string,
+    source: string,
+    workspacePath: string | null | undefined,
+    directoryPath: string,
+    syncTargets: string[],
+  ): Promise<SkillListVm>;
   getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null): Promise<import('../types').SyncStatusEntryVm[]>;
   checkSkillNameConflict(
     name: string,

@@ -361,6 +361,15 @@ export const desktopApi: RuntimeApi = {
   deleteSkill(name: string, source: string, workspacePath?: string | null, directoryPath?: string | null) {
     return invokeCommand('delete_skill', { name, source, workspacePath, directoryPath });
   },
+  updateSkillSyncTargets(
+    name: string,
+    source: string,
+    workspacePath: string | null | undefined,
+    directoryPath: string,
+    syncTargets: string[],
+  ) {
+    return invokeCommand('update_skill_sync_targets', { name, source, workspacePath, directoryPath, syncTargets });
+  },
   getSkillSyncStatus(name: string, directoryPath: string, workspacePath?: string | null) {
     return invokeCommand<import('../types').SyncStatusEntryVm[]>('get_skill_sync_status', { name, directoryPath, workspacePath });
   },

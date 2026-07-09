@@ -11,18 +11,36 @@ export interface SkillStorageHintInput {
   editing: boolean;
   directoryPath?: string | null;
   workspacePath?: string | null;
+  translate?: (key: string, params?: Record<string, string>) => string;
 }
+
+const defaultTranslate = (key: string, params?: Record<string, string>) => {
+  const path = params?.path ?? '';
+  switch (key) {
+    case 'contextManagement.skills.storageGlobal':
+      return `Available across every project. Saved to ${path}`;
+    case 'contextManagement.skills.storageProject':
+      return `Project-level. Saved to ${path}`;
+    default:
+      return path;
+  }
+};
 
 export function skillStorageHint({
   source,
   editing,
   directoryPath,
   workspacePath,
+  translate = defaultTranslate,
 }: SkillStorageHintInput) {
   if (!editing || !directoryPath) {
-    return source === 'global'
-      ? 'Available across every project. Saved to ~/.gold-band/skills/<name>/SKILL.md'
-      : 'Project-level. Saved to <project>/.gold-band/skills/<name>/SKILL.md';
+    const path = source === 'global'
+      ? '~/.gold-band/skills/<name>/SKILL.md'
+      : '<project>/.gold-band/skills/<name>/SKILL.md';
+    return translate(
+      source === 'global' ? 'contextManagement.skills.storageGlobal' : 'contextManagement.skills.storageProject',
+      { path },
+    );
   }
 
   const normalizedDirectory = normalizePathSeparators(directoryPath);
@@ -34,11 +52,14 @@ export function skillStorageHint({
       normalizedDirectory === normalizedWorkspace
       || normalizedDirectory.startsWith(`${normalizedWorkspace}/`)
     ) {
-      return `Project-level. Saved to <project>${skillFilePath.slice(normalizedWorkspace.length)}`;
+      return translate('contextManagement.skills.storageProject', {
+        path: `<project>${skillFilePath.slice(normalizedWorkspace.length)}`,
+      });
     }
   }
 
-  return source === 'global'
-    ? `Available across every project. Saved to ${skillFilePath}`
-    : `Project-level. Saved to ${skillFilePath}`;
+  return translate(
+    source === 'global' ? 'contextManagement.skills.storageGlobal' : 'contextManagement.skills.storageProject',
+    { path: skillFilePath },
+  );
 }

@@ -685,7 +685,7 @@ export function ContextManagementPage() {
               {skillTab === 'project' && workspaces.length > 0 && (
                 <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); rememberSkillProjectWorkspace(v); setSkillQuery(''); }}>
                   <SelectTrigger className="h-8 w-44 text-xs">
-                    <SelectValue placeholder="选择项目..." />
+                    <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
                   </SelectTrigger>
                   <SelectContent>
                     {workspaces.map((w) => (
@@ -699,16 +699,16 @@ export function ContextManagementPage() {
               {(skillTab === 'global' || selectedWorkspace) && (
                 <div className="relative min-w-[160px]">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input className="h-8 pl-8 text-xs" placeholder="搜索 SKILL..." value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+                  <Input className="h-8 pl-8 text-xs" placeholder={t('contextManagement.skills.searchPlaceholder', '搜索 SKILL...')} value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
                 </div>
               )}
               {(skillTab === 'global' || selectedWorkspace) && configuredAgents.length > 0 && (
                 <Select value={skillAgentFilter} onValueChange={setSkillAgentFilter}>
                   <SelectTrigger className="h-8 w-40 text-xs">
-                    <SelectValue placeholder="按 Agent 筛选" />
+                    <SelectValue placeholder={t('contextManagement.skills.agentFilterPlaceholder', '按 Agent 筛选')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部 Agent</SelectItem>
+                    <SelectItem value="all">{t('contextManagement.skills.allAgents', '全部 Agent')}</SelectItem>
                     {configuredAgents.map((agent) => (
                       <SelectItem key={agent.agentType} value={agent.agentType}>{agent.label}</SelectItem>
                     ))}
@@ -722,10 +722,10 @@ export function ContextManagementPage() {
           {skillError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{skillError}</div> : null}
           <ScrollArea className="min-h-0 flex-1">
             {skillLoading && !skillList ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>选择项目以查看项目级 SKILL</EmptyState> : null}
+            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState> : null}
             {skillTab === 'global' && skillList && skillList.global.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
             {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>无匹配结果</EmptyState> : null}
+            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState> : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {filteredSkills && filteredSkills.map((skill) => {
                 const sourceAgent = skillSourceAgent(skill, configuredAgents);
@@ -740,9 +740,9 @@ export function ContextManagementPage() {
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
                             <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
                           </div>
-                          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">no description</span>}</p>
+                          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? 'Global' : 'Project'}</Badge>
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
                     <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
@@ -814,7 +814,7 @@ export function ContextManagementPage() {
                                 <Eye className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent side="top">View</TooltipContent>
+                            <TooltipContent side="top">{t('common.detail')}</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                         <TooltipProvider delayDuration={300}>
@@ -824,7 +824,7 @@ export function ContextManagementPage() {
                                 <Pencil className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent side="top">Edit</TooltipContent>
+                            <TooltipContent side="top">{t('contextManagement.skills.editSkillAction', '编辑')}</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                         <TooltipProvider delayDuration={300}>
@@ -834,7 +834,7 @@ export function ContextManagementPage() {
                                 <Trash2 className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent side="top">Delete</TooltipContent>
+                            <TooltipContent side="top">{t('contextManagement.skills.deleteSkill', '删除 SKILL')}</TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       </div>
@@ -950,15 +950,15 @@ export function ContextManagementPage() {
             {toolsLoading ? (
               <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
-                正在获取工具列表…
+                {t('contextManagement.mcp.loadingTools', '正在获取工具列表…')}
               </div>
             ) : toolsError ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{toolsError}</div>
             ) : toolsList && toolsList.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">该服务器未提供任何工具</div>
+              <div className="py-12 text-center text-sm text-muted-foreground">{t('contextManagement.mcp.emptyTools', '该服务器未提供任何工具')}</div>
             ) : toolsList ? (
               <>
-                <p className="text-xs text-muted-foreground">共 {toolsList.length} 个工具</p>
+                <p className="text-xs text-muted-foreground">{t('contextManagement.mcp.toolCount', { count: toolsList.length, defaultValue: `共 ${toolsList.length} 个工具` })}</p>
                 <div className="space-y-2">
                   {toolsList.map((tool) => (
                     <div key={tool.name} className="rounded-lg border border-border/50 bg-card/40 px-4 py-3">
@@ -972,7 +972,7 @@ export function ContextManagementPage() {
                       </div>
                       {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">参数 Schema</summary>
+                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
                           <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
                         </details>
                       )}
@@ -983,7 +983,7 @@ export function ContextManagementPage() {
             ) : null}
           </div>
           <SheetFooter className="border-t px-5 py-4">
-            <Button variant="outline" onClick={() => { setToolsSheetServer(null); setToolsList(null); setToolsError(null); }}>关闭</Button>
+            <Button variant="outline" onClick={() => { setToolsSheetServer(null); setToolsList(null); setToolsError(null); }}>{t('common.close')}</Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>
@@ -1053,7 +1053,8 @@ function SkillSheet({
     editing: mode === 'edit',
     directoryPath: editTarget?.directoryPath ?? null,
     workspacePath: editWorkspacePath,
-  }), [editTarget?.directoryPath, editWorkspacePath, form.source, mode]);
+    translate: (key, params) => t(key, params),
+  }), [editTarget?.directoryPath, editWorkspacePath, form.source, mode, t]);
 
   useEffect(() => {
     if (!open || !mode) return;
@@ -1128,7 +1129,7 @@ function SkillSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
         <SheetHeader className="border-b px-5 py-4">
-          <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? `编辑 ${editTarget?.name ?? ''}` : editTarget?.name ?? t('common.detail')}</SheetTitle>
+          <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? t('contextManagement.skills.editSkillTitle', { name: editTarget?.name ?? '', defaultValue: `编辑 ${editTarget?.name ?? ''}` }) : editTarget?.name ?? t('common.detail')}</SheetTitle>
         </SheetHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {mode === 'view' ? (
@@ -1136,10 +1137,10 @@ function SkillSheet({
               <div className="grid gap-2 text-sm">
                 <div><span className="text-muted-foreground">{t('contextManagement.skills.name', '名称')}:</span> {form.name}</div>
                 <div><span className="text-muted-foreground">{t('contextManagement.skills.description', '描述')}:</span> {form.description}</div>
-                <div><span className="text-muted-foreground">Scope:</span> {form.source === 'global' ? 'Global' : 'Project'}</div>
+                <div><span className="text-muted-foreground">{t('contextManagement.scope', '范围')}:</span> {form.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</div>
               </div>
               <div className="rounded-lg border bg-card/50 p-4">
-                <Markdown>{form.body || '_no content_'}</Markdown>
+                <Markdown>{form.body || t('contextManagement.emptyContent', '暂无正文内容')}</Markdown>
               </div>
             </div>
           ) : (
@@ -1154,15 +1155,15 @@ function SkillSheet({
                 >
                   {mode === 'edit' && editWorkspacePath ? (
                     <option value={`project:${editWorkspacePath}`}>
-                      {workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)
+                      {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
                     </option>
                   ) : (
                     <>
                       {workspaces.map((workspace) => (
-                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{workspace.name} (project)</option>
+                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</option>
                       ))}
-                      <option value="global">Global</option>
-                      {workspaces.length === 0 && <option value="project">Project</option>}
+                      <option value="global">{t('contextManagement.skills.globalBadge', 'Global')}</option>
+                      {workspaces.length === 0 && <option value="project">{t('contextManagement.skills.projectBadge', 'Project')}</option>}
                     </>
                   )}
                 </select>
@@ -1193,7 +1194,7 @@ function SkillSheet({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">No configured agent available for sync.</p>
+                  <p className="text-xs text-muted-foreground">{t('contextManagement.skills.noConfiguredAgents', 'No configured agent available for sync.')}</p>
                 )}
               </label>
               <label className="block space-y-1">

@@ -17,6 +17,21 @@ describe('skillStorageHint', () => {
     })).toBe('Project-level. Saved to <project>/.gold-band/skills/<name>/SKILL.md');
   });
 
+  it('allows UI copy to be localized by the caller', () => {
+    expect(skillStorageHint({
+      source: 'project',
+      editing: true,
+      directoryPath: 'E:\\AI_PROJECT\\Gold-Band\\.gold-band\\skills\\test-skill',
+      workspacePath: 'E:\\AI_PROJECT\\Gold-Band',
+      translate: (key, params) => {
+        if (key === 'contextManagement.skills.storageProject') {
+          return `项目级。保存到 ${params?.path ?? ''}`;
+        }
+        return params?.path ?? '';
+      },
+    })).toBe('项目级。保存到 <project>/.gold-band/skills/test-skill/SKILL.md');
+  });
+
   it('shows the actual project agent-native path while editing', () => {
     expect(skillStorageHint({
       source: 'project',

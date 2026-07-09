@@ -22,7 +22,8 @@
 - `next.type="end"` 时，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
 - `next.type="single"` 时，必须提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
 - `next.type="single"` 的节点不要使用 `workspace.mode="worktree"`；只有 `fanout` 分支可以使用 worktree，因为 runtime 只会为 fanout 创建后续 merge / acceptance。
-- `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`。
+- `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`，且 `nodes` 至少包含两个分支；只有一个后继节点时使用 `next.type="single"`。
+- `next.type="fanout"` 的分支节点不要使用 `workspace.mode="main"`；只读分支使用 `readonly`，会写文件的并行分支在 workspace 支持时使用 `worktree`。需要在 main 写入时，改用 `next.type="single"` 串行执行。
 - `profile` 只允许在 worker 节点中使用，选填；如果填写，必须使用 schema enum 或当前 prompt 中 `profileId=...` 后面的 ID，不要填写 displayName。
 - `merge` / `acceptance` 不要输出 `profile`；它们统一使用 runtime 内置的 AI-DYNAMIC merge / acceptance prompt。
 {% if agent_strategy_mode == "dynamic" %}- `provider` 如果填写，必须是 schema enum 或当前 prompt 中列出的可用 provider 之一。
@@ -30,5 +31,5 @@
 - `sessionMode="continue"` 时必须填写 `continueFromNodeId`，且只能引用当前 prompt 列出的可复用会话节点。
 - `workflow-invocation` 不要使用 `sessionMode="continue"`。
 - `workflowId` 如果填写，必须是 schema enum 或当前 prompt 中列出的 allowed workflow DSL ID 之一。
-- fanout 的节点数量不能超过 schema `maxItems`、当前 prompt 给出的 `maxFanout` 和剩余预算约束。
+- fanout 的节点数量必须满足 schema `minItems/maxItems`、当前 prompt 给出的 `maxFanout` 和剩余预算约束。
 - 不要输出伪代码、说明文字或示例包裹语；只输出最终 JSON。

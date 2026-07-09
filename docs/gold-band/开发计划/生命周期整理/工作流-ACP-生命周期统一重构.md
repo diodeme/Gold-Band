@@ -38,7 +38,9 @@
 - 新旧 UI 的工作流 attempt composer / Round 详情继续发送已统一收敛到 `submit_conversation_prompt`；`send_acp_prompt` 保留为非 runtime 生命周期的窄入口，并在 paused/resumable/current workflow attempt 命中时拒绝直接 ACP prompt，防止绕过 runtime。
 - `stop_active_session` 返回体与 ACP session update event 已附带最新 `lifecycle`，前端收到停止响应或 session update 时可立即更新 composer 和 session tree，不再只等待下一轮完整 run snapshot 收敛。
 - 会话页的 lifecycle-only patch 已同步覆盖 `workflowGraph`：继续/停止命令即使只返回 lifecycle、不返回新 session payload，也会立即更新工作流查看抽屉中的 graph node/attempt 状态，避免 composer 已恢复运行但抽屉节点仍显示暂停。
-- compact 用量栏已统一按 composer lifecycle active 展示运行态：`launching-next-node` 这类 ACP 已 terminal、runtime 仍 active 的阶段也显示旋转状态、当前用时、会话累计与 token 信息。
+- compact 用量栏已统一按 composer lifecycle active 展示运行态：`launching-next-node` 这类 ACP 已 terminal、runtime 仍 active 的阶段也显示旋转状态、会话累计与 token 信息。
+- 活跃 ACP session 的会话累计以 `getAcpSession` 后端 VM 扫描出的当前净累计为权威值，不再让 stale snapshot timing 在切换会话、权限响应或刷新恢复时短暂覆盖实时累计；终态 session 继续使用 snapshot timing，但 terminal snapshot 写入按 prompt 结束 / cancel 当前时刻结算当前 turn，避免只有 live-only tick 的运行片段在停止后丢失。
+- 同一 ACP session 的 stop response、subscription session、final refresh 与 live-only `timingUpdate` 可能乱序到达；后端 timing 携带 `revision` / `observedAt`，前端 session reducer 接受 status/events/metadata 更新，但只接受较新 revision 的 timing，缺少 revision 的旧历史数据才使用秒数单调保护。后端重放 compacted permission / elicitation 事件时使用 `startedAt -> endedAt(timestamp)` 扣除已闭合用户等待，避免权限申请被压缩成 selected 单事件后把等待时间重新算进会话累计。
 - 生命周期别名清理：`WorkflowEvent = RuntimeLifecycleEvent` 与 `ObservabilityBus = RuntimeLifecycleBus` 已从 `src/app/mod.rs` 与 `src/app/observability.rs` 删除，`metrics.rs` 直接使用 `RuntimeLifecycleEvent` 命名。
 - 系统通知事件收敛：通知 subscriber 不再直接消费 `RunPaused`，改为消费语义事件 `InterventionRequested` 与 `RunCompleted`；新增 `RuntimeInterventionKind` 枚举区分人工确认、权限请求、错误阻塞、进程中断四种干预类型。
 - ACP 权限请求通知旁路移除：`commands.rs` 中的 `maybe_emit_permission_intervention` 不再直接调用 OS toast，改为通过 lifecycle bus 发布 `InterventionRequested { kind: PermissionRequested }`，由通知 subscriber 统一处理。
@@ -245,8 +247,12 @@ RuntimeLifecycleBus
 1. 后端根据当前 run 是否 paused/resumable 以及选中 locator 是否匹配当前 runtime attempt 判定 `runtime-continue`。
 2. 顶层 attempt 的 `runtime-continue` 调用 `run_continue_background`。
 3. AI-DYNAMIC 内部 attempt 的 `runtime-continue` 调用 `run_continue_dynamic_inner_background`，携带 outer node/attempt 与 inner node/attempt。
-4. 其余场景降级为同会话 ACP prompt helper，只处理 runtime 未接管的普通追问。
-5. 新 UI 会话页与旧 UI Round 详情的工作流 attempt 提交都只调用 `submit_conversation_prompt`，不再自行选择 `sendAcpPrompt` 或 `continueRun`。
+4. `runtime-continue-started` 表示后端已接受继续命令；即使后台线程尚未把 run/node 文件推进到 running，返回体也必须合成 `runtime-active / provider-running` lifecycle，不能返回刚读取到的 paused/interrupted-input 快照。
+5. 其余场景降级为同会话 ACP prompt helper，只处理 runtime 未接管的普通追问。
+6. 新 UI 会话页与旧 UI Round 详情的工作流 attempt 提交都只调用 `submit_conversation_prompt`，不再自行选择 `sendAcpPrompt` 或 `continueRun`。
+7. `submit_conversation_prompt` 的 runtime-continue 分支必须透传本次用户新上传的 `attachment_paths`。普通 worker 与 AI-DYNAMIC internal worker 使用同一语义：`SessionMode::New` 只带任务 authoring 输入附件；`SessionMode::Continue` 只带本次继续/追问附件，不重带任务输入附件或历史附件。
+8. 对 `codex-acp` 等不支持原生 `systemPrompt` 的 provider，首轮新 session 可把 stable system prompt 作为 hidden user block 内联发送并持久化；同一 ACP session 的后续 continue/追问必须复用历史上下文，不再重复内联 stable system prompt，timeline 中的 user prompt 记录也必须与实际发送内容一致。
+9. timeline 中用户消息附件必须按 `raw.attachments[].path` 分流展示：`task-inputs/<name>` 是首轮 task 输入附件，前端继续通过 task 级 `authoring/inputs` 读取；`user-inputs/<name>` 是继续/追问本轮新附件，前端必须传入 `projectId + taskId + runId + roundId + nodeId + attemptId + outer locator + path`，由后端从对应 attempt 目录读取。两类路径不能统一压成一个读取入口。
 
 `send_acp_prompt` 仅保留为非 runtime 生命周期会话的窄入口；若请求命中 paused/resumable/current workflow attempt，后端返回 `acp.runtime-submit-required`，要求调用 `submit_conversation_prompt`，避免再次绕过 runtime。
 
@@ -258,6 +264,7 @@ RuntimeLifecycleBus
 - AI-DYNAMIC 外层停止、重跑前停止旧 run 或关闭客户端时，dynamic graph、dynamic node、child run 必须全部保持 `Paused + ProcessInterrupted`；`run_kill / kill_run / killRun` 产生链路已废弃，不允许再写新的 `Killed` 状态。
 - provider 已被调用但 stop 已落盘时，即使 provider 迟到返回 success，也不能写 success artifact，不能完成 run，不能进入下一节点。
 - stop / crash recovery 写入的历史 `cancelled` ACP snapshot/session 不能取消后续 runtime continue；继续入口必须只以当前 runtime lifecycle 和 provider control 为准，不能被历史 ACP cancelled metadata 阻断。
+- 前端收到 `runtime-continue-started` 后，本地 composer lifecycle 进入 runtime-active；后台 running 快照到达前，旧的 paused/interrupted-input lifecycle update 不能把输入框短暂恢复为可输入。父级 lifecycle 追到 active、stopping 或 runtime-error 后，本地 override 必须释放，重新以父级 lifecycle 为准。
 - `stop_active_session` 必须先更新 runtime pause 事实，再切换 per-attempt provider control；活跃 runtime 必须发送一次 `session/cancel` notification 取消底层会话，并继续 drain 当前 prompt response，直到 cancelled/interrupted 或 cancel deadline 到期。普通停止不按 `provider.pid` 清理 adapter，不把 kill adapter 当作 cancel 成功兜底。停止不改变 runtime 状态语义。stop 命令返回前必须写入 cancelled session/snapshot；前端在此期间显示停止遮罩，结束后按后端 lifecycle 和最终快照收敛。
 - 桌面启动 recovery 扫描 running run，并复用 interruption 路径收敛为可继续暂停态；关闭窗口同理。
 

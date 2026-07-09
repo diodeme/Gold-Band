@@ -117,7 +117,7 @@ export function deriveAcpRuntimeComposerState(
     runtimeErrorMessage,
   });
   const submitTarget = submitTargetFromBackend(input, mode, backend?.submitTarget);
-  const sessionActive = runtimeActive || acpActive || stopInProgress;
+  const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
   const activePromptLocked =
     input.sending ||
     waitingForOptimisticPrompt ||
@@ -169,6 +169,23 @@ export function deriveAcpRuntimeComposerState(
     hintKind: hintKindForMode(input, mode, statusActive, turnSubmitting),
     message: externalMessage,
   };
+}
+
+export function shouldKeepLocalRuntimeLifecycleOverride(
+  local: ConversationAttemptLifecycleVm | null | undefined,
+  incoming: ConversationAttemptLifecycleVm | null | undefined,
+) {
+  if (!local?.runtime.active) return false;
+  if (!incoming) return true;
+  if (incoming.runtime.active || incoming.acp.active || incoming.acp.stopping) {
+    return false;
+  }
+  if (incoming.composer.mode === 'runtime-error') return false;
+  return (
+    incoming.runtime.phase === 'paused' &&
+    incoming.continueKind === 'input' &&
+    incoming.composer.mode === 'interrupted-input'
+  );
 }
 
 export function isSessionActiveStatus(status?: string | null) {
@@ -226,7 +243,6 @@ function composerModeFromBackend(input: {
   if (input.stopInProgress) return 'stopping';
   if (input.turnSubmitting) return 'submitting';
   if (input.runtimeContinueBlockedByWorkflow) return 'invalid-workflow';
-  if (input.runtimeErrorMessage) return 'runtime-error';
   return input.backendMode;
 }
 
@@ -277,6 +293,7 @@ function placeholderKindForMode(
   activePromptLocked: boolean,
 ): AcpComposerPlaceholderKind {
   if (input.hasPlanIntervention) return 'plan-intervention';
+  if (input.waitingForPermission) return 'runtime-controlled';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'interrupted-input') return 'stopped';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
@@ -319,9 +336,9 @@ function runtimeContinueKindFromInput(input: AcpRuntimeComposerStateInput): 'inp
 }
 
 function runtimeErrorMessageFromInput(input: AcpRuntimeComposerStateInput) {
+  if (input.lifecycle?.composer.mode !== 'runtime-error') return null;
   if (input.runtimeErrorMessage) return input.runtimeErrorMessage;
-  if (input.lifecycle?.composer.mode === 'runtime-error') return 'runtime-error';
-  return null;
+  return 'runtime-error';
 }
 
 function normalizeProcessingKind(kind?: string | null): AcpComposerProcessingKind {

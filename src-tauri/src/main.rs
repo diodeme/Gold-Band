@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
@@ -21,9 +22,10 @@ use commands::{
     get_agent_registry, get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings,
     get_profile, get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
     get_system_fonts, get_task_detail, get_task_list, get_update_status, get_workflow,
-    get_workflow_templates, list_mcp_servers, list_project_skills, list_skills,
+    get_workflow_templates, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
     mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
-    read_skill, replace_auto_templates, respond_acp_permission, retry_run, save_auto_template,
+    read_skill, replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
+    save_auto_template,
     save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
     select_recent_workspace, send_acp_prompt, set_acp_session_model,
@@ -39,9 +41,9 @@ use commands_conversation::{
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
     reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, show_conversation_attachment, stat_attachment_files,
-    switch_conversation_session, sync_conversation_workspace, unpin_conversation,
-    update_task_metadata, validate_conversation_create,
+    search_conversation_tasks, show_conversation_attachment, show_conversation_message_attachment,
+    stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
+    unpin_conversation, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
@@ -94,6 +96,7 @@ fn run() -> anyhow::Result<()> {
                     needs_workspace = ctx.needs_workspace,
                     "desktop runtime initialized"
                 );
+                builtin_mcp::inject_builtin_mcp_servers(&state);
                 let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
             }
             let handle = app.handle().clone();
@@ -103,6 +106,13 @@ fn run() -> anyhow::Result<()> {
                     let _ = state.refresh_all_agent_diagnostics();
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
+            });
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
+            let health_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let state = health_handle.state::<DesktopState>();
+                builtin_mcp::refresh_all_mcp_health(&state);
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
@@ -166,6 +176,7 @@ fn run() -> anyhow::Result<()> {
             set_acp_session_model,
             set_acp_session_permission_mode,
             respond_acp_permission,
+            respond_elicitation,
             cancel_acp_session,
             get_acp_raw_frames,
             start_run,
@@ -202,6 +213,7 @@ fn run() -> anyhow::Result<()> {
             stat_attachment_files,
             materialize_conversation_attachments,
             show_conversation_attachment,
+            show_conversation_message_attachment,
             update_task_metadata,
             delete_conversation_task,
             pin_conversation,
@@ -225,6 +237,7 @@ fn run() -> anyhow::Result<()> {
             delete_mcp_server,
             toggle_mcp_server,
             check_mcp_server_health,
+            list_mcp_tools,
             list_skills,
             list_project_skills,
             read_skill,

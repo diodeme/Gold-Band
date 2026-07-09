@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
@@ -6,6 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::artifacts::json_artifact_display_span;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
 };
@@ -56,6 +57,8 @@ pub struct AcpSessionMetadata {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -104,7 +107,359 @@ pub struct AcpUiEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<AcpTimingPatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimingPatch {
+    pub session_elapsed_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn_last_activity_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_reason: Option<String>,
+    pub paused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSessionTiming {
+    pub session_elapsed_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn_last_activity_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_wait_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_reason: Option<String>,
+    pub paused: bool,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AcpTimingState {
+    elapsed_seconds: u64,
+    active_turn_started_at: Option<u64>,
+    active_turn_last_activity_at: Option<u64>,
+    revision: Option<u64>,
+    saw_turn: bool,
+    pending_permission_ids: HashSet<String>,
+    pending_elicitation_ids: HashSet<String>,
+    user_wait_started_at: Option<u64>,
+    user_wait_seconds: u64,
+}
+
+impl AcpTimingState {
+    pub fn from_timeline_items(items: impl IntoIterator<Item = AcpUiEvent>) -> Self {
+        let mut state = Self::default();
+        let mut items = items.into_iter().collect::<Vec<_>>();
+        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+        for item in &items {
+            state.observe_event(item);
+        }
+        state
+    }
+
+    pub fn observe_event(&mut self, event: &AcpUiEvent) {
+        self.revision = Some(
+            self.revision
+                .unwrap_or_default()
+                .max(timing_revision_for_event(event)),
+        );
+        if is_gold_band_user_prompt_event(event) {
+            self.elapsed_seconds = self
+                .elapsed_seconds
+                .saturating_add(self.finish_current_turn(false, None));
+            self.active_turn_started_at = parse_epoch_timestamp(&event.timestamp);
+            self.active_turn_last_activity_at = None;
+            self.pending_permission_ids.clear();
+            self.pending_elicitation_ids.clear();
+            self.user_wait_started_at = None;
+            self.user_wait_seconds = 0;
+            self.saw_turn = self.active_turn_started_at.is_some();
+            return;
+        }
+        if self.active_turn_started_at.is_none() {
+            return;
+        }
+        let Some(timestamp) = parse_epoch_timestamp(&event.timestamp) else {
+            return;
+        };
+        self.observe_permission_event(event, timestamp);
+        self.observe_elicitation_event(event, timestamp);
+        if is_session_elapsed_progress_event(event) {
+            self.active_turn_last_activity_at = Some(timestamp);
+        }
+    }
+
+    pub fn patch_at(&self, now: u64, reason: impl Into<String>) -> Option<AcpTimingPatch> {
+        self.patch_at_with_revision(
+            now,
+            reason,
+            self.revision,
+            Some(format_epoch_timestamp(now)),
+        )
+    }
+
+    pub fn patch_at_with_revision(
+        &self,
+        now: u64,
+        reason: impl Into<String>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpTimingPatch> {
+        self.snapshot_at_with_revision(true, Some(now), revision, observed_at)
+            .map(|snapshot| AcpTimingPatch {
+                session_elapsed_seconds: snapshot.session_elapsed_seconds,
+                revision: snapshot.revision,
+                observed_at: snapshot.observed_at,
+                active_turn_started_at: snapshot.active_turn_started_at,
+                active_turn_last_activity_at: snapshot.active_turn_last_activity_at,
+                permission_wait_started_at: snapshot.permission_wait_started_at,
+                user_wait_started_at: snapshot.user_wait_started_at,
+                wait_reason: snapshot.wait_reason,
+                paused: snapshot.paused,
+                reason: Some(reason.into()),
+            })
+    }
+
+    pub fn snapshot(&self, session_active: bool) -> Option<AcpSessionTiming> {
+        self.snapshot_at(session_active, None)
+    }
+
+    pub fn terminal_snapshot(&self) -> Option<AcpSessionTiming> {
+        self.terminal_snapshot_at(None)
+    }
+
+    pub fn snapshot_at(&self, session_active: bool, now: Option<u64>) -> Option<AcpSessionTiming> {
+        self.snapshot_at_with_revision(
+            session_active,
+            now,
+            self.revision,
+            now.map(format_epoch_timestamp),
+        )
+    }
+
+    pub fn snapshot_at_with_revision(
+        &self,
+        session_active: bool,
+        now: Option<u64>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpSessionTiming> {
+        if !self.saw_turn {
+            return None;
+        }
+        let paused = self.user_wait_started_at.is_some();
+        let anchor = if session_active {
+            if paused {
+                self.user_wait_started_at
+                    .or(self.active_turn_last_activity_at)
+                    .or(self.active_turn_started_at)
+            } else {
+                Some(now.unwrap_or_else(current_epoch_seconds))
+            }
+        } else {
+            None
+        };
+        let current_turn_elapsed_seconds = if session_active {
+            self.finish_current_turn(true, anchor)
+        } else {
+            self.finish_current_turn(false, None)
+        };
+        let session_elapsed_seconds = self
+            .elapsed_seconds
+            .saturating_add(current_turn_elapsed_seconds);
+        Some(AcpSessionTiming {
+            session_elapsed_seconds,
+            revision,
+            observed_at,
+            active_turn_started_at: session_active
+                .then_some(self.active_turn_started_at)
+                .flatten()
+                .map(format_epoch_timestamp),
+            active_turn_last_activity_at: anchor.map(format_epoch_timestamp),
+            permission_wait_started_at: self
+                .user_wait_started_at
+                .filter(|_| !self.pending_permission_ids.is_empty())
+                .map(format_epoch_timestamp),
+            user_wait_started_at: self.user_wait_started_at.map(format_epoch_timestamp),
+            wait_reason: self.wait_reason().map(str::to_string),
+            paused: paused || !session_active,
+        })
+    }
+
+    pub fn terminal_snapshot_at(&self, now: Option<u64>) -> Option<AcpSessionTiming> {
+        self.terminal_snapshot_at_with_revision(now, self.revision, now.map(format_epoch_timestamp))
+    }
+
+    pub fn terminal_snapshot_at_with_revision(
+        &self,
+        now: Option<u64>,
+        revision: Option<u64>,
+        observed_at: Option<String>,
+    ) -> Option<AcpSessionTiming> {
+        let mut snapshot = self.snapshot_at_with_revision(true, now, revision, observed_at)?;
+        snapshot.active_turn_started_at = None;
+        snapshot.active_turn_last_activity_at = None;
+        snapshot.permission_wait_started_at = None;
+        snapshot.user_wait_started_at = None;
+        snapshot.wait_reason = None;
+        snapshot.paused = true;
+        Some(snapshot)
+    }
+
+    fn finish_current_turn(&self, session_active: bool, now: Option<u64>) -> u64 {
+        let Some(started_at) = self.active_turn_started_at else {
+            return 0;
+        };
+        let end_at = if session_active {
+            now.unwrap_or_else(current_epoch_seconds)
+        } else {
+            self.active_turn_last_activity_at.unwrap_or(started_at)
+        };
+        let base_elapsed = end_at.saturating_sub(started_at);
+        base_elapsed.saturating_sub(
+            self.user_wait_seconds
+                .saturating_add(self.open_user_wait(end_at)),
+        )
+    }
+
+    fn open_user_wait(&self, end_at: u64) -> u64 {
+        self.user_wait_started_at
+            .map(|started_at| end_at.saturating_sub(started_at))
+            .unwrap_or_default()
+    }
+
+    fn observe_permission_event(&mut self, event: &AcpUiEvent, timestamp: u64) {
+        if event.kind != "permissionRequest" {
+            return;
+        }
+        let is_pending = event
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
+        let request_id = canonical_permission_request_id(event);
+        if is_pending {
+            let was_waiting = self.is_waiting_for_user();
+            if self.pending_permission_ids.insert(request_id) && !was_waiting {
+                self.user_wait_started_at = Some(timestamp);
+            }
+            return;
+        }
+        if !self.pending_permission_ids.remove(&request_id) {
+            if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                self.add_closed_user_wait(started_at, timestamp);
+            }
+            return;
+        }
+        self.close_user_wait_if_idle(timestamp);
+    }
+
+    fn observe_elicitation_event(&mut self, event: &AcpUiEvent, timestamp: u64) {
+        match event.kind.as_str() {
+            "elicitationRequest"
+                if event
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("pending")) =>
+            {
+                let was_waiting = self.is_waiting_for_user();
+                if self.pending_elicitation_ids.insert(event.id.clone()) && !was_waiting {
+                    self.user_wait_started_at = Some(timestamp);
+                }
+            }
+            "elicitationResponse" => {
+                let raw_id = event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| event.id.trim_end_matches("-response").to_string());
+                if self.pending_elicitation_ids.remove(&raw_id) {
+                    self.close_user_wait_if_idle(timestamp);
+                } else if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            "elicitationRequest" => {
+                if let Some(started_at) = compacted_wait_started_at(event, timestamp) {
+                    self.add_closed_user_wait(started_at, timestamp);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_waiting_for_user(&self) -> bool {
+        !self.pending_permission_ids.is_empty() || !self.pending_elicitation_ids.is_empty()
+    }
+
+    fn close_user_wait_if_idle(&mut self, timestamp: u64) {
+        if self.is_waiting_for_user() {
+            return;
+        }
+        if let Some(started_at) = self.user_wait_started_at.take() {
+            self.user_wait_seconds = self
+                .user_wait_seconds
+                .saturating_add(timestamp.saturating_sub(started_at));
+        }
+    }
+
+    fn add_closed_user_wait(&mut self, started_at: u64, ended_at: u64) {
+        if ended_at <= started_at {
+            return;
+        }
+        let effective_end = self
+            .user_wait_started_at
+            .map(|open_started_at| ended_at.min(open_started_at))
+            .unwrap_or(ended_at);
+        if effective_end <= started_at {
+            return;
+        }
+        self.user_wait_seconds = self
+            .user_wait_seconds
+            .saturating_add(effective_end.saturating_sub(started_at));
+    }
+
+    fn wait_reason(&self) -> Option<&'static str> {
+        if !self.pending_permission_ids.is_empty() {
+            Some("permission")
+        } else if !self.pending_elicitation_ids.is_empty() {
+            Some("elicitation")
+        } else {
+            None
+        }
+    }
+}
+
+fn compacted_wait_started_at(event: &AcpUiEvent, ended_at: u64) -> Option<u64> {
+    let started_at = event
+        .started_at
+        .as_deref()
+        .and_then(parse_epoch_timestamp)?;
+    (started_at < ended_at).then_some(started_at)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +503,65 @@ impl AcpAttemptPaths {
             attempt_dir,
         }
     }
+}
+
+fn parse_epoch_timestamp(value: &str) -> Option<u64> {
+    value.trim_end_matches('Z').parse::<u64>().ok()
+}
+
+fn format_epoch_timestamp(value: u64) -> String {
+    format!("{value}Z")
+}
+
+fn timing_revision_for_event(event: &AcpUiEvent) -> u64 {
+    event
+        .ended_seq
+        .or(event.started_seq)
+        .unwrap_or(event.seq)
+        .max(event.seq)
+}
+
+fn current_epoch_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn is_gold_band_user_prompt_event(event: &AcpUiEvent) -> bool {
+    event.kind == "userTextDelta"
+        && event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("source"))
+            .and_then(Value::as_str)
+            == Some("goldBandPrompt")
+}
+
+fn is_session_elapsed_progress_event(event: &AcpUiEvent) -> bool {
+    let session_update = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("sessionUpdate"))
+        .and_then(Value::as_str);
+    !matches!(
+        session_update,
+        Some("available_commands_update" | "current_mode_update" | "session_info_update")
+    )
+}
+
+fn canonical_permission_request_id(event: &AcpUiEvent) -> String {
+    let value = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("requestId"))
+        .and_then(Value::as_str)
+        .unwrap_or(event.id.as_str());
+    let mut current = value;
+    while let Some(next) = current.strip_prefix("permission-") {
+        current = next;
+    }
+    current.to_string()
 }
 
 /// Read token totals from the ACP session metadata file and timeline.
@@ -384,6 +798,61 @@ pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     with_jsonl_file_lock(path, || load_timeline_items_unlocked(path))
 }
 
+pub fn annotate_latest_runtime_control_output(
+    path: &Utf8Path,
+    artifact_name: &str,
+    kind: &str,
+) -> Result<bool> {
+    let mut items = load_timeline_items(path)?;
+    let Some(index) = items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| {
+            if item.kind != "textDelta" {
+                return None;
+            }
+            let content = item.content.as_deref()?;
+            json_artifact_display_span(content).map(|span| (index, span))
+        })
+        .map(|(index, _)| index)
+    else {
+        return Ok(false);
+    };
+
+    let content = items[index].content.as_deref().unwrap_or_default();
+    let Some(span) = json_artifact_display_span(content) else {
+        return Ok(false);
+    };
+    let display = serde_json::json!({
+        "artifactName": artifact_name,
+        "kind": kind,
+        "jsonText": span.json_text,
+        "start": utf16_index(content, span.start),
+        "end": utf16_index(content, span.end),
+        "jsonStart": utf16_index(content, span.json_start),
+        "jsonEnd": utf16_index(content, span.json_end),
+        "fenced": span.fenced,
+        "parseStatus": span.parse_status,
+    });
+
+    let item = &mut items[index];
+    let raw = item.raw.get_or_insert_with(|| serde_json::json!({}));
+    if !raw.is_object() {
+        *raw = serde_json::json!({});
+    }
+    if let Some(object) = raw.as_object_mut() {
+        object.insert("runtimeControlOutputDisplay".to_string(), display);
+    }
+    let revision = latest_timeline_source_seq(path).saturating_add(1);
+    append_timeline_patch(path, item.id.clone(), revision, item)?;
+    Ok(true)
+}
+
+fn utf16_index(content: &str, byte_index: usize) -> usize {
+    content[..byte_index].encode_utf16().count()
+}
+
 fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
@@ -477,6 +946,7 @@ pub fn normalize_session_update(
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw,
     };
 
@@ -516,7 +986,65 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw: Some(raw),
+    }
+}
+
+pub fn elicitation_request_event(
+    seq: u64,
+    elicitation_id: String,
+    message: String,
+    schema: Value,
+) -> AcpUiEvent {
+    AcpUiEvent {
+        id: elicitation_id,
+        seq,
+        timestamp: current_timestamp(),
+        kind: "elicitationRequest".to_string(),
+        session_id: None,
+        content: Some(message),
+        title: Some("需要您的选择".to_string()),
+        tool_call_id: None,
+        status: Some("pending".to_string()),
+        // 不设 ended_seq/ended_at — 保持"进行中"直到用户响应
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
+        timing: None,
+        raw: Some(schema),
+    }
+}
+
+pub fn elicitation_response_event(
+    seq: u64,
+    elicitation_id: String,
+    action: String,
+    content: Option<Value>,
+) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("{}-response", elicitation_id),
+        seq,
+        timestamp: current_timestamp(),
+        kind: "elicitationResponse".to_string(),
+        session_id: None,
+        content: content.map(|v| v.to_string()),
+        title: Some(match action.as_str() {
+            "accept" => "已选择".to_string(),
+            _ => "已跳过".to_string(),
+        }),
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: None,
+        ended_seq: None,
+        started_at: None,
+        ended_at: None,
+        timing: None,
+        raw: Some(serde_json::json!({
+            "elicitationId": elicitation_id,
+            "action": action,
+        })),
     }
 }
 
@@ -539,6 +1067,7 @@ pub fn permission_decision_event(
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw: Some(serde_json::json!({
             "requestId": request_id,
             "optionId": option_id,
@@ -586,6 +1115,7 @@ pub fn user_prompt_event(
         ended_seq: None,
         started_at: None,
         ended_at: None,
+        timing: None,
         raw: Some(raw),
     }
 }
@@ -672,11 +1202,12 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpUiEvent, append_raw_frame, append_timeline_patch,
-        extract_usage_fields, kind_to_ui_kind, load_timeline_items, permission_request_event,
-        user_prompt_event, write_timeline_items,
+        AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
+        append_raw_frame, append_timeline_patch, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind, load_timeline_items,
+        permission_request_event, user_prompt_event, write_timeline_items,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     // --- extract_usage_fields ---
 
@@ -946,8 +1477,192 @@ mod tests {
             ended_seq: Some(seq),
             started_at: Some(format!("{seq}Z")),
             ended_at: Some(format!("{seq}Z")),
+            timing: None,
             raw: None,
         }
+    }
+
+    fn prompt_event_at(seq: u64, timestamp: u64) -> AcpUiEvent {
+        let mut event = user_prompt_event(
+            seq,
+            "session-1".to_string(),
+            "继续".to_string(),
+            Some(format!("prompt-{seq}")),
+            false,
+            Vec::new(),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event
+    }
+
+    fn session_update_event_at(seq: u64, session_update: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = test_timeline_event(&format!("event-{seq}"), seq, "delta");
+        event.timestamp = format!("{timestamp}Z");
+        event.raw = Some(json!({ "sessionUpdate": session_update }));
+        event
+    }
+
+    fn permission_event_at(seq: u64, request_id: &str, status: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = permission_request_event(
+            seq,
+            request_id.to_string(),
+            json!({ "requestId": request_id }),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event.status = Some(status.to_string());
+        event
+    }
+
+    fn elicitation_request_event_at(seq: u64, elicitation_id: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = elicitation_request_event(
+            seq,
+            elicitation_id.to_string(),
+            "Choose".to_string(),
+            json!({ "type": "object" }),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event
+    }
+
+    fn elicitation_response_event_at(seq: u64, elicitation_id: &str, timestamp: u64) -> AcpUiEvent {
+        let mut event = elicitation_response_event(
+            seq,
+            elicitation_id.to_string(),
+            "accept".to_string(),
+            Some(json!({})),
+        );
+        event.timestamp = format!("{timestamp}Z");
+        event
+    }
+
+    #[test]
+    fn acp_timing_patch_uses_last_activity_anchor() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 112));
+
+        let patch = state.patch_at(112, "active").unwrap();
+
+        assert_eq!(patch.session_elapsed_seconds, 12);
+        assert_eq!(patch.revision, Some(2));
+        assert_eq!(patch.observed_at.as_deref(), Some("112Z"));
+        assert_eq!(patch.active_turn_started_at.as_deref(), Some("100Z"));
+        assert_eq!(patch.active_turn_last_activity_at.as_deref(), Some("112Z"));
+        assert!(!patch.paused);
+    }
+
+    #[test]
+    fn acp_timing_metadata_update_does_not_advance_elapsed() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 105));
+        state.observe_event(&session_update_event_at(3, "current_mode_update", 500));
+
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 5);
+    }
+
+    #[test]
+    fn acp_timing_terminal_snapshot_counts_prompt_with_only_live_ticks() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&prompt_event_at(3, 139));
+
+        let snapshot = state.terminal_snapshot_at(Some(148)).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 19);
+        assert_eq!(snapshot.revision, Some(3));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("148Z"));
+        assert!(snapshot.paused);
+        assert!(snapshot.active_turn_started_at.is_none());
+        assert!(snapshot.active_turn_last_activity_at.is_none());
+    }
+
+    #[test]
+    fn acp_timing_terminal_snapshot_accepts_synthetic_revision() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+
+        let snapshot = state
+            .terminal_snapshot_at_with_revision(Some(120), Some(99), Some("120Z".to_string()))
+            .unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 20);
+        assert_eq!(snapshot.revision, Some(99));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("120Z"));
+    }
+
+    #[test]
+    fn acp_timing_terminal_snapshot_excludes_open_user_wait() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&permission_event_at(2, "permission-1", "pending", 105));
+
+        let snapshot = state.terminal_snapshot_at(Some(150)).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 5);
+        assert_eq!(snapshot.revision, Some(2));
+        assert_eq!(snapshot.observed_at.as_deref(), Some("150Z"));
+        assert!(snapshot.paused);
+        assert!(snapshot.user_wait_started_at.is_none());
+        assert!(snapshot.wait_reason.is_none());
+    }
+
+    #[test]
+    fn acp_timing_permission_wait_pauses_and_is_excluded() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&permission_event_at(3, "permission-1", "pending", 120));
+
+        let waiting = state.patch_at(120, "permission-wait").unwrap();
+        assert_eq!(waiting.session_elapsed_seconds, 20);
+        assert!(waiting.paused);
+        assert_eq!(waiting.wait_reason.as_deref(), Some("permission"));
+
+        state.observe_event(&permission_event_at(4, "permission-1", "selected", 170));
+        state.observe_event(&session_update_event_at(5, "agent_message_chunk", 180));
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 30);
+    }
+
+    #[test]
+    fn acp_timing_reconstructs_compacted_permission_wait() {
+        let mut selected = permission_event_at(3, "permission-1", "selected", 170);
+        selected.started_at = Some("120Z".to_string());
+        selected.ended_at = Some("170Z".to_string());
+
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&selected);
+        state.observe_event(&session_update_event_at(4, "agent_message_chunk", 180));
+
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 30);
+    }
+
+    #[test]
+    fn acp_timing_elicitation_wait_pauses_and_is_excluded() {
+        let mut state = AcpTimingState::default();
+        state.observe_event(&prompt_event_at(1, 100));
+        state.observe_event(&session_update_event_at(2, "agent_message_chunk", 110));
+        state.observe_event(&elicitation_request_event_at(3, "elicit-1", 120));
+
+        let waiting = state.patch_at(150, "tick").unwrap();
+        assert_eq!(waiting.session_elapsed_seconds, 20);
+        assert!(waiting.paused);
+        assert_eq!(waiting.wait_reason.as_deref(), Some("elicitation"));
+
+        state.observe_event(&elicitation_response_event_at(4, "elicit-1", 170));
+        state.observe_event(&session_update_event_at(5, "agent_message_chunk", 180));
+        let snapshot = state.snapshot_at(false, None).unwrap();
+
+        assert_eq!(snapshot.session_elapsed_seconds, 30);
     }
 
     #[test]
@@ -975,6 +1690,109 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn annotates_latest_runtime_control_text_delta() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[
+                test_timeline_event("message-1", 10, "earlier {\"old\":true}"),
+                test_timeline_event("message-2", 20, "你好\n```json\n{\"a\":\"b\"}\n```"),
+            ],
+        )
+        .unwrap();
+
+        assert!(
+            annotate_latest_runtime_control_output(
+                &path,
+                "dynamic-node-completion",
+                "dynamic-node-completion",
+            )
+            .unwrap()
+        );
+
+        let items = load_timeline_items(&path).unwrap();
+        assert!(
+            items[0]
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+                .is_none()
+        );
+        let raw = items[1].raw.as_ref().unwrap();
+        let display = raw.get("runtimeControlOutputDisplay").unwrap();
+        assert_eq!(
+            display.get("artifactName").and_then(Value::as_str),
+            Some("dynamic-node-completion")
+        );
+        assert_eq!(
+            display.get("kind").and_then(Value::as_str),
+            Some("dynamic-node-completion")
+        );
+        assert_eq!(
+            display.get("jsonText").and_then(Value::as_str),
+            Some("{\"a\":\"b\"}")
+        );
+        assert_eq!(display.get("fenced").and_then(Value::as_bool), Some(true));
+        let start = display.get("start").and_then(Value::as_u64).unwrap() as usize;
+        let end = display.get("end").and_then(Value::as_u64).unwrap() as usize;
+        let content = items[1].content.as_ref().unwrap();
+        let display_text = content
+            .encode_utf16()
+            .skip(start)
+            .take(end - start)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            String::from_utf16(&display_text).unwrap(),
+            "```json\n{\"a\":\"b\"}\n```"
+        );
+    }
+
+    #[test]
+    fn annotates_invalid_runtime_control_text_delta() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        write_timeline_items(
+            &path,
+            &[test_timeline_event(
+                "message-1",
+                10,
+                "修复前\n```json\n{\"a\":\"unterminated}\n```",
+            )],
+        )
+        .unwrap();
+
+        assert!(
+            annotate_latest_runtime_control_output(&path, "accept-result", "workflow-output")
+                .unwrap()
+        );
+
+        let items = load_timeline_items(&path).unwrap();
+        let display = items[0]
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("runtimeControlOutputDisplay"))
+            .unwrap();
+        assert_eq!(
+            display.get("kind").and_then(Value::as_str),
+            Some("workflow-output")
+        );
+        assert_eq!(
+            display.get("parseStatus").and_then(Value::as_str),
+            Some("invalid")
+        );
+        assert_eq!(
+            display.get("jsonText").and_then(Value::as_str),
+            Some("{\"a\":\"unterminated}")
+        );
+        assert_eq!(display.get("fenced").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

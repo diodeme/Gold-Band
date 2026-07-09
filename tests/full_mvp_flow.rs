@@ -86,6 +86,7 @@ impl ProviderAdapter for SequencedProvider {
                 open_command: Some(format!("claude -c session-{}", *calls)),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 

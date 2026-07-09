@@ -75,6 +75,10 @@ import { useTranslation } from 'react-i18next';
 import { AgentManagementPage } from './pages/AgentManagementPage';
 import { ContextManagementPage } from './pages/ContextManagementPage';
 import { ConversationHomePage } from './pages/ConversationHomePage';
+import {
+  ConversationComposerDraftBoundary,
+  type ConversationComposerDraftBoundaryHandle,
+} from '@/components/conversation/ConversationComposerDraftBoundary';
 import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
 import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
@@ -82,12 +86,18 @@ import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
+import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme } from './theme';
 import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
+import {
+  shouldRunWorkbenchBackgroundRefresh,
+  WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
+  WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS,
+} from '@/lib/workbench-background-refresh';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -296,6 +306,7 @@ export function App() {
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [taskList, setTaskList] = useState<TaskListVm | null>(null);
   const [createTaskDraft, setCreateTaskDraft] = useState<CreateTaskDraftState>(() => createInitialCreateTaskDraft());
+  const composerDraftRef = useRef<ConversationComposerDraftBoundaryHandle | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowVm | null>(null);
   const [roundDetail, setRoundDetail] = useState<RoundDetailVm | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -752,26 +763,31 @@ export function App() {
   }, [bootstrap, primaryModule, roundSelection, t, taskPage]);
 
   useEffect(() => {
+    if (uiMode !== 'workbench') return;
     void refresh(hasPageData ? 'background' : 'initial');
-  }, [hasPageData, refresh]);
+  }, [hasPageData, refresh, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || !hasPageData) return undefined;
+    if (!shouldRunWorkbenchBackgroundRefresh({
+      uiMode,
+      bootstrapReady: Boolean(bootstrap),
+      hasPageData,
+    })) return undefined;
     let intervalId: number;
     const startInterval = (ms: number) => {
       window.clearInterval(intervalId);
       intervalId = window.setInterval(() => void refresh('background'), ms) as unknown as number;
     };
-    startInterval(10000);
+    startInterval(WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS);
     const onVisibilityChange = () => {
-      startInterval(document.hidden ? 30000 : 10000);
+      startInterval(document.hidden ? WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS : WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS);
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [bootstrap, hasPageData, refresh]);
+  }, [bootstrap, hasPageData, refresh, uiMode]);
 
   const openProfileManagement = () => {
     setWorkspacePickerOpen(false);
@@ -1236,6 +1252,7 @@ export function App() {
   };
 
   return (
+    <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
       active={primaryModule}
@@ -1371,6 +1388,7 @@ export function App() {
         }}
       />
     </Shell>
+    </ConversationComposerDraftBoundary>
   );
 
   function renderConversationContent() {
@@ -1446,6 +1464,7 @@ export function App() {
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
               applyConversationRunSnapshot(run, 'create');
+              resetConversationComposerDraft(composerDraftRef.current);
               setConversationPage({
                 kind: 'conversation-run',
                 projectId: run.projectId,
@@ -1468,6 +1487,7 @@ export function App() {
           }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
+            resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
             getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
           }}
@@ -1615,6 +1635,7 @@ export function App() {
       onSubmit={(_input) => null}
       onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
       onWorkspaceChange={(projectId) => {
+        resetConversationComposerDraft(composerDraftRef.current);
         setDraftConversationWorkspaceId(projectId);
         getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
       }}

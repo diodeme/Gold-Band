@@ -173,6 +173,9 @@ export const desktopApi: RuntimeApi = {
   respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('respond_acp_permission', { projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, outerNodeId, outerAttemptId });
   },
+  respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
+  },
   cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
@@ -187,6 +190,9 @@ export const desktopApi: RuntimeApi = {
   },
   showConversationAttachment(projectId: string, taskId: string, name: string) {
     return invokeCommand('show_conversation_attachment', { projectId, taskId, name });
+  },
+  showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+    return invokeCommand('show_conversation_message_attachment', { projectId, taskId, runId, roundId, nodeId, attemptId, name, path, outerNodeId, outerAttemptId });
   },
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
@@ -328,6 +334,9 @@ export const desktopApi: RuntimeApi = {
   },
   checkMcpServerHealth(id: string) {
     return invokeCommand('check_mcp_server_health', { id });
+  },
+  listMcpTools(id: string) {
+    return invokeCommand('list_mcp_tools', { id });
   },
   listSkills() {
     return invokeCommand('list_skills');

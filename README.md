@@ -4,11 +4,9 @@
 
 # Gold Band
 
-> 本地化 · 工作流驱动 · AI Agent 编排工具 
-> 
-> Harness Engineering | Loop Engineering
+> 本地优先的 AI Coding 工作流桌面客户端
 >
-> 让长程 AI Coding 任务更可控、可观测、更可靠
+> 编排、观测、验证和恢复长程 Agent 任务
 
 [![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
@@ -17,115 +15,77 @@
 
 [下载](https://github.com/diodeme/Gold-Band/releases)
 
-[English](README.en.md)
+<!-- README-I18N:START -->
+
+**中文** | [English](./README.en.md)
+
+<!-- README-I18N:END -->
 
 </div>
 
 ---
 
-Gold Band 目前处于**开发者预览阶段**。
+Gold Band 是一个面向本地项目的 AI Agent 工作流桌面客户端。它通过 Agent Client Protocol / ACP 调起本地 Agent，把长程 AI Coding 任务拆成可编排、可观测、可验证、可恢复的运行过程。
 
-项目名称来源于《西游记》中"金箍"的寓意：AI Agent 强大而富有创造力，但在复杂工程任务中同样需要边界、编排、验证和上下文管理。Gold Band 旨在提供这一工程化层，让 Agent 在长程任务中更稳定地发挥作用。
+Gold Band 不试图替代 Claude Code、Codex、Cursor、Gemini 或 OpenCode。它更像这些 Agent 之上的本地 runtime 和桌面壳：负责工作流控制、上下文注入、产物归档、状态收敛、失败恢复和运行观测。
 
-简单来说，Gold Band 可以理解为一个**本地 Agent 工作流版的 Dify**，但更侧重于开发工作流、本地执行、Agent 编排和 AI Coding 的可靠性。
-
-## 状态
-
-Gold Band 仍处于早期阶段。
-
-当前 MVP 版本的核心链路已经能够跑通，但产品体验、边界情况、稳定性和工程细节仍在持续优化中。API、UX、工作流行为和内部实现在稳定版本发布前可能发生变化。
-
-在这个阶段，早期用户的反馈尤为宝贵。与核心工作流相关的问题将被优先处理。
-
-## 技术栈
-
-- Rust
-- React
-- Tauri 2
-- Agent Client Protocol / ACP
+> [!NOTE]
+> Gold Band 仍处于 **Developer Preview**。核心链路已经可用，但 AUTO / AI-DYNAMIC、多 Agent 兼容性、复杂任务稳定性和产品体验仍在快速迭代。推荐先使用 Claude Code 和 Codex 体验。
 
 ## 为什么做 Gold Band
 
-在 AI Coding 的实践中，我反复遇到以下几个问题：
+AI Coding 真正难的往往不是让 Agent 写一次代码，而是让它在更长、更复杂的任务中稳定工作：
 
-1. **长程任务难以可靠编排。**
-   即使采用 subagent、agent team 等分治协作策略，一旦任务周期过长，主会话的 orchestrator 仍可能出现编排错误，甚至直接自己下场干活。
+- **控制流容易漂移**：长程任务里，主会话可能忘记原始编排，甚至跳过验证直接自报完成。
+- **自验证不可靠**：同一个 Agent 同时当执行者和裁判时，`completed` 不一定代表需求真的完成。
+- **上下文管理碎片化**：profile、rules、skills、MCP、运行约束和修复指令分散在不同工具中，迁移和维护成本越来越高。
+- **过程难以复盘**：如果没有统一的 run、round、node、attempt、artifact 和 raw event，失败后很难定位问题和恢复执行。
 
-2. **Agent 自验证不一定可信。**
-   在使用 loop 类工具时，同一个 Agent 既当运动员又当裁判，缺少交叉验证，`completed` 的结果不一定代表输出真的可靠。
-
-3. **上下文和能力加载碎片化。**
-   skill、constitution、MCP 工具、rules 等上下文来源在不同 Agent 之间往往各自管理，维护和迁移这些配置会越来越痛苦。
-
-4. **Agent 平台的限制可能阻碍工作流设计。**
-   例如，Claude Code 的 subagent 早期无法继承主会话的 skill 列表，只能由主 Agent 告知或提前定义，导致 subagent 能力受限。此问题在最新版本（v2.1.153）中已修复，但它曾是促使我想做一套外部编排和上下文管理层的触发因素之一。
-
-Gold Band 的核心理念是：好的 AI 应用应该用工程化手段降低 AI 的不稳定性，同时保留 AI 的创造力。
+Gold Band 的核心思路是：**控制面确定化，执行面交给 Agent；完成判断基于状态、产物和验证，而不是只听 Agent 自述。**
 
 ## 核心能力
 
-Gold Band 聚焦四个核心能力：
+- **会话模式**：像 Agent IDE 一样发起需求、查看流式会话、切换 session、继续追问、查看输入附件和执行产物。
+- **工作流模式**：用可视化画布编排 plan、dev、review、test、accept、cleanup 等节点，并支持失败回环与新 round。
+- **AUTO / AI-DYNAMIC**：让运行时在约束内动态拆分任务、创建内部节点、fan-out 并行、merge、acceptance，再回到外层工作流。
+- **多 Agent 管理**：通过 ACP 管理 Claude Code、Codex、Cursor、Gemini、OpenCode 等 provider 的配置和诊断状态。
+- **运行观测**：查看 canonical state、ACP 会话事件、原始帧、系统提示、节点状态、token / 耗时信息、artifacts 和 attachments。
+- **附件与产物**：支持文件选择、拖拽、粘贴图片、输入附件复用、图片预览、节点产物和自由附件查看。
+- **上下文管理**：管理用户级 / 项目级 profile、MCP、SKILL管理，并在工作流和动态节点中复用。
 
-- **工作流编排**：定义 Agent 在规划、开发、审查、测试、验收、清理等阶段如何流转。
-- **上下文管理**：管理角色，未来还将支持 skill、rules、MCP 等可复用上下文资产。
-- **交叉验证**：将开发、审查、测试、验收分离，让结果由不同节点检查。
-- **可观测性**：查看 Agent 会话、系统提示、原始 ACP 帧、产物、附件、轮次和 attempt。
+## 快速开始
 
-## 功能
+1. 从 [Releases](https://github.com/diodeme/Gold-Band/releases) 下载桌面包，或从源码构建。
+2. 打开 Gold Band，添加一个本地 workspace。
+3. 在 Agent 管理中配置一个可用 Agent。当前推荐先配置 Claude Code 和 Codex。
+4. 回到会话首页，输入需求。
+5. 选择运行模式：
+   - `WORKFLOW`：使用固定工作流模板，适合流程明确、需要强验证的任务。
+   - `AUTO`：让 AI-DYNAMIC 在约束内动态拆分和调度，适合更开放或更复杂的任务。
+6. 发起运行后，在会话详情中观察 Agent 输出、节点切换、产物、附件和运行状态。
 
-### 工作流编排
+### 本地开发
 
-用户可在创建任务时为任务指定工作流。工作流可直接在画布中可视化创建，也可复用现有模板。Gold Band 也内置了一套工作流。
-
-![工作流编排](docs/images/wf-orchestration.png)
-
-#### 概念
-
-**节点**
-
-每个节点代表一次 Agent 执行。用户可在 Agent 管理中配置 Agent。理论上任何 ACP 兼容的 Agent 都可以调起，但由于不同 Agent 对 ACP 的支持质量参差不齐，Gold Band 仅在完整测试通过后才将其加入推荐列表。当前阶段已验证通过的是 **Claude Code**。
-
-**角色**
-
-每个节点可指定一个角色，角色内容会追加到系统提示中。如果 ACP Agent 不支持追加 system prompt，Gold Band 目前会将其追加到 user prompt。角色可在上下文管理中进行管理。系统提供内置角色，用户可修改后另存为自定义角色。
-
-**权限模式**
-
-权限模式在 ACP 握手阶段获取。用户可在节点设置中选择支持的权限模式。
-
-**结果判定**
-
-结果判定决定节点完成后的分支走向。
-
-Gold Band 目前支持两种方式：
-
-1. **人工 check**：用户手动标记节点为成功或失败，适用于方案审核等需要人工确认的场景。
-2. **AI 输出验证**：要求 Agent 输出结构化 DSL，Gold Band 通过表达式判定结果。
-
-示例：
-
-```json
-{
-  "reason": "String",
-  "result": "boolean"
-}
+```bash
+npm install
+npm run dev
 ```
 
-```js
-$.result == true
+常用验证命令：
+
+```bash
+cargo check
+npm run web:test
+npm run web:build
 ```
 
-**边**
+## 运行模式
 
-边定义节点之间的连接方式。用户可编辑目标节点和会话模式：
+### WORKFLOW
 
-- `new`：开启新会话
-- `continue`：在上一个会话中继续
+WORKFLOW 模式使用显式工作流。每个节点代表一次 Agent 执行，边决定成功、失败或人工确认后的流转方向。
 
-
-### 内置工作流
-
-Gold Band 当前内置的默认工作流如下：
+典型默认工作流：
 
 ```mermaid
 flowchart LR
@@ -140,153 +100,148 @@ flowchart LR
       CLEANUP -->|success| END["$end"]
 ```
 
-重点行为：
+这个模式适合：
 
-- 审查和测试不通过会回环到开发节点，使用 `continue` 模式进行修复。
-- 验收节点验证需求是否真正完成。
-- 验收失败则生成报告并开启新轮次。
-- 验收通过后，清理节点整理过程产物并持久化到项目目录。
-- 用户不必使用内置工作流，可自行创建偏好的工作流。
+- 有明确开发、审查、测试、验收阶段的需求。
+- 希望失败后回到指定节点继续修复。
+- 希望用结构化产物和验证规则固化验收标准。
 
-### 任务执行
+### AUTO / AI-DYNAMIC
 
-用户可在任务目录下发起新的 run。一个需求可执行多次。run 启动后，用户可查看每一轮的详细执行情况。
+AUTO 模式会在运行时生成 `AI-DYNAMIC -> end` 形式的工作流。AI-DYNAMIC 是一个特殊复合节点：外层仍由 Gold Band runtime 控制，内部由 Agent 在 schema 和预算约束内提出下一步执行计划。
 
-![任务执行](docs/images/task-execution.png)
+AI-DYNAMIC 可以：
 
-#### 概念
+- 创建单个后继节点。
+- 创建 fan-out 分支并行处理子任务。
+- 为可写并行分支创建独立 git worktree。
+- 在分支结束后创建 merge 节点。
+- 创建 acceptance 节点验收结果。
+- 在验收不通过时继续生成修复节点。
+- 调用已允许的 workflow snapshot。
 
-**Attempt**
+AI-DYNAMIC 不能直接修改 runtime 状态。它只能输出结构化 proposal，由 Gold Band 校验后 materialize 成真实节点。
 
-节点对之间的回环算一次 attempt。例如 `测试 -> failure -> 开发` 是一次 attempt。工作流可在运行时限制每对节点的最大 attempt 次数。
+## 核心概念
 
-**Round**
+| 概念 | 含义 |
+|---|---|
+| `workspace` | 一个本地项目目录，也是任务执行的工作区。 |
+| `task` | 一次需求或目标。 |
+| `run` | 对同一个 task 发起的一次执行。 |
+| `round` | run 内的一轮工作流执行；验收失败时可以开启新 round。 |
+| `node` | 工作流中的一次 Agent 执行或复合执行单元。 |
+| `attempt` | 某个节点的一次尝试；失败回环或 retry 会产生新的 attempt。 |
+| `artifact` | 有明确输出契约的规范化节点产物。 |
+| `attachment` | Agent 或用户产生的自由文件，例如报告、截图、日志和中间材料。 |
+| `provider` | Gold Band 通过 ACP 调起的 Agent 实现。 |
 
-节点可指定结束状态以开启新轮次。新轮次从头执行工作流，Gold Band 会在系统提示中告知 Agent 当前轮次和上轮产物目录。工作流可在运行时限制最大 round 次数。
-
-**产物目录**
-
-过程产物存放在：
+过程数据默认保存在用户目录下的 `.gold-band` 项目空间中，例如：
 
 ```txt
-~/.gold-band/projects/<project-path>
+~/.gold-band/projects/<project-id>/tasks/<task-id>/runs/<run-id>/rounds/<round-id>/nodes/<node-id>/attempt-001/artifacts
+~/.gold-band/projects/<project-id>/tasks/<task-id>/runs/<run-id>/rounds/<round-id>/nodes/<node-id>/attempt-001/attachments
 ```
 
-示例：
-
-```txt
-# artifacts
-~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/artifacts
-
-# attachments
-~/.gold-band/projects/D--Projects-code-ai-Gold-Band/tasks/task-001/runs/run-001/rounds/round-001/nodes/dev/attempt-001/attachments
-```
-
-**Artifact**
-
-对有明确输出要求的节点，Gold Band 自动将节点输出放到 `artifacts` 下。这与 AI 输出验证相关。
-
-**Attachments**
-
-Agent 可自由输出文件和报告到 `attachments` 下，如测试报告或中间笔记。
-
-### 会话观测
-
-节点运行中，用户可实时观察会话状态。会话结束后，用户也可打开对应的 CLI 会话。节点执行完后，用户可继续在该窗口对话，使用 `continue` 模式。
-
-![会话观测](docs/images/session-observation.png)
-
-支持的观测内容：
-
-- **系统提示**：Gold Band 运行时追加的 system prompt。
-- **原始帧**：原始 ACP 会话帧，用于调试和问题排查。
+## 界面
 
 ### Agent 管理
 
-Gold Band 通过 ACP 启动 Agent，并在 Agent 管理中提供配置和环境诊断。
+配置 ACP provider、模型、权限模式和环境诊断。当前已纳入 Claude Code、Codex、Cursor、Gemini、OpenCode 等 Agent 类型，实际可用性取决于本机环境和 provider 的 ACP 支持情况。
 
-虽然理论上支持所有 ACP 兼容的 Agent，但目前推荐优先使用 **Claude Code**，因为它已在当前实现中通过验证。
+![agent管理](docs/images/agent-management.png)
 
-![Agent管理](docs/images/agent-management.png)
+### 工作流编排
+
+在画布中创建、查看和编辑 workflow 模板，配置节点 provider、profile、权限模式、输出契约和边的 session 策略。
+
+![工作流编排](docs/images/wf-orchestration.png)
+
+### 快速对话
+
+发起 ACP 会话，选择工作空间和运行模式
+
+![快速对话](docs/images/quick-chat.png)
+
+### 会话观测
+
+查看 ACP 会话、系统提示、原始帧、产物和附件。运行中可以在不同 session / attempt 之间切换。
+
+![会话观测](docs/images/session-observation.png)
 
 ### 上下文管理
 
-Gold Band 目前支持角色管理。内置角色不可直接修改或删除，但可复制后另存为自定义角色。
-
-未来版本可能会扩展此区域，支持 skill、rules、MCP 等可复用上下文资产。
+管理用户级和项目级 profile，并在工作流或动态节点中选择复用。
 
 ![上下文管理](docs/images/context-management.png)
 
-### 设置
+## 当前状态
 
-当前设置项包括：
+已经可用的主路径：
 
-- 中 / 英文语言切换
-- 主题切换
-- 字体切换
-- 更新机制
-- 本地 Claude Code 开关
+- 桌面端会话模式和工作台模式。
+- 固定 WORKFLOW 运行。
+- AUTO / AI-DYNAMIC 模式。
+- Claude Code ACP 和 Codex 主路径。
+- 多 workspace 会话侧边栏。
+- 输入附件、图片预览、产物和附件查看。
+- run / round / node / attempt 状态观测。
+- 工作流模板和 AUTO 模板管理。
+- 角色、MCP、SKILL统一管理。
 
-本地 Claude 开关为临时方案，后续可能会优化。开启时使用本地 Claude Code 可执行文件，关闭时 Claude Code ACP 组件会拉取 Claude Code SDK 中携带的 `claude.exe`。
+仍在打磨的方向：
 
-## 权衡
+- Cursor、Gemini、OpenCode 等多 Agent 的兼容性。
+- 更稳定的runtime生命周期。
+- 更优雅、轻量的内置提示词。
+- 更流畅、更友好的UI体验。
+- 更美观的主题。
 
-内置工作流更适用于大型、复杂、长周期的开发任务。
+正在开发的功能：
 
-通过将工作拆分为方案、开发、审查、测试、验收、清理等阶段，Gold Band 可以提供更强的约束和交叉验证。代价是执行时间和 token 消耗可能增加。这是基于工作流的 Agent 系统的常见权衡。
+- 和IM工具打通。
+- 新增定时任务能力。
+- 新增本地数据看板能力。
 
-对于小型日常任务，用户可以定义更轻量的工作流，例如：
 
-- `plan -> dev`
-- `dev -> review`
+## 适合与不适合
 
-未来 Gold Band 将探索 AI 动态路由，让系统根据任务复杂度选择合适的执行路径：简单任务快速通过，复杂任务自动分解、验证和循环。
+适合：
 
-## 路线图
+- 长程 AI Coding 任务。
+- 希望开发、审查、测试、验收分离的任务。
+- 希望保留过程产物并能失败恢复的任务。
+- 希望把多个本地 Agent 统一到同一套 workflow runtime 的用户。
 
-### 高优先级
+暂不适合：
 
-1. **多 Agent 支持**
+- 只需要一次性简单问答的场景。
+- 要求稳定商用 SLA 的生产环境。
+- 不愿意接受 Developer Preview 阶段 UI 和行为快速变化的用户。
 
-   测试并集成 Codex、Cursor、Gemini CLI、OpenCode，根据兼容性和稳定性可能增加更多 Agent。
+## 技术栈
 
-2. **系统通知**
-
-   Agent 请求权限或工作流出错时进行系统通知，可在设置中配置。
-
-3. **自适应工作流编排与并发执行**
-
-   支持更灵活的执行策略，不局限于固定工作流路径。
-
-   - **节点级并发**：一个节点可分发到多个下游节点并行处理子任务，可在实验室功能中配置最大并行数。
-   - **需求级并发**：一次导入多个需求，复用同一套工作流并行执行，可在实验室功能中配置需求并行数。
-   - **AI 动态路由**：工作流执行中，由 AI 根据当前目标、上下文、中间产物和执行结果，动态决定下一步进入哪些节点、拆分哪些子任务、是否需要并行执行。
-
-### 中优先级
-
-1. 增加对 skill 的支持与管理。
-2. 增加对 MCP 的支持与管理。
-3. 优化 ACP 会话观测的性能、UI、使用体验和已知问题。
-4. 增加指标统计和数据看板，包括会话用时、token 消耗量等，校对当前会话计时的准确性。
+- Rust
+- React
+- Tauri 2
+- Tailwind CSS
+- shadcn/ui
+- Agent Client Protocol / ACP
 
 ## 社区
 
 本项目积极参与和支持 [linux.do 社区](https://linux.do)。
 
-## 贡献
+## 反馈
 
-Gold Band 处于开发者预览阶段，非常欢迎真实使用场景的反馈。
+Gold Band 目前最需要真实使用反馈，尤其欢迎这些问题：
 
-有价值的反馈包括：
-
-- 核心工作流在哪里出问题或变得令人困惑。
-- 编排模型在真实 AI Coding 场景中是否有用。
-- 哪些 Agent 集成最重要。
-- 哪些缺失的能力阻碍了实际使用。
-- 任何 bug、粗糙边缘或不合理的设计选择。
+- AUTO 模式拆任务是否合理。
+- WORKFLOW 模式的失败回环和验收是否真正有用。
+- 多 Agent 接入哪里不顺。
+- 会话、产物、附件和运行状态是否看得明白。
+- 哪些错误应该被更早发现、更清楚提示或更容易恢复。
 
 欢迎提交 Issue 和 Pull Request。
 
-## License
-
-AGPL-3.0-only — 请参阅 [LICENSE](LICENSE) 文件。
+AGPL-3.0-only，详见 [LICENSE](LICENSE)。

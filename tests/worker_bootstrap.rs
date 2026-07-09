@@ -167,6 +167,8 @@ fn success_result() -> ProviderRunResult {
             open_command: Some("claude -c session-123".to_string()),
         }),
         stream_path: None,
+        runtime_error: None,
+
     }
 }
 
@@ -218,6 +220,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
             }),
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -266,6 +269,7 @@ impl ProviderAdapter for InterruptedThenContinueProvider {
                     open_command: Some("claude -c session-123".to_string()),
                 }),
                 stream_path: None,
+                runtime_error: None,
             });
         }
         assert_eq!(session_mode, SessionMode::Continue);
@@ -325,6 +329,116 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
             }),
             worker_ref_seed: None,
             stream_path: None,
+            runtime_error: None,
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(
+        &self,
+        worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(worker_ref.open_command.clone())
+    }
+}
+
+#[derive(Clone, Default)]
+struct NewRoundScopedContextProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+impl ProviderAdapter for NewRoundScopedContextProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        AlwaysFailAcceptanceProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        AlwaysFailAcceptanceProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        std::fs::create_dir_all(req.runtime_context.attachments_dir.as_std_path())?;
+        let node_id = req.runtime_context.node_id.clone();
+        let round_id = req.runtime_context.round_id.clone();
+        match (round_id.as_str(), node_id.as_str()) {
+            ("round-001", "plan") => {
+                std::fs::write(
+                    req.runtime_context
+                        .attachments_dir
+                        .join("tech-plan.md")
+                        .as_std_path(),
+                    "plan",
+                )?;
+            }
+            ("round-001", "dev") => {
+                std::fs::write(
+                    req.runtime_context
+                        .attachments_dir
+                        .join("dev-report.md")
+                        .as_std_path(),
+                    "old dev",
+                )?;
+            }
+            ("round-001", "accept") => {
+                std::fs::write(
+                    req.runtime_context
+                        .attachments_dir
+                        .join("accept-report.md")
+                        .as_std_path(),
+                    "failed accept",
+                )?;
+            }
+            ("round-002", "dev") => {
+                std::fs::write(
+                    req.runtime_context
+                        .attachments_dir
+                        .join("dev-report.md")
+                        .as_std_path(),
+                    "new dev",
+                )?;
+            }
+            _ => {}
+        }
+
+        let accept_invocation_index = {
+            let invocations = self.invocations.lock().unwrap();
+            invocations
+                .iter()
+                .filter(|invocation| invocation.runtime_context.node_id == "accept")
+                .count()
+        };
+        self.invocations.lock().unwrap().push(req);
+
+        let output_artifact = if node_id == "accept" {
+            let passed = accept_invocation_index > 0;
+            Some(OutputArtifactPayload {
+                name: "accept-result".to_string(),
+                content: format!(
+                    r#"{{"result":{},"reason":"{}"}}"#,
+                    passed,
+                    if passed {
+                        "accepted"
+                    } else {
+                        "needs another round"
+                    }
+                ),
+            })
+        } else {
+            None
+        };
+
+        Ok(ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: Some(0),
+            result_payload: output_artifact.map(|output_artifact| ProviderResultPayload {
+                output_artifact: Some(output_artifact),
+            }),
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -406,6 +520,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
                 open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -473,6 +588,7 @@ impl ProviderAdapter for OneRepairProvider {
                 open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
             }),
             stream_path: None,
+            runtime_error: None,
         })
     }
 
@@ -993,6 +1109,196 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
 }
 
 #[test]
+fn run_continue_model_override_uses_current_acp_session_model() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-model";
+
+    let provider = InterruptThenSuccessProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Check feature",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "continue-model-flow",
+          "entry": "accept",
+          "control": {{ "max_attempts": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","model":"deepseek","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-continue-model"}"#,
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert!(is_run_continuable(&paused));
+
+    gold_band::storage::write_json(
+        &app.paths
+            .worker_ref_file(task_id, "run-001", "round-001", "accept", "attempt-001"),
+        &WorkerRefState {
+            version: gold_band::domain::VERSION.to_string(),
+            provider: "claude-acp".to_string(),
+            mode: SessionMode::Continue,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(serde_json::json!({"acpSessionId":"session-123"})),
+            open_command: None,
+        },
+    )
+    .unwrap();
+
+    let completed = app
+        .run_continue_with_model_override(
+            task_id,
+            "run-001",
+            Some("prompt-continue-model-001".to_string()),
+            Some("继续使用新模型".to_string()),
+            Some("gpt-5.4".to_string()),
+        )
+        .unwrap();
+    assert_eq!(completed.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].model.as_deref(), Some("deepseek"));
+    assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(invocations[1].model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        invocations[1]
+            .continue_ref
+            .as_ref()
+            .and_then(|value| value.get("acpSessionId"))
+            .and_then(|value| value.as_str()),
+        Some("session-123"),
+    );
+}
+
+#[test]
+fn run_continue_permission_override_uses_current_acp_session_mode() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-continue-permission";
+
+    let provider = InterruptThenSuccessProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Check feature",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "continue-permission-flow",
+          "entry": "accept",
+          "control": {{ "max_attempts": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","permission_mode":"ask","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-continue-permission"}"#,
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert!(is_run_continuable(&paused));
+
+    gold_band::storage::write_json(
+        &app.paths
+            .worker_ref_file(task_id, "run-001", "round-001", "accept", "attempt-001"),
+        &WorkerRefState {
+            version: gold_band::domain::VERSION.to_string(),
+            provider: "claude-acp".to_string(),
+            mode: SessionMode::Continue,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(serde_json::json!({"acpSessionId":"session-123"})),
+            open_command: None,
+        },
+    )
+    .unwrap();
+
+    let completed = app
+        .run_continue_with_config_overrides(
+            task_id,
+            "run-001",
+            Some("prompt-continue-permission-001".to_string()),
+            Some("继续使用新权限".to_string()),
+            None,
+            Some("bypassPermissions".to_string()),
+        )
+        .unwrap();
+    assert_eq!(completed.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].permission_mode.as_deref(), Some("ask"));
+    assert_eq!(invocations[1].session_mode, SessionMode::Continue);
+    assert_eq!(
+        invocations[1].permission_mode.as_deref(),
+        Some("bypassPermissions")
+    );
+    assert_eq!(
+        invocations[1]
+            .continue_ref
+            .as_ref()
+            .and_then(|value| value.get("acpSessionId"))
+            .and_then(|value| value.as_str()),
+        Some("session-123"),
+    );
+}
+
+#[test]
 fn transition_continue_uses_latest_target_attempt_ref() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -1233,7 +1539,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
             {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
           ],
           "edges": [
-            {{"from":"accept","to":"$new-round","on":"failure"}},
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"$entry"}},
             {{"from":"accept","to":"$end","on":"success"}}
           ]
         }}"#,
@@ -1252,6 +1558,213 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     assert_eq!(run.outcome, Some(RunOutcome::Failure));
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn new_round_starts_from_configured_entry_node() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-new-round-entry";
+
+    let provider = AlwaysFailAcceptanceProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let profiles = app.profiles().unwrap().profiles;
+    let accept_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
+    let dev_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Start the next round from development",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "round-entry-flow",
+          "entry": "accept",
+          "control": {{ "max_rounds": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}"}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"dev"}},
+            {{"from":"accept","to":"$end","on":"success"}},
+            {{"from":"dev","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile, dev_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-new-round-entry"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+    assert_eq!(run.new_rounds_opened, 1);
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].runtime_context.node_id, "accept");
+    assert_eq!(invocations[1].runtime_context.round_id, "round-002");
+    assert_eq!(invocations[1].runtime_context.node_id, "dev");
+}
+
+#[test]
+fn new_round_predecessor_context_uses_stable_prefix_and_current_round() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-new-round-scoped-context";
+
+    let provider = NewRoundScopedContextProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let profiles = app.profiles().unwrap().profiles;
+    let plan_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "方案")
+        .unwrap()
+        .id
+        .clone();
+    let dev_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "开发")
+        .unwrap()
+        .id
+        .clone();
+    let accept_profile = profiles
+        .iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id
+        .clone();
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Scope predecessor context across rounds",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "round-scoped-context-flow",
+          "entry": "plan",
+          "control": {{ "max_rounds": 1 }},
+          "nodes": [
+            {{"id":"dev","type":"worker","provider":"claude-acp","profile":"{}"}},
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}},
+            {{"id":"plan","type":"worker","provider":"claude-acp","profile":"{}"}}
+          ],
+          "edges": [
+            {{"from":"plan","to":"dev","on":"success"}},
+            {{"from":"dev","to":"accept","on":"success"}},
+            {{"from":"accept","to":"$new-round","on":"failure","new_round_entry":"dev"}},
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            dev_profile, accept_profile, plan_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-new-round-scoped-context"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    let invocations = provider.invocations.lock().unwrap();
+    let order = invocations
+        .iter()
+        .map(|invocation| {
+            format!(
+                "{}/{}",
+                invocation.runtime_context.round_id, invocation.runtime_context.node_id
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![
+            "round-001/plan",
+            "round-001/dev",
+            "round-001/accept",
+            "round-002/dev",
+            "round-002/accept"
+        ]
+    );
+
+    let round2_dev = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "dev"
+        })
+        .unwrap();
+    let round2_dev_predecessors = round2_dev
+        .predecessors
+        .iter()
+        .map(|predecessor| format!("{}/{}", predecessor.round_id, predecessor.node_id))
+        .collect::<Vec<_>>();
+    assert_eq!(round2_dev_predecessors, vec!["round-001/plan"]);
+    assert_eq!(
+        round2_dev.predecessors[0].attachments[0].name,
+        "tech-plan.md"
+    );
+    let round2_dev_trigger = round2_dev.new_round_trigger.as_ref().unwrap();
+    assert_eq!(round2_dev_trigger.round_id, "round-001");
+    assert_eq!(round2_dev_trigger.node_id, "accept");
+    assert_eq!(round2_dev_trigger.outcome.as_deref(), Some("failure"));
+    assert_eq!(
+        round2_dev_trigger
+            .output_artifact
+            .as_ref()
+            .map(|artifact| artifact.name.as_str()),
+        Some("accept-result")
+    );
+    assert_eq!(round2_dev_trigger.attachments[0].name, "accept-report.md");
+
+    let round2_accept = invocations
+        .iter()
+        .find(|invocation| {
+            invocation.runtime_context.round_id == "round-002"
+                && invocation.runtime_context.node_id == "accept"
+        })
+        .unwrap();
+    let round2_accept_predecessors = round2_accept
+        .predecessors
+        .iter()
+        .map(|predecessor| format!("{}/{}", predecessor.round_id, predecessor.node_id))
+        .collect::<Vec<_>>();
+    assert_eq!(round2_accept_predecessors, vec!["round-002/dev"]);
+    assert_eq!(
+        round2_accept.predecessors[0].attachments[0].name,
+        "dev-report.md"
+    );
+    assert!(round2_accept.new_round_trigger.is_none());
 }
 
 #[test]

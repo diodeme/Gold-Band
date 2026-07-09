@@ -64,6 +64,7 @@ Agent 管理
 - 点击“任务编排”应回到任务列表根页面，而不是保留任务工作流或 Round 详情等深层页面。
 - 当前实现任务编排、Agent 管理、上下文管理和设置。
 - 上下文管理当前提供角色管理（Profile Management），用于维护工作流节点引用的 profile；列表拆成“自定义角色 / 内置角色”双 tab，自定义角色维护独立分页与过滤，内置角色单独浏览。内置角色与自定义角色卡片使用同一套紧凑密度基线，桌面常见宽度下优先维持一行 3 张卡片，再按宽度退化。浏览器预览 mock 与桌面端 Tauri 数据通路必须分层隔离，不能在正式路径复用 mock 状态；该分层由前端 Vitest 回归测试持续覆盖 runtime 选择、facade 透传和 desktop/browser 双实现语义。
+- 上下文管理的 MCP 管理页按“自定义 MCP / 内置 MCP”分段展示。自定义 MCP 允许用户新增、编辑、删除和启停；内置 MCP 由渠道配置注入，只允许用户查看、诊断、查看工具列表和启停，不能编辑或删除。内置 MCP 仅在对应渠道声明 `builtinMcpServers` 时注入，首次注入使用渠道配置的 `enabled` 默认值；后续启动同步只刷新名称、连接方式和帮助信息，必须保留用户在本机选择的启停状态。MCP 工具列表通过后端 `tools/list` 获取，stdio transport 必须在同一个子进程会话中先完成 `initialize`，再等待 `tools/list` 的 JSON-RPC 响应，不能把 initialize 响应误当作工具列表结果。Gold Band 设置页和存储层继续使用内部 transport + map 结构；发送 ACP `session/new|load` 时必须转换为 ACP `mcpServers` wire format：stdio 不带 `type`，HTTP/SSE 使用 `type: "http"|"sse"`，`env` 与 `headers` 均为 `{ name, value }` 数组，不能透传内部 `id`、`transport` 或对象 map。
 - 模型管理保持占位，可显示 disabled 或 coming soon 状态。
 - 不在一级菜单中放 run、round、node 等任务内部对象。
 
@@ -147,8 +148,10 @@ round 详情
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
 - 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；Workbench / Conversation 形态切换集中到顶栏中部
+- 共享顶栏除按钮、toggle、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
+- 桌面根壳层需要通过 overlay 提供主题化 1px 窗口外轮廓，顶部轮廓使用独立 token 略强于左右/底部边界，弥补 Windows 10 在无原生 decorations 时缺少 Win11 圆角/阴影所导致的顶部边界丢失
 - Windows/Linux 顶栏右侧承载窗口最小化、最大化/还原、关闭操作；macOS 使用系统原生左上角 traffic lights，顶栏不重复渲染自定义窗口按钮
 
 ### 6.4 运行态生命周期
@@ -173,6 +176,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 - 2026-06-19 起桌面 bootstrap 暴露 `platform` 作为前端唯一平台事实源：macOS 启用原生 traffic lights + overlay 标题栏并隐藏系统标题文本；Windows/Linux 继续关闭整窗 decorations，由共享顶栏右侧自定义窗口控制接管最小化、最大化/还原和关闭。
+- 2026-06-29 起共享顶栏拖拽命中升级为“整条顶栏默认可拖，交互控件显式 no-drag”，并由根壳层 overlay 提供主题化外轮廓；顶部轮廓单独加强，保证 Windows 10/11 在无原生 decorations 下都有可感知窗口边界。
 
 ---
 

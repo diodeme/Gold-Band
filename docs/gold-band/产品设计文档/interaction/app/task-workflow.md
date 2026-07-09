@@ -98,6 +98,8 @@
 - allowed workflows 使用可搜索多选下拉栏，分为“可选择的工作流”和“不可选择的工作流”。不可选择项禁用并展示原因，例如 `workflow.id` 重复、`workflow.id` 为空、包含 AI-DYNAMIC 但未允许嵌套；默认工作流不做重复 ID 豁免。触发器内以标签展示已选 workflow 名称与 DSL `workflow.id`，标签可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
 - 保存 workflow 时，前端校验 AI-DYNAMIC 的控制限制必须为正整数、allowed workflow 必须存在且不重复、`allowNestedDynamic=false` 时不得选择包含 AI-DYNAMIC 的 workflow；后端保存和 run start 时会再次校验并冻结 snapshot。
 - 作者态画布右键菜单提供“添加结束节点”和“添加新 Round 节点”；添加后会在画布中出现对应虚拟目标节点，普通节点可拖拽连线到该目标，用于补齐结束流向或开启新 round 的流向。
+- 初始入口不提供独立选择器，由画布拓扑自动派生：真实节点中没有初始拓扑入边的节点显示“入口”标识；初始拓扑入边包含 success 主链入边和非回退的前向分支入边，不包含指回 success 主链前序节点的 failure 回退边，也不包含 `$new-round.new_round_entry`。唯一入口候选会自动写入 `workflow.entry`，多个或零个入口候选均不能保存。`$new-round.new_round_entry` 仍必须在边 Inspector 中显式选择下一轮 Round 起点。
+- 作者态画布自动整形使用 success 主链拓扑顺序，不使用 `workflow.nodes` 数组追加顺序判断前后；当用户新增前置节点并连出 success 边时，该节点应自动排到原入口前方，failure 边仍按主链顺序作为分支/回退线处理。
 - Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
 - 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
 - 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置且 doctor 成功的 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。
@@ -111,10 +113,10 @@
 - worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
 - 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。
 - 默认模板来自后端持久化的内置 workflow JSON，前端“默认模板”按钮只应用该模板，不维护独立业务默认 schema/expression，也不会在模板缺失时本地合成默认 workflow；默认模板生成顺序为先同步默认角色，再把生成出的角色 ID 写入默认节点 profile。
-- 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
+- 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
-- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。
+- AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。声明 JSON 输出的 worker 只有在最近 assistant 输出中提取到可解析 JSON 时才允许落盘 canonical artifact，不得把普通自然语言回复 fallback 成 `.json` 产物；进入隐藏修复前必须清理本轮非法 output artifact，避免修复中断后产物列表展示旧的无效产物。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
 - 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。
@@ -206,6 +208,7 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - 左侧外置垂直 tab：查看详情、查看会话。
 - 查看详情默认展示结构化节点信息：node id、节点说明、节点类型、sequence、status、outcome、current 标记、attempt id、startedAt、finishedAt。
 - artifact 与 attachment 作为资源列表展示，不预加载完整正文。
+- AI-DYNAMIC 内部控制协议产物 `dynamic-node-completion` 也作为产物展示；runtime 必须只在 provider 已返回完整且合法的 artifact 内容后落盘该文件，不允许用 0 字节占位文件、停止前最后一句普通 assistant 文本或非法 JSON 触发产物数量和弹窗入口。
 - 点击 artifact 或 attachment 后打开二级抽屉展示完整内容；二级抽屉左上提供返回按钮，返回上一级节点详情。
 
 右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id、从该节点重跑；核心浏览路径必须通过单击节点完成。

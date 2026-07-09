@@ -143,7 +143,7 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
 - 启动命令为 `npm run dev`，默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
 - Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。
-- Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理等 npx/codex/taskkill 调用不弹控制台窗口。
+- Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理、Toast AUMID 注册等 npx/codex/taskkill/reg/PowerShell 调用不弹控制台窗口。
 
 MVP 范围：
 - 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
@@ -322,7 +322,7 @@ MVP 范围：
 
 ## 11. 2026-06-18 系统通知干预弹窗
 
-编排器在人工确认 / 权限请求 / 执行错误 / 进程中断四类暂停场景下，通过 **OS 系统通知**（Windows Toast，含「查看详情」「忽略」按钮，左上角展示码灵图标）单一表面主动提醒用户：应用未聚焦时仍可触达。
+编排器在人工确认 / 权限请求 / 执行错误 / 进程中断四类暂停场景下，通过 **OS 系统通知**（Windows Toast，含「查看详情」「忽略」按钮，左上角展示码灵图标）单一表面主动提醒用户：应用未聚焦时仍可触达。Windows Toast 首次发送时会幂等注册 AUMID 与开始菜单快捷方式；该注册属于后台非交互流程，所有 `reg` / PowerShell helper 必须通过统一 process helper 隐藏控制台窗口。
 
 交互约束：
 - 生命周期为**点掉即消失**，无解决闭环。点掉（忽略）或查看详情时由后端清 dedup key，允许同节点再次弹出。

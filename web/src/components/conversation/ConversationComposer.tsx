@@ -5,9 +5,11 @@ import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { normalizeConversationAutoConfigForSubmit, optionalRunModeText } from '@/lib/conversation-run-mode-config';
 import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStart } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -39,7 +41,9 @@ export function ConversationComposer({
   onWorkspaceChange,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
-  const [content, setContent] = useState('');
+  const composerDraft = useConversationComposerDraft();
+  const content = composerDraft.draft.content;
+  const setContent = composerDraft.setContent;
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
@@ -69,7 +73,7 @@ export function ConversationComposer({
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
-  } = useAttachmentPicker();
+  } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
 
   useWindowDragGuard();
 
@@ -92,26 +96,38 @@ export function ConversationComposer({
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
   }, [runMode, workflowTemplates]);
 
+  const patchedValue = <K extends keyof ConversationAutoConfigVm>(
+    patch: Partial<ConversationAutoConfigVm>,
+    key: K,
+    fallback: ConversationAutoConfigVm[K] | undefined,
+  ): ConversationAutoConfigVm[K] | undefined => (
+    Object.prototype.hasOwnProperty.call(patch, key) ? patch[key] : fallback
+  );
+
   const autoConfigWithSession = (patch: Partial<ConversationAutoConfigVm> = {}): ConversationAutoConfigVm => {
     const base = runMode.autoConfig ?? { agentType: selectedAgent };
+    const nextAgent = patchedValue(patch, 'agentType', selectedAgent);
+    const nextModel = patchedValue(patch, 'modelId', selectedModel);
+    const nextPermissionMode = patchedValue(patch, 'permissionMode', selectedPermissionMode);
+    const nextGlobalGoal = patchedValue(patch, 'globalGoal', globalGoal);
     if (isDynamicAuto) {
       return {
         ...base,
         agentStrategy: 'dynamic',
-        agentType: base.agentType || base.bootstrapAgentType || selectedAgent,
-        permissionMode: selectedPermissionMode || undefined,
-        globalGoal: globalGoal.trim() || undefined,
+        agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
+        permissionMode: nextPermissionMode || undefined,
+        globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
     return {
       ...base,
       agentStrategy: 'fixed',
-      agentType: selectedAgent,
-      modelId: selectedModel || undefined,
-      permissionMode: selectedPermissionMode || undefined,
-      globalGoal: globalGoal.trim() || undefined,
       ...patch,
+      agentType: nextAgent || '',
+      modelId: nextModel || undefined,
+      permissionMode: nextPermissionMode || undefined,
+      globalGoal: optionalRunModeText(nextGlobalGoal),
     };
   };
 
@@ -128,7 +144,7 @@ export function ConversationComposer({
       runMode: runMode.mode,
       workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
       autoConfig: isAuto
-        ? autoConfigWithSession()
+        ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
         : undefined,
     };
     const localIssues = isAuto
@@ -150,8 +166,7 @@ export function ConversationComposer({
         setRunModeError(submitError);
         return;
       }
-      setContent('');
-      clearAttachments();
+      composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.
     } finally {
@@ -261,21 +276,21 @@ export function ConversationComposer({
               type="button"
               className={cn(
                 'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-                isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              )}
-              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
-            >
-              {t('conversation.home.auto')}
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 !isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
               onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId })}
             >
               {t('conversation.home.workflow')}
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
+                isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+              )}
+              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
+            >
+              {t('conversation.home.auto')}
             </button>
           </div>
 
@@ -357,8 +372,9 @@ export function ConversationComposer({
               value={globalGoal}
               placeholder={t('runMode.globalGoalPlaceholder')}
               onChange={(event) => {
-                setGlobalGoal(event.target.value);
-                updateAutoSession({ globalGoal: event.target.value.trim() || undefined });
+                const nextGlobalGoal = event.target.value;
+                setGlobalGoal(nextGlobalGoal);
+                updateAutoSession({ globalGoal: optionalRunModeText(nextGlobalGoal) });
               }}
             />
           </div>

@@ -9,6 +9,8 @@ import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
+const titleBarNonDragSelector = 'button, a, input, textarea, select, [role="button"], [data-titlebar-no-drag="true"]';
+
 interface AppTitleBarProps {
   appName: string;
   platform?: DesktopPlatform | null;
@@ -79,12 +81,14 @@ export function AppTitleBar({
 
   const handleTitleBarDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement;
-    if (target.closest('button')) return;
+    if (target.closest(titleBarNonDragSelector)) return;
     handleToggleMaximize();
   };
 
   const handleDragMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (!tauriRuntime || event.button !== 0 || event.detail > 1) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(titleBarNonDragSelector)) return;
     getCurrentWindow().startDragging().catch(() => {});
   };
 
@@ -92,22 +96,28 @@ export function AppTitleBar({
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
 
   return (
-    <header className="flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground" onDoubleClick={handleTitleBarDoubleClick}>
+    <header
+      data-tauri-drag-region
+      className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
+      onDoubleClick={handleTitleBarDoubleClick}
+      onMouseDown={handleDragMouseDown}
+    >
       <div className="flex items-center gap-2 px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 rounded-md text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground"
+          className="app-titlebar-no-drag size-8 rounded-md text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground"
           onClick={onToggleSidebar}
           aria-label={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
           title={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
+          data-titlebar-no-drag="true"
         >
           <PanelLeft className="size-4" />
         </Button>
-        <div data-tauri-drag-region className="flex h-full items-center gap-2 pr-2" onMouseDown={handleDragMouseDown}>
+        <div data-tauri-drag-region className="flex h-full items-center gap-2 pr-2">
           <span data-tauri-drag-region className="grid h-7 w-10 shrink-0 place-items-center rounded-lg border border-titlebar-border bg-background/55 p-1">
-            <img src="/logo.svg" alt="" className="h-full w-full object-contain" />
+            <img src="/logo.svg" alt="" className="h-full w-full object-contain pointer-events-none" />
           </span>
           <span data-tauri-drag-region className="text-sm font-semibold tracking-[0.01em] text-titlebar-foreground">
             {appName}
@@ -115,7 +125,7 @@ export function AppTitleBar({
         </div>
       </div>
 
-      <div className="flex items-center gap-1 rounded-lg border border-titlebar-border bg-background/40 p-0.5">
+      <div className="app-titlebar-no-drag flex items-center gap-1 rounded-lg border border-titlebar-border bg-background/40 p-0.5" data-titlebar-no-drag="true">
         <button
           type="button"
           className={cn(
@@ -148,11 +158,10 @@ export function AppTitleBar({
         data-tauri-drag-region
         className="min-w-0 flex-1 self-stretch"
         aria-label={modeLabel}
-        onMouseDown={handleDragMouseDown}
       />
 
       {policy.showCustomControls ? (
-        <div className="flex h-full items-stretch pl-2">
+        <div className="app-titlebar-no-drag flex h-full items-stretch pl-2" data-titlebar-no-drag="true">
           <button
             type="button"
             className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"

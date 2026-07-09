@@ -192,6 +192,10 @@ export function respondAcpPermission(projectId: string | null | undefined, taskI
   return getRuntimeApi().respondAcpPermission(projectId, taskId, runId, roundId, nodeId, attemptId, requestId, optionId, fallback, outerNodeId, outerAttemptId);
 }
 
+export function respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().respondElicitation(projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId);
+}
+
 export function cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
@@ -210,6 +214,10 @@ export function showAttachment(projectId: string | null | undefined, taskId: str
 
 export function showConversationAttachment(projectId: string, taskId: string, name: string) {
   return getRuntimeApi().showConversationAttachment(projectId, taskId, name);
+}
+
+export function showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().showConversationMessageAttachment(projectId, taskId, runId, roundId, nodeId, attemptId, name, path, outerNodeId, outerAttemptId);
 }
 
 export function showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -384,6 +392,10 @@ export function toggleMcpServer(id: string, enabled: boolean) {
 
 export function checkMcpServerHealth(id: string) {
   return getRuntimeApi().checkMcpServerHealth(id);
+}
+
+export function listMcpTools(id: string) {
+  return getRuntimeApi().listMcpTools(id);
 }
 
 export function listSkills() {

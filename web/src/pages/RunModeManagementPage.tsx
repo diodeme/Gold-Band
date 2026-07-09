@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -26,6 +27,55 @@ interface RunModeManagementPageProps {
   onSave: (mode: ConversationRunModeVm) => void;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onBack: () => void;
+}
+
+type RunModeManagementTab = 'auto' | 'workflow';
+
+export function createBlankWorkflowTemplateEditorState() {
+  const workflow = createBlankWorkflowDraft();
+  return {
+    templateId: null as string | null,
+    workflow,
+    saveName: '',
+  };
+}
+
+export function RunModeTabsToolbar({
+  mode,
+  onModeChange,
+  onSave,
+  saved,
+  workflowLabel,
+  autoLabel,
+  saveLabel,
+  savedLabel,
+}: {
+  mode: RunModeManagementTab;
+  onModeChange: (mode: RunModeManagementTab) => void;
+  onSave: () => void;
+  saved: boolean;
+  workflowLabel: string;
+  autoLabel: string;
+  saveLabel: string;
+  savedLabel: string;
+}) {
+  return (
+    <div data-testid="run-mode-tabs-toolbar" className="flex flex-wrap items-center justify-between gap-3">
+      <Tabs value={mode} onValueChange={(value) => onModeChange(value as RunModeManagementTab)}>
+        <TabsList className="grid w-fit grid-cols-2">
+          <TabsTrigger value="workflow">{workflowLabel}</TabsTrigger>
+          <TabsTrigger value="auto">{autoLabel}</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <div className="flex items-center gap-3">
+        <Button className="gap-2" onClick={onSave}>
+          <Save className="size-4" />
+          {saveLabel}
+        </Button>
+        {saved ? <span className="text-sm text-emerald-500">{savedLabel}</span> : null}
+      </div>
+    </div>
+  );
 }
 
 const AUTO_TEMPLATE_STORAGE_KEY = 'gold-band-auto-mode-templates';
@@ -49,7 +99,7 @@ export function RunModeManagementPage({
   onBack,
 }: RunModeManagementPageProps) {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<'auto' | 'workflow'>(runMode.mode);
+  const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode);
   const [agentStrategy, setAgentStrategy] = useState<'fixed' | 'dynamic'>(runMode.autoConfig?.agentStrategy ?? 'fixed');
   const [agent, setAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [bootstrapAgent, setBootstrapAgent] = useState(runMode.autoConfig?.bootstrapAgentType ?? runMode.autoConfig?.agentType ?? '');
@@ -263,9 +313,10 @@ export function RunModeManagementPage({
   };
 
   const startWfBlank = () => {
-    setWfEditTemplateId(null);
-    setWfEditWorkflow(null);
-    setWfSaveName('');
+    const draft = createBlankWorkflowTemplateEditorState();
+    setWfEditTemplateId(draft.templateId);
+    setWfEditWorkflow(draft.workflow);
+    setWfSaveName(draft.saveName);
     setWfTemplatePickerOpen(false);
     setWfNotice(null);
     setWfError(null);
@@ -464,12 +515,21 @@ export function RunModeManagementPage({
       />
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <Tabs value={mode} onValueChange={(value) => setMode(value as 'auto' | 'workflow')}>
-          <TabsList className="grid w-fit grid-cols-2">
-            <TabsTrigger value="auto">{t('runMode.autoSection')}</TabsTrigger>
-            <TabsTrigger value="workflow">{t('runMode.workflowSection')}</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <RunModeTabsToolbar
+          mode={mode}
+          onModeChange={setMode}
+          onSave={handleSave}
+          saved={saved}
+          workflowLabel={t('runMode.workflowSection')}
+          autoLabel={t('runMode.autoSection')}
+          saveLabel={t('common.save')}
+          savedLabel={t('runMode.saved')}
+        />
+        {autoNotice ? (
+          <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
+            {autoNotice.message}
+          </div>
+        ) : null}
 
         {mode === 'auto' ? (
           <div className="space-y-6">
@@ -790,19 +850,6 @@ export function RunModeManagementPage({
             </div>
           </div>
         )}
-
-        <div className="flex items-center gap-3">
-          <Button className="gap-2" onClick={handleSave}>
-            <Save className="size-4" />
-            {t('common.save')}
-          </Button>
-          {saved ? <span className="text-sm text-emerald-500">{t('runMode.saved')}</span> : null}
-        </div>
-        {autoNotice ? (
-          <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
-            {autoNotice.message}
-          </div>
-        ) : null}
       </div>
 
       {/* Delete template confirmation dialog */}

@@ -11,9 +11,12 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
-use crate::acp::events::append_raw_frame;
+use crate::acp::elicitation::cancel_pending_elicitation_requests;
+use crate::acp::events::{append_raw_frame, current_timestamp};
+use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::AcpAdapterConfig;
 use crate::process::kill_process_tree;
+use crate::storage::{ensure_parent_dir, read_json, write_json};
 
 const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
 const CLOSE_RAW_TARGET_SIZE: u64 = 4 * 1024 * 1024;
@@ -678,7 +681,9 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
+        settle_attempt_for_session_close(attempt_dir);
         connection.close_session_bounded(&session.session_id, timeout)?;
+        persist_cancelled_session_snapshot(attempt_dir);
         self.unregister_attempt_session(attempt_dir);
         Ok(true)
     }
@@ -751,7 +756,9 @@ impl AdapterConnectionManager {
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
         for (attempt_dir, session_id) in sessions {
-            let raw_path = Utf8PathBuf::from(&attempt_dir).join("acp.raw.jsonl");
+            let attempt_path = Utf8PathBuf::from(&attempt_dir);
+            settle_attempt_for_session_close(attempt_path.as_path());
+            let raw_path = attempt_path.join("acp.raw.jsonl");
             if let Err(error) = connection.close_session_bounded_with_raw_log(
                 &session_id,
                 timeout,
@@ -759,6 +766,7 @@ impl AdapterConnectionManager {
             ) {
                 close_errors.push(format!("{attempt_dir}: {error}"));
             }
+            persist_cancelled_session_snapshot(attempt_path.as_path());
             closed_attempts.push(attempt_dir);
         }
         if let Ok(mut attempts) = self.attempt_sessions.lock() {
@@ -809,6 +817,51 @@ impl AdapterConnectionManager {
     }
 }
 
+fn settle_attempt_for_session_close(attempt_dir: &Utf8Path) {
+    let decided_at = current_timestamp();
+    if let Err(error) = cancel_pending_permission_requests(attempt_dir, decided_at.clone()) {
+        warn!(%attempt_dir, %error, "failed to cancel pending ACP permission requests before session close");
+    }
+    if let Err(error) = cancel_pending_elicitation_requests(attempt_dir, decided_at) {
+        warn!(%attempt_dir, %error, "failed to cancel pending ACP elicitation requests before session close");
+    }
+}
+
+fn persist_cancelled_session_snapshot(attempt_dir: &Utf8Path) {
+    for file_name in ["acp.snapshot.json", "acp.session.json"] {
+        let path = attempt_dir.join(file_name);
+        if let Err(error) = persist_cancelled_session_file(&path) {
+            warn!(%path, %error, "failed to persist cancelled ACP session metadata after session close");
+        }
+    }
+}
+
+fn persist_cancelled_session_file(path: &Utf8Path) -> Result<()> {
+    let mut session = if path.exists() {
+        read_json::<Value>(path)?
+    } else {
+        let session_id = path
+            .parent()
+            .and_then(|attempt_dir| attempt_dir.file_name())
+            .unwrap_or("session");
+        json!({
+            "sessionId": session_id,
+            "status": "cancelled",
+            "restored": false,
+            "createdAt": current_timestamp(),
+        })
+    };
+    let now = current_timestamp();
+    session["status"] = json!("cancelled");
+    session["stopReason"] = json!("cancelled");
+    session["updatedAt"] = json!(now.clone());
+    if session.get("updated_at").is_some() {
+        session["updated_at"] = json!(now);
+    }
+    ensure_parent_dir(path)?;
+    write_json(path, &session)
+}
+
 static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
     LazyLock::new(AdapterConnectionManager::default);
 
@@ -816,8 +869,19 @@ static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
 mod tests {
     use camino::Utf8PathBuf;
     use serde_json::json;
+    use tempfile::tempdir;
 
-    use super::{AdapterConnectionKey, session_id_from_frame};
+    use super::{
+        AdapterConnectionKey, persist_cancelled_session_snapshot, session_id_from_frame,
+        settle_attempt_for_session_close,
+    };
+    use crate::{
+        acp::{
+            events::{load_timeline_items, permission_request_event, write_timeline_items},
+            permission::{pending_permission_file, write_pending_permission},
+        },
+        storage::{read_json, write_json},
+    };
 
     #[test]
     fn connection_key_is_provider_and_workspace_only() {
@@ -848,5 +912,71 @@ mod tests {
 
         assert_eq!(session_id_from_frame(&direct), Some("session-a"));
         assert_eq!(session_id_from_frame(&nested), Some("session-b"));
+    }
+
+    #[test]
+    fn session_close_settles_pending_permission_and_snapshot() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let request_id = "close";
+        write_pending_permission(
+            &attempt_dir,
+            request_id,
+            json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "tool-1",
+                    "title": "Read file"
+                },
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            }),
+            "1Z".to_string(),
+        )
+        .unwrap();
+        let mut pending = permission_request_event(
+            1,
+            request_id.to_string(),
+            json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "tool-1",
+                    "title": "Read file"
+                },
+                "options": [{ "optionId": "allow", "name": "Allow" }]
+            }),
+        );
+        pending.id = format!("permission-{request_id}");
+        write_timeline_items(&attempt_dir.join("acp.timeline.jsonl"), &[pending]).unwrap();
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &json!({
+                "sessionId": "session-1",
+                "status": "running",
+                "stopReason": null,
+                "createdAt": "1Z"
+            }),
+        )
+        .unwrap();
+
+        settle_attempt_for_session_close(&attempt_dir);
+        persist_cancelled_session_snapshot(&attempt_dir);
+
+        assert!(!pending_permission_file(&attempt_dir, request_id).exists());
+        let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
+        let permission = items
+            .iter()
+            .find(|item| item.id == "permission-close")
+            .unwrap();
+        assert_eq!(permission.status.as_deref(), Some("cancelled"));
+        let snapshot: serde_json::Value =
+            read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        assert_eq!(
+            snapshot.get("status").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
+        assert_eq!(
+            snapshot.get("stopReason").and_then(|value| value.as_str()),
+            Some("cancelled")
+        );
     }
 }

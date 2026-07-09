@@ -36,3 +36,7 @@ export function imageSrcFromContent(content: ContentVm | null | undefined): stri
 export function isImageMessageAttachment(attachment: MessageAttachmentPreview): boolean {
   return isImageMimeType(attachment.type);
 }
+
+export function isTaskInputMessageAttachment(attachment: MessageAttachmentPreview): boolean {
+  return attachment.path.replaceAll('\\', '/').startsWith('task-inputs/');
+}

@@ -44,7 +44,7 @@ fn validates_basic_workflow() {
                 { "from": "test", "to": "accept", "on": "success" },
                 { "from": "test", "to": "dev", "on": "failure", "session": "continue" },
                 { "from": "accept", "to": "$end", "on": "success" },
-                { "from": "accept", "to": "$new-round", "on": "failure" }
+                { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" }
             ]
         }"#,
     );
@@ -110,7 +110,7 @@ fn rejects_workflow_without_end_node() {
                 }
             ],
             "edges": [
-                { "from": "dev", "to": "$new-round", "on": "failure" }
+                { "from": "dev", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" }
             ]
         }"#,
     );
@@ -172,6 +172,93 @@ fn rejects_success_edge_to_new_round() {
             .to_string()
             .contains("cannot target `$new-round` on success")
     );
+}
+
+#[test]
+fn rejects_new_round_edge_without_entry() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "missing-new-round-entry",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let error = validate_workflow(workflow).expect_err("new round edge requires an entry");
+    assert!(error.to_string().contains("must declare `new_round_entry`"));
+}
+
+#[test]
+fn rejects_new_round_edge_with_missing_entry_node() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "invalid-new-round-entry",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "dev" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let error = validate_workflow(workflow).expect_err("new round entry must exist");
+    assert!(error.to_string().contains("invalid `new_round_entry`: dev"));
+}
+
+#[test]
+fn accepts_new_round_entry_as_reachable_start_node() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "new-round-entry-node",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp" },
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure", "new_round_entry": "dev" },
+                { "from": "accept", "to": "$end", "on": "success" },
+                { "from": "dev", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    validate_workflow(workflow).expect("new round entry should make the node reachable");
+}
+
+#[test]
+fn serializes_non_new_round_edge_without_new_round_entry() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "serialize-edge",
+            "entry": "dev",
+            "nodes": [
+                { "id": "dev", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "dev", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let json = serde_json::to_string(&workflow.edges[0]).unwrap();
+    assert!(!json.contains("new_round_entry"));
 }
 
 #[test]
@@ -364,7 +451,7 @@ fn accepts_worker_json_output_validation() {
             "edges": [
                 { "from": "review", "to": "test", "on": "success" },
                 { "from": "test", "to": "$end", "on": "success" },
-                { "from": "test", "to": "$new-round", "on": "failure" }
+                { "from": "test", "to": "$new-round", "on": "failure", "new_round_entry": "$entry" }
             ]
         }"#,
     );
@@ -558,7 +645,7 @@ fn rejects_continue_to_new_round_target() {
                 { "id": "review", "type": "worker", "provider": "claude-acp" }
             ],
             "edges": [
-                { "from": "review", "to": "$new-round", "on": "failure", "session": "continue" }
+                { "from": "review", "to": "$new-round", "on": "failure", "session": "continue", "new_round_entry": "$entry" }
             ]
         }"#,
     );

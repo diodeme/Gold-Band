@@ -291,6 +291,7 @@ export interface WorkflowEdgeDsl {
   to: string;
   on: 'success' | 'failure' | string;
   session?: 'new' | 'continue' | null;
+  new_round_entry?: '$entry' | string | null;
 }
 
 export interface CreateTaskInput {
@@ -588,14 +589,21 @@ export interface AcpAttemptSessionVm {
 export interface AcpSessionVm {
   sessionId?: string | null;
   title?: string | null;
+  roundId?: string | null;
+  nodeId?: string | null;
+  attemptId?: string | null;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   cwd?: string | null;
+  providerCwd?: string | null;
   status: string;
   sessionStartedAt?: string | null;
   sessionUpdatedAt?: string | null;
   sessionElapsedSeconds?: number | null;
+  timing?: AcpSessionTimingVm | null;
   restored: boolean;
   stopReason?: string | null;
   systemPromptAppend?: string | null;
@@ -659,7 +667,33 @@ export interface AcpUiEventVm {
   endedSeq?: number | null;
   startedAt?: string | null;
   endedAt?: string | null;
+  timing?: AcpTimingPatchVm | null;
   raw?: unknown;
+}
+
+export interface AcpTimingPatchVm {
+  sessionElapsedSeconds: number;
+  revision?: number | null;
+  observedAt?: string | null;
+  activeTurnStartedAt?: string | null;
+  activeTurnLastActivityAt?: string | null;
+  permissionWaitStartedAt?: string | null;
+  userWaitStartedAt?: string | null;
+  waitReason?: string | null;
+  paused: boolean;
+  reason?: string | null;
+}
+
+export interface AcpSessionTimingVm {
+  sessionElapsedSeconds: number;
+  revision?: number | null;
+  observedAt?: string | null;
+  activeTurnStartedAt?: string | null;
+  activeTurnLastActivityAt?: string | null;
+  permissionWaitStartedAt?: string | null;
+  userWaitStartedAt?: string | null;
+  waitReason?: string | null;
+  paused: boolean;
 }
 
 export interface AcpPermissionRequestVm {
@@ -976,6 +1010,7 @@ export interface ConversationTreeNodeVm {
 export interface ConversationRunVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   title: string;
   autoTitle: boolean;

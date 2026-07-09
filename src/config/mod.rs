@@ -429,6 +429,7 @@ pub const SKILLS_DIR_NAME: &str = "skills";
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
 pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
+pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -501,6 +502,7 @@ pub struct ProjectAppConfig {
     pub acp_chat_event_page_size: Option<usize>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
+    pub conversation_auto_title_max_chars: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
@@ -536,6 +538,7 @@ pub struct RuntimeConfig {
     pub acp_chat_event_page_size: usize,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
+    pub conversation_auto_title_max_chars: usize,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
@@ -570,6 +573,7 @@ impl Default for RuntimeConfig {
             acp_chat_event_page_size: 360,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
+            conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
@@ -632,6 +636,12 @@ impl RuntimeConfig {
         }
         if let Some(acp_raw_target_size_bytes) = app_config.acp_raw_target_size_bytes {
             self.acp_raw_target_size_bytes = acp_raw_target_size_bytes;
+        }
+        if let Some(conversation_auto_title_max_chars) = app_config
+            .conversation_auto_title_max_chars
+            .filter(|value| *value > 0)
+        {
+            self.conversation_auto_title_max_chars = conversation_auto_title_max_chars;
         }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
@@ -845,12 +855,14 @@ mod tests {
         let app_config = ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            conversation_auto_title_max_chars: Some(20),
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
         let roundtripped: ProjectAppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
+        assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
     }
 
     #[test]
@@ -905,10 +917,25 @@ mod tests {
         let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
+            conversation_auto_title_max_chars: Some(20),
             ..Default::default()
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
+        assert_eq!(config.conversation_auto_title_max_chars, 20);
+    }
+
+    #[test]
+    fn app_config_ignores_zero_conversation_auto_title_limit() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            conversation_auto_title_max_chars: Some(0),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            config.conversation_auto_title_max_chars,
+            super::DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS
+        );
     }
 
     #[test]

@@ -195,7 +195,9 @@ impl DesktopState {
     }
 
     /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
-    pub fn mcp_health_snapshot(&self) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
+    pub fn mcp_health_snapshot(
+        &self,
+    ) -> Result<BTreeMap<String, gold_band::config::McpServerState>> {
         Ok(self
             .mcp_health
             .lock()

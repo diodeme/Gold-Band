@@ -144,7 +144,7 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - 当前 run 因 `process-interrupted` 暂停且用户在 composer 中输入补充内容时，提交仍走 runtime `continue` 主链路而不是普通 ACP prompt；但 `run_continue()` 必须把这类“停止后用户继续”判定为 `UserMessage` 渲染语义，只把用户原文发送给 provider。只有 workflow 自身恢复执行、没有用户显式追问时，才判定为 `WorkflowResume` 并发送 hidden runtime context + `# Goal`。
 - 当 node 处于 `waiting_for_user_input`、permission pending、adapter disconnected 等状态时，composer 应显示明确状态。
 - 当 ACP session 处于 pending/running/cancelling 等 active 状态时，composer 展示 Stop action，普通 Send 禁用；Stop 请求只取消当前 ACP adapter prompt。AI-DYNAMIC 内部 leaf 的运行事实以 dynamic leaf workflow 状态为准，ACP `cancelled` 只代表聊天会话传输事实，不得让前端或命令层把 live running sibling 推成 paused。
-- 若 Stop 发生在本地 optimistic prompt 已创建、但后端真实 `userTextDelta` 尚未写入之前，前端必须立即移除该 optimistic prompt 并释放其发送锁；未被后端接受的取消 prompt 不得永久停留在“发送中”。`runtime-continue-started` 与普通发送不同：该返回值即表示后端已接受继续命令，即使 `session` 为 `null`，前端也要把本次 optimistic prompt 从 `sending` 转为 accepted/completed 并清理 `awaitingResponse`，不能继续等待 ACP echo 才解除发送锁。
+- 若 Stop 发生在本地 optimistic prompt 已创建、但后端真实 `userTextDelta` 尚未写入之前，前端必须立即移除该 optimistic prompt 并释放其发送锁；未被后端接受的取消 prompt 不得永久停留在“发送中”。`runtime-continue-started` 与普通发送不同：该返回值即表示后端已接受继续命令，即使 `session` 为 `null`，后端响应也必须携带 `runtime-active / provider-running` lifecycle，前端要把本次 optimistic prompt 从 `sending` 转为 accepted/completed 并清理 `awaitingResponse`，不能继续等待 ACP echo 才解除发送锁。后台线程真正写入 run/node running 文件前，旧的 paused/interrupted-input lifecycle snapshot 不得把 composer 短暂降级为可输入；只有父级 lifecycle 追到 active、stopping 或 runtime-error 后，前端才释放本地 continue-started lifecycle override。
 - Plan intervention permission 是 active-session 发送锁的唯一例外：composer 仍可输入反馈，但只在权限决策完成且当前 turn 结束后继续发送 queued prompt。
 - 用户输入不走 terminal stdin，不依赖 legacy CLI 会话。
 
@@ -253,7 +253,7 @@ artifact validation
 workflow control
 ```
 
-UI 上应避免把 ACP `stopReason`、session status 或 tool call status 直接展示成 Gold Band node status/outcome；ACP 会话头部不展示 session status，处理中状态由 composer 表达。返回 artifact 时，runtime 只在最近有限个 assistant 文本输出段中查找可解析 JSON，支持最后一段为“说明文字 + JSON”或 JSON 出现在倒数几段内，但不无限扫描历史会话。Gold Band runtime canonical state 仍由 task / run / round / node / attempt / artifact 维护。
+UI 上应避免把 ACP `stopReason`、session status 或 tool call status 直接展示成 Gold Band node status/outcome；ACP 会话头部不展示 session status，处理中状态由 composer 表达。返回 JSON artifact 时，runtime 只在最近有限个 assistant 文本输出段中查找可解析 JSON，支持最后一段为“说明文字 + JSON”或 JSON 出现在倒数几段内，但不无限扫描历史会话；未提取到合法 JSON 时不得把普通 assistant 文本 fallback 成 artifact。普通 worker 进入 invalid-output hidden repair 前必须删除本次非法 output artifact，repair 被停止或中断时 UI 不应继续展示旧的无效产物。Gold Band runtime canonical state 仍由 task / run / round / node / attempt / artifact 维护。
 
 ## 8. UI 功能模块清单
 

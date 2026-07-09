@@ -1,6 +1,6 @@
 # AI-DYNAMIC 节点方案
 
-## 0. 当前实现状态（2026-06-16）
+## 0. 当前实现状态（2026-07-06）
 
 本轮已完成 V1 成功路径的可运行闭环：
 
@@ -11,17 +11,18 @@
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
 - AI-DYNAMIC Agent 策略区分 fixed 与 dynamic：fixed 策略下 proposal 不输出 provider，runtime 为 worker / merge / acceptance 注入固定 provider；若 fixed provider 未配置模型且 provider 暴露可选模型列表，prompt 会要求 proposal 输出 `model`。dynamic 策略下 bootstrap 可独立选择模型，运行时调起 bootstrap 时只使用该模型；可选动态 Agent 的模型可清空。若 agent / 模型决策指南为空，每个可选动态 Agent 必须配置模型，proposal DSL 不要求输出 `model`；若决策指南非空，worker / merge / acceptance proposal 必须输出 `model`，但已配置模型的 Agent 仍由 runtime 固定使用配置模型，proposal 中的其他模型不会覆盖配置。workflow invocation 仍不输出 provider/model。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
-- prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`proposal_repair.md`）；其中 system prompt 模板统一使用 minijinja 渲染，runtime 决定的 dynamic 上下文、路径、限制、历史与输出协议进入 system prompt，requirement 与当前 goal 进入 user prompt。
-- AI-DYNAMIC internal worker 的 system prompt 会额外注入”当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。
-- AI-DYNAMIC fanout 可写分支已采用 worktree 隔离协议：proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；worktree 根目录改为目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>`，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 用户级运行目录叠加仓库长文件名后触发 checkout 路径限制并保证同一 run 内不冲突；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。dynamic run 的 run/graph/node/group/proposal 状态读写已增加 run 级互斥锁，公共 JSON 状态写入改为同目录临时文件原子替换，避免状态推进期间读到半写入 graph 导致 `trailing characters` 等瞬时解析错误。
-- 非 git workspace worktree 能力检测：runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），非 git 目录、无 HEAD 提交或 git 不可用时，system prompt 与 proposal repair reference 会注入约束，fanout prompt 禁止模型输出 `worktree`；proposal 校验层对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议使用 `readonly`/`main`；`ensure_dynamic_workspace` 在执行前再做能力检查，并在创建前清理同名 stale branch 与不完整 worktree 目录，Git 创建失败时保留 stdout/stderr 作为 error-blocked 诊断，确保不因模型绕过或半失败状态而静默污染后续重试。
+- prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`hidden_context.md`、`proposal_repair.md`）；其中 AI-DYNAMIC system prompt 只保留稳定角色、文件边界、workspace 语义、两阶段执行和按 invocation 能力启用的 output contract 原则。每次 invocation 变化的信息由 runtime 按当前节点位置生成 `DynamicContextProjection`，再进入 hidden context 并合并到同一个 Gold Band hidden context 块中展示；AI-DYNAMIC 专用 hidden context 会替代普通 workflow 的 predecessor hidden context，避免普通 workflow 前序链逻辑错误显示“无前序”。projection 包含直接前序、当前 group、继承的父 group、并行兄弟边界、可用 attachments、运行预算、workspace、可复用会话和 agent/profile 选项；并行兄弟边界只给 group 内普通 worker / workflow invocation 分支查看，merge / acceptance 不展示 siblings；会话复用、运行预算和 agent/profile 选项只在启用 `dynamic-node-completion` output contract 的 worker / acceptance 中展示，merge 只保留合并执行所需的 group、workspace、直接前序和 attachments。requirement 与当前节点 task 进入 user prompt；外层 `globalGoal` 作为每个内部节点都必须继承的用户提示约束，进入独立 `# 用户提示` / `# User Tips` 块，不再拼进 `# 任务` / `# Task`。内部控制 artifact 不作为 runtime context 材料展示。
+- AI-DYNAMIC internal worker 的 hidden context 会额外注入”当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。执行 continue 节点时，continue 只复用来源节点 ACP session 记忆，不继续执行来源节点任务；user prompt 的 `# 任务` / `# Task` 只放当前节点业务任务，当前 node id/title/kind 与 `continueFromNodeId` 等运行事实放 hidden context。
+- AI-DYNAMIC fanout 已明确为真正并行分组：`next.type=fanout` 必须创建至少两个 child 节点，只有一个后继任务时使用 `next.type=single`。fanout child 的 workspace 只允许 `readonly` 或 `worktree`，禁止 `main`；只读分析/审查/方案分支使用 `readonly`，可写并行分支必须使用 `workspace.mode=worktree`。proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；worktree 根目录改为目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>`，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 用户级运行目录叠加仓库长文件名后触发 checkout 路径限制并保证同一 run 内不冲突；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。dynamic run 的 run/graph/node/group/proposal 状态读写已增加 run 级互斥锁，公共 JSON 状态写入改为同目录临时文件原子替换，避免状态推进期间读到半写入 graph 导致 `trailing characters` 等瞬时解析错误。
+- 非 git workspace worktree 能力检测：runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），非 git 目录、无 HEAD 提交或 git 不可用时，hidden context 与 proposal repair reference 会注入约束，fanout prompt 禁止模型输出 `worktree`；proposal 校验层对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议同一 fanout child 改为 `readonly`，或把可写工作改成 `next.type=single` 的串行 `main`；`ensure_dynamic_workspace` 在执行前再做能力检查，并在创建前清理同名 stale branch 与不完整 worktree 目录，Git 创建失败时保留 stdout/stderr 作为 error-blocked 诊断，确保不因模型绕过或半失败状态而静默污染后续重试。
 - 单节点 worktree 语义校验：`next.type=single` 的后继节点即使在 Git/worktree 可用时也不能声明 `workspace.mode=worktree`，因为单节点链路没有自动 merge / acceptance 负责把隔离分支合回主工作区；runtime 在 typed proposal 语义校验层返回 `dynamic.node.workspace.single-worktree-unsupported`，提示改用 `fanout` + merge/acceptance 或 `main` 串行执行。
-- `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、provider/model 需求、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema，并同时用于 prompt、provider output contract、runtime 结构校验与 repair 诊断。
-- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。普通 worker 启动前用当前缓存校验已配置的 model / permissionMode 是否仍有效。AI-DYNAMIC 的 schema 生成、system prompt 可选模型列表和 permissionMode 校验也读取当前缓存，不在 worker invocation 构建阶段同步 doctor provider capabilities；模型列表使用 ACP 配置项的 `value` 作为实际 DSL/调用值，`name` 只作为展示标签。当 dynamic proposal 需要输出模型但缓存缺少该 provider 的模型目录时，runtime 在 provider session 创建前直接进入 `error-blocked`，前端会以错误阻塞态展示而不是停留在调用中。
+- `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、provider/model 需求、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema，并同时用于 prompt、provider output contract、runtime 结构校验与 repair 诊断。worker 和 acceptance 接入该 output contract；merge 保持执行型 agent stage，只负责合并和报告，不输出控制 artifact。
+- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。普通 worker 启动前用当前缓存校验已配置的 model / permissionMode 是否仍有效。AI-DYNAMIC 的 schema 生成、hidden context 可选模型列表和 permissionMode 校验也读取当前缓存，不在 worker invocation 构建阶段同步 doctor provider capabilities；模型列表使用 ACP 配置项的 `value` 作为实际 DSL/调用值，`name` 只作为展示标签。当 dynamic proposal 需要输出模型但缓存缺少该 provider 的模型目录时，runtime 在 provider session 创建前直接进入 `error-blocked`，前端会以错误阻塞态展示而不是停留在调用中。
 - proposal repair 已统一使用结构化诊断：JSON Schema 结构错误、serde parse 错误与业务校验错误都会渲染 code、path、actual、expected、allowed values、suggested repair，并附带当前 provider/model、worker profile ID、allowed workflow ID 参考；缺失字段会尽量补细到 `next.merge.task` 这类可执行 JSON path。
-- fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。
+- fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。group 只有在 acceptance 输出 accepted 的 `dynamic-node-completion` 且 `next.type=end` 后才 closed；若 acceptance 输出 `single` 或 `fanout`，runtime 会 materialize 修复节点并重新打开该 group，等待修复链路、merge 与 acceptance 再次完成。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
 - view model 已暴露 AI-DYNAMIC summary / internal graph / groups / proposals；同时 Round 详情主图已改为把 AI-DYNAMIC 内部实际执行节点内联到主执行图中，点击后复用普通节点详情 / 会话 / 产物链路。
+- `dynamic-node-completion` 是 AI-DYNAMIC 内部节点的控制协议产物，也会进入 Round 详情、会话资产栏、图节点产物数量和可点击弹窗；runtime 只能在 provider 已返回完整且合法的 artifact 内容后写入该文件，不能提前创建 0 字节占位文件，也不能在 `Interrupted` 场景把停止前最后一句普通 assistant 文本写成控制产物。它不进入后续 AI-DYNAMIC 节点的 runtime context，也不作为“上游材料”提示模型读取；业务证据通过 attachments 传递。
 - 动态内联节点的详情与 ACP 会话定位必须读取真实 dynamic attempt 目录，并与主图边关系保持一致；不能把所有内部节点固定映射成同一个 attempt，否则会出现节点看似运行但会话/边信息错位。
 - Round 详情主图中，AI-DYNAMIC 外层 success/failure 边仍按普通 workflow trace 判定，但展示连接端点改为内部 dynamic graph 出口节点：显式 `dependsOn`、`sessionMode=continue` 和 `chainId/depth` 隐式成功边都会参与出口判定，避免 bootstrap 等中间层节点被误连到后续普通节点；当前常见单出口，保留多个出口 fan-in 到后续节点的能力。
 - 动态内联节点在主图中的 rank 必须位于其外层 AI-DYNAMIC trace 步骤与后续普通 workflow 节点之间；外层后继节点不能因为原始 trace sequence 更小而排到内部节点前面，否则出口边会被前端布局识别成回退边并走顶部绕线路由。
@@ -641,9 +642,9 @@ open
   -> merged
   -> 创建 acceptance agent node
   -> accepting
-  -> acceptance node success
-  -> accepted
-  -> closed
+  -> acceptance 输出 dynamic-node-completion
+  -> next=end 时 accepted/closed
+  -> next=single/fanout 时创建修复节点并回到 open
 ```
 
 ### 11.2 group 结束条件
@@ -685,7 +686,7 @@ AI-DYNAMIC 的完成不是 agent 决定，而是 runtime 派生。
 1. 所有内部 chain 已 terminal。
 2. 所有 group 已 closed。
 3. 所有 merge node success。
-4. 所有 acceptance node success。
+4. 所有 acceptance node 输出 accepted 的 `dynamic-node-completion`，且对应 proposal 为 `next.type=end`。
 5. 没有 ready/running/pending internal node。
 6. 没有未处理 dynamic-node-completion proposal。
 7. 没有 validation error。
@@ -869,7 +870,7 @@ type WorkspaceMode = 'readonly' | 'worktree' | 'main';
 - 并行开发
 - 可能修改代码的分支任务
 
-每个 mutating fanout 分支默认一个独立 worktree。
+每个 mutating fanout 分支默认一个独立 worktree；fanout child 不允许使用 main workspace。只读 fanout 分支使用 `readonly`，需要在 main 写入时改用 `next.type=single` 串行执行。
 
 ### 15.3 main
 
@@ -878,6 +879,7 @@ type WorkspaceMode = 'readonly' | 'worktree' | 'main';
 - merge agent
 - final acceptance
 - cleanup
+- `next.type=single` 的串行写入节点
 
 ### 15.4 runtime 职责
 
@@ -887,7 +889,7 @@ runtime 负责：
 - 记录 workspace path
 - 把 workspace path 注入 prompt
 - 在 merge 节点输入里列出当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status
-- 让 merge / acceptance 使用 main workspace，普通 fanout 可写分支使用独立 worktree
+- 让 merge / acceptance 使用 main workspace，fanout child 只使用 readonly / worktree，普通 fanout 可写分支使用独立 worktree
 - 成功后按策略清理 worktree
 - 对同一 dynamic run 的状态快照读写使用 run 级状态锁；`graph.json` 等 JSON 状态文件通过同目录临时文件原子替换写入，避免并发读写时出现半写入或新旧内容混合
 - driver 热循环持久化以 `DynamicGraphState` 序列化内容指纹判断是否变化；首次或 graph 实际变化时写出 graph/run/node/group/proposal 派生文件，等待 worker 消息的 200ms scheduler 心跳不重复重写磁盘，不用枚举 Ready→Running、proposal 接受等具体状态转换作为 dirty flag
@@ -921,32 +923,44 @@ AI-DYNAMIC 初始节点拿到：
 
 ### 16.2 内部 dynamic node prompt
 
-每个内部节点拿到的 prompt 分两层：
+每个内部节点拿到的 prompt 分三层：
 
 system prompt：
 
-- 当前 dynamic node id / group id / chain id / depth
-- dependsOn 节点摘要
-- upstream artifact/attachment 路径
-- workspace path / workspace mode
-- allowed workflow snapshots 摘要
-- 当前 dynamic graph 摘要
-- 可用 provider 列表
-- 可用 profile 列表
-- 当前剩余预算摘要（例如 remaining dynamic nodes、remaining workflow invocations、当前 fanout 能力）
-- 输出 schema：`dynamic-node-completion`
-- 不主动扫描 dynamic run 目录、只读取 prompt 明确给出的路径等 runtime 规则
+- AI-DYNAMIC 角色与稳定执行边界
+- 文件边界、workspace 语义与 runtime 规则
+- 两阶段执行原则：先完成当前业务任务，再在最后输出控制 JSON
+- output contract 原则；worker / acceptance 接入 `dynamic-node-completion`，merge 不接入控制 artifact
 
 user prompt：
 
 - 原始 requirement
-- 当前 sub-task / 当前 goal
+- 当前 sub-task；continue 节点也只在 `# 任务` / `# Task` 中表达当前业务任务
+
+hidden context：
+
+- 当前 dynamic node id / group id / chain id / depth
+- workspace path / workspace mode
+- 直接前序节点摘要
+- 当前 group 详情
+- 继承的父 group 摘要
+- 并行兄弟节点边界
+- 可用 attachments manifest
+- allowed workflow snapshots 摘要
+- 可用 provider 列表
+- 可用 profile 列表
+- 可复用 session 节点列表
+- 当前剩余预算摘要（例如 remaining dynamic nodes、remaining workflow invocations、当前 fanout 能力）
+
+AI-DYNAMIC hidden context 合并进同一个 Gold Band hidden context 块，不单独渲染第二个 hidden block；AI-DYNAMIC 内部节点不渲染普通 workflow 的 `Latest predecessor chain / transition reasons` 小节，前序语义统一由 `DynamicContextProjection` 的“直接前序节点 / 当前 group / 继承的 group 上下文”表达。
 
 要求：
 
 - 不主动扫描 dynamic run 目录。
 - 只读取 prompt 明确给出的路径。
-- 完成后必须输出 `dynamic-node-completion`。
+- 不把 `dynamic-node-completion`、proposal JSON、raw stream 或 diagnostics 作为上游材料注入 prompt。
+- 只通过 attachments manifest 暴露业务证据；fanout worker 不能消费 sibling attachments，merge / acceptance 可以消费当前 group 分支附件，嵌套 fanout 只继承父 group 的出口附件摘要。
+- worker / acceptance 完成后必须输出 `dynamic-node-completion`；merge 只输出合并报告。
 - 如果没有后续任务，输出 `next.type=end`。
 - 如果需要并行，输出 `next.type=fanout`。
 
@@ -1043,8 +1057,10 @@ all group chains terminal
   -> merge success
   -> runtime creates acceptance node
   -> execute acceptance agent
-  -> acceptance success
+  -> acceptance next=end
   -> group closed
+  -> acceptance next=single/fanout
+  -> runtime materializes repair node(s)
 ```
 
 ### 17.7 AI-DYNAMIC success
@@ -1111,6 +1127,8 @@ proposal 的 rejected 结果使用结构化错误对象而不是裸字符串，�
 - model 是否需要输出由 output protocol 中的 model policy 决定；fixed provider 未配置模型且 provider 暴露可选模型列表时需要输出，dynamic 策略有 agent / 模型决策指南时需要输出
 - workspace mode 合法
 - `next.type=single` 的后继节点不能使用 `workspace.mode=worktree`；worktree 只允许在带 merge / acceptance 的 fanout 分支中使用
+- `next.type=fanout` 必须至少包含两个 child 节点；只有一个后继节点时必须使用 `next.type=single`
+- fanout child 不能使用 `workspace.mode=main`；只允许 `readonly` 或 `worktree`
 - dependsOn 指向已存在节点
 - 不形成环
 - depth 不超过 maxDepth
@@ -1120,6 +1138,7 @@ proposal 的 rejected 结果使用结构化错误对象而不是裸字符串，�
 
 - groupId 非空
 - groupId 不重复
+- nodes 数量至少为 2；单个后继节点应使用 `next.type=single`
 - nodes 数量不超过 maxFanout
 - group depth 不超过 maxGroupDepth
 - 每个 fanout child 必须绑定 groupId
@@ -1183,8 +1202,14 @@ V1 先做成功路径，但失败不能隐式。
 merge failure
   -> AI-DYNAMIC paused/error-blocked
 
-acceptance failure
-  -> AI-DYNAMIC failure 或外层 failure edge
+acceptance provider/runtime failure
+  -> AI-DYNAMIC paused/error-blocked
+
+acceptance 输出非法 JSON 或非法 proposal
+  -> 进入与 worker 相同的 proposal repair 回路
+
+acceptance 验收不通过
+  -> 输出 next=single 或 next=fanout，runtime 创建修复节点并保持 group 未最终关闭
 ```
 
 暂时不做：
@@ -1435,7 +1460,8 @@ AI-DYNAMIC 内部由独立 dynamic orchestrator 驱动。
 
 - group merge-ready 后创建 merge node
 - merge success 后创建 acceptance node
-- acceptance success 后 group closed
+- acceptance 输出 `next.type=end` 后 group closed
+- acceptance 输出 `next.type=single/fanout` 后创建修复节点，group 保持未最终关闭
 - 所有 group closed 后 AI-DYNAMIC success
 
 ### Phase 6：workflow-invocation
@@ -1471,7 +1497,7 @@ AI-DYNAMIC 内部由独立 dynamic orchestrator 驱动。
 
 fanout group 的所有链路结束后，runtime 创建 merge agent，再创建 acceptance agent。
 
-全部 group closed 且无 pending/running 内部节点后，AI-DYNAMIC 节点 success，外层普通工作流继续。
+acceptance agent 通过 `dynamic-node-completion` 决定 group 后续：`next.type=end` 表示验收通过并关闭 group；`next.type=single/fanout` 表示验收不通过并创建修复节点。全部 group closed 且无 pending/running 内部节点后，AI-DYNAMIC 节点 success，外层普通工作流继续。
 
 V1 边界：
 
@@ -1481,5 +1507,5 @@ V1 边界：
 - 不做 nested AI-DYNAMIC。
 - 支持内部 fanout。
 - 支持 workflow-invocation，但只引用 run start 时冻结的 allowed workflow snapshots。
-- merge / acceptance 都是 agent 节点。
+- merge / acceptance 都是 agent 节点；merge 是执行型合并节点，acceptance 是控制型验收节点。
 - AI-DYNAMIC 完成由 runtime 派生，不由 agent 自述决定。

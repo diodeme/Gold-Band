@@ -47,10 +47,11 @@ describe('skill sheet form helpers', () => {
   it('hydrates the local draft from loaded skill content', () => {
     expect(createSkillFormFromContent(content({
       meta: skill({ name: 'loaded', description: 'Loaded', source: 'global' }),
+      descriptionSource: 'Loaded\nfrom folded block',
       body: 'loaded body',
     }), 'project')).toEqual({
       name: 'loaded',
-      description: 'Loaded',
+      description: 'Loaded\nfrom folded block',
       body: 'loaded body',
       source: 'global',
     });
@@ -91,6 +92,16 @@ describe('skill sheet form helpers', () => {
       directoryPath: 'D:/repo/.claude/skills/old',
       syncTargets: ['codex-acp'],
     });
+  });
+
+  it('encodes multiline descriptions as frontmatter block scalars', () => {
+    expect(buildSkillSaveRequest({
+      form: { name: 'demo', description: 'Line one\nLine two', body: 'body', source: 'global' },
+      mode: 'create',
+      editTarget: null,
+      editWorkspacePath: null,
+      syncTargets: [],
+    }).content).toBe('---\nname: demo\ndescription: |\n  Line one\n  Line two\n---\n\nbody');
   });
 
   it('filters stale sync targets when configured agents change', () => {

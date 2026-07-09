@@ -12,6 +12,9 @@ use crate::config::{
     GOLD_BAND_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, ManagedAgentConfig, ManagedAgentType,
     SKILL_FILE_NAME, SKILLS_DIR_NAME, SkillMeta, SkillSource,
 };
+use crate::frontmatter::{
+    FrontmatterUpdate, parse_optional_frontmatter_document, update_frontmatter_document,
+};
 use crate::storage::GoldBandPaths;
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,7 @@ pub struct SkillListResult {
 #[serde(rename_all = "camelCase")]
 pub struct SkillContent {
     pub meta: SkillMeta,
+    pub description_source: String,
     pub body: String,
 }
 
@@ -258,7 +262,13 @@ impl SkillManager {
             .unwrap_or_else(|| skill_path.as_str().to_string());
         let (meta, body) =
             parse_skill_md(&raw, name, source, directory_path.as_str(), agent_source)?;
-        Ok(SkillContent { meta, body })
+        let description_source =
+            skill_description_source(&raw).unwrap_or_else(|| meta.description.clone());
+        Ok(SkillContent {
+            meta,
+            description_source,
+            body,
+        })
     }
 
     pub fn write(&self, name: &str, source: SkillSource, content: &str) -> Result<SkillMeta> {
@@ -375,6 +385,11 @@ impl SkillManager {
         let old_content = current_dir
             .as_ref()
             .and_then(|dir| fs::read_to_string(dir.join(SKILL_FILE_NAME).as_std_path()).ok());
+        let content_to_write = if current_dir.is_some() {
+            merge_skill_edit_content(old_content.as_deref(), content, name)?
+        } else {
+            content.to_string()
+        };
         let previous_sync_targets = current_dir
             .as_ref()
             .map(|dir| self.synced_agent_types_for_directory(dir.as_str(), source, workspace_path));
@@ -404,7 +419,7 @@ impl SkillManager {
         }
 
         let skill_path = target_dir.join(SKILL_FILE_NAME);
-        if let Err(error) = fs::write(skill_path.as_std_path(), content) {
+        if let Err(error) = fs::write(skill_path.as_std_path(), &content_to_write) {
             self.rollback_instance_write(
                 &target_dir,
                 current_dir.as_ref(),
@@ -918,36 +933,20 @@ fn parse_skill_md(
     agent_source: &str,
 ) -> Result<(SkillMeta, String)> {
     let mut load_warnings = Vec::new();
-    let (frontmatter, body) = if raw.starts_with("---") {
-        let rest = &raw[3..];
-        if let Some(end) = rest.find("---") {
-            let fm = rest[..end].trim().to_string();
-            let body_start = end + 3;
-            let body = rest[body_start..].trim_start().to_string();
-            (fm, body)
-        } else {
-            (String::new(), raw.to_string())
-        }
-    } else {
-        (String::new(), raw.to_string())
-    };
+    let document = parse_optional_frontmatter_document(raw)?;
 
     let mut parsed_name = default_name.to_string();
     let mut description = String::new();
 
-    if !frontmatter.is_empty() {
-        for line in frontmatter.lines() {
-            let line = line.trim();
-            if let Some(value) = line.strip_prefix("name:") {
-                parsed_name = value.trim().to_string();
-            } else if let Some(value) = line.strip_prefix("description:") {
-                description = value.trim().to_string();
-                if description.len() > MAX_SKILL_DESCRIPTION_LEN {
-                    load_warnings.push(format!(
-                        "description exceeds {MAX_SKILL_DESCRIPTION_LEN} bytes"
-                    ));
-                }
-            }
+    if let Some(value) = document.fields.get("name") {
+        parsed_name = value.trim().to_string();
+    }
+    if let Some(value) = document.fields.get("description") {
+        description = value.trim().to_string();
+        if description.len() > MAX_SKILL_DESCRIPTION_LEN {
+            load_warnings.push(format!(
+                "description exceeds {MAX_SKILL_DESCRIPTION_LEN} bytes"
+            ));
         }
     }
 
@@ -961,8 +960,60 @@ fn parse_skill_md(
             load_warnings,
             synced_agent_types: Vec::new(),
         },
-        body,
+        document.body.trim_start().to_string(),
     ))
+}
+
+fn skill_description_source(raw: &str) -> Option<String> {
+    parse_optional_frontmatter_document(raw)
+        .ok()
+        .and_then(|document| {
+            document
+                .field_sources
+                .get("description")
+                .cloned()
+                .or_else(|| document.fields.get("description").cloned())
+        })
+}
+
+fn merge_skill_edit_content(
+    old_content: Option<&str>,
+    requested_content: &str,
+    name: &str,
+) -> Result<String> {
+    let requested = parse_optional_frontmatter_document(requested_content)?;
+    let description_value = requested
+        .fields
+        .get("description")
+        .map(|value| value.trim())
+        .unwrap_or_default();
+    let description_source = requested
+        .field_sources
+        .get("description")
+        .map(String::as_str)
+        .unwrap_or(description_value);
+    let body = requested.body.trim_start();
+
+    if let Some(old_content) = old_content {
+        return update_frontmatter_document(
+            old_content,
+            &[
+                FrontmatterUpdate {
+                    key: "name",
+                    value: name,
+                    source: None,
+                },
+                FrontmatterUpdate {
+                    key: "description",
+                    value: description_value,
+                    source: Some(description_source),
+                },
+            ],
+            body,
+        );
+    }
+
+    Ok(requested_content.to_string())
 }
 
 fn populate_synced_agent_types(
@@ -1119,6 +1170,55 @@ mod tests {
         assert_eq!(results[0].agent_source, ".claude");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_skill_md_supports_folded_description_frontmatter() {
+        let raw = r#"---
+name: tailwind-theme-builder
+description: >
+  Set up Tailwind v4 with shadcn/ui themed UI. Workflow: install dependencies,
+  configure CSS variables with @theme inline, set up dark mode, verify.
+  Use when initialising React projects with Tailwind v4, setting up shadcn/ui theming,
+  or fixing colors not working.
+compatibility: claude-code-only
+---
+
+# Tailwind Theme Builder
+"#;
+        let raw = raw.replace('\n', "\r\n");
+
+        let (meta, body) = parse_skill_md(
+            &raw,
+            "fallback-name",
+            SkillSource::Project,
+            "/tmp/tailwind-theme-builder",
+            ".claude",
+        )
+        .unwrap();
+
+        assert_eq!(meta.name, "tailwind-theme-builder");
+        assert_eq!(
+            meta.description,
+            "Set up Tailwind v4 with shadcn/ui themed UI. Workflow: install dependencies, configure CSS variables with @theme inline, set up dark mode, verify. Use when initialising React projects with Tailwind v4, setting up shadcn/ui theming, or fixing colors not working."
+        );
+        assert!(!meta.description.contains("compatibility"));
+        assert_eq!(body, "# Tailwind Theme Builder\r\n");
+    }
+
+    #[test]
+    fn merge_skill_edit_content_preserves_unknown_frontmatter_fields() {
+        let old = "---\r\nname: tailwind-theme-builder\r\ndescription: >\r\n  Set up Tailwind v4 with shadcn/ui themed UI.\r\ncompatibility: claude-code-only\r\n---\r\n# Old\r\n";
+        let requested = "---\nname: tailwind-theme-builder\ndescription: |\n  Set up Tailwind v4 with shadcn/ui themed UI.\n  Verify dark mode.\n---\n\n# New\n";
+
+        let merged =
+            merge_skill_edit_content(Some(old), requested, "tailwind-theme-builder").unwrap();
+
+        assert!(merged.contains("compatibility: claude-code-only"));
+        assert!(merged.contains(
+            "description: >\r\n  Set up Tailwind v4 with shadcn/ui themed UI.\r\n  Verify dark mode.\r\n"
+        ));
+        assert!(merged.ends_with("---\r\n# New\n"));
     }
 
     #[test]

@@ -1112,10 +1112,10 @@ function SkillSheet({
         onError(t('errors.skill.sync-conflict', { skillName: request.name, conflicts: conflicts.join('、') }));
         return;
       }
-      await writeSkill(request.name, request.scope, request.content, request.wsPath, request.oldName, request.directoryPath, request.syncTargets);
-      onSaved(await listSkills());
+      const next = await writeSkill(request.name, request.scope, request.content, request.wsPath, request.oldName, request.directoryPath, request.syncTargets);
+      onSaved(next);
       if (skillTab === 'project' && selectedWorkspace) {
-        void onReloadProjectSkills(selectedWorkspace);
+        await onReloadProjectSkills(selectedWorkspace);
       }
       onOpenChange(false);
     } catch (err) {
@@ -1177,7 +1177,7 @@ function SkillSheet({
               </label>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
-                <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
+                <Textarea className="min-h-24 text-sm leading-relaxed" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
               </label>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.syncTargets', '同步到')}</span>
@@ -1548,7 +1548,7 @@ function profileInputDefaults(profile: ProfileVm | null): ProfileInput {
   return {
     scope: profile?.scope === 'project' ? 'project' : 'user',
     name: profile?.name ?? '',
-    summary: profile?.summary ?? '',
+    summary: profile?.summarySource ?? profile?.summary ?? '',
     content: profile?.content ?? '',
   };
 }

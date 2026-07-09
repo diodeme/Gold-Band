@@ -169,6 +169,7 @@ pub struct SkillListVm {
 #[serde(rename_all = "camelCase")]
 pub struct SkillContentVm {
     pub meta: SkillMetaVm,
+    pub description_source: String,
     pub body: String,
 }
 
@@ -5834,6 +5835,7 @@ pub fn skill_list_vm(result: &gold_band::skill::SkillListResult) -> SkillListVm 
 pub fn skill_content_vm(content: &gold_band::skill::SkillContent) -> SkillContentVm {
     SkillContentVm {
         meta: skill_meta_vm(&content.meta),
+        description_source: content.description_source.clone(),
         body: content.body.clone(),
     }
 }

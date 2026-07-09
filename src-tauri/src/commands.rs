@@ -1305,11 +1305,11 @@ pub(crate) fn acp_live_update_emitter(
     })
 }
 
-/// ?? B????? `permissionRequest` ?????? `PermissionRequested` ??????
+/// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
 ///
-/// ?? `event.kind == "permissionRequest" && status == "pending"` ??????????
-/// ???node_label ? node_id?task_title ? None???? App????? context???
-/// ?6.2/?9.4??dedup ??? A ???? `DesktopState.notification_dedup` ???
+/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。文案用一般性
+/// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
+/// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
     context: &gold_band::app::AcpLiveEventContext,

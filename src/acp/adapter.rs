@@ -51,16 +51,8 @@ pub fn spawn_adapter(
     for (key, value) in &resolved_env {
         command.env(key, value);
     }
-    if use_local_claude && !resolved_env.contains_key("CLAUDE_CODE_EXECUTABLE") {
-        #[cfg(windows)]
-        let claude_exe =
-            find_executable_in_paths("claude.exe", resolved_env.get("PATH").map(OsStr::new));
-        #[cfg(not(windows))]
-        let claude_exe =
-            find_executable_in_paths("claude", resolved_env.get("PATH").map(OsStr::new));
-        if let Some(claude_path) = claude_exe {
-            command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
-        }
+    if let Some(claude_path) = local_claude_executable_for_env(use_local_claude, &resolved_env) {
+        command.env("CLAUDE_CODE_EXECUTABLE", claude_path);
     }
     let child = command
         .spawn()
@@ -109,6 +101,16 @@ fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
     find_executable_in_paths(command, path.map(OsStr::new))
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| command.to_string())
+}
+
+fn local_claude_executable_for_env(
+    use_local_claude: bool,
+    resolved_env: &BTreeMap<String, String>,
+) -> Option<PathBuf> {
+    if !use_local_claude || resolved_env.contains_key("CLAUDE_CODE_EXECUTABLE") {
+        return None;
+    }
+    resolve_local_claude_executable(resolved_env.get("PATH").map(String::as_str))
 }
 
 fn resolve_local_claude_executable(path: Option<&str>) -> Option<PathBuf> {
@@ -205,10 +207,11 @@ fn command_requires_path_lookup(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        augment_path_with_dirs, resolve_command_with_path, resolve_local_claude_executable,
-        spawn_adapter, suggested_path_dirs_with_home,
+        augment_path_with_dirs, local_claude_executable_for_env, resolve_command_with_path,
+        resolve_local_claude_executable, spawn_adapter, suggested_path_dirs_with_home,
     };
     use crate::config::AcpAdapterConfig;
+    use std::collections::BTreeMap;
     use std::fs;
     use tempfile::tempdir;
 
@@ -266,6 +269,36 @@ mod tests {
         let resolved = resolve_local_claude_executable(path.to_str());
 
         assert_eq!(resolved, Some(npm_bin.join("claude.exe")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_claude_env_uses_npm_package_binary_on_windows() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("claude.cmd"), "").unwrap();
+        fs::write(temp.path().join("claude"), "").unwrap();
+        let npm_bin = temp
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin");
+        fs::create_dir_all(&npm_bin).unwrap();
+        fs::write(npm_bin.join("claude.exe"), "").unwrap();
+
+        let path = std::env::join_paths([temp.path()]).unwrap();
+        let env = BTreeMap::from([("PATH".to_string(), path.to_string_lossy().into_owned())]);
+        let resolved = local_claude_executable_for_env(true, &env);
+
+        assert_eq!(resolved, Some(npm_bin.join("claude.exe")));
+    }
+
+    #[test]
+    fn local_claude_env_respects_override_and_disabled_flag() {
+        let env = BTreeMap::from([(
+            "CLAUDE_CODE_EXECUTABLE".to_string(),
+            "/custom/claude".to_string(),
+        )]);
+
+        assert!(local_claude_executable_for_env(true, &env).is_none());
+        assert!(local_claude_executable_for_env(false, &BTreeMap::new()).is_none());
     }
 
     #[cfg(windows)]

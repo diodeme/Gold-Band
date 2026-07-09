@@ -29,7 +29,8 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
@@ -2626,7 +2627,7 @@ impl App {
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PromptBundle> {
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
-        let validated = validate_workflow(workflow)?;
+        let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
         let round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
         let node: NodeState = read_json(

@@ -23,7 +23,7 @@ use crate::domain::{
 };
 use crate::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, NodeDsl, ValidatedWorkflow, WorkflowDsl,
-    validate_workflow, workflow_contains_ai_dynamic,
+    validate_workflow, validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
@@ -440,7 +440,7 @@ fn prepare_run(
         .map(|path| path.to_owned())
         .unwrap_or_else(|| app.paths.workflow_file(task_id));
     let workflow: WorkflowDsl = read_json(&workflow_path)?;
-    let validated = validate_workflow(workflow.clone())?;
+    let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -480,7 +480,7 @@ fn prepare_run(
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
     write_json(
         &app.paths.workflow_snapshot_file(task_id, &run_id),
-        &workflow,
+        &validated.raw,
     )?;
 
     let round = RoundState {
@@ -853,7 +853,7 @@ pub(crate) fn run_continue(
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow(workflow)?;
+    let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -1039,7 +1039,7 @@ pub(crate) fn run_continue_dynamic_inner(
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow(workflow)?;
+    let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     ensure!(
         matches!(
@@ -1307,7 +1307,7 @@ pub(crate) fn submit_manual_check(
         "manual check outcome must be success or failure"
     );
     let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow(workflow)?;
+    let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -1473,7 +1473,7 @@ pub(crate) fn submit_manual_check_background(
 
 pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow(workflow)?;
+    let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -7707,7 +7707,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
             _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),
         };
     } else {
-        validated = Some(validate_workflow(workflow)?);
+        validated = Some(validate_workflow_snapshot(workflow)?);
         dynamic = match validated.as_ref().unwrap().get_node(outer_node_id) {
             Some(NodeDsl::AiDynamic(d)) => d,
             _ => return Err(anyhow!("node `{outer_node_id}` is not an ai-dynamic node")),

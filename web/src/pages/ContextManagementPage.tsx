@@ -901,7 +901,7 @@ export function ContextManagementPage() {
             </div>
             ) : null}
             <textarea
-              className="min-h-72 w-full rounded-md border bg-muted/30 p-3 font-mono text-sm leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={mcpJsonContent}
               onChange={(e) => setMcpJsonContent(e.target.value)}
               spellCheck={false}
@@ -1199,7 +1199,7 @@ function SkillSheet({
               </label>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
-                <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />
+                <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />
               </label>
             </>
           )}
@@ -1406,7 +1406,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>{t('contextManagement.content')}</FormLabel>
-                          <FormControl><Textarea className="min-h-72 font-mono text-xs" {...field} /></FormControl>
+                          <FormControl><Textarea className="min-h-72 text-sm leading-relaxed" {...field} /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )}

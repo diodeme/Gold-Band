@@ -1603,8 +1603,6 @@ function profileScopeText(t: (key: string) => string, scope: ProfileVm['scope'])
   switch (scope) {
     case 'built-in':
       return t('contextManagement.builtInScope');
-    case 'project':
-      return t('contextManagement.projectScope');
     case 'user':
     default:
       return t('contextManagement.userScope');

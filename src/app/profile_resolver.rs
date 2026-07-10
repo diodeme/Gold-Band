@@ -65,7 +65,7 @@ pub(crate) fn resolve_profile(
 ) -> Result<ResolvedProfileRef> {
     let Some(profile) = find_profile_by_id(paths, profile_id, language)? else {
         return Err(anyhow!(
-            "node `{node_id}` associated role visibility changed; reset it"
+            "node `{node_id}` associated role no longer exists; reset it"
         ));
     };
     Ok(ResolvedProfileRef {
@@ -73,7 +73,6 @@ pub(crate) fn resolve_profile(
         display_name: profile.name,
         source: match profile.scope {
             super::profiles::ProfileScope::BuiltIn => ProfileSource::BuiltIn,
-            super::profiles::ProfileScope::Project => ProfileSource::Project,
             super::profiles::ProfileScope::User => ProfileSource::User,
         },
         path: profile.path,

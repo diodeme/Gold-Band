@@ -1,7 +1,5 @@
 use camino::Utf8PathBuf;
-use gold_band::app::{
-    App, CreateTaskInput, ProfileCommandError, ProfileInput, ProfileScope, is_run_continuable,
-};
+use gold_band::app::{App, CreateTaskInput, ProfileCommandError, ProfileInput, is_run_continuable};
 use gold_band::config::{DesktopLanguage, RuntimeConfig};
 use gold_band::domain::{RunStatus, SessionMode};
 use gold_band::dsl::{WorkflowDsl, WorkflowValidationError};
@@ -366,16 +364,15 @@ fn built_in_review_profile_scopes_review_to_current_changes() {
 }
 
 #[test]
-fn default_workflow_keeps_seeded_profile_ids_when_project_role_has_same_name() {
+fn default_workflow_keeps_seeded_profile_ids_when_user_role_has_same_name() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let app = App::new(repo_root);
-    let project_profile = app
+    let user_profile = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::Project,
             name: "方案".to_string(),
-            summary: "项目方案角色".to_string(),
-            content: "Project plan role".to_string(),
+            summary: "用户方案角色".to_string(),
+            content: "User plan role".to_string(),
         })
         .unwrap();
 
@@ -394,7 +391,7 @@ fn default_workflow_keeps_seeded_profile_ids_when_project_role_has_same_name() {
     let gold_band::dsl::NodeDsl::Worker(plan) = plan else {
         panic!("plan should be a worker node");
     };
-    assert_ne!(project_profile.id, "pf-builtin-plan");
+    assert_ne!(user_profile.id, "pf-builtin-plan");
     assert_eq!(plan.profile.as_deref(), Some("pf-builtin-plan"));
 }
 
@@ -437,7 +434,7 @@ fn saving_workflow_requires_visible_profile() {
         .unwrap_err();
     assert!(
         err.to_string()
-            .contains("node `plan` associated role visibility changed; reset it")
+            .contains("node `plan` associated role no longer exists; reset it")
     );
 }
 
@@ -448,7 +445,6 @@ fn deleting_unreferenced_profile_succeeds_without_force() {
     let app = App::new(repo_root);
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "未引用角色".to_string(),
             summary: "可直接删除".to_string(),
             content: "role body".to_string(),
@@ -471,7 +467,6 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
     let app = App::new(repo_root);
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "被引用角色".to_string(),
             summary: "template/task reference".to_string(),
             content: "role body".to_string(),
@@ -519,7 +514,6 @@ fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
     let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "可恢复运行角色".to_string(),
             summary: "run snapshot reference".to_string(),
             content: "role body".to_string(),
@@ -564,7 +558,6 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
     let app = App::new(repo_root);
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "强制删除角色".to_string(),
             summary: "force delete".to_string(),
             content: "role body".to_string(),
@@ -607,7 +600,7 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
         .unwrap_err();
     assert!(
         err.to_string()
-            .contains("associated role visibility changed; reset it")
+            .contains("associated role no longer exists; reset it")
     );
 }
 
@@ -618,7 +611,6 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
     let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "继续运行删除角色".to_string(),
             summary: "break continue".to_string(),
             content: "role body".to_string(),
@@ -663,7 +655,7 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
         .unwrap_err();
     assert!(
         err.to_string()
-            .contains("associated role visibility changed; reset it")
+            .contains("associated role no longer exists; reset it")
     );
 }
 

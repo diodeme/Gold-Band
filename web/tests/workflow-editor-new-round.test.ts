@@ -5,7 +5,7 @@ import type { ManagedAgentVm, ProfileVm, WorkflowDsl } from '../src/types';
 const t = (key: string, options?: Record<string, unknown>) => `${key}${options ? `:${JSON.stringify(options)}` : ''}`;
 
 const profiles: ProfileVm[] = [
-  { id: 'developer', name: 'Developer', summary: '', content: '', scope: 'project', isBuiltIn: false, createdAt: '', updatedAt: '', path: '' },
+  { id: 'developer', name: 'Developer', summary: '', content: '', scope: 'user', isBuiltIn: false, createdAt: '', updatedAt: '', path: '' },
 ];
 
 const agents: ManagedAgentVm[] = [

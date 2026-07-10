@@ -85,6 +85,24 @@ export function validateWorkflowTemplateForConversationStart(
   return validation.valid ? [] : validation.issues.map((issue) => issue.message);
 }
 
+export async function validateWorkflowTemplateForConversationStartWithFreshProfiles(
+  templateId: string | null | undefined,
+  agentRegistry: AgentRegistryVm | null,
+  profiles: ProfileVm[],
+  loadProfiles: () => Promise<ProfileVm[]>,
+  workflowTemplates: WorkflowTemplateStore | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): Promise<string[]> {
+  const latestProfiles = await loadProfiles().catch(() => profiles);
+  return validateWorkflowTemplateForConversationStart(
+    templateId,
+    agentRegistry,
+    latestProfiles,
+    workflowTemplates,
+    t,
+  );
+}
+
 export function validateAutoConfig(
   config: ConversationAutoConfigVm | null | undefined,
   agentRegistry: AgentRegistryVm | null,

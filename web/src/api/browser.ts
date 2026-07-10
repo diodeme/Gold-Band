@@ -51,14 +51,14 @@ export const browserApi: RuntimeApi = {
   },
   createProfile(input: ProfileInput) {
     const now = localTimestamp();
-    const profile: ProfileVm = { ...input, id: browserProfileId(), isBuiltIn: false, createdAt: now, updatedAt: now, path: '' };
+    const profile: ProfileVm = { ...input, id: browserProfileId(), scope: 'user', isBuiltIn: false, createdAt: now, updatedAt: now, path: '' };
     return Promise.resolve(browserPreviewState.addProfile(profile));
   },
   updateProfile(id: string, input: ProfileInput) {
     const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
     if (!existing) return browserCommandError('app.unexpected');
     if (existing.isBuiltIn) return browserCommandError('profile.readonly-built-in');
-    const profile: ProfileVm = { ...existing, ...input, id, isBuiltIn: false, createdAt: existing.createdAt, updatedAt: localTimestamp(), path: existing.path };
+    const profile: ProfileVm = { ...existing, ...input, id, scope: 'user', isBuiltIn: false, createdAt: existing.createdAt, updatedAt: localTimestamp(), path: existing.path };
     return Promise.resolve(browserPreviewState.updateProfile(profile));
   },
   deleteProfile(id: string, force = false) {

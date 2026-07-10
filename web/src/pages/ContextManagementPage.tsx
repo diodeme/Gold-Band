@@ -65,7 +65,6 @@ export function ContextManagementPage() {
   const [profileListTab, setProfileListTab] = useState<ProfileListTab>('custom');
   const [builtInQuery, setBuiltInQuery] = useState('');
   const [customQuery, setCustomQuery] = useState('');
-  const [customScope, setCustomScope] = useState<'all' | Exclude<ProfileScope, 'built-in'>>('all');
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(6);
   const [sheetMode, setSheetMode] = useState<ProfileSheetMode | null>(null);
@@ -352,11 +351,10 @@ export function ContextManagementPage() {
     const normalizedQuery = customQuery.trim().toLowerCase();
     return profiles.filter((profile) => {
       if (profile.isBuiltIn) return false;
-      if (customScope !== 'all' && profile.scope !== customScope) return false;
       if (!normalizedQuery) return true;
       return profileSearchText(profile).includes(normalizedQuery);
     });
-  }, [profiles, customQuery, customScope]);
+  }, [profiles, customQuery]);
   const pageCount = Math.max(1, Math.ceil(customProfiles.length / pageSize));
   const safePageIndex = Math.min(pageIndex, pageCount - 1);
   const pagedCustomProfiles = customProfiles.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize);
@@ -464,16 +462,6 @@ export function ContextManagementPage() {
                   placeholder={t('contextManagement.searchPlaceholder')}
                 />
               </div>
-              {profileListTab === 'custom' ? (
-                <Select value={customScope} onValueChange={(value) => { setCustomScope(value as 'all' | 'user' | 'project'); setPageIndex(0); }}>
-                  <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">{t('common.all')}</SelectItem>
-                    <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
-                    <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : null}
             </>
           }
           error={error}
@@ -1359,25 +1347,6 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                   <form id="profile-form" className="space-y-4" onSubmit={form.handleSubmit(submit)}>
                     <FormField
                       control={form.control}
-                      name="scope"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t('contextManagement.scope')}</FormLabel>
-                          <Select value={field.value} onValueChange={(value) => field.onChange(value as ProfileScope)}>
-                            <FormControl>
-                              <SelectTrigger><SelectValue /></SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="user">{t('contextManagement.userScope')}</SelectItem>
-                              <SelectItem value="project">{t('contextManagement.projectScope')}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
                       name="name"
                       rules={{ required: t('contextManagement.profileRequired') }}
                       render={({ field }) => (
@@ -1546,7 +1515,6 @@ function ProfilePagination({ pageIndex, pageCount, onPageChange }: { pageIndex: 
 
 function profileInputDefaults(profile: ProfileVm | null): ProfileInput {
   return {
-    scope: profile?.scope === 'project' ? 'project' : 'user',
     name: profile?.name ?? '',
     summary: profile?.summarySource ?? profile?.summary ?? '',
     content: profile?.content ?? '',
@@ -1557,8 +1525,6 @@ function profileScopeLabel(t: (key: string) => string, scope: ProfileScope) {
   switch (scope) {
     case 'built-in':
       return t('contextManagement.builtInScope');
-    case 'project':
-      return t('contextManagement.projectScope');
     case 'user':
     default:
       return t('contextManagement.userScope');

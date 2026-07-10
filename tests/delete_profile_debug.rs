@@ -1,5 +1,5 @@
 use camino::Utf8PathBuf;
-use gold_band::app::{App, ProfileInput, ProfileScope};
+use gold_band::app::{App, ProfileInput};
 
 #[test]
 fn delete_profile_smoke_test_uses_force_flag_signature() {
@@ -8,7 +8,6 @@ fn delete_profile_smoke_test_uses_force_flag_signature() {
     let app = App::new(repo_root);
     let created = app
         .create_profile(ProfileInput {
-            scope: ProfileScope::User,
             name: "删除冒烟角色".to_string(),
             summary: "用于删除冒烟测试".to_string(),
             content: "临时内容".to_string(),

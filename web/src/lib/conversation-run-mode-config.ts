@@ -1,5 +1,13 @@
 import type { ConversationAutoConfigVm, ConversationRunModeVm } from '@/types';
 
+export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'auto' };
+
+export function conversationRunModeOrDefault(
+  mode: ConversationRunModeVm | null | undefined,
+): ConversationRunModeVm {
+  return mode ?? DEFAULT_CONVERSATION_RUN_MODE;
+}
+
 export function optionalRunModeText(value: string | null | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Plus, Trash2, X } from 'lucide-react';
-import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Trash2, X } from 'lucide-react';
+import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import { WorkflowEditor, validateWorkflowForSave } from '@/components/WorkflowEditor';
@@ -21,9 +21,13 @@ import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
+  projectId: string;
+  workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
+  onProjectChange: (projectId: string) => void;
   onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onBack: () => void;
@@ -110,6 +114,52 @@ export function TemplateActionRow({
   );
 }
 
+export function RunModeProjectSelector({
+  projectId,
+  workspaceName,
+  workspaces,
+  label,
+  onProjectChange,
+}: {
+  projectId: string;
+  workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
+  label: string;
+  onProjectChange: (projectId: string) => void;
+}) {
+  const selectedWorkspace = workspaces.find((workspace) => workspace.projectId === projectId) ?? null;
+  const selectedLabel = selectedWorkspace?.name ?? workspaceName;
+
+  return (
+    <div data-testid="run-mode-project-selector" className="flex min-w-0 flex-wrap items-center gap-2">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {workspaces.length > 1 ? (
+        <Select value={projectId} onValueChange={onProjectChange}>
+          <SelectTrigger className="h-9 min-w-[220px] max-w-[320px] gap-2">
+            <Folders className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{selectedLabel}</span>
+          </SelectTrigger>
+          <SelectContent align="end">
+            {workspaces.map((workspace) => (
+              <SelectItem key={workspace.projectId} value={workspace.projectId}>
+                <span className="block min-w-0">
+                  <span className="block truncate">{workspace.name}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{workspace.workspacePath}</span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : (
+        <div className="flex h-9 min-w-[220px] max-w-[320px] items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
+          <Folders className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{selectedLabel}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const AUTO_TEMPLATE_STORAGE_KEY = 'gold-band-auto-mode-templates';
 
 const DEFAULT_DYNAMIC_CONTROL: DynamicControlDsl = {
@@ -131,9 +181,13 @@ export function autoNoticeAutoDismiss(tone: 'success' | 'error'): boolean {
 }
 
 export function RunModeManagementPage({
+  projectId,
+  workspaceName,
+  workspaces,
   runMode,
   agentRegistry,
   workflowTemplates,
+  onProjectChange,
   onSave,
   onWorkflowTemplatesChange,
   onBack,
@@ -172,6 +226,8 @@ export function RunModeManagementPage({
   const [wfNotice, setWfNotice] = useState<string | null>(null);
   const [wfError, setWfError] = useState<string | null>(null);
   const [wfTemplateStore, setWfTemplateStore] = useState<WorkflowTemplateStore | null>(workflowTemplates);
+  const wfEditorInitialized = useRef(false);
+  const previousProjectIdRef = useRef(projectId);
 
   useEffect(() => {
     setWfTemplateStore(workflowTemplates);
@@ -207,6 +263,51 @@ export function RunModeManagementPage({
     }
     return Array.from(options.values());
   }, [acceptanceModel, agents, availableAgents, bootstrapAgent]);
+
+  useEffect(() => {
+    const projectChanged = previousProjectIdRef.current !== projectId;
+    previousProjectIdRef.current = projectId;
+
+    setMode(runMode.mode);
+    const config = runMode.autoConfig ?? null;
+    setAgentStrategy(config?.agentStrategy ?? 'fixed');
+    setAgent(config?.agentType ?? '');
+    setBootstrapAgent(config?.bootstrapAgentType ?? config?.agentType ?? '');
+    setBootstrapModel(config?.bootstrapModelId ?? '');
+    setAcceptanceModel(config?.acceptanceModelId ?? '');
+    setModel(config?.modelId ?? '');
+    setAvailableAgents(config?.availableAgents ?? []);
+    setRoutingPrompt(config?.routingPrompt ?? '');
+    setAllowedWorkflowIds((config?.allowedWorkflows ?? []).map((item) => item.workflowId));
+    setAllowedProfiles(config?.allowedProfiles ?? []);
+    setControl({ ...DEFAULT_DYNAMIC_CONTROL, ...(config?.control ?? {}) });
+    setActiveTemplateId(config?.activeTemplateId ?? '');
+    setTemplateName(config?.activeTemplateName ?? '');
+
+    const nextWorkflowTemplateId = runMode.workflowTemplateId
+      ?? effectiveWorkflowTemplates?.lastUsedTemplateId
+      ?? workflowTemplateList[0]?.id
+      ?? '';
+    setWorkflowTemplateId(nextWorkflowTemplateId);
+    if (runMode.mode === 'workflow') {
+      const selectedTemplate = nextWorkflowTemplateId
+        ? effectiveWorkflowTemplates?.templates.find((template) => template.id === nextWorkflowTemplateId) ?? null
+        : null;
+      setWfEditTemplateId(selectedTemplate?.id ?? null);
+      setWfEditWorkflow(selectedTemplate?.workflow ?? null);
+      setWfSaveName('');
+      setWfLastUsedHintDismissed(selectedTemplate?.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
+      wfEditorInitialized.current = Boolean(selectedTemplate);
+    } else {
+      wfEditorInitialized.current = false;
+    }
+
+    if (projectChanged) {
+      setAutoNotice(null);
+      setWfNotice(null);
+      setWfError(null);
+    }
+  }, [projectId, runMode, effectiveWorkflowTemplates]);
 
   const showAutoNotice = (notice: { tone: 'success' | 'error'; message: string }, autoDismiss = autoNoticeAutoDismiss(notice.tone)) => {
     if (autoNoticeTimerRef.current) {
@@ -391,7 +492,6 @@ export function RunModeManagementPage({
   };
 
   // Initialize editor on first render when templates are available
-  const wfEditorInitialized = useRef(false);
   useEffect(() => {
     if (!wfEditorInitialized.current && workflowTemplateList.length > 0 && mode === 'workflow') {
       wfEditorInitialized.current = true;
@@ -622,12 +722,21 @@ export function RunModeManagementPage({
       />
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <RunModeTabsToolbar
-          mode={mode}
-          onModeChange={changeMode}
-          workflowLabel={t('runMode.workflowSection')}
-          autoLabel={t('runMode.autoSection')}
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <RunModeTabsToolbar
+            mode={mode}
+            onModeChange={changeMode}
+            workflowLabel={t('runMode.workflowSection')}
+            autoLabel={t('runMode.autoSection')}
+          />
+          <RunModeProjectSelector
+            projectId={projectId}
+            workspaceName={workspaceName}
+            workspaces={workspaces}
+            label={t('runMode.project')}
+            onProjectChange={onProjectChange}
+          />
+        </div>
 
         {mode === 'auto' ? (
           <div className="space-y-6">

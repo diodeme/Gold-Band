@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { autoNoticeAutoDismiss, autoSaveTarget, createBlankWorkflowTemplateEditorState, RunModeTabsToolbar, TemplateActionRow } from '@/pages/RunModeManagementPage';
+import { autoNoticeAutoDismiss, autoSaveTarget, createBlankWorkflowTemplateEditorState, RunModeProjectSelector, RunModeTabsToolbar, TemplateActionRow } from '@/pages/RunModeManagementPage';
 
 describe('RunModeTabsToolbar', () => {
   it('renders only mode tabs because mode changes are applied immediately', () => {
@@ -34,6 +34,25 @@ describe('RunModeTabsToolbar', () => {
       edges: [],
     });
     expect(draft.workflow.id).toMatch(/^workflow-/);
+  });
+
+  it('renders the current project as the selected run mode scope', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(RunModeProjectSelector, {
+        projectId: 'project-b',
+        workspaceName: 'Project B',
+        label: '项目',
+        workspaces: [
+          { projectId: 'project-a', name: 'Project A', workspacePath: 'D:/a' },
+          { projectId: 'project-b', name: 'Project B', workspacePath: 'D:/b' },
+        ],
+        onProjectChange: () => undefined,
+      }),
+    );
+
+    expect(html).toContain('data-testid="run-mode-project-selector"');
+    expect(html).toContain('项目');
+    expect(html).toContain('Project B');
   });
 
   it('saves AUTO changes to run mode when no template is selected', () => {

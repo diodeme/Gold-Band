@@ -22,10 +22,24 @@ describe('Gold themed scrollbar', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
 
     expect(styles).toContain(`.${GOLD_THEMED_SCROLLBAR_CLASS}`);
+    expect(styles).toContain('*::-webkit-scrollbar-thumb');
+    expect(styles).toContain('*::-webkit-scrollbar-button');
     expect(styles).toContain('--gold-scrollbar-track');
     expect(styles).toContain('--gold-scrollbar-thumb');
     expect(styles).toContain('--gold-scrollbar-thumb-hover');
     expect(styles).toContain(`.${GOLD_THEMED_SCROLLBAR_CLASS}::-webkit-scrollbar-thumb`);
     expect(styles).toContain(`.${GOLD_THEMED_SCROLLBAR_CLASS}::-webkit-scrollbar-button`);
+  });
+
+  it('uses Gold Band tokens for shadcn ScrollArea scrollbars', () => {
+    const scrollArea = readFileSync(path.resolve(__dirname, '../src/components/ui/scroll-area.tsx'), 'utf8');
+
+    expect(scrollArea).toContain('p-[3px]');
+    expect(scrollArea).toContain('w-2.5');
+    expect(scrollArea).toContain('h-2.5');
+    expect(scrollArea).toContain('bg-[var(--gold-scrollbar-track)]');
+    expect(scrollArea).toContain('bg-[var(--gold-scrollbar-thumb)]');
+    expect(scrollArea).toContain('bg-[var(--gold-scrollbar-thumb-hover)]');
+    expect(scrollArea).not.toContain('bg-border');
   });
 });

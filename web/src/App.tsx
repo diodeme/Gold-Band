@@ -952,7 +952,7 @@ export function App() {
 
   const updateConversationRunMode = (mode: ConversationRunModeVm) => {
     setConversationRunMode(mode);
-    saveConversationRunMode(defaultProjectId, mode).catch(() => {});
+    return saveConversationRunMode(defaultProjectId, mode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {

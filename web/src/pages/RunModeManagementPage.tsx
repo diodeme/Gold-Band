@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Plus, Save, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Plus, Trash2, X } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
@@ -24,7 +24,7 @@ interface RunModeManagementPageProps {
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
-  onSave: (mode: ConversationRunModeVm) => void;
+  onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onBack: () => void;
 }
@@ -43,37 +43,69 @@ export function createBlankWorkflowTemplateEditorState() {
 export function RunModeTabsToolbar({
   mode,
   onModeChange,
-  onSave,
-  saved,
   workflowLabel,
   autoLabel,
-  saveLabel,
-  savedLabel,
 }: {
   mode: RunModeManagementTab;
   onModeChange: (mode: RunModeManagementTab) => void;
-  onSave: () => void;
-  saved: boolean;
   workflowLabel: string;
   autoLabel: string;
-  saveLabel: string;
-  savedLabel: string;
 }) {
   return (
-    <div data-testid="run-mode-tabs-toolbar" className="flex flex-wrap items-center justify-between gap-3">
+    <div data-testid="run-mode-tabs-toolbar" className="flex flex-wrap items-center gap-3">
       <Tabs value={mode} onValueChange={(value) => onModeChange(value as RunModeManagementTab)}>
         <TabsList className="grid w-fit grid-cols-2">
           <TabsTrigger value="workflow">{workflowLabel}</TabsTrigger>
           <TabsTrigger value="auto">{autoLabel}</TabsTrigger>
         </TabsList>
       </Tabs>
-      <div className="flex items-center gap-3">
-        <Button className="gap-2" onClick={onSave}>
-          <Save className="size-4" />
-          {saveLabel}
+    </div>
+  );
+}
+
+export function TemplateActionRow({
+  label,
+  picker,
+  auxiliaryAction,
+  showSaveCurrent = true,
+  saving,
+  saveCurrentLabel,
+  savingLabel,
+  onSaveCurrent,
+  name,
+  namePlaceholder,
+  onNameChange,
+  saveAsLabel,
+  onSaveAs,
+}: {
+  label: ReactNode;
+  picker: ReactNode;
+  auxiliaryAction?: ReactNode;
+  showSaveCurrent?: boolean;
+  saving: boolean;
+  saveCurrentLabel: string;
+  savingLabel: string;
+  onSaveCurrent: () => void;
+  name: string;
+  namePlaceholder: string;
+  onNameChange: (value: string) => void;
+  saveAsLabel: string;
+  onSaveAs: () => void;
+}) {
+  return (
+    <div data-testid="template-action-row" className="flex flex-wrap items-center gap-3">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {picker}
+      {auxiliaryAction}
+      {showSaveCurrent ? (
+        <Button size="sm" disabled={saving} onClick={onSaveCurrent}>
+          {saving ? savingLabel : saveCurrentLabel}
         </Button>
-        {saved ? <span className="text-sm text-emerald-500">{savedLabel}</span> : null}
-      </div>
+      ) : null}
+      <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
+      <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
+        {saveAsLabel}
+      </Button>
     </div>
   );
 }
@@ -89,6 +121,14 @@ const DEFAULT_DYNAMIC_CONTROL: DynamicControlDsl = {
   maxWorkflowInvocations: 10,
   allowNestedDynamic: false,
 };
+
+export function autoSaveTarget(activeTemplateId: string | null | undefined): 'template' | 'run-mode' {
+  return activeTemplateId ? 'template' : 'run-mode';
+}
+
+export function autoNoticeAutoDismiss(tone: 'success' | 'error'): boolean {
+  return tone === 'success';
+}
 
 export function RunModeManagementPage({
   runMode,
@@ -116,9 +156,10 @@ export function RunModeManagementPage({
   const [templates, setTemplates] = useState<AutoTemplate[]>([]);
   const [templateName, setTemplateName] = useState(runMode.autoConfig?.activeTemplateName ?? '');
   const [activeTemplateId, setActiveTemplateId] = useState(runMode.autoConfig?.activeTemplateId ?? '');
-  const [saved, setSaved] = useState(false);
   const [autoNotice, setAutoNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [autoSaving, setAutoSaving] = useState(false);
   const [autoTemplatePickerOpen, setAutoTemplatePickerOpen] = useState(false);
+  const autoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Workflow template editor state ──
   const [wfEditTemplateId, setWfEditTemplateId] = useState<string | null>(null);
@@ -166,6 +207,28 @@ export function RunModeManagementPage({
     }
     return Array.from(options.values());
   }, [acceptanceModel, agents, availableAgents, bootstrapAgent]);
+
+  const showAutoNotice = (notice: { tone: 'success' | 'error'; message: string }, autoDismiss = autoNoticeAutoDismiss(notice.tone)) => {
+    if (autoNoticeTimerRef.current) {
+      clearTimeout(autoNoticeTimerRef.current);
+      autoNoticeTimerRef.current = null;
+    }
+    setAutoNotice(notice);
+    if (autoDismiss) {
+      autoNoticeTimerRef.current = setTimeout(() => {
+        setAutoNotice(null);
+        autoNoticeTimerRef.current = null;
+      }, 3000);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (autoNoticeTimerRef.current) {
+        clearTimeout(autoNoticeTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
@@ -238,6 +301,28 @@ export function RunModeManagementPage({
     };
   };
 
+  const persistRunModeSelection = (nextMode: RunModeManagementTab, autoConfig?: ConversationAutoConfigVm, templateId = wfEditTemplateId ?? workflowTemplateId) => {
+    const updated: ConversationRunModeVm = nextMode === 'auto'
+      ? { mode: 'auto', autoConfig: autoConfig ?? buildAutoConfig() }
+      : { mode: 'workflow', workflowTemplateId: templateId || undefined };
+    void Promise.resolve(onSave(updated));
+  };
+
+  const changeMode = (nextMode: RunModeManagementTab) => {
+    setMode(nextMode);
+    if (nextMode === 'auto') {
+      const config = buildAutoConfig();
+      const issues = validateAutoConfig(config, agentRegistry, effectiveWorkflowTemplates, t);
+      if (issues.length > 0) {
+        showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+        return;
+      }
+      persistRunModeSelection('auto', config);
+      return;
+    }
+    persistRunModeSelection('workflow');
+  };
+
   const applyAutoConfig = (config: ConversationAutoConfigVm) => {
     setAgentStrategy(config.agentStrategy ?? 'fixed');
     setAgent(config.agentType ?? '');
@@ -256,25 +341,36 @@ export function RunModeManagementPage({
 
   const selectAutoTemplate = (templateId: string) => {
     if (templateId === '__none__') {
+      const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       setActiveTemplateId('');
       setTemplateName('');
       setAutoTemplatePickerOpen(false);
+      persistRunModeSelection('auto', config);
       return;
     }
     const template = templates.find((item) => item.id === templateId);
     if (!template) return;
-    applyAutoConfig({ ...template.config, activeTemplateId: template.id, activeTemplateName: template.name });
+    const config = {
+      ...template.config,
+      activeTemplateId: template.id,
+      activeTemplateName: template.name,
+      ...sessionFields(),
+    };
+    applyAutoConfig(config);
     setAutoTemplatePickerOpen(false);
+    persistRunModeSelection('auto', config);
   };
 
   const deleteAutoTemplate = async (templateId: string) => {
     const nextStore = await deleteAutoTemplateApi(templateId);
     setTemplates(nextStore.templates);
     if (activeTemplateId === templateId) {
+      const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       setActiveTemplateId('');
       setTemplateName('');
+      persistRunModeSelection('auto', config);
     }
-    setAutoNotice({ tone: 'success', message: t('runMode.autoTemplateDeleted') });
+    showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateDeleted') });
   };
 
   // ── Workflow template editor helpers ──
@@ -304,12 +400,14 @@ export function RunModeManagementPage({
   const selectWfTemplate = (templateId: string) => {
     const found = effectiveWorkflowTemplates?.templates.find((t) => t.id === templateId);
     if (!found) return;
+    setWorkflowTemplateId(found.id);
     setWfEditTemplateId(found.id);
     setWfEditWorkflow(found.workflow);
     setWfSaveName('');
     setWfLastUsedHintDismissed(found.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
     setWfNotice(null);
     setWfError(null);
+    persistRunModeSelection('workflow', undefined, found.id);
   };
 
   const startWfBlank = () => {
@@ -418,36 +516,23 @@ export function RunModeManagementPage({
     }
   };
 
-  const handleSave = () => {
-    if (mode === 'auto') {
-      const issues = validateAutoConfig(buildAutoConfig(), agentRegistry, effectiveWorkflowTemplates, t);
-      if (issues.length > 0) {
-        setAutoNotice({ tone: 'error', message: issues.join('\n') });
-        return;
-      }
-    }
-    const updated: ConversationRunModeVm = mode === 'auto'
-      ? { mode: 'auto', autoConfig: buildAutoConfig() }
-      : { mode: 'workflow', workflowTemplateId: (wfEditTemplateId ?? workflowTemplateId) || undefined };
-    onSave(updated);
-    setSaved(true);
-    setAutoNotice({ tone: 'success', message: t('runMode.saved') });
-    setTimeout(() => setSaved(false), 2000);
-    setTimeout(() => setAutoNotice(null), 3000);
-  };
-
   const saveAsTemplate = async () => {
-    const name = templateName.trim() || t('runMode.autoTemplateFallbackName');
+    const name = templateName.trim();
+    if (!name) {
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameRequired') }, false);
+      return;
+    }
     if (templates.some((item) => item.name.trim() === name)) {
-      setAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) });
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) }, false);
       return;
     }
     const templateConfig = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: name }, false);
     const issues = validateAutoConfig(templateConfig, agentRegistry, effectiveWorkflowTemplates, t);
     if (issues.length > 0) {
-      setAutoNotice({ tone: 'error', message: issues.join('\n') });
+      showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
       return;
     }
+    setAutoSaving(true);
     try {
       const nextStore = await saveAutoTemplate(name, templateConfig);
       const savedTemplate = nextStore.templates.find((item) => item.name === name) ?? nextStore.templates.at(-1);
@@ -460,38 +545,58 @@ export function RunModeManagementPage({
       setTemplates(nextStore.templates);
       setActiveTemplateId(savedTemplate?.id ?? '');
       setTemplateName(savedTemplate?.name ?? name);
-      onSave({ mode: 'auto', autoConfig: config });
-      setAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
+      await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+      showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
-      setAutoNotice({ tone: 'error', message: displayAppError(t, error) });
+      showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+    } finally {
+      setAutoSaving(false);
     }
   };
 
   const saveCurrentTemplate = async () => {
-    if (!activeTemplateId) {
-      await saveAsTemplate();
+    const target = autoSaveTarget(activeTemplateId);
+    if (target === 'run-mode') {
+      const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
+      const issues = validateAutoConfig(config, agentRegistry, effectiveWorkflowTemplates, t);
+      if (issues.length > 0) {
+        showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+        return;
+      }
+      setAutoSaving(true);
+      try {
+        await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+        setActiveTemplateId('');
+        showAutoNotice({ tone: 'success', message: t('runMode.saved') });
+      } finally {
+        setAutoSaving(false);
+      }
       return;
     }
+
     const name = templateName.trim() || templates.find((item) => item.id === activeTemplateId)?.name || t('runMode.autoTemplateFallbackName');
     if (templates.some((item) => item.id !== activeTemplateId && item.name.trim() === name)) {
-      setAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) });
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) }, false);
       return;
     }
     const templateConfig = buildAutoConfig({ activeTemplateId, activeTemplateName: name }, false);
     const issues = validateAutoConfig(templateConfig, agentRegistry, effectiveWorkflowTemplates, t);
     if (issues.length > 0) {
-      setAutoNotice({ tone: 'error', message: issues.join('\n') });
+      showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
       return;
     }
+    setAutoSaving(true);
     try {
       const nextStore = await updateAutoTemplate(activeTemplateId, name, templateConfig);
       const config = { ...templateConfig, ...sessionFields() };
       setTemplates(nextStore.templates);
       setTemplateName(name);
-      onSave({ mode: 'auto', autoConfig: config });
-      setAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
+      await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
+      showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
-      setAutoNotice({ tone: 'error', message: displayAppError(t, error) });
+      showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+    } finally {
+      setAutoSaving(false);
     }
   };
 
@@ -517,79 +622,84 @@ export function RunModeManagementPage({
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <RunModeTabsToolbar
           mode={mode}
-          onModeChange={setMode}
-          onSave={handleSave}
-          saved={saved}
+          onModeChange={changeMode}
           workflowLabel={t('runMode.workflowSection')}
           autoLabel={t('runMode.autoSection')}
-          saveLabel={t('common.save')}
-          savedLabel={t('runMode.saved')}
         />
-        {autoNotice ? (
-          <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
-            {autoNotice.message}
-          </div>
-        ) : null}
 
         {mode === 'auto' ? (
           <div className="space-y-6">
             <section className="space-y-3">
-              <div className="flex items-center gap-3">
-                <Popover open={autoTemplatePickerOpen} onOpenChange={setAutoTemplatePickerOpen}>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className="h-9 w-[220px] justify-between px-3 font-normal" aria-label={t('runMode.autoTemplate')}>
-                      <span className="truncate">{templates.find((item) => item.id === activeTemplateId)?.name ?? t('runMode.noAutoTemplate')}</span>
-                      <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[280px] p-0" align="start">
-                    <div className="p-1">
-                      <button
-                        type="button"
-                        className={cn('flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent', !activeTemplateId && 'bg-accent text-accent-foreground')}
-                        onClick={() => selectAutoTemplate('__none__')}
-                      >
-                        {t('runMode.noAutoTemplate')}
-                      </button>
-                    </div>
-                    {templates.length > 0 ? <Separator /> : null}
-                    <div className="max-h-64 overflow-auto p-1">
-                      {templates.map((template) => {
-                        const selected = template.id === activeTemplateId;
-                        return (
-                          <div key={template.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
-                            <button
-                              type="button"
-                              className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
-                              onClick={() => selectAutoTemplate(template.id)}
-                            >
-                              {template.name}
-                            </button>
-                            <Button
-                              variant="ghost"
-                              size="icon-xs"
-                              className="size-6 shrink-0"
-                              aria-label={t('runMode.deleteAutoTemplate', { name: template.name })}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void deleteAutoTemplate(template.id).catch((error) => {
-                                  setAutoNotice({ tone: 'error', message: displayAppError(t, error) });
-                                });
-                              }}
-                            >
-                              <Trash2 className="size-3" />
-                            </Button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-                <Input className="h-9 max-w-[220px]" value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder={t('runMode.autoTemplateName')} />
-                <Button variant="secondary" size="sm" onClick={() => void saveCurrentTemplate()}>{t('runMode.saveTemplate')}</Button>
-                <Button variant="outline" size="sm" onClick={() => void saveAsTemplate()}>{t('runMode.saveAsTemplate')}</Button>
-              </div>
+              <TemplateActionRow
+                label={t('runMode.autoTemplate')}
+                picker={(
+                  <Popover open={autoTemplatePickerOpen} onOpenChange={setAutoTemplatePickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className="justify-between min-w-[200px]" aria-label={t('runMode.autoTemplate')}>
+                        <span className="truncate">{templates.find((item) => item.id === activeTemplateId)?.name ?? t('runMode.noAutoTemplate')}</span>
+                        <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[280px] p-0" align="start">
+                      <div className="p-1">
+                        <button
+                          type="button"
+                          className={cn('flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent', !activeTemplateId && 'bg-accent text-accent-foreground')}
+                          onClick={() => selectAutoTemplate('__none__')}
+                        >
+                          {t('runMode.noAutoTemplate')}
+                        </button>
+                      </div>
+                      {templates.length > 0 ? <Separator /> : null}
+                      <div className="max-h-64 overflow-auto p-1">
+                        {templates.map((template) => {
+                          const selected = template.id === activeTemplateId;
+                          return (
+                            <div key={template.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
+                              <button
+                                type="button"
+                                className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
+                                onClick={() => selectAutoTemplate(template.id)}
+                              >
+                                {template.name}
+                              </button>
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                className="size-6 shrink-0"
+                                aria-label={t('runMode.deleteAutoTemplate', { name: template.name })}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void deleteAutoTemplate(template.id).catch((error) => {
+                                    showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+                                  });
+                                }}
+                              >
+                                <Trash2 className="size-3" />
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
+                saving={autoSaving}
+                saveCurrentLabel={t('runMode.saveChanges')}
+                savingLabel={t('runMode.saving')}
+                onSaveCurrent={() => void saveCurrentTemplate()}
+                name={templateName}
+                namePlaceholder={t('runMode.autoTemplateName')}
+                onNameChange={setTemplateName}
+                saveAsLabel={t('runMode.saveAsTemplate')}
+                onSaveAs={() => void saveAsTemplate()}
+              />
             </section>
+            {autoNotice ? (
+              <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
+                {autoNotice.message}
+              </div>
+            ) : null}
 
             <section className="flex flex-wrap gap-2">
               <Field label={<><Bot className="size-3.5" />{t('workflowEditor.dynamicAgentStrategy')}</>} required help={t('workflowEditor.dynamicAgentStrategyHelp')}>
@@ -742,59 +852,59 @@ export function RunModeManagementPage({
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Template picker + actions */}
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-xs font-medium text-muted-foreground">{t('taskList.create.workflowTemplate')}</span>
-              <Popover open={wfTemplatePickerOpen} onOpenChange={setWfTemplatePickerOpen}>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="justify-between min-w-[200px]" aria-label={t('taskList.create.workflowTemplate')}>
-                    <span className="truncate">{wfTemplateLabel}</span>
-                    <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[280px] p-0" align="start">
-                  <div className="p-1">
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent"
-                      onClick={startWfBlank}
-                    >
-                      <Plus className="size-3.5" />
-                      {t('taskList.create.newWorkflowTemplate')}
-                    </button>
-                  </div>
-                  {workflowTemplateList.length > 0 ? <Separator /> : null}
-                  <div className="max-h-64 overflow-auto p-1">
-                    {workflowTemplateList.map((tpl) => {
-                      const selected = tpl.id === wfEditTemplateId;
-                      const isDefault = tpl.id === 'default';
-                      return (
-                        <div key={tpl.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
-                          <button
-                            type="button"
-                            className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
-                            onClick={() => { selectWfTemplate(tpl.id); setWfTemplatePickerOpen(false); }}
-                          >
-                            {tpl.name}
-                          </button>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="size-6 shrink-0"
-                            disabled={isDefault}
-                            aria-label={isDefault ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: tpl.name })}
-                            onClick={() => { setWfTemplatePickerOpen(false); setWfDeleteTarget(tpl); }}
-                          >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </PopoverContent>
-              </Popover>
-
-              {showWfLastUsedHint && lastUsedWfTemplate ? (
+            <TemplateActionRow
+              label={t('taskList.create.workflowTemplate')}
+              picker={(
+                <Popover open={wfTemplatePickerOpen} onOpenChange={setWfTemplatePickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="justify-between min-w-[200px]" aria-label={t('taskList.create.workflowTemplate')}>
+                      <span className="truncate">{wfTemplateLabel}</span>
+                      <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="start">
+                    <div className="p-1">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent"
+                        onClick={startWfBlank}
+                      >
+                        <Plus className="size-3.5" />
+                        {t('taskList.create.newWorkflowTemplate')}
+                      </button>
+                    </div>
+                    {workflowTemplateList.length > 0 ? <Separator /> : null}
+                    <div className="max-h-64 overflow-auto p-1">
+                      {workflowTemplateList.map((tpl) => {
+                        const selected = tpl.id === wfEditTemplateId;
+                        const isDefault = tpl.id === 'default';
+                        return (
+                          <div key={tpl.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
+                            <button
+                              type="button"
+                              className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
+                              onClick={() => { selectWfTemplate(tpl.id); setWfTemplatePickerOpen(false); }}
+                            >
+                              {tpl.name}
+                            </button>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              className="size-6 shrink-0"
+                              disabled={isDefault}
+                              aria-label={isDefault ? t('taskList.create.defaultWorkflowReadonly') : t('taskList.create.deleteWorkflowTemplate', { name: tpl.name })}
+                              onClick={() => { setWfTemplatePickerOpen(false); setWfDeleteTarget(tpl); }}
+                            >
+                              <Trash2 className="size-3" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
+              auxiliaryAction={showWfLastUsedHint && lastUsedWfTemplate ? (
                 <button
                   type="button"
                   className="rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary hover:bg-primary/10"
@@ -803,17 +913,17 @@ export function RunModeManagementPage({
                   {t('taskList.create.selectLastUsedWorkflow', { name: lastUsedWfTemplate.name })}
                 </button>
               ) : null}
-
-              {canUpdateWfTemplate ? (
-                <Button variant="outline" size="sm" disabled={wfSaving} onClick={saveWfCurrent}>
-                  {wfSaving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}
-                </Button>
-              ) : null}
-              <Input className="h-8 w-40" value={wfSaveName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(e) => setWfSaveName(e.target.value)} />
-              <Button variant="outline" size="sm" disabled={!wfSaveName.trim() || wfSaving} onClick={saveWfAsNew}>
-                {t('taskList.create.saveAsWorkflow')}
-              </Button>
-            </div>
+              showSaveCurrent={canUpdateWfTemplate}
+              saving={wfSaving}
+              saveCurrentLabel={t('taskList.create.saveCurrentWorkflow')}
+              savingLabel={t('taskList.create.savingWorkflowTemplate')}
+              onSaveCurrent={() => void saveWfCurrent()}
+              name={wfSaveName}
+              namePlaceholder={t('taskList.create.workflowTemplateName')}
+              onNameChange={setWfSaveName}
+              saveAsLabel={t('taskList.create.saveAsWorkflow')}
+              onSaveAs={() => void saveWfAsNew()}
+            />
 
             {wfNotice ? (
               <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600">{wfNotice}</div>

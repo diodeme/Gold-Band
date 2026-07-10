@@ -161,14 +161,6 @@ impl GoldBandPaths {
         self.user_context_dir().join("profiles")
     }
 
-    pub fn project_context_dir(&self) -> Utf8PathBuf {
-        self.runtime_root.join("context")
-    }
-
-    pub fn project_context_profiles_dir(&self) -> Utf8PathBuf {
-        self.project_context_dir().join("profiles")
-    }
-
     pub fn logs_dir(&self) -> Utf8PathBuf {
         self.user_gold_band_root.join("logs")
     }

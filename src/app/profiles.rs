@@ -27,13 +27,11 @@ const BUILT_IN_PROFILE_TIMESTAMP: &str = "2026-05-27 00:00:00";
 pub enum ProfileScope {
     BuiltIn,
     User,
-    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileInput {
-    pub scope: ProfileScope,
     pub name: String,
     pub summary: String,
     pub content: String,
@@ -180,7 +178,6 @@ pub(crate) fn list_profiles(
     language: DesktopLanguage,
 ) -> Result<ProfileList> {
     let mut profiles = Vec::new();
-    profiles.extend(read_profile_dir(paths, ProfileScope::Project)?);
     profiles.extend(read_profile_dir(paths, ProfileScope::User)?);
     profiles.extend(built_in_profiles(language));
     profiles.sort_by(|left, right| {
@@ -209,7 +206,7 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
         summary: input.summary.trim().to_string(),
         summary_source: input.summary.trim().to_string(),
         content: input.content,
-        scope: input.scope,
+        scope: ProfileScope::User,
         is_built_in: false,
         created_at: now.clone(),
         updated_at: now,
@@ -236,7 +233,7 @@ pub(crate) fn update_profile(
         summary: input.summary.trim().to_string(),
         summary_source: input.summary.trim().to_string(),
         content: input.content,
-        scope: input.scope,
+        scope: ProfileScope::User,
         is_built_in: false,
         created_at: existing.created_at,
         updated_at: local_timestamp(),
@@ -276,12 +273,6 @@ pub(crate) fn find_profile_by_id(
         return Ok(None);
     }
     if let Some(profile) = built_in_profile_by_id(id, language) {
-        return Ok(Some(profile));
-    }
-    if let Some(profile) = read_profile_dir(paths, ProfileScope::Project)?
-        .into_iter()
-        .find(|profile| profile.id == id)
-    {
         return Ok(Some(profile));
     }
     Ok(read_profile_dir(paths, ProfileScope::User)?
@@ -482,9 +473,6 @@ fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>
 }
 
 fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
-    if input.scope == ProfileScope::BuiltIn {
-        return Err(ProfileCommandError::BuiltInScopeUnsupported.into());
-    }
     if input.name.trim().is_empty() {
         bail!("profile name cannot be empty");
     }
@@ -497,7 +485,6 @@ fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
 fn profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Utf8PathBuf> {
     match scope {
         ProfileScope::User => Ok(paths.user_context_profiles_dir()),
-        ProfileScope::Project => Ok(paths.project_context_profiles_dir()),
         ProfileScope::BuiltIn => Err(ProfileCommandError::BuiltInScopeUnsupported.into()),
     }
 }
@@ -568,8 +555,7 @@ fn local_timestamp() -> String {
 fn scope_rank(scope: ProfileScope) -> u8 {
     match scope {
         ProfileScope::BuiltIn => 0,
-        ProfileScope::Project => 1,
-        ProfileScope::User => 2,
+        ProfileScope::User => 1,
     }
 }
 
@@ -624,7 +610,6 @@ profile body
             &paths,
             "pf-test",
             ProfileInput {
-                scope: ProfileScope::User,
                 name: "review".to_string(),
                 summary: "审查角色，\n用于检查输出质量。".to_string(),
                 content: "new body\n".to_string(),
@@ -636,5 +621,15 @@ profile body
         assert!(saved.contains("extra: keep-me"));
         assert!(saved.contains("summary: >\n  审查角色，\n  用于检查输出质量。\n"));
         assert!(saved.ends_with("---\nnew body\n"));
+    }
+
+    #[test]
+    fn profile_input_rejects_legacy_scope_field() {
+        let err = serde_json::from_str::<ProfileInput>(
+            r#"{"scope":"project","name":"role","summary":"summary","content":"body"}"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unknown field `scope`"));
     }
 }

@@ -14,11 +14,11 @@ describe('browserApi', () => {
 
   it('requires explicit force before deleting confirmation-gated preview profiles', async () => {
     const created = await browserApi.createProfile({
-      scope: 'user',
       name: 'Needs confirmation',
       summary: 'preview role [requires-confirmation]',
       content: 'temp',
     });
+    expect(created.scope).toBe('user');
 
     await expect(browserApi.deleteProfile(created.id)).rejects.toEqual({
       code: 'profile.delete-confirmation-required',

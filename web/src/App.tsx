@@ -337,6 +337,12 @@ export function App() {
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
 
+  const loadProfiles = useCallback(async () => {
+    const result = await getProfiles();
+    setProfiles(result.profiles);
+    return result.profiles;
+  }, []);
+
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const metricsSettings = bootstrap?.metricsSettings ?? null;
@@ -479,9 +485,9 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
-    getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
+    loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
-  }, [bootstrap, uiMode]);
+  }, [bootstrap, loadProfiles, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
@@ -1460,6 +1466,7 @@ export function App() {
           profiles={profiles}
           busy={busy}
           onRunModeChange={updateConversationRunMode}
+          onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'auto'
               ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
@@ -1634,24 +1641,27 @@ export function App() {
         />
       );
     }
-    return <ConversationHomePage
-      projectId={defaultProjectId}
-      workspaceName={defaultWorkspaceName}
-      workspaces={conversationSidebar.workspaces}
-          runMode={conversationRunMode}
-          agentRegistry={agentRegistry}
-          workflowTemplates={conversationWorkflowTemplates}
-          profiles={profiles}
-          busy={busy}
-      onRunModeChange={updateConversationRunMode}
-      onSubmit={(_input) => null}
-      onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
-      onWorkspaceChange={(projectId) => {
-        resetConversationComposerDraft(composerDraftRef.current);
-        setDraftConversationWorkspaceId(projectId);
-        getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
-      }}
-    />;
+    return (
+      <ConversationHomePage
+        projectId={defaultProjectId}
+        workspaceName={defaultWorkspaceName}
+        workspaces={conversationSidebar.workspaces}
+        runMode={conversationRunMode}
+        agentRegistry={agentRegistry}
+        workflowTemplates={conversationWorkflowTemplates}
+        profiles={profiles}
+        busy={busy}
+        onRunModeChange={updateConversationRunMode}
+        onLoadProfiles={loadProfiles}
+        onSubmit={(_input) => null}
+        onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+        onWorkspaceChange={(projectId) => {
+          resetConversationComposerDraft(composerDraftRef.current);
+          setDraftConversationWorkspaceId(projectId);
+          getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+        }}
+      />
+    );
   }
 
   function renderTaskContent() {

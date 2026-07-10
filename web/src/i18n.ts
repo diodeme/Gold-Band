@@ -278,7 +278,7 @@ const resources = {
           "固定角色，支持打开草稿并另存为新的自定义角色。",
         customSectionTitle: "自定义角色",
         customSectionDescription:
-          "你创建的用户级和项目级角色会在这里分页展示。",
+          "你创建的用户级自定义角色会在这里分页展示。",
         customProfilesPageRange: "自定义角色 {{start}}-{{end}} / {{total}}",
         builtInReadonlyHint: "内置角色不可直接保存，请另存为新角色。",
         emptyContent: "暂无正文内容",
@@ -286,7 +286,6 @@ const resources = {
         scope: "范围",
         builtInScope: "内置",
         userScope: "用户级",
-        projectScope: "项目级",
         name: "名称",
         summary: "摘要",
         content: "完整内容",
@@ -670,7 +669,7 @@ const resources = {
           "{{node}} 节点的权限模式不属于当前 Agent。",
         validationNodeProfileRequired: "{{node}} 节点未关联角色。",
         validationNodeProfileVisibilityChanged:
-          "{{node}} 节点关联的角色可见性发生变更，请重新设置。",
+          "{{node}} 节点关联的角色不存在或已删除，请重新设置。",
         validationNodeGoalRequired: "{{node}} 节点目标不能为空。",
         validationDynamicAvailableAgentsRequired:
           "{{node}} 至少需要选择一个可用 agent。",
@@ -1499,7 +1498,7 @@ const resources = {
           "Fixed roles that can be opened as drafts and saved as new custom roles.",
         customSectionTitle: "Custom Roles",
         customSectionDescription:
-          "Your user and project roles are paginated here.",
+          "Your user roles are paginated here.",
         customProfilesPageRange: "Custom roles {{start}}-{{end}} / {{total}}",
         builtInReadonlyHint:
           "Built-in roles cannot be saved directly. Save them as a new role instead.",
@@ -1508,7 +1507,6 @@ const resources = {
         scope: "Scope",
         builtInScope: "Built-in",
         userScope: "User",
-        projectScope: "Project",
         name: "Name",
         summary: "Summary",
         content: "Full Content",
@@ -1910,7 +1908,7 @@ const resources = {
         validationNodeProfileRequired:
           "{{node}} node is not associated with a role.",
         validationNodeProfileVisibilityChanged:
-          "{{node}} node associated role visibility changed; reset it.",
+          "{{node}} node associated role no longer exists; reset it.",
         validationNodeGoalRequired: "{{node}} node goal is required.",
         validationDynamicAvailableAgentsRequired:
           "{{node}} requires at least one available agent.",

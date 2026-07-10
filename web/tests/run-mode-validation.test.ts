@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateWorkflowTemplateForConversationStart } from '../src/lib/run-mode-validation';
+import {
+  validateWorkflowTemplateForConversationStart,
+  validateWorkflowTemplateForConversationStartWithFreshProfiles,
+} from '../src/lib/run-mode-validation';
 import type { AgentRegistryVm, ProfileVm, WorkflowTemplateStore } from '../src/types';
 
 const t = (key: string, options?: Record<string, unknown>) => {
@@ -8,6 +11,7 @@ const t = (key: string, options?: Record<string, unknown>) => {
     'conversation.validation.workflow.not-found': 'Selected workflow template not found',
     'workflowEditor.validationPermissionModeUnavailable': `${options?.node} 节点的权限模式不属于当前 Agent。`,
     'workflowEditor.validationNodeProfileRequired': `${options?.node} 节点未关联角色。`,
+    'workflowEditor.validationNodeProfileVisibilityChanged': `${options?.node} 节点关联的角色不存在或已删除，请重新设置。`,
   };
   return messages[key] ?? key;
 };
@@ -87,5 +91,61 @@ describe('run mode validation', () => {
     );
 
     expect(issues).toContain('ai-dynamic1 节点的权限模式不属于当前 Agent。');
+  });
+
+  it('refreshes profiles before validating a workflow conversation start', async () => {
+    const freshProfile: ProfileVm = {
+      id: 'fresh-profile',
+      name: '新角色',
+      summary: '',
+      content: '',
+      scope: 'user',
+      isBuiltIn: false,
+      createdAt: '',
+      updatedAt: '',
+      path: '',
+    };
+    const templates: WorkflowTemplateStore = {
+      version: '1',
+      templates: [{
+        id: 'fresh-template',
+        name: '新角色工作流',
+        createdAt: '',
+        updatedAt: '',
+        workflow: {
+          version: '0.1',
+          id: 'fresh-workflow',
+          entry: 'dev',
+          control: {},
+          nodes: [{
+            id: 'dev',
+            type: 'worker',
+            provider: 'claude-acp',
+            profile: freshProfile.id,
+          }],
+          edges: [{ from: 'dev', to: '$end', on: 'success' }],
+        },
+      }],
+      lastUsedTemplateId: 'fresh-template',
+    };
+
+    const staleIssues = validateWorkflowTemplateForConversationStart(
+      'fresh-template',
+      agentRegistry,
+      [],
+      templates,
+      t,
+    );
+    const freshIssues = await validateWorkflowTemplateForConversationStartWithFreshProfiles(
+      'fresh-template',
+      agentRegistry,
+      [],
+      async () => [freshProfile],
+      templates,
+      t,
+    );
+
+    expect(staleIssues).toContain('dev 节点关联的角色不存在或已删除，请重新设置。');
+    expect(freshIssues).toEqual([]);
   });
 });

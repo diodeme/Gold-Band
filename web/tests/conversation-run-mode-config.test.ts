@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  conversationRunModeOrDefault,
   mergeConversationRunMode,
   normalizeConversationAutoConfigForSubmit,
   normalizeOptionalRunModeText,
@@ -7,6 +8,11 @@ import {
 } from '../src/lib/conversation-run-mode-config';
 
 describe('conversation run mode config text fields', () => {
+  it('uses default AUTO when a workspace has no saved run mode', () => {
+    expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'auto' });
+    expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'auto' });
+  });
+
   it('preserves in-progress spaces while editing session config', () => {
     expect(optionalRunModeText('alpha ')).toBe('alpha ');
     expect(optionalRunModeText('alpha  beta')).toBe('alpha  beta');

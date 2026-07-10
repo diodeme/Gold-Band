@@ -103,7 +103,7 @@ import {
   shouldAutoOpenWorkspacePicker,
   shouldRenderWorkspacePicker,
 } from '@/lib/workspace-picker-scope';
-import { mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
+import { conversationRunModeOrDefault, mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -231,6 +231,7 @@ export function App() {
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
+  const conversationRunModeRequestRef = useRef(0);
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -320,6 +321,19 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const loadConversationRunMode = useCallback((projectId: string) => {
+    const requestId = ++conversationRunModeRequestRef.current;
+    return getConversationRunMode(projectId)
+      .then((mode) => {
+        const nextMode = conversationRunModeOrDefault(mode);
+        if (requestId === conversationRunModeRequestRef.current) {
+          setConversationRunMode(nextMode);
+        }
+        return nextMode;
+      })
+      .catch(() => undefined);
+  }, []);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
@@ -497,10 +511,8 @@ export function App() {
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
-    getConversationRunMode(defaultProjectId)
-      .then((mode) => { if (mode) setConversationRunMode(mode); })
-      .catch(() => {});
-  }, [bootstrap, uiMode, defaultProjectId]);
+    void loadConversationRunMode(defaultProjectId);
+  }, [bootstrap, uiMode, defaultProjectId, loadConversationRunMode]);
 
   // Load conversation run when navigating to a run page
   useEffect(() => {
@@ -956,10 +968,11 @@ export function App() {
     }
   };
 
-  const updateConversationRunMode = (mode: ConversationRunModeVm) => {
+  const updateConversationRunMode = (mode: ConversationRunModeVm, projectId = defaultProjectId) => {
+    conversationRunModeRequestRef.current += 1;
     const nextMode = mergeConversationRunMode(conversationRunMode, mode);
     setConversationRunMode(nextMode);
-    return saveConversationRunMode(defaultProjectId, nextMode).catch(() => {});
+    return saveConversationRunMode(projectId, nextMode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {
@@ -1520,7 +1533,7 @@ export function App() {
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
-            getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+            void loadConversationRunMode(projectId);
           }}
         />
       );
@@ -1528,10 +1541,17 @@ export function App() {
     if (conversationPage.kind === 'run-mode-management') {
       return (
         <RunModeManagementPage
+          projectId={defaultProjectId}
+          workspaceName={defaultWorkspaceName}
+          workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
-          onSave={updateConversationRunMode}
+          onProjectChange={(projectId) => {
+            setDraftConversationWorkspaceId(projectId);
+            void loadConversationRunMode(projectId);
+          }}
+          onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
           onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
@@ -1670,7 +1690,7 @@ export function App() {
         onWorkspaceChange={(projectId) => {
           resetConversationComposerDraft(composerDraftRef.current);
           setDraftConversationWorkspaceId(projectId);
-          getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+          void loadConversationRunMode(projectId);
         }}
       />
     );

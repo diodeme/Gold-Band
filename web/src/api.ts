@@ -67,6 +67,10 @@ export function selectRecentWorkspace(workspace: string) {
   return getRuntimeApi().selectRecentWorkspace(workspace);
 }
 
+export function removeRecentWorkspace(workspace: string) {
+  return getRuntimeApi().removeRecentWorkspace(workspace);
+}
+
 export function getTaskDetail(taskId: string) {
   return getRuntimeApi().getTaskDetail(taskId);
 }

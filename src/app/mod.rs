@@ -1073,6 +1073,15 @@ impl App {
         Ok((settings, state))
     }
 
+    pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
+        let mut state = self.load_state()?;
+        state
+            .recent_desktop_workspaces
+            .retain(|item| item != workspace);
+        self.save_state(&state)?;
+        Ok(state)
+    }
+
     pub fn set_user_agents(
         &self,
         agents: std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig>,
@@ -4238,6 +4247,24 @@ mod tests {
         assert_eq!(state.recent_desktop_workspaces.len(), 2);
         assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/A");
         assert_eq!(state.recent_desktop_workspaces[1], "D:/Projects/B");
+    }
+
+    #[test]
+    fn recent_workspace_can_be_removed_without_switching_workspace() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root.clone());
+        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+
+        let state = app
+            .remove_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+
+        assert_eq!(state.recent_desktop_workspaces, vec!["D:/Projects/B"]);
+        let settings = app.load_settings().unwrap();
+        assert_eq!(settings.desktop_workspace.as_deref(), Some("D:/Projects/B"));
     }
 
     #[test]

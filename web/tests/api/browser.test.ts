@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('keeps the current preview workspace in the recent list', async () => {
+    const bootstrap = await browserApi.getAppBootstrap();
+
+    await expect(browserApi.removeRecentWorkspace(bootstrap.repoRoot)).rejects.toEqual({
+      code: 'workspace.recent-current-locked',
+      params: { workspace: bootstrap.repoRoot },
+    });
+  });
+
   it('keeps built-in profiles readonly in preview mode', async () => {
     const builtIn = (await browserApi.getProfiles()).profiles.find((profile) => profile.isBuiltIn);
 

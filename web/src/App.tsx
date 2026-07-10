@@ -26,6 +26,7 @@ import {
   pauseRun,
   pinConversation,
   rerunConversationTask,
+  removeRecentWorkspace,
   saveDesktopPreferences,
   saveUpdaterSettings,
   saveTaskWorkflow,
@@ -98,6 +99,11 @@ import {
   WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
   WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS,
 } from '@/lib/workbench-background-refresh';
+import {
+  shouldAutoOpenWorkspacePicker,
+  shouldRenderWorkspacePicker,
+} from '@/lib/workspace-picker-scope';
+import { mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -467,12 +473,12 @@ export function App() {
     getAppBootstrap()
       .then((bootstrap) => {
         setBootstrap(bootstrap);
-        if (bootstrap.needsWorkspace) {
+        if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
           setWorkspacePickerOpen(true);
         }
       })
       .catch((err) => setError(displayAppError(t, err)));
-  }, [t]);
+  }, [t, uiMode]);
 
   // Load conversation sidebar data when in conversation mode
   useEffect(() => {
@@ -951,8 +957,9 @@ export function App() {
   };
 
   const updateConversationRunMode = (mode: ConversationRunModeVm) => {
-    setConversationRunMode(mode);
-    return saveConversationRunMode(defaultProjectId, mode).catch(() => {});
+    const nextMode = mergeConversationRunMode(conversationRunMode, mode);
+    setConversationRunMode(nextMode);
+    return saveConversationRunMode(defaultProjectId, nextMode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {
@@ -1032,6 +1039,19 @@ export function App() {
     setError(null);
     try {
       applyWorkspace(await selectRecentWorkspace(workspace));
+    } catch (err) {
+      setError(displayAppError(t, err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRemoveRecentWorkspace = async (workspace: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const nextBootstrap = await removeRecentWorkspace(workspace);
+      setBootstrap(nextBootstrap);
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -1162,7 +1182,7 @@ export function App() {
 
   const content = uiMode === 'conversation'
     ? renderConversationContent()
-    : workspacePickerOpen
+    : shouldRenderWorkspacePicker(uiMode, workspacePickerOpen)
     ? (
       <WorkspaceSelectPage
         bootstrap={bootstrap}
@@ -1170,6 +1190,7 @@ export function App() {
         busy={busy}
         onChooseWorkspace={onChooseWorkspace}
         onSelectRecentWorkspace={onSelectRecentWorkspace}
+        onRemoveRecentWorkspace={onRemoveRecentWorkspace}
       />
     )
     : primaryModule === 'settings'
@@ -1227,12 +1248,14 @@ export function App() {
         return;
       }
       persistUiMode('workbench');
+      setWorkspacePickerOpen(Boolean(bootstrap?.needsWorkspace));
       pushRoute(primaryModule, taskPage);
       return;
     }
 
     persistUiMode('conversation');
-    if (bootstrap?.repoRoot) {
+    setWorkspacePickerOpen(false);
+    if (bootstrap?.repoRoot && !bootstrap.needsWorkspace) {
       syncConversationWorkspace(bootstrap.repoRoot)
         .then((sidebar) => {
           activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
@@ -1410,17 +1433,6 @@ export function App() {
   );
 
   function renderConversationContent() {
-    if (workspacePickerOpen) {
-      return (
-        <WorkspaceSelectPage
-          bootstrap={bootstrap}
-          appInfo={appInfo}
-          busy={busy}
-          onChooseWorkspace={onChooseWorkspace}
-          onSelectRecentWorkspace={onSelectRecentWorkspace}
-        />
-      );
-    }
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }

@@ -46,8 +46,9 @@
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
 - **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
-- **新旧 UI 切换同步**：旧 UI → 新 UI 时，将旧 UI 当前 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；新 UI → 旧 UI 时，将新 UI 最后活跃 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）。查看历史 run 或切换 composer 草稿目标不改变该同步目标。
-- **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
+- **新旧 UI 切换同步**：旧 UI → 新 UI 时，如果旧 UI 已有有效 workspace，将该 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；如果旧 UI 仍处于“选择工作空间”状态，则只切换到新 UI 的会话主页，不把占位 cwd 同步为 conversation workspace，也不继续显示旧 UI 选择页。新 UI → 旧 UI 时，将新 UI 最后活跃 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）；若没有可用目标且旧 UI 仍需要 workspace，则显示旧 UI workspace 选择页。查看历史 run 或切换 composer 草稿目标不改变该同步目标。
+- **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
+- **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 
 ### 3.3 一级菜单
 当前菜单：
@@ -167,8 +168,8 @@ round 详情
 MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 左侧固定展示 Gold Band、workspace 路径/切换入口、任务编排、Agent 管理、上下文管理、模型管理占位、设置。
 - 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
-- 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。
-- Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置。
+- 工作空间选择页由 `web/src/pages/WorkspaceSelectPage.tsx` 实现，展示原生选择按钮和最近 workspace 列表；主视觉入口使用与侧边栏一致的 Gold Band logo，不使用临时菱形占位图标。该页面只作为工作台模式覆盖层渲染，不进入会话模式页面栈。
+- Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置；`remove_recent_workspace` 只移除最近列表项并返回刷新后的 bootstrap。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
 - Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。

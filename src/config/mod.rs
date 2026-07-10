@@ -1075,7 +1075,6 @@ mod tests {
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileSource {
     BuiltIn,
-    Project,
     User,
 }
 

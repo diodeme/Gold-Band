@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  mergeConversationRunMode,
   normalizeConversationAutoConfigForSubmit,
   normalizeOptionalRunModeText,
   optionalRunModeText,
@@ -35,6 +36,59 @@ describe('conversation run mode config text fields', () => {
       agentStrategy: 'fixed',
       agentType: 'claude',
       globalGoal: ' ship the MVP ',
+    });
+  });
+
+  it('preserves AUTO config when switching to workflow mode', () => {
+    expect(mergeConversationRunMode(
+      {
+        mode: 'auto',
+        workflowTemplateId: 'workflow-default',
+        autoConfig: {
+          agentStrategy: 'fixed',
+          agentType: 'claude-acp',
+          modelId: 'sonnet',
+        },
+      },
+      {
+        mode: 'workflow',
+        workflowTemplateId: 'workflow-review',
+      },
+    )).toEqual({
+      mode: 'workflow',
+      workflowTemplateId: 'workflow-review',
+      autoConfig: {
+        agentStrategy: 'fixed',
+        agentType: 'claude-acp',
+        modelId: 'sonnet',
+      },
+    });
+  });
+
+  it('preserves workflow template when switching back to AUTO mode', () => {
+    expect(mergeConversationRunMode(
+      {
+        mode: 'workflow',
+        workflowTemplateId: 'workflow-review',
+        autoConfig: {
+          agentStrategy: 'fixed',
+          agentType: 'claude-acp',
+        },
+      },
+      {
+        mode: 'auto',
+        autoConfig: {
+          agentStrategy: 'fixed',
+          agentType: 'codex-acp',
+        },
+      },
+    )).toEqual({
+      mode: 'auto',
+      workflowTemplateId: 'workflow-review',
+      autoConfig: {
+        agentStrategy: 'fixed',
+        agentType: 'codex-acp',
+      },
     });
   });
 

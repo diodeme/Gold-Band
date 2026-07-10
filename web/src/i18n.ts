@@ -1181,8 +1181,8 @@ const resources = {
       runMode: {
         title: "运行模式管理",
         project: "项目",
-        autoSection: "AUTO 设置",
-        workflowSection: "工作流模板",
+        autoSection: "AUTO模式",
+        workflowSection: "工作流模式",
         autoDescription: "AUTO 模式使用 AI-DYNAMIC 节点自动处理任务",
         agent: "Agent",
         model: "模型",
@@ -2451,8 +2451,8 @@ const resources = {
       runMode: {
         title: "Run Mode Management",
         project: "Project",
-        autoSection: "AUTO Settings",
-        workflowSection: "Workflow Templates",
+        autoSection: "AUTO Mode",
+        workflowSection: "Workflow Mode",
         autoDescription:
           "AUTO mode uses an AI-DYNAMIC node to process tasks automatically",
         agent: "Agent",

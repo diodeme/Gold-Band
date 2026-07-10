@@ -3,6 +3,13 @@ import { displayAppError } from '@/i18n';
 import i18n from '@/i18n';
 
 describe('app error i18n', () => {
+  it('renders run mode management section labels', () => {
+    expect(i18n.t('runMode.workflowSection', { lng: 'zh-CN' })).toBe('工作流模式');
+    expect(i18n.t('runMode.autoSection', { lng: 'zh-CN' })).toBe('AUTO模式');
+    expect(i18n.t('runMode.workflowSection', { lng: 'en' })).toBe('Workflow Mode');
+    expect(i18n.t('runMode.autoSection', { lng: 'en' })).toBe('AUTO Mode');
+  });
+
   it('renders active ACP prompt config-save guard as a user action', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'acp.active-prompt-blocks-config-save',

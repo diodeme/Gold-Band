@@ -870,6 +870,43 @@ pub fn select_recent_workspace(
 }
 
 #[tauri::command]
+pub fn remove_recent_workspace(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace: String,
+) -> CommandResult<AppBootstrapVm> {
+    info!(workspace = %workspace, "removing recent workspace");
+    let current_context = state.context().map_err(command_error)?;
+    if workspace == current_context.repo_root.as_str() {
+        return Err(CommandErrorVm::new(
+            "workspace.recent-current-locked",
+            serde_json::json!({ "workspace": workspace }),
+        ));
+    }
+    if current_context.recent_workspaces.len() <= 1 {
+        return Err(CommandErrorVm::new(
+            "workspace.recent-minimum-required",
+            serde_json::json!({ "workspace": workspace }),
+        ));
+    }
+    let context = state
+        .remove_recent_workspace(&workspace)
+        .map_err(command_error)?;
+    info!(
+        recent_workspace_count = context.recent_workspaces.len(),
+        "recent workspace removed"
+    );
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+        context.needs_workspace,
+    ))
+}
+
+#[tauri::command]
 pub fn get_task_detail(
     state: State<'_, DesktopState>,
     task_id: String,

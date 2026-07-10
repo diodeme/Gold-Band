@@ -517,6 +517,22 @@ impl DesktopState {
         Ok(next_context)
     }
 
+    pub fn remove_recent_workspace(&self, workspace: &str) -> Result<DesktopContext> {
+        let mut guard = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        let app = guard.app();
+        let state = app.remove_user_recent_desktop_workspace(workspace)?;
+        guard.config = guard.config.clone().apply_state(&state);
+        guard.recent_workspaces = recent_workspaces(&state, &guard.repo_root);
+        if guard.needs_workspace {
+            let current = guard.repo_root.to_string();
+            guard.recent_workspaces.retain(|w| w != &current);
+        }
+        Ok(guard.clone())
+    }
+
     fn persist_agent_diagnostics(
         &self,
         diagnostics: &BTreeMap<ManagedAgentType, AgentDiagnosticState>,

@@ -63,6 +63,7 @@ const resources = {
         maximizeWindow: "最大化窗口",
         restoreWindow: "还原窗口",
         closeWindow: "关闭窗口",
+        remove: "移除",
       },
       navigation: {
         taskList: "任务列表",
@@ -72,6 +73,9 @@ const resources = {
       workspaceSelect: {
         product: "{{appName}} Desktop",
         emptyRecent: "暂无最近工作空间",
+        removeRecent: "从最近列表移除",
+        keepOneRecent: "至少保留一个最近工作空间",
+        currentWorkspaceLocked: "当前工作空间正在使用",
       },
       errors: {
         agent: {
@@ -138,6 +142,8 @@ const resources = {
           "path-invalid-utf8": "选择的工作空间路径不是有效 UTF-8。",
           "path-resolve-failed": "无法解析选择的工作空间路径。",
           "not-found": "找不到对应的工作空间。",
+          "recent-minimum-required": "至少保留一个最近工作空间。",
+          "recent-current-locked": "当前工作空间正在使用，不能从最近列表移除。",
         },
         updater: {
           "invalid-url": "更新地址无效。",
@@ -1275,6 +1281,7 @@ const resources = {
         maximizeWindow: "Maximize window",
         restoreWindow: "Restore window",
         closeWindow: "Close window",
+        remove: "Remove",
       },
       navigation: {
         taskList: "Task List",
@@ -1284,6 +1291,9 @@ const resources = {
       workspaceSelect: {
         product: "{{appName}} Desktop",
         emptyRecent: "No recent workspaces",
+        removeRecent: "Remove from recent",
+        keepOneRecent: "Keep at least one recent workspace",
+        currentWorkspaceLocked: "Current workspace is in use",
       },
       errors: {
         agent: {
@@ -1355,6 +1365,8 @@ const resources = {
           "path-invalid-utf8": "Selected workspace path is not valid UTF-8.",
           "path-resolve-failed": "Failed to resolve selected workspace path.",
           "not-found": "The workspace could not be found.",
+          "recent-minimum-required": "Keep at least one recent workspace.",
+          "recent-current-locked": "The current workspace is in use and cannot be removed from recent workspaces.",
         },
         updater: {
           "invalid-url": "Invalid update URL.",

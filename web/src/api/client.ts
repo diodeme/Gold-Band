@@ -118,6 +118,7 @@ export interface RuntimeApi {
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;
   selectRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
+  removeRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   getTaskDetail(taskId: string): Promise<TaskDetailVm>;
   getWorkflow(taskId: string): Promise<WorkflowVm>;
   createTask(input: CreateTaskInput): Promise<WorkflowVm>;

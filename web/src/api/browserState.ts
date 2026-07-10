@@ -7,6 +7,7 @@ export class BrowserPreviewState {
   private updaterSettings: UpdaterSettingsVm = cloneUpdaterSettings(mockUpdaterSettings);
   private updateStatus: UpdateStatusVm = cloneUpdateStatus(mockUpdateStatus);
   private updateBadges: UpdateBadgeStateVm = cloneUpdateBadges(mockUpdateBadges);
+  private recentWorkspaces: string[] = [...mockBootstrap.recentWorkspaces];
   private workflowTemplates: WorkflowTemplateStore = cloneWorkflowTemplateStore(mockWorkflowTemplates);
   private autoTemplates: AutoTemplateStore = { version: '0.1', templates: [] };
 
@@ -17,9 +18,15 @@ export class BrowserPreviewState {
       updaterSettings: this.getUpdaterSettings(),
       updateStatus: this.getUpdateStatus(),
       updateBadges: this.getUpdateBadges(),
+      recentWorkspaces: [...this.recentWorkspaces],
       persistedAvailableUpdate: this.updateStatus.update ?? null,
       clientVersion: mockBootstrap.clientVersion,
     };
+  }
+
+  setRecentWorkspaces(workspaces: string[]) {
+    this.recentWorkspaces = [...workspaces];
+    return this.getAppBootstrap();
   }
 
   getPreferences(): PreferencesVm {

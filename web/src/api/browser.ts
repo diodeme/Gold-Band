@@ -80,6 +80,20 @@ export const browserApi: RuntimeApi = {
   selectRecentWorkspace(workspace: string) {
     return Promise.resolve({ ...mockBootstrap, repoRoot: workspace, updateBadges: browserPreviewState.getUpdateBadges() });
   },
+  removeRecentWorkspace(workspace: string) {
+    const bootstrap = browserPreviewState.getAppBootstrap();
+    if (workspace === bootstrap.repoRoot) {
+      return browserCommandError('workspace.recent-current-locked', { workspace });
+    }
+    if (bootstrap.recentWorkspaces.length <= 1) {
+      return browserCommandError('workspace.recent-minimum-required', { workspace });
+    }
+    return Promise.resolve(
+      browserPreviewState.setRecentWorkspaces(
+        bootstrap.recentWorkspaces.filter((item) => item !== workspace),
+      ),
+    );
+  },
   getTaskDetail(taskId: string) {
     return Promise.resolve({ ...mockTaskDetail, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockTaskDetail.task });
   },

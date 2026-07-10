@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.0](https://github.com/diodeme/Gold-Band/compare/v0.7.1...v1.0.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **profile:** project-level profile scope is no longer accepted or resolved.
+
+### Bug Fixes
+
+* **acp:** restore local Claude executable resolution ([a17c3d8](https://github.com/diodeme/Gold-Band/commit/a17c3d82bb5d67ac07d860c6917160c00a4c8df9))
+* **acp:** tighten local Claude executable resolution ([186927d](https://github.com/diodeme/Gold-Band/commit/186927d1f4d6eedc31c0cbed41a1007a12689a8f))
+* **run-mode:** apply template selections immediately ([300616d](https://github.com/diodeme/Gold-Band/commit/300616d8ae83d3eb823d9e7186dfabf60b16164b))
+* **run-mode:** preserve config across mode switches ([2211995](https://github.com/diodeme/Gold-Band/commit/2211995849020a75a21905a3b53645b8b0c070b9))
+* **run-mode:** scope management by project ([0b55ce0](https://github.com/diodeme/Gold-Band/commit/0b55ce05e779f204d7f8d7a42991756135579820))
+* **ui:** unify Gold Band scrollbar styling ([95e57de](https://github.com/diodeme/Gold-Band/commit/95e57def87886fc5b3eef56d0b97aa74cabc7481))
+* **workflow:** avoid canvas refresh on inspector input ([9817ec6](https://github.com/diodeme/Gold-Band/commit/9817ec651a6fb390776c6781c1f4a4af49c2b219))
+* **workflow:** support legacy new-round reruns ([51a0ce5](https://github.com/diodeme/Gold-Band/commit/51a0ce5b97488c6190641bd66ea57fd46e08c5c4))
+* **workspace:** scope picker and guard recent removal ([01047d4](https://github.com/diodeme/Gold-Band/commit/01047d4ff9d6e6a3619743fd17ffc53dbf6ccd0d))
+
+
+### Code Refactoring
+
+* **profile:** remove project-level profile scope ([6a6b5fc](https://github.com/diodeme/Gold-Band/commit/6a6b5fc874207801629cd781e3f0b732319a702b))
+
 ## [0.7.1](https://github.com/diodeme/Gold-Band/compare/v0.7.0...v0.7.1) (2026-07-09)
 
 

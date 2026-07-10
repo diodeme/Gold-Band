@@ -302,9 +302,11 @@ export function RunModeManagementPage({
   };
 
   const persistRunModeSelection = (nextMode: RunModeManagementTab, autoConfig?: ConversationAutoConfigVm, templateId = wfEditTemplateId ?? workflowTemplateId) => {
-    const updated: ConversationRunModeVm = nextMode === 'auto'
-      ? { mode: 'auto', autoConfig: autoConfig ?? buildAutoConfig() }
-      : { mode: 'workflow', workflowTemplateId: templateId || undefined };
+    const updated: ConversationRunModeVm = {
+      mode: nextMode,
+      workflowTemplateId: templateId || undefined,
+      autoConfig: autoConfig ?? buildAutoConfig(),
+    };
     void Promise.resolve(onSave(updated));
   };
 

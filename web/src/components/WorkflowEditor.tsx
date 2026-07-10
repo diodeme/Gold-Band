@@ -154,7 +154,13 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
   const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && agents.length > 0;
-  const { nodes, edges } = useMemo(() => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, t), [invalidNodeIds, selectedEdgeId, selectedNodeId, t, visibleTerminalIds, workflow]);
+  const workflowGraphSignature = useMemo(() => authoringWorkflowGraphSignature(workflow), [workflow]);
+  const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
+  const visibleTerminalSignature = useMemo(() => stringSetSignature(visibleTerminalIds), [visibleTerminalIds]);
+  const { nodes, edges } = useMemo(
+    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, t),
+    [invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
+  );
 
   useEffect(() => {
     if (JSON.stringify(workflow) === JSON.stringify(initialWorkflow)) return;
@@ -1828,6 +1834,22 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
   return workflow.nodes
     .map((node) => node.id)
     .filter((id) => Boolean(id) && !incomingNodeIds.has(id));
+}
+
+export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
+  return JSON.stringify({
+    entry: workflow.entry,
+    nodes: workflow.nodes.map((node) => [
+      node.id,
+      node.type,
+      'provider' in node ? node.provider ?? null : null,
+    ]),
+    edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
+  });
+}
+
+function stringSetSignature(values: Set<string>): string {
+  return Array.from(values).sort().join('\u0000');
 }
 
 function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl {

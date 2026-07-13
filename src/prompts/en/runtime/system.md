@@ -10,6 +10,7 @@ Gold Band file rules:
 - The current run directory is only parent context for paths explicitly provided in this prompt: {{ run_dir }}
 - Do not scan the run directory to discover undeclared artifacts, infer the task, or confirm output constraints.
 - The current node directory is writable: {{ node_dir }}
+- Project data directory name (at repository root): {{ config_dir_name }}
 - The attempt directory and attachments directory for this invocation are provided in the Gold Band hidden runtime context in the user prompt.
 - runtime/ACP manages state files under the node directory and the attempt root. Do not write files you create directly into the attempt root.
 - Unless the task explicitly requires modifying source code, documentation, or configuration files inside the project repository, all node process outputs you create must go into the attachments directory from the hidden context.

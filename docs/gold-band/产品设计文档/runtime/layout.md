@@ -90,9 +90,6 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
   projects/
     D--Projects-code-ai-Gold-Band/
       project.json
-      context/
-        profiles/
-          项目开发-profile-1760000000000000000.md
       tasks/
         task-001/
 ```
@@ -135,11 +132,7 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
   config.json        # 如后续需要项目级配置覆盖
 ```
 
-项目级 profile 不写入真实项目工作树，而是写入对应 user project runtime store：
-
-```text
-~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md
-```
+自定义 profile 统一存放在用户级 `~/.gold-band/context/profiles/`，不再存在项目级 profile 目录。
 
 ### 边界
 
@@ -180,10 +173,10 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 
 建议统一为：
 
-1. `~/.gold-band/projects/{project-id}/context/profiles/<name>-<id>.md` 中的项目级 profile
+1. 客户端内建 profile
 2. `~/.gold-band/context/profiles/<name>-<id>.md` 中的用户级 profile
 
-workflow DSL 中的 `profile` 字段保存 profile `id`，不保存文件名或显示名称；运行时通过扫描上述两个目录解析，项目级优先。开发阶段不保留旧固定 profile id 的迁移兼容分支，历史固定 ID 若仍存在会按普通 profile 处理。
+workflow DSL 中的 `profile` 字段保存 profile `id`，不保存文件名或显示名称；运行时只解析内建 profile 与用户级 profile。开发阶段不保留项目级 profile 的迁移、兼容或双读 fallback。
 
 ---
 

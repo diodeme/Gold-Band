@@ -267,6 +267,36 @@ fn edge_to_new_round_opens_round() {
 }
 
 #[test]
+fn legacy_snapshot_new_round_edge_defaults_to_workflow_entry() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "legacy-new-round-edge",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp", "output": { "kind": "json", "artifact": "accept-result" }, "success_condition": { "path": "passed", "equals": true } }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let validated = gold_band::dsl::validate_workflow_snapshot(workflow).unwrap();
+    let decision = decide_next_step(
+        &validated,
+        &sample_run(),
+        &sample_round(),
+        &sample_node("accept", NodeOutcome::Failure),
+    );
+    assert!(
+        matches!(decision, ControlDecision::OpenNewRound { entry_node_id } if entry_node_id == "accept")
+    );
+}
+
+#[test]
 fn edge_to_new_round_uses_configured_entry_node() {
     let workflow = parse_workflow(
         r#"{

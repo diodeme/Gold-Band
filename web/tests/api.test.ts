@@ -5,7 +5,7 @@ vi.mock('../src/api/client', () => ({
 }));
 
 import { getRuntimeApi } from '../src/api/client';
-import { deleteProfile, materializeConversationAttachments, pauseRun, stopActiveSession } from '../src/api';
+import { deleteProfile, materializeConversationAttachments, pauseRun, removeRecentWorkspace, stopActiveSession } from '../src/api';
 
 describe('api facade', () => {
   beforeEach(() => {
@@ -41,6 +41,15 @@ describe('api facade', () => {
 
     expect(materializeImpl).toHaveBeenCalledWith(files);
     expect(result).toEqual([{ path: 'C:/tmp/shot.png', name: 'shot.png', size: 4 }]);
+  });
+
+  it('passes recent workspace removal through to the selected runtime API', async () => {
+    const removeRecentWorkspaceImpl = vi.fn().mockResolvedValue({ recentWorkspaces: [] });
+    vi.mocked(getRuntimeApi).mockReturnValue({ removeRecentWorkspace: removeRecentWorkspaceImpl } as never);
+
+    await removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
+
+    expect(removeRecentWorkspaceImpl).toHaveBeenCalledWith('D:/Projects/code/ai/Gold-Band');
   });
 
   it('passes active session fallback and locator to the runtime API', async () => {

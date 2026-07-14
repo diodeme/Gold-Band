@@ -61,7 +61,7 @@ preset -> task -> run -> round/attempt
 
 ### profile 解析优先级
 建议统一为：
-1. 项目目录下的 profile
+1. 客户端内建 profile
 2. 用户目录下的 profile
 
 约束：

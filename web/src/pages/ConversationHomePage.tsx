@@ -12,6 +12,7 @@ interface ConversationHomePageProps {
   profiles: ProfileVm[];
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
+  onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -27,6 +28,7 @@ export function ConversationHomePage({
   profiles,
   busy,
   onRunModeChange,
+  onLoadProfiles,
   onSubmit,
   onOpenRunModeSettings,
   onWorkspaceChange,
@@ -51,6 +53,7 @@ export function ConversationHomePage({
           profiles={profiles}
           busy={busy}
           onRunModeChange={onRunModeChange}
+          onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}

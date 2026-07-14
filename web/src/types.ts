@@ -333,7 +333,7 @@ export interface AutoTemplate {
   updatedAt: string;
 }
 
-export type ProfileScope = 'built-in' | 'user' | 'project';
+export type ProfileScope = 'built-in' | 'user';
 
 export interface ProfileVm {
   id: string;
@@ -353,7 +353,6 @@ export interface ProfileListVm {
 }
 
 export interface ProfileInput {
-  scope: ProfileScope;
   name: string;
   summary: string;
   content: string;

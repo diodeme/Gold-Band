@@ -870,6 +870,43 @@ pub fn select_recent_workspace(
 }
 
 #[tauri::command]
+pub fn remove_recent_workspace(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace: String,
+) -> CommandResult<AppBootstrapVm> {
+    info!(workspace = %workspace, "removing recent workspace");
+    let current_context = state.context().map_err(command_error)?;
+    if workspace == current_context.repo_root.as_str() {
+        return Err(CommandErrorVm::new(
+            "workspace.recent-current-locked",
+            serde_json::json!({ "workspace": workspace }),
+        ));
+    }
+    if current_context.recent_workspaces.len() <= 1 {
+        return Err(CommandErrorVm::new(
+            "workspace.recent-minimum-required",
+            serde_json::json!({ "workspace": workspace }),
+        ));
+    }
+    let context = state
+        .remove_recent_workspace(&workspace)
+        .map_err(command_error)?;
+    info!(
+        recent_workspace_count = context.recent_workspaces.len(),
+        "recent workspace removed"
+    );
+    let update_status = state.update_status().map_err(command_error)?;
+    Ok(bootstrap_vm(
+        &context.app(),
+        context.recent_workspaces,
+        update_status,
+        app_handle.package_info().version.to_string(),
+        context.needs_workspace,
+    ))
+}
+
+#[tauri::command]
 pub fn get_task_detail(
     state: State<'_, DesktopState>,
     task_id: String,
@@ -1305,11 +1342,11 @@ pub(crate) fn acp_live_update_emitter(
     })
 }
 
-/// ?? B????? `permissionRequest` ?????? `PermissionRequested` ??????
+/// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
 ///
-/// ?? `event.kind == "permissionRequest" && status == "pending"` ??????????
-/// ???node_label ? node_id?task_title ? None???? App????? context???
-/// ?6.2/?9.4??dedup ??? A ???? `DesktopState.notification_dedup` ???
+/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。文案用一般性
+/// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
+/// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
     context: &gold_band::app::AcpLiveEventContext,
@@ -1871,6 +1908,7 @@ pub async fn send_acp_prompt(
                 model,
                 continue_ref,
                 app.config.use_local_claude,
+                app.config.require_local_claude_executable,
                 app.config.acp_session_title_refresh_enabled,
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
@@ -2016,6 +2054,7 @@ pub async fn send_acp_prompt(
             model,
             continue_ref,
             app.config.use_local_claude,
+            app.config.require_local_claude_executable,
             app.config.acp_session_title_refresh_enabled,
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,

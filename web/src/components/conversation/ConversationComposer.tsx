@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { normalizeConversationAutoConfigForSubmit, optionalRunModeText } from '@/lib/conversation-run-mode-config';
-import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStart } from '@/lib/run-mode-validation';
+import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -22,6 +22,7 @@ interface ConversationComposerProps {
   profiles: ProfileVm[];
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm) => void;
+  onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -37,6 +38,7 @@ export function ConversationComposer({
   profiles,
   busy,
   onRunModeChange,
+  onLoadProfiles,
   onSubmit,
   onOpenRunModeSettings,
   onWorkspaceChange,
@@ -149,15 +151,22 @@ export function ConversationComposer({
         ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
         : undefined,
     };
-    const localIssues = isAuto
-      ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
-      : validateWorkflowTemplateForConversationStart(inputBase.workflowTemplateId, agentRegistry, profiles, workflowTemplates, t);
-    if (localIssues.length > 0) {
-      setRunModeError(localIssues.join('\n'));
-      return;
-    }
     setSubmittingAttachments(true);
     try {
+      const localIssues = isAuto
+        ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
+        : await validateWorkflowTemplateForConversationStartWithFreshProfiles(
+          inputBase.workflowTemplateId,
+          agentRegistry,
+          profiles,
+          onLoadProfiles,
+          workflowTemplates,
+          t,
+        );
+      if (localIssues.length > 0) {
+        setRunModeError(localIssues.join('\n'));
+        return;
+      }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
       const submitError = await onSubmit({

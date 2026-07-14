@@ -72,13 +72,13 @@
 - 默认 workflow 初始化时先同步默认角色，再把生成出的 profile `id` 写入默认节点；默认 cleanup 节点是普通 worker，不声明输出验证
 
 `profile` 查找优先级：
-1. 当前项目级 profile id
+1. 客户端内建 profile id
 2. 用户级 profile id
 
 说明：
 - `provider` 与 `profile` 的解析应发生在 runtime / provider invocation 之前
 - provider implementation 不应自行去猜 provider / profile 来源
-- 如果 profile id 不存在或当前项目不可见，workflow 保存/运行应失败并提示用户重新选择角色
+- 如果 profile id 不存在，workflow 保存/运行应失败并提示用户重新选择角色
 
 ## 5. 相关文档
 - [DSL 概览](../overview.md)

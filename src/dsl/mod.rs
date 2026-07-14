@@ -770,7 +770,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+fn validate_workflow_strict(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
     ensure!(
         workflow.version == "0.1",
         "unsupported workflow version: {}",
@@ -938,4 +938,28 @@ pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
         raw: workflow,
         nodes_by_id,
     })
+}
+
+pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+    validate_workflow_strict(workflow)
+}
+
+pub fn normalize_legacy_workflow_snapshot(mut workflow: WorkflowDsl) -> WorkflowDsl {
+    for edge in &mut workflow.edges {
+        if edge.to == NEW_ROUND_NODE
+            && edge
+                .new_round_entry
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            edge.new_round_entry = Some(ENTRY_NODE.to_string());
+        }
+    }
+    workflow
+}
+
+pub fn validate_workflow_snapshot(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+    validate_workflow_strict(normalize_legacy_workflow_snapshot(workflow))
 }

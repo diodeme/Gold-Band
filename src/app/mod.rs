@@ -29,7 +29,8 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
@@ -1088,6 +1089,15 @@ impl App {
         Ok((settings, state))
     }
 
+    pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
+        let mut state = self.load_state()?;
+        state
+            .recent_desktop_workspaces
+            .retain(|item| item != workspace);
+        self.save_state(&state)?;
+        Ok(state)
+    }
+
     pub fn set_user_agents(
         &self,
         agents: std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig>,
@@ -1619,6 +1629,7 @@ impl App {
             agent_type,
             config,
             self.config.use_local_claude,
+            self.config.require_local_claude_executable,
             self.config.acp_session_title_refresh_enabled,
             self.config.acp_raw_max_size_bytes,
             self.config.acp_raw_target_size_bytes,
@@ -1638,6 +1649,7 @@ impl App {
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
+            self.config.require_local_claude_executable,
         ) {
             Ok(capabilities) => Ok(DoctorResult {
                 available: true,
@@ -2642,7 +2654,7 @@ impl App {
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PromptBundle> {
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
-        let validated = validate_workflow(workflow)?;
+        let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
         let round: RoundState = read_json(&self.paths.round_file(task_id, run_id, round_id))?;
         let node: NodeState = read_json(
@@ -4251,6 +4263,24 @@ mod tests {
         assert_eq!(state.recent_desktop_workspaces.len(), 2);
         assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/A");
         assert_eq!(state.recent_desktop_workspaces[1], "D:/Projects/B");
+    }
+
+    #[test]
+    fn recent_workspace_can_be_removed_without_switching_workspace() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root.clone());
+        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+
+        let state = app
+            .remove_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+
+        assert_eq!(state.recent_desktop_workspaces, vec!["D:/Projects/B"]);
+        let settings = app.load_settings().unwrap();
+        assert_eq!(settings.desktop_workspace.as_deref(), Some("D:/Projects/B"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use gold_band::dsl::{WorkflowDsl, strip_interview_node, validate_workflow};
+use gold_band::dsl::{WorkflowDsl, strip_interview_node, validate_workflow, validate_workflow_snapshot};
 
 fn parse_workflow(json: &str) -> WorkflowDsl {
     serde_json::from_str(json).expect("workflow should deserialize")
@@ -194,6 +194,35 @@ fn rejects_new_round_edge_without_entry() {
 
     let error = validate_workflow(workflow).expect_err("new round edge requires an entry");
     assert!(error.to_string().contains("must declare `new_round_entry`"));
+}
+
+#[test]
+fn snapshot_validation_defaults_missing_new_round_entry_to_entry() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "legacy-new-round-entry",
+            "entry": "accept",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "accept", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "accept", "to": "$new-round", "on": "failure" },
+                { "from": "accept", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let validated =
+        validate_workflow_snapshot(workflow).expect("legacy snapshot should default to entry");
+    let edge = validated
+        .raw
+        .edges
+        .iter()
+        .find(|edge| edge.to == "$new-round")
+        .unwrap();
+    assert_eq!(edge.new_round_entry.as_deref(), Some("$entry"));
 }
 
 #[test]

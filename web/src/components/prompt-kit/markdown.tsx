@@ -55,7 +55,7 @@ export function Markdown({ children, className }: MarkdownProps) {
             </code>
           ),
           pre: ({ children }) => (
-            <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-xs leading-5 text-foreground shadow-sm shadow-background/20 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit] [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/30 [&::-webkit-scrollbar-track]:bg-transparent">
+            <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-xs leading-5 text-foreground shadow-sm shadow-background/20 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit]">
               {children}
             </pre>
           ),

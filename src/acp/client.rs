@@ -364,6 +364,7 @@ pub fn doctor(
     config: &AcpAdapterConfig,
     cwd: Utf8PathBuf,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
 ) -> Result<Value> {
     let paths = GoldBandPaths::new(cwd.clone());
     let doctor_acp_dir = paths.doctor_acp_dir();
@@ -374,6 +375,7 @@ pub fn doctor(
         cwd.clone(),
         doctor_acp_dir.clone(),
         use_local_claude,
+        require_local_claude_executable,
         DOCTOR_DIAGNOSTIC_MAX_SIZE,
         DOCTOR_DIAGNOSTIC_TARGET_SIZE,
         None,
@@ -432,6 +434,7 @@ pub fn run_prompt(
     model: Option<String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
@@ -446,6 +449,7 @@ pub fn run_prompt(
         adapter_workspace_dir,
         attempt_dir,
         use_local_claude,
+        require_local_claude_executable,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
         live_update,
@@ -802,6 +806,7 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
         raw_max_size: u64,
         raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
@@ -813,7 +818,13 @@ impl<'a> AcpRuntime<'a> {
         let key = AdapterConnectionKey::new(provider_id, cwd.clone());
         let adapter_started_at = Instant::now();
         let resolution = AdapterConnectionManager::shared()
-            .get_or_spawn_with_outcome(provider_id, config, cwd.clone(), use_local_claude)
+            .get_or_spawn_with_outcome(
+                provider_id,
+                config,
+                cwd.clone(),
+                use_local_claude,
+                require_local_claude_executable,
+            )
             .map_err(|error| {
                 let _ = append_diagnostic(
                     &paths.diagnostics,
@@ -860,6 +871,7 @@ impl<'a> AcpRuntime<'a> {
         cwd: Utf8PathBuf,
         attempt_dir: Utf8PathBuf,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
         raw_max_size: u64,
         raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
@@ -868,20 +880,25 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
-        let connection = AdapterConnection::spawn_standalone(config, &cwd, use_local_claude)
-            .map_err(|error| {
-                let _ = append_diagnostic(
-                    &paths.diagnostics,
-                    "error",
-                    format!("failed to start ACP adapter: {error}"),
-                    Some(json!({
-                        "command": config.command,
-                        "args": config.args,
-                        "displayName": config.display_name,
-                    })),
-                );
-                error
-            })?;
+        let connection = AdapterConnection::spawn_standalone(
+            config,
+            &cwd,
+            use_local_claude,
+            require_local_claude_executable,
+        )
+        .map_err(|error| {
+            let _ = append_diagnostic(
+                &paths.diagnostics,
+                "error",
+                format!("failed to start ACP adapter: {error}"),
+                Some(json!({
+                    "command": config.command,
+                    "args": config.args,
+                    "displayName": config.display_name,
+                })),
+            );
+            error
+        })?;
         Self::from_connection(
             provider_id,
             cwd,

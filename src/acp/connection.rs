@@ -43,16 +43,22 @@ struct AdapterConfigSignature {
     display_name: String,
     env: BTreeMap<String, String>,
     use_local_claude: bool,
+    require_local_claude_executable: bool,
 }
 
 impl AdapterConfigSignature {
-    fn new(config: &AcpAdapterConfig, use_local_claude: bool) -> Self {
+    fn new(
+        config: &AcpAdapterConfig,
+        use_local_claude: bool,
+        require_local_claude_executable: bool,
+    ) -> Self {
         Self {
             command: config.command.clone(),
             args: config.args.clone(),
             display_name: config.display_name.clone(),
             env: config.env.clone(),
             use_local_claude,
+            require_local_claude_executable,
         }
     }
 }
@@ -120,8 +126,15 @@ impl AdapterConnection {
         config: &AcpAdapterConfig,
         cwd: &Utf8Path,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
-        Self::spawn(None, config, cwd, use_local_claude)
+        Self::spawn(
+            None,
+            config,
+            cwd,
+            use_local_claude,
+            require_local_claude_executable,
+        )
     }
 
     fn spawn(
@@ -129,8 +142,14 @@ impl AdapterConnection {
         config: &AcpAdapterConfig,
         cwd: &Utf8Path,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
     ) -> Result<Arc<Self>> {
-        let (adapter, mut child) = spawn_adapter(config, cwd.as_std_path(), use_local_claude)?;
+        let (adapter, mut child) = spawn_adapter(
+            config,
+            cwd.as_std_path(),
+            use_local_claude,
+            require_local_claude_executable,
+        )?;
         let stdin = child
             .stdin
             .take()
@@ -146,7 +165,11 @@ impl AdapterConnection {
         let connection = Arc::new(Self {
             key,
             adapter,
-            signature: AdapterConfigSignature::new(config, use_local_claude),
+            signature: AdapterConfigSignature::new(
+                config,
+                use_local_claude,
+                require_local_claude_executable,
+            ),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             next_id: Mutex::new(1),
@@ -548,9 +571,16 @@ impl AdapterConnectionManager {
         config: &AcpAdapterConfig,
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
     ) -> Result<Arc<AdapterConnection>> {
         Ok(self
-            .get_or_spawn_with_outcome(provider_id, config, workspace_root, use_local_claude)?
+            .get_or_spawn_with_outcome(
+                provider_id,
+                config,
+                workspace_root,
+                use_local_claude,
+                require_local_claude_executable,
+            )?
             .connection)
     }
 
@@ -560,9 +590,11 @@ impl AdapterConnectionManager {
         config: &AcpAdapterConfig,
         workspace_root: Utf8PathBuf,
         use_local_claude: bool,
+        require_local_claude_executable: bool,
     ) -> Result<AdapterConnectionResolution> {
         let key = AdapterConnectionKey::new(provider_id, workspace_root);
-        let signature = AdapterConfigSignature::new(config, use_local_claude);
+        let signature =
+            AdapterConfigSignature::new(config, use_local_claude, require_local_claude_executable);
         if let Some(existing) = self.existing_ready_connection(&key, &signature) {
             return Ok(AdapterConnectionResolution {
                 connection: existing,
@@ -587,6 +619,7 @@ impl AdapterConnectionManager {
             config,
             &key.workspace_root,
             use_local_claude,
+            require_local_claude_executable,
         )?;
         self.connections
             .lock()

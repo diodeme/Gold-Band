@@ -19,6 +19,22 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('delete_profile', { id: 'pf-missing', force: true });
   });
 
+  it('forwards profile creation without a scope selector', async () => {
+    const input = { name: 'Custom role', summary: 'Reusable role', content: 'body' };
+
+    await desktopApi.createProfile(input);
+
+    expect(invokeCommand).toHaveBeenCalledWith('create_profile', { input });
+  });
+
+  it('forwards recent workspace removal to the Tauri command path', async () => {
+    await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
+
+    expect(invokeCommand).toHaveBeenCalledWith('remove_recent_workspace', {
+      workspace: 'D:/Projects/code/ai/Gold-Band',
+    });
+  });
+
   it('normalizes updater override URL before invoking Tauri', async () => {
     await desktopApi.saveUpdaterSettings('  https://example.com/feed.json  ');
 

@@ -18,6 +18,7 @@ const resources = {
         refresh: "刷新",
         clear: "清除",
         close: "关闭",
+        operationFailed: "操作失败",
         back: "返回",
         save: "保存",
         open: "打开",
@@ -62,6 +63,7 @@ const resources = {
         maximizeWindow: "最大化窗口",
         restoreWindow: "还原窗口",
         closeWindow: "关闭窗口",
+        remove: "移除",
       },
       navigation: {
         taskList: "任务列表",
@@ -71,6 +73,9 @@ const resources = {
       workspaceSelect: {
         product: "{{appName}} Desktop",
         emptyRecent: "暂无最近工作空间",
+        removeRecent: "从最近列表移除",
+        keepOneRecent: "至少保留一个最近工作空间",
+        currentWorkspaceLocked: "当前工作空间正在使用",
       },
       errors: {
         agent: {
@@ -137,6 +142,8 @@ const resources = {
           "path-invalid-utf8": "选择的工作空间路径不是有效 UTF-8。",
           "path-resolve-failed": "无法解析选择的工作空间路径。",
           "not-found": "找不到对应的工作空间。",
+          "recent-minimum-required": "至少保留一个最近工作空间。",
+          "recent-current-locked": "当前工作空间正在使用，不能从最近列表移除。",
         },
         updater: {
           "invalid-url": "更新地址无效。",
@@ -277,7 +284,7 @@ const resources = {
           "固定角色，支持打开草稿并另存为新的自定义角色。",
         customSectionTitle: "自定义角色",
         customSectionDescription:
-          "你创建的用户级和项目级角色会在这里分页展示。",
+          "你创建的用户级自定义角色会在这里分页展示。",
         customProfilesPageRange: "自定义角色 {{start}}-{{end}} / {{total}}",
         builtInReadonlyHint: "内置角色不可直接保存，请另存为新角色。",
         emptyContent: "暂无正文内容",
@@ -285,7 +292,6 @@ const resources = {
         scope: "范围",
         builtInScope: "内置",
         userScope: "用户级",
-        projectScope: "项目级",
         name: "名称",
         summary: "摘要",
         content: "完整内容",
@@ -669,7 +675,7 @@ const resources = {
           "{{node}} 节点的权限模式不属于当前 Agent。",
         validationNodeProfileRequired: "{{node}} 节点未关联角色。",
         validationNodeProfileVisibilityChanged:
-          "{{node}} 节点关联的角色可见性发生变更，请重新设置。",
+          "{{node}} 节点关联的角色不存在或已删除，请重新设置。",
         validationNodeGoalRequired: "{{node}} 节点目标不能为空。",
         validationDynamicAvailableAgentsRequired:
           "{{node}} 至少需要选择一个可用 agent。",
@@ -1175,8 +1181,9 @@ const resources = {
       },
       runMode: {
         title: "运行模式管理",
-        autoSection: "AUTO 设置",
-        workflowSection: "工作流模板",
+        project: "项目",
+        autoSection: "AUTO模式",
+        workflowSection: "工作流模式",
         autoDescription: "AUTO 模式使用 AI-DYNAMIC 节点自动处理任务",
         agent: "Agent",
         model: "模型",
@@ -1188,6 +1195,8 @@ const resources = {
         noAutoTemplate: "不使用模板",
         autoTemplateName: "模板名称",
         autoTemplateFallbackName: "AUTO 模板",
+        saveChanges: "保存修改",
+        saving: "保存中…",
         saveTemplate: "保存模板",
         saveAsTemplate: "另存模板",
         saved: "已保存",
@@ -1229,6 +1238,7 @@ const resources = {
         refresh: "Refresh",
         clear: "Clear",
         close: "Close",
+        operationFailed: "Operation failed",
         back: "Back",
         save: "Save",
         open: "Open",
@@ -1273,6 +1283,7 @@ const resources = {
         maximizeWindow: "Maximize window",
         restoreWindow: "Restore window",
         closeWindow: "Close window",
+        remove: "Remove",
       },
       navigation: {
         taskList: "Task List",
@@ -1282,6 +1293,9 @@ const resources = {
       workspaceSelect: {
         product: "{{appName}} Desktop",
         emptyRecent: "No recent workspaces",
+        removeRecent: "Remove from recent",
+        keepOneRecent: "Keep at least one recent workspace",
+        currentWorkspaceLocked: "Current workspace is in use",
       },
       errors: {
         agent: {
@@ -1353,6 +1367,8 @@ const resources = {
           "path-invalid-utf8": "Selected workspace path is not valid UTF-8.",
           "path-resolve-failed": "Failed to resolve selected workspace path.",
           "not-found": "The workspace could not be found.",
+          "recent-minimum-required": "Keep at least one recent workspace.",
+          "recent-current-locked": "The current workspace is in use and cannot be removed from recent workspaces.",
         },
         updater: {
           "invalid-url": "Invalid update URL.",
@@ -1498,7 +1514,7 @@ const resources = {
           "Fixed roles that can be opened as drafts and saved as new custom roles.",
         customSectionTitle: "Custom Roles",
         customSectionDescription:
-          "Your user and project roles are paginated here.",
+          "Your user roles are paginated here.",
         customProfilesPageRange: "Custom roles {{start}}-{{end}} / {{total}}",
         builtInReadonlyHint:
           "Built-in roles cannot be saved directly. Save them as a new role instead.",
@@ -1507,7 +1523,6 @@ const resources = {
         scope: "Scope",
         builtInScope: "Built-in",
         userScope: "User",
-        projectScope: "Project",
         name: "Name",
         summary: "Summary",
         content: "Full Content",
@@ -1909,7 +1924,7 @@ const resources = {
         validationNodeProfileRequired:
           "{{node}} node is not associated with a role.",
         validationNodeProfileVisibilityChanged:
-          "{{node}} node associated role visibility changed; reset it.",
+          "{{node}} node associated role no longer exists; reset it.",
         validationNodeGoalRequired: "{{node}} node goal is required.",
         validationDynamicAvailableAgentsRequired:
           "{{node}} requires at least one available agent.",
@@ -2437,8 +2452,9 @@ const resources = {
       },
       runMode: {
         title: "Run Mode Management",
-        autoSection: "AUTO Settings",
-        workflowSection: "Workflow Templates",
+        project: "Project",
+        autoSection: "AUTO Mode",
+        workflowSection: "Workflow Mode",
         autoDescription:
           "AUTO mode uses an AI-DYNAMIC node to process tasks automatically",
         agent: "Agent",
@@ -2453,6 +2469,8 @@ const resources = {
         noAutoTemplate: "No template",
         autoTemplateName: "Template name",
         autoTemplateFallbackName: "AUTO Template",
+        saveChanges: "Save changes",
+        saving: "Saving…",
         saveTemplate: "Save Template",
         saveAsTemplate: "Save As",
         saved: "Saved",

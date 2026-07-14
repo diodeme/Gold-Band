@@ -89,6 +89,9 @@ export const desktopApi: RuntimeApi = {
   selectRecentWorkspace(workspace: string) {
     return invokeCommand('select_recent_workspace', { workspace });
   },
+  removeRecentWorkspace(workspace: string) {
+    return invokeCommand('remove_recent_workspace', { workspace });
+  },
   getTaskDetail(taskId: string) {
     return invokeCommand('get_task_detail', { taskId });
   },

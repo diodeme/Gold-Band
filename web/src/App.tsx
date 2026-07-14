@@ -26,6 +26,7 @@ import {
   pauseRun,
   pinConversation,
   rerunConversationTask,
+  removeRecentWorkspace,
   saveDesktopPreferences,
   saveUpdaterSettings,
   saveTaskWorkflow,
@@ -49,7 +50,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
@@ -98,6 +99,11 @@ import {
   WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
   WORKBENCH_BACKGROUND_REFRESH_INTERVAL_MS,
 } from '@/lib/workbench-background-refresh';
+import {
+  shouldAutoOpenWorkspacePicker,
+  shouldRenderWorkspacePicker,
+} from '@/lib/workspace-picker-scope';
+import { conversationRunModeOrDefault, mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -225,6 +231,7 @@ export function App() {
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
+  const conversationRunModeRequestRef = useRef(0);
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -314,6 +321,19 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const loadConversationRunMode = useCallback((projectId: string) => {
+    const requestId = ++conversationRunModeRequestRef.current;
+    return getConversationRunMode(projectId)
+      .then((mode) => {
+        const nextMode = conversationRunModeOrDefault(mode);
+        if (requestId === conversationRunModeRequestRef.current) {
+          setConversationRunMode(nextMode);
+        }
+        return nextMode;
+      })
+      .catch(() => undefined);
+  }, []);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
@@ -336,6 +356,12 @@ export function App() {
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
+
+  const loadProfiles = useCallback(async () => {
+    const result = await getProfiles();
+    setProfiles(result.profiles);
+    return result.profiles;
+  }, []);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
@@ -461,12 +487,12 @@ export function App() {
     getAppBootstrap()
       .then((bootstrap) => {
         setBootstrap(bootstrap);
-        if (bootstrap.needsWorkspace) {
+        if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
           setWorkspacePickerOpen(true);
         }
       })
       .catch((err) => setError(displayAppError(t, err)));
-  }, [t]);
+  }, [t, uiMode]);
 
   // Load conversation sidebar data when in conversation mode
   useEffect(() => {
@@ -479,16 +505,14 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
-    getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
+    loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
-  }, [bootstrap, uiMode]);
+  }, [bootstrap, loadProfiles, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || !defaultProjectId) return;
-    getConversationRunMode(defaultProjectId)
-      .then((mode) => { if (mode) setConversationRunMode(mode); })
-      .catch(() => {});
-  }, [bootstrap, uiMode, defaultProjectId]);
+    void loadConversationRunMode(defaultProjectId);
+  }, [bootstrap, uiMode, defaultProjectId, loadConversationRunMode]);
 
   // Load conversation run when navigating to a run page
   useEffect(() => {
@@ -944,9 +968,11 @@ export function App() {
     }
   };
 
-  const updateConversationRunMode = (mode: ConversationRunModeVm) => {
-    setConversationRunMode(mode);
-    saveConversationRunMode(defaultProjectId, mode).catch(() => {});
+  const updateConversationRunMode = (mode: ConversationRunModeVm, projectId = defaultProjectId) => {
+    conversationRunModeRequestRef.current += 1;
+    const nextMode = mergeConversationRunMode(conversationRunMode, mode);
+    setConversationRunMode(nextMode);
+    return saveConversationRunMode(projectId, nextMode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {
@@ -1026,6 +1052,19 @@ export function App() {
     setError(null);
     try {
       applyWorkspace(await selectRecentWorkspace(workspace));
+    } catch (err) {
+      setError(displayAppError(t, err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRemoveRecentWorkspace = async (workspace: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const nextBootstrap = await removeRecentWorkspace(workspace);
+      setBootstrap(nextBootstrap);
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -1156,7 +1195,7 @@ export function App() {
 
   const content = uiMode === 'conversation'
     ? renderConversationContent()
-    : workspacePickerOpen
+    : shouldRenderWorkspacePicker(uiMode, workspacePickerOpen)
     ? (
       <WorkspaceSelectPage
         bootstrap={bootstrap}
@@ -1164,6 +1203,7 @@ export function App() {
         busy={busy}
         onChooseWorkspace={onChooseWorkspace}
         onSelectRecentWorkspace={onSelectRecentWorkspace}
+        onRemoveRecentWorkspace={onRemoveRecentWorkspace}
       />
     )
     : primaryModule === 'settings'
@@ -1221,12 +1261,14 @@ export function App() {
         return;
       }
       persistUiMode('workbench');
+      setWorkspacePickerOpen(Boolean(bootstrap?.needsWorkspace));
       pushRoute(primaryModule, taskPage);
       return;
     }
 
     persistUiMode('conversation');
-    if (bootstrap?.repoRoot) {
+    setWorkspacePickerOpen(false);
+    if (bootstrap?.repoRoot && !bootstrap.needsWorkspace) {
       syncConversationWorkspace(bootstrap.repoRoot)
         .then((sidebar) => {
           activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
@@ -1342,7 +1384,19 @@ export function App() {
         }).catch((err) => setError(displayAppError(t, err)));
       }}
     >
-      {error ? <Alert variant="destructive" className="mx-8 mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('common.operationFailed')}</AlertDialogTitle>
+            <AlertDialogDescription className="whitespace-pre-wrap break-words">
+              {error}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setError(null)}>{t('common.close')}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {shouldShowUpdateAnnouncement ? (
         <div className="pointer-events-none fixed left-1/2 top-13 z-10 -translate-x-1/2">
           <Alert className="pointer-events-auto w-auto min-w-[300px] max-w-[520px] border-border/60 bg-background/95 px-4 py-3 text-foreground shadow-lg backdrop-blur">
@@ -1392,17 +1446,6 @@ export function App() {
   );
 
   function renderConversationContent() {
-    if (workspacePickerOpen) {
-      return (
-        <WorkspaceSelectPage
-          bootstrap={bootstrap}
-          appInfo={appInfo}
-          busy={busy}
-          onChooseWorkspace={onChooseWorkspace}
-          onSelectRecentWorkspace={onSelectRecentWorkspace}
-        />
-      );
-    }
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
@@ -1448,6 +1491,7 @@ export function App() {
           profiles={profiles}
           busy={busy}
           onRunModeChange={updateConversationRunMode}
+          onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'auto'
               ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
@@ -1489,7 +1533,7 @@ export function App() {
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
-            getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
+            void loadConversationRunMode(projectId);
           }}
         />
       );
@@ -1497,10 +1541,17 @@ export function App() {
     if (conversationPage.kind === 'run-mode-management') {
       return (
         <RunModeManagementPage
+          projectId={defaultProjectId}
+          workspaceName={defaultWorkspaceName}
+          workspaces={conversationSidebar.workspaces}
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
-          onSave={updateConversationRunMode}
+          onProjectChange={(projectId) => {
+            setDraftConversationWorkspaceId(projectId);
+            void loadConversationRunMode(projectId);
+          }}
+          onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
           onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
@@ -1622,24 +1673,27 @@ export function App() {
         />
       );
     }
-    return <ConversationHomePage
-      projectId={defaultProjectId}
-      workspaceName={defaultWorkspaceName}
-      workspaces={conversationSidebar.workspaces}
-          runMode={conversationRunMode}
-          agentRegistry={agentRegistry}
-          workflowTemplates={conversationWorkflowTemplates}
-          profiles={profiles}
-          busy={busy}
-      onRunModeChange={updateConversationRunMode}
-      onSubmit={(_input) => null}
-      onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
-      onWorkspaceChange={(projectId) => {
-        resetConversationComposerDraft(composerDraftRef.current);
-        setDraftConversationWorkspaceId(projectId);
-        getConversationRunMode(projectId).then((mode) => { if (mode) setConversationRunMode(mode); }).catch(() => {});
-      }}
-    />;
+    return (
+      <ConversationHomePage
+        projectId={defaultProjectId}
+        workspaceName={defaultWorkspaceName}
+        workspaces={conversationSidebar.workspaces}
+        runMode={conversationRunMode}
+        agentRegistry={agentRegistry}
+        workflowTemplates={conversationWorkflowTemplates}
+        profiles={profiles}
+        busy={busy}
+        onRunModeChange={updateConversationRunMode}
+        onLoadProfiles={loadProfiles}
+        onSubmit={(_input) => null}
+        onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+        onWorkspaceChange={(projectId) => {
+          resetConversationComposerDraft(composerDraftRef.current);
+          setDraftConversationWorkspaceId(projectId);
+          void loadConversationRunMode(projectId);
+        }}
+      />
+    );
   }
 
   function renderTaskContent() {

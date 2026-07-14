@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
+use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, UserPromptRenderMode,
@@ -1558,6 +1559,84 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     assert_eq!(run.outcome, Some(RunOutcome::Failure));
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn run_start_normalizes_legacy_new_round_entry_in_snapshot_only() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-legacy-new-round-entry";
+
+    let provider = AlwaysFailAcceptanceProvider::default();
+    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Exercise legacy new round entry",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "legacy-round-entry-flow",
+          "entry": "accept",
+          "control": {{ "max_rounds": 1 }},
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$new-round","on":"failure"}},
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        r#"{"version":"0.1","id":"task-legacy-new-round-entry"}"#,
+    )
+    .unwrap();
+
+    let run = app.run_start(task_id, None).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Failure));
+    assert_eq!(run.new_rounds_opened, 1);
+    assert_eq!(provider.invocations.lock().unwrap().len(), 2);
+
+    let authoring: WorkflowDsl = gold_band::storage::read_json(&app.paths.workflow_file(task_id))
+        .expect("authoring workflow should remain readable");
+    let authoring_new_round = authoring
+        .edges
+        .iter()
+        .find(|edge| edge.to == "$new-round")
+        .unwrap();
+    assert!(authoring_new_round.new_round_entry.is_none());
+
+    let snapshot: WorkflowDsl =
+        gold_band::storage::read_json(&app.paths.workflow_snapshot_file(task_id, &run.id))
+            .expect("snapshot should be frozen");
+    let snapshot_new_round = snapshot
+        .edges
+        .iter()
+        .find(|edge| edge.to == "$new-round")
+        .unwrap();
+    assert_eq!(
+        snapshot_new_round.new_round_entry.as_deref(),
+        Some("$entry")
+    );
 }
 
 #[test]

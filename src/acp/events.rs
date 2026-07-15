@@ -567,11 +567,33 @@ fn canonical_permission_request_id(event: &AcpUiEvent) -> String {
 /// Read token totals from the ACP session metadata file and timeline.
 /// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
+/// Token and timing metrics read from an ACP session's persisted files.
+pub struct SessionMetrics {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    pub session_elapsed_seconds: u64,
+}
+
+/// Read token totals from the ACP session metadata file and timeline.
+/// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
+/// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
 pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
+    let m = read_session_metrics(session_path);
+    (m.input_tokens, m.output_tokens, m.cache_read_tokens, m.total_tokens)
+}
+
+/// Read token totals and session elapsed seconds from the ACP session metadata
+/// file and timeline. Token counts are taken as the max of snapshot and timeline
+/// `usageUpdate` events. `session_elapsed_seconds` comes from the snapshot's
+/// `timing` field.
+pub fn read_session_metrics(session_path: &Utf8Path) -> SessionMetrics {
     let mut input = 0u64;
     let mut output = 0u64;
     let mut cache_read = 0u64;
     let mut total = 0u64;
+    let mut session_elapsed_seconds = 0u64;
 
     // 1. Read acp.snapshot.json (acp.session.json may not exist)
     let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
@@ -582,10 +604,9 @@ pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
                 output = meta.output_tokens.unwrap_or(0);
                 cache_read = meta.cached_read_tokens.unwrap_or(0);
                 total = meta.total_tokens.unwrap_or(0);
-                eprintln!(
-                    "[metrics] snapshot.json tokens: input={} output={} cacheRead={} total={}",
-                    input, output, cache_read, total
-                );
+                if let Some(t) = &meta.timing {
+                    session_elapsed_seconds = t.session_elapsed_seconds;
+                }
             }
         }
     }
@@ -616,46 +637,16 @@ pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
                     }
                 }
             }
-            eprintln!(
-                "[metrics] timeline tokens (after scan): input={} output={} cacheRead={} total={}",
-                input, output, cache_read, total
-            );
-        } else {
-            eprintln!("[metrics] failed to open timeline at {}", tp.as_str());
-        }
-    } else {
-        eprintln!(
-            "[metrics] no timeline file found for {}",
-            session_path.as_str()
-        );
-    }
-
-    // 3. Debug: list files in attempt dir and show first timeline line
-    let dir = session_path.parent();
-    if let Some(d) = dir {
-        if let Ok(entries) = std::fs::read_dir(d.as_std_path()) {
-            eprintln!("[metrics] attempt_dir files:");
-            for e in entries.flatten() {
-                eprintln!("[metrics]   {}", e.file_name().to_string_lossy());
-            }
-        }
-    }
-    if let Some(ref tp) = timeline_path {
-        if let Ok(file) = std::fs::File::open(tp.as_std_path()) {
-            let reader = BufReader::new(file);
-            for (i, line) in reader.lines().enumerate() {
-                if i >= 3 {
-                    break;
-                }
-                if let Ok(l) = line {
-                    let preview = l.chars().take(200).collect::<String>();
-                    eprintln!("[metrics] timeline[{}]: {}", i, preview);
-                }
-            }
         }
     }
 
-    (input, output, cache_read, total)
+    SessionMetrics {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: cache_read,
+        total_tokens: total,
+        session_elapsed_seconds,
+    }
 }
 
 pub fn current_timestamp() -> String {
@@ -1966,6 +1957,63 @@ mod tests {
         assert_eq!(i, 77);
         assert_eq!(o, 7);
         assert_eq!(t, 84);
+    }
+
+    #[test]
+    fn metrics_reads_session_elapsed_seconds_from_snapshot() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":1000,"outputTokens":500,"cachedReadTokens":200,"totalTokens":1700,
+            "timing":{"sessionElapsedSeconds":842,"paused":false}
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let m = super::read_session_metrics(&session_path);
+        assert_eq!(m.input_tokens, 1000);
+        assert_eq!(m.output_tokens, 500);
+        assert_eq!(m.cache_read_tokens, 200);
+        assert_eq!(m.total_tokens, 1700);
+        assert_eq!(m.session_elapsed_seconds, 842);
+    }
+
+    #[test]
+    fn metrics_returns_zero_for_elapsed_when_no_timing() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":100,"outputTokens":50,"cachedReadTokens":0,"totalTokens":150
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let m = super::read_session_metrics(&session_path);
+        assert_eq!(m.session_elapsed_seconds, 0);
+    }
+
+    #[test]
+    fn metrics_no_files_returns_zeros() {
+        let dir = TempDir::new().unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let m = super::read_session_metrics(&session_path);
+        assert_eq!(m.input_tokens, 0);
+        assert_eq!(m.output_tokens, 0);
+        assert_eq!(m.cache_read_tokens, 0);
+        assert_eq!(m.total_tokens, 0);
+        assert_eq!(m.session_elapsed_seconds, 0);
     }
 
     #[test]

@@ -995,7 +995,7 @@ pub fn elicitation_request_event(
         kind: "elicitationRequest".to_string(),
         session_id: None,
         content: Some(message),
-        title: Some("需要您的选择".to_string()),
+        title: None,
         tool_call_id: None,
         status: Some("pending".to_string()),
         // 不设 ended_seq/ended_at — 保持"进行中"直到用户响应
@@ -1021,10 +1021,7 @@ pub fn elicitation_response_event(
         kind: "elicitationResponse".to_string(),
         session_id: None,
         content: content.map(|v| v.to_string()),
-        title: Some(match action.as_str() {
-            "accept" => "已选择".to_string(),
-            _ => "已跳过".to_string(),
-        }),
+        title: None,
         tool_call_id: None,
         status: Some("completed".to_string()),
         started_seq: None,

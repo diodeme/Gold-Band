@@ -2203,6 +2203,35 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
+  const declineElicitation = async (elicitationId: string) => {
+    setAnsweredElicitations((current) => {
+      const next = new Map(current);
+      next.set(elicitationId, { __declined: true });
+      return next;
+    });
+    try {
+      await respondElicitation(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        elicitationId,
+        "decline",
+        null,
+        outerNodeId,
+        outerAttemptId,
+      );
+    } catch {
+      setAnsweredElicitations((current) => {
+        const next = new Map(current);
+        next.delete(elicitationId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
     if (
       !queuedInterventionPrompt ||
@@ -2440,12 +2469,14 @@ export const ACPChatDialog = forwardRef<
                     elicitationId={pendingElicitation.elicitationId}
                     message={pendingElicitation.message}
                     schema={pendingElicitation.requestedSchema}
-                    confirmedContent={pendingElicitation.confirmedContent}
                     onRespond={(content) =>
                       answerElicitation(
                         pendingElicitation.elicitationId,
                         content,
                       )
+                    }
+                    onDecline={() =>
+                      declineElicitation(pendingElicitation.elicitationId)
                     }
                   />
                 ) : null}
@@ -4674,7 +4705,14 @@ function isGoldBandUserPrompt(event: AcpUiEventVm) {
 function isGoldBandManagedPrompt(event: AcpUiEventVm) {
   return (
     event.kind === "userTextDelta" &&
-    (isGoldBandUserPrompt(event) || isOptimisticEvent(event))
+    (isGoldBandUserPrompt(event) || isElicitationAnswerEvent(event) || isOptimisticEvent(event))
+  );
+}
+
+function isElicitationAnswerEvent(event: AcpUiEventVm): boolean {
+  return (
+    event.kind === "userTextDelta" &&
+    rawObject(event.raw)?.source === "elicitationAnswer"
   );
 }
 
@@ -4875,9 +4913,14 @@ interface PendingElicitationVm {
   elicitationId: string;
   message: string;
   requestedSchema: ElicitationSchema;
-  confirmedContent?: Record<string, unknown> | null;
 }
 
+/**
+ * Scan events backward to find the latest unanswered pending elicitation.
+ * Once an elicitation has been answered, the answer is rendered inline in
+ * the message stream (via injectElicitationResponses), so the intervention
+ * area only needs to surface the active interactive card.
+ */
 export function pendingElicitationFromEvents(
   events: AcpUiEventVm[],
   answeredElicitations: Map<string, Record<string, unknown>>,
@@ -5068,7 +5111,86 @@ function latestStreamingTextItemKey(items: AcpTimelineItem[]): string | null {
 }
 
 function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
-  return groupChildAgentTimeline(buildFlatAcpTimeline(events));
+  return groupChildAgentTimeline(buildFlatAcpTimeline(injectElicitationResponses(events)));
+}
+
+/**
+ * Convert accepted elicitationResponse events into synthetic userTextDelta
+ * items so the user's answer appears inline in the message stream as a
+ * standard user message bubble (scrolls naturally, all history visible).
+ * Decline responses are dropped ? the agent simply continues.
+ */
+function injectElicitationResponses(events: AcpUiEventVm[]): AcpUiEventVm[] {
+  const schemas = new Map<string, ElicitationSchema>();
+  for (const event of events) {
+    if (event.kind === "elicitationRequest") {
+      const raw = rawObject(event.raw) ?? {};
+      const schema: ElicitationSchema =
+        typeof raw === "object" && (raw as Record<string, unknown>).type === "object"
+          ? (raw as unknown as ElicitationSchema)
+          : { type: "object", properties: {} };
+      schemas.set(event.id, schema);
+    }
+  }
+  const result: AcpUiEventVm[] = [];
+  for (const event of events) {
+    if (event.kind !== "elicitationResponse") {
+      result.push(event);
+      continue;
+    }
+    const elicitationId =
+      stringValue(rawObject(event.raw)?.elicitationId) ??
+      event.id.replace(/-response$/, "");
+    const action = stringValue(rawObject(event.raw)?.action);
+    if (action === "decline") continue;
+    const content = rawObject(event.raw)?.content as
+      | Record<string, unknown>
+      | undefined;
+    const schema = schemas.get(elicitationId);
+    const displayText = schema && content
+      ? formatElicitationAnswerText(schema, content)
+      : content
+        ? JSON.stringify(content)
+        : null;
+    if (!displayText) continue;
+    result.push({
+      ...event,
+      kind: "userTextDelta",
+      content: displayText,
+      raw: { ...rawObject(event.raw), source: "elicitationAnswer" },
+    });
+  }
+  return result;
+}
+
+/**
+ * Format an elicitation answer into a display string using the request
+ * schema for label mapping. Skips `_custom` variant keys.
+ */
+function formatElicitationAnswerText(
+  schema: ElicitationSchema,
+  content: Record<string, unknown>,
+): string {
+  if (!schema.properties) return JSON.stringify(content);
+  const parts: string[] = [];
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    if (key.endsWith("_custom")) continue;
+    const val = content[key];
+    if (val === undefined || val === null) continue;
+    if (prop.oneOf) {
+      const match = prop.oneOf.find((o) => o.const === val);
+      parts.push(match?.title ?? String(val));
+    } else if (prop.anyOf && Array.isArray(val)) {
+      const matches = val.map(
+        (v: unknown) =>
+          prop.anyOf!.find((o) => o.const === String(v))?.title ?? String(v),
+      );
+      parts.push(matches.join(", "));
+    } else if (typeof val === "string" && val.trim()) {
+      parts.push(val.trim());
+    }
+  }
+  return parts.length > 0 ? parts.join(" / ") : JSON.stringify(content);
 }
 
 function buildFlatAcpTimeline(events: AcpUiEventVm[]) {

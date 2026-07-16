@@ -37,9 +37,9 @@ Frontend (ACPChatDialog)
   │
   ├─ session prop / live update 合并 → effectiveEvents
   ├─ applyEventUpdates 保留 permission / elicitation 交互事件
-  ├─ pendingElicitationFromEvents 扫描 request/response → 推导当前 pending
-  └─ ElicitationCard 渲染 (内联卡片，非弹窗)
-```
+pendingElicitationFromEvents 扫描 request/response → 只推导当前未回答的 pending
+  ├─ injectElicitationResponses 将已回答的 elicitationResponse 转为 userTextDelta 注入消息流
+  └ ElicitationCard 渲染（干预区仅展示待交互卡片，已回答的展示为用户消息气泡）```
 
 ### 协议消息示例
 
@@ -477,7 +477,7 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 
 ## 待优化项（按优先级排列）
 
-### P0 — 多问题逐个展示（向导式流程）
+### P0 — 多问题逐个展示（向导式流程） ✅ 已完成
 
 **现状**：当一个 `elicitation/create` 请求的 `requestedSchema` 包含多个 properties 时，`ElicitationCard` 将它们全部渲染在同一张卡片中。当用户点击一个单选选项时，`onRespond(content)` 立即被调用，此时只填充了该单选字段的值，其他字段的答案丢失。
 
@@ -518,7 +518,7 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 - 进度指示器（可选 P3）
 - 答案逐步积累在内部 state 中（`answers: Record<string, unknown>`）
 
-### P1 — 答案文本格式化改进
+### P1 — 答案文本格式化改进 ✅ 已完成（后端死代码删除，前端 formatConfirmedChoice + i18n 分隔符）
 
 **现状**：后端 `format_elicitation_answer` 将所有答案字段用 `；` 连接为一行：
 
@@ -540,7 +540,7 @@ MySQL；用户认证、日志系统
 - 在 `user_prompt_event` 构造时保持消息气泡内容为格式化文本
 - 可配合 P2（Markdown 渲染）实现更好的视觉效果
 
-### P1 — 单选改为"选中态 + 确认按钮"
+### P1 — 单选改为"选中态 + 确认按钮" ✅ 已完成
 
 **现状**：单选字段（`oneOf`）点击即提交。优点：步数少。缺点：用户无法反悔。
 
@@ -583,11 +583,11 @@ MySQL；用户认证、日志系统
 
 **实现**：`ElicitationCard.tsx` 的 `fields` 计算 + `elicitation.rs` 的 `format_elicitation_answer` 各新增一个 `enum`/`enumNames` 解析分支。
 
-### P3 — 进度指示器
+### P3 — 进度指示器 ✅ 已完成
 
 多问题向导式流程的顶部步骤进度 UI（`步骤 2/3`、步骤条、圆点指示器）。
 
-### P3 — 跳过可选问题
+### P3 — 跳过可选问题 ✅ 已完成
 
 检测 `requestedSchema.properties[].optional` 或 MCP `required` 数组，非必答问题提供"跳过"按钮。
 
@@ -601,11 +601,17 @@ MySQL；用户认证、日志系统
 | ✅ 已完成 | 后端 userTextDelta 用户消息气泡 | — | — |
 | ✅ 已完成 | key prop 修复选项陈旧问题 | — | — |
 | ✅ 已完成 | project_id 修复响应文件目录错位 | — | — |
-| **P0** | **多问题逐个展示（向导式流程）** | ElicitationCard.tsx | 中 |
-| **P1** | **答案文本格式化改进** | elicitation.rs | 小 |
-| **P1** | **单选改为选中态+确认按钮** | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 多问题逐个展示（向导式流程） | ElicitationCard.tsx | 中 |
+| ✅ 已完成 | 单选改为选中态+确认按钮 | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 进度指示器（步骤圆点） | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 跳过可选问题（非必填字段跳过） | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 跳过整个问题（decline 操作路径） | ElicitationCard.tsx + ACPChatDialog.tsx | 中 |
+| ✅ 已完成 | elicitation 答案转用户消息气泡 (injectElicitationResponses) | ACPChatDialog.tsx | 中 |
+| ✅ 已完成 | 后端事件 title i18n 化（title: None） | events.rs | 小 |
+| ✅ 已完成 | 删除死代码 ElicitationDialog.tsx | web/src/components/acp/ | — |
+| ✅ 已完成 | 删除死代码 format_elicitation_answer | elicitation.rs | — |
+| ✅ 已完成 | 答案文本格式化改用 i18n 分隔符 | ElicitationCard.tsx (formatConfirmedChoice) + i18n.ts | 小 |
 | P2 | 消息气泡 Markdown 渲染 | events.rs + ACPChatDialog.tsx | 小 |
 | P2 | 可配置超时时长 | elicitation.rs + config | 小 |
 | P3 | enum/enumNames 支持 | ElicitationCard.tsx + elicitation.rs | 小 |
-| P3 | 进度指示器 | ElicitationCard.tsx | 小 |
-| P3 | 跳过可选问题 | ElicitationCard.tsx | 小 |
+

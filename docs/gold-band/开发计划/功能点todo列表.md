@@ -26,7 +26,7 @@
 | 完成 | `$new-round` 边目标 | workflow edge 可显式指向 `$new-round`，控制引擎返回 `OpenNewRound`。 | `docs/gold-band/产品设计文档/dsl/overview.md`; `docs/gold-band/产品设计文档/runtime/layout.md` |
 | 完成 | `worker.显式 edge` 合法性校验 | 已校验 `worker` 只能引用 worker 节点；需要产物校验的来源 worker 通过 `output.artifact` 声明 canonical artifact。 | `docs/gold-band/开发计划/gold-band-mvp-plan.md:194-204`; `docs/gold-band/产品设计文档/runtime/control.md:187-220` |
 | 完成 | runtime 顶层目录布局 | 已实现 `.gold-band/` 下 logs、tasks、runs、rounds、attempt、artifacts、attachments、raw stream 等路径模型。 | `docs/gold-band/产品设计文档/runtime/layout.md:98-445` |
-| 完成 | 用户级 profile 路径解析 | profile 已收敛为内置 + 用户级两类来源，自定义角色统一存储到 `~/.gold-band/context/profiles/<name>-<id>.md`；不再读取项目级 profile 目录，也不提供迁移或双读 fallback。 | `docs/gold-band/产品设计文档/runtime/overview.md`; `docs/gold-band/产品设计文档/runtime/layout.md` |
+| 完成 | 用户级 profile 路径解析 | profile 已收敛为内置 + 用户级两类来源，自定义角色统一存储到 `~/.gold-band/context/profiles/<name>-<id>.md`；不再读取项目级 profile 目录，也不提供迁移或双读 fallback。另外：profile 目录读取已改为容错跳过，单个文件缺少合法 front matter 时只记录 warn 并跳过，不再中断整个 profile 列表；front matter 解析入口统一剥离 UTF-8 BOM，避免 Windows 下带 BOM 文件被误判为缺少 front matter。 | `docs/gold-band/产品设计文档/runtime/overview.md`; `docs/gold-band/产品设计文档/runtime/layout.md` |
 | 待办 | workflow preset 解析链路 | 设计文档要求支持项目/用户预设 workflow，当前仅支持 task workflow 与 CLI `--workflow` 覆盖。 | `docs/gold-band/产品设计文档/interaction/cli.md:74-86`; `docs/gold-band/产品设计文档/runtime/layout.md:153-160` |
 | 完成 | `run.json` 状态模型 | 已实现 run 级状态结构与一致性校验。 | `docs/gold-band/产品设计文档/runtime/state/run.json.md:14-149` |
 | 完成 | `round.json` 状态模型 | 已实现 round 级状态结构与一致性校验。 | `docs/gold-band/开发计划/gold-band-mvp-plan.md:127-138`; `docs/gold-band/产品设计文档/runtime/control.md:254-289` |

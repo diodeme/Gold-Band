@@ -16,6 +16,7 @@ pub struct FrontmatterUpdate<'a> {
 }
 
 pub fn parse_frontmatter_document(content: &str) -> Result<FrontmatterDocument> {
+    let content = strip_utf8_bom(content);
     let Some(parts) = split_frontmatter(content) else {
         bail!("document is missing front matter");
     };
@@ -29,6 +30,7 @@ pub fn parse_frontmatter_document(content: &str) -> Result<FrontmatterDocument> 
 }
 
 pub fn parse_optional_frontmatter_document(content: &str) -> Result<FrontmatterDocument> {
+    let content = strip_utf8_bom(content);
     if !has_frontmatter_start(content) {
         return Ok(FrontmatterDocument {
             fields: BTreeMap::new(),
@@ -67,6 +69,7 @@ pub fn update_frontmatter_document(
     updates: &[FrontmatterUpdate<'_>],
     body: &str,
 ) -> Result<String> {
+    let content = strip_utf8_bom(content);
     let Some(parts) = split_frontmatter(content) else {
         return Ok(render_frontmatter_document(updates, body));
     };
@@ -138,6 +141,10 @@ pub fn update_frontmatter_document(
 struct FrontmatterParts<'a> {
     frontmatter: &'a str,
     body: &'a str,
+}
+
+fn strip_utf8_bom(content: &str) -> &str {
+    content.strip_prefix('\u{FEFF}').unwrap_or(content)
 }
 
 fn has_frontmatter_start(content: &str) -> bool {
@@ -415,5 +422,15 @@ mod tests {
         assert!(updated.contains("compatibility: claude-code-only"));
         assert!(updated.contains("description: >\n  new line\n  next line\n"));
         assert!(updated.ends_with("---\nnew body"));
+    }
+
+    #[test]
+    fn parses_document_prefixed_with_utf8_bom() {
+        let document =
+            parse_frontmatter_document("\u{FEFF}---\nname: demo\nnext: value\n---\nbody").unwrap();
+
+        assert_eq!(document.fields.get("name").map(String::as_str), Some("demo"));
+        assert_eq!(document.fields.get("next").map(String::as_str), Some("value"));
+        assert_eq!(document.body, "body");
     }
 }

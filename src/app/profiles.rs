@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
@@ -353,7 +354,13 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
         if path.extension() != Some("md") {
             continue;
         }
-        let parsed = parse_profile_file(&path)?;
+        let parsed = match parse_profile_file(&path) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                warn!("skipping unreadable profile `{path}`: {:#}", error);
+                continue;
+            }
+        };
         profiles.push(ProfileEntry {
             id: parsed.id,
             name: parsed.name,
@@ -638,5 +645,49 @@ profile body
         .unwrap_err();
 
         assert!(err.to_string().contains("unknown field `scope`"));
+    }
+
+    #[test]
+    fn read_profile_dir_skips_corrupt_profile_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+
+        let good = paths.user_context_profiles_dir().join("role-pf-good.md");
+        fs::write(
+            good.as_std_path(),
+            "---\nid: pf-good\nname: role\nsummary: ok\ncreatedAt: 2026-07-09 10:00:00\nupdatedAt: 2026-07-09 10:00:00\n---\nbody\n",
+        )
+        .unwrap();
+
+        let corrupt = paths
+            .user_context_profiles_dir()
+            .join("broken-pf-bad.md");
+        fs::write(corrupt.as_std_path(), "no front matter here\n").unwrap();
+
+        let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "pf-good");
+    }
+
+    #[test]
+    fn read_profile_dir_reads_bom_prefixed_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+
+        let path = paths.user_context_profiles_dir().join("role-pf-bom.md");
+        fs::write(
+            path.as_std_path(),
+            "\u{FEFF}---\nid: pf-bom\nname: role\nsummary: bom\ncreatedAt: 2026-07-09 10:00:00\nupdatedAt: 2026-07-09 10:00:00\n---\nbody\n",
+        )
+        .unwrap();
+
+        let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "pf-bom");
     }
 }

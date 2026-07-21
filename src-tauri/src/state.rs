@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::events::current_timestamp;
+use gold_band::app::observability::RuntimeLifecycleBus;
 use gold_band::app::{App, NotificationDedup};
 use gold_band::config::{
     ManagedAgentType, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig, StateConfig,
@@ -175,6 +176,7 @@ pub struct DesktopState {
     notification_attention: Mutex<NotificationAttentionState>,
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
+    lifecycle_bus: RuntimeLifecycleBus,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
 }
@@ -190,6 +192,7 @@ impl DesktopState {
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
+            lifecycle_bus: RuntimeLifecycleBus::new(),
             mcp_health: Mutex::new(BTreeMap::new()),
         }
     }
@@ -249,20 +252,18 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
-        Ok(
-            App::with_config(context.repo_root, context.config).with_provider_diagnostics_source(
-                Arc::new(move || {
-                    Ok(diagnostics
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
-                        .iter()
-                        .map(|(agent_type, diagnostic)| {
-                            (agent_type.as_str().to_string(), diagnostic.clone())
-                        })
-                        .collect())
-                }),
-            ),
-        )
+        Ok(App::with_config(context.repo_root, context.config)
+            .with_lifecycle_bus(self.lifecycle_bus.clone())
+            .with_provider_diagnostics_source(Arc::new(move || {
+                Ok(diagnostics
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+                    .iter()
+                    .map(|(agent_type, diagnostic)| {
+                        (agent_type.as_str().to_string(), diagnostic.clone())
+                    })
+                    .collect())
+            })))
     }
 
     pub fn provider_diagnostic_snapshots(

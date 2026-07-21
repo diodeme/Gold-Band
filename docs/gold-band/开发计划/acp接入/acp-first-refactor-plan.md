@@ -303,6 +303,22 @@ ACP 接入任务不再按“阶段 1 / 阶段 2”组织，而是按互不影响
 
 每个模块都需要明确目标、输入、输出、主要任务、不做什么、验收标准和相关文档链接。
 
-## 11. 一句话总结
+## 11. 运行内存稳定性收敛（2026-07-21）
+
+本轮按 ACP-first 的事实源设计完成隐性稳定性收敛，不新增第二套事件协议，也不改变 UI/API：
+
+- 桌面 `DesktopState` 持有共享 `RuntimeLifecycleBus`；setup 阶段通过 `desktop.metrics`、`desktop.notifications`、`desktop.conversation-run-state` 三个固定键幂等注册，命令路径不再重复订阅。
+- session route 从无界 `mpsc` 改为 4 MiB / 256 帧的无损 FIFO 阻塞队列；空队列允许一个超大单帧，消费、注销、receiver drop 和 transport close 都会解除 producer 等待。RPC response 继续走独立 pending request 通道。
+- `acp.timeline.jsonl` 保持完整事实源；runtime 只保留当前流、未终态 tool、未决 permission/elicitation 与 timing aggregate。timeline patch 持续追加，权限/提问 timing 改为增量观察，不再周期性从全量内存历史重写文件。
+- `ConversationRunVm` 构建树时只读取 session metadata/lifecycle 摘要，并保留原有 stale-session completion fuse；只有选中 leaf 加载完整事件页，避免所有 attempt timeline 被重复扫描。
+- 未路由 frame 日志只输出 method、sessionUpdate、sessionId、字节数、adapter 与 suppressed 计数，并按连接/事件类型 60 秒限频。`runtime.log` 使用 `file-rotate` 按 8 MiB 轮转，保留 4 份；`acp.raw.jsonl` 配置不变。
+
+已固化的接口级回归覆盖包括：10,000 帧逐字节顺序、字节/帧背压、超大单帧、route close/drop 唤醒、具名订阅幂等、timeline 热状态释放、tool raw input 终态合并、permission timing、非选中不可读 timeline、日志限频摘要与 size rotation。验收继续要求 `cargo test --workspace`、`npm run web:test`、`npm run web:build` 和桌面 deep-link 运行验证全部通过。
+
+本次验收结果：`cargo test --workspace` 全量通过；Release 模式 ACP route 10 项洪峰/背压测试通过；`npm run web:test` 54 个文件、362 项通过；`npm run web:build` 通过。桌面端 deep-link 到现有 run 后，session tree、历史 session 切换、长消息、思考折叠、raw frames、产物/附件、usage/timing 与 composer 均可正常访问，未出现白屏或无响应。Web 字体回归测试同时修正为只检查目标 textarea 的 opening tag，消除跨越 MCP tools 区域导致的 `font-mono` 误判，不改变页面样式。
+
+明确不在本轮范围：事件截断/丢弃/合并、既有事件窗口配置调整、75ms/125ms 流式节奏调整、并行度调整、WebView 重建或自动重载。
+
+## 12. 一句话总结
 
 > Gold Band 这次 ACP 重构的核心是：全面切换到 ACP，不再保留 Claude Code legacy fallback；Gold Band 用 ACP 统一 agent 返回值，并用 Dialog / Chat UI 展示 ACP 会话事件，同时继续维护自己的 runtime canonical state、artifact contract 和 workflow 控制。

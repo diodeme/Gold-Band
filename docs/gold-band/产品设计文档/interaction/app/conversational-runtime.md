@@ -6,6 +6,16 @@
 
 运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
+## 运行时数据与内存边界
+
+- `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
+- timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
+- 会话树刷新只读取 attempt 的 session metadata 与 lifecycle 摘要；仅当前选中会话读取完整 timeline 事件页。非选中会话的超大或不可读 timeline 不得阻断 run/session tree 刷新；选中会话仍保持既有事件窗口配置、cursor 和终态覆盖语义。
+- 每个 ACP session route 是无损 FIFO 有界队列：最多 4 MiB 且最多 256 帧；队列为空时允许一个超过 4 MiB 的合法单帧进入。达到任一上限后 producer 阻塞等待消费，不合并、不丢弃、不重排；receiver drop、route 注销或连接关闭必须唤醒等待者。
+- 桌面进程共享单一 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 使用固定具名幂等订阅并只在 setup 注册一次；创建、重跑、继续与 prompt 路径不得重复挂载订阅。
+- 未路由 ACP frame 的 runtime 日志只记录 connection/provider、sessionId、JSON-RPC method、sessionUpdate 类型、原始字节数与限频摘要，不记录 prompt、技能列表、工具输出或完整 JSON。`runtime.log` 活跃文件上限 8 MiB，保留 4 个轮转文件并继续遵守 30 天清理；`acp.raw.jsonl` 保持完整原始排障来源及既有轮转配置。
+- 以上均为隐性稳定性约束：不得改变消息内容、事件顺序、工具详情、流式节奏、权限语义、页面交互、ViewModel/API JSON、工作流并行度或既有 `acpChatEventPageSize` 配置值。本边界不包含 WebView 自动恢复、自动重载或内存压力下降低并行度。
+
 ## 顶部信息栏
 
 - 标题显示：可 inline edit，修改后同步到 task 和所有 run

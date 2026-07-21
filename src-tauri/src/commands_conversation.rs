@@ -69,7 +69,10 @@ pub fn get_conversation_run(
             serde_json::json!({ "projectId": project_id }),
         ));
     };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let workspace_app = state
+        .app()
+        .map_err(command_error)?
+        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let result = crate::view_models_conversation::conversation_run_vm(
         &workspace_app,
         &project_id,
@@ -129,7 +132,10 @@ pub async fn create_conversation_run(
             serde_json::json!({ "projectId": input.project_id }),
         ));
     };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let workspace_app = state
+        .app()
+        .map_err(command_error)?
+        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let project_id_for_current = input.project_id.clone();
     let project_id_for_emit = input.project_id.clone();
     let app = workspace_app;
@@ -142,10 +148,12 @@ pub async fn create_conversation_run(
         .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
-            app_for_workspace(&context, &workspace_path).map_err(command_error)?,
+            state
+                .app()
+                .map_err(command_error)?
+                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
             Some(project_id_for_emit),
         ));
-    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -174,7 +182,10 @@ pub fn rerun_conversation_task(
             serde_json::json!({ "projectId": project_id }),
         ));
     };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+    let workspace_app = state
+        .app()
+        .map_err(command_error)?
+        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let app = workspace_app;
     let live_update = crate::commands::acp_live_update_emitter_for_app(
         &app,
@@ -185,10 +196,12 @@ pub fn rerun_conversation_task(
         .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(
             app_handle.clone(),
-            app_for_workspace(&context, &workspace_path).map_err(command_error)?,
+            state
+                .app()
+                .map_err(command_error)?
+                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
             Some(project_id.clone()),
         ));
-    crate::commands::register_lifecycle_subscribers(&app, &app_handle);
     let run =
         crate::view_models_conversation::rerun_conversation_task_vm(&app, &project_id, &task_id)
             .map_err(command_error)?;

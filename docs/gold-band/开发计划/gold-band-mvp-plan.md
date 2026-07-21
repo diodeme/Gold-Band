@@ -641,6 +641,18 @@ attempt-001/
 
 ---
 
+## 2026-07-21：工作流长运行内存稳定性隐性优化
+
+- 生命周期：桌面进程共享一个 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 在 setup 以固定键幂等订阅一次；保留匿名订阅供测试和内部场景使用。
+- ACP 传输：每 session route 使用 4 MiB / 256 帧无损 FIFO 背压，允许空队列单个超大帧；不影响 RPC pending response，不丢弃、不合并、不重排。
+- Timeline：磁盘 `acp.timeline.jsonl` 是完整事实源，内存只保留当前 text/thought/plan 流、未终态 tool、未决 permission/elicitation 及 metadata/usage/timing；会话树只加载 metadata/lifecycle，选中会话才加载完整事件页。
+- 日志：未路由 frame 仅记录摘要并按连接/事件类型限频；`runtime.log` 8 MiB 轮转、保留 4 份并继续执行 30 天清理，`acp.raw.jsonl` 保持现状。
+- 兼容边界：Tauri command、Runtime API、ViewModel JSON、前端类型、既有事件窗口配置、75ms/125ms 流式刷新、消息/工具/权限/分页/自动跟随与 workflow 并行度全部不变；不包含 WebView 恢复和高内存降并行。
+- 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、字节/帧背压、超大帧与关闭唤醒、热状态释放后 timeline 可读、tool input/output 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
+- 本次结果：Rust workspace 全量通过；Release ACP route 10 项通过；Web 54 个测试文件、362 项通过且生产构建成功；桌面端现有 run/session deep-link 冒烟通过，测试实例与 dev server 已清理。字体测试仅修正元素定位，未改变 UI。
+
+---
+
 ## 结论
 
 建议主实现语言使用 Rust，先围绕 CLI + runtime + Claude Code provider 跑通 MVP 闭环，再逐步补 provider 扩展、progress 观测与插件层。

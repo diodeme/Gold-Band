@@ -224,7 +224,7 @@ fn default_workflow_dsl(
                 "interview",
                 "Conduct a deep interview to clarify the requirement and produce a clear specification.",
                 false,
-                true,
+                false,
             ),
             worker(
                 provider,
@@ -4297,5 +4297,35 @@ mod tests {
         let state = app.load_state().unwrap();
         assert_eq!(state.recent_desktop_workspaces.len(), 8);
         assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/Repo9");
+    }
+    #[test]
+    fn default_workflow_interview_node_succeeds_without_manual_check() {
+        let paths = crate::storage::GoldBandPaths::new(Utf8PathBuf::from(
+            "/tmp/interview-default-success",
+        ));
+        let profiles = super::ensure_default_user_profiles(&paths).unwrap();
+        let workflow =
+            super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+
+        let interview = workflow
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                NodeDsl::Worker(worker) if worker.id == "interview" => Some(worker),
+                _ => None,
+            })
+            .expect("default workflow contains an interview node");
+        let interview_node = NodeDsl::Worker(interview.clone());
+
+        // 采访节点默认成功：不开启人工 check，也没有 AI 输出验证，
+        // 产出 interview-spec.md 后直接走默认成功分支，无需人工判定。
+        assert!(
+            !interview_node.manual_check_enabled(),
+            "interview node must default to no manual check"
+        );
+        assert!(
+            interview.output.is_none() && interview.success_condition.is_none(),
+            "interview node must declare no output contract or success condition"
+        );
     }
 }

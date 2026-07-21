@@ -213,7 +213,7 @@ fn get_system_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-const HEARTBEAT_INTERVAL_SECS: u64 = 300; // 5 minutes
+const HEARTBEAT_INTERVAL_SECS: u64 = 900; // 15 minutes
 
 pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {

@@ -180,6 +180,16 @@ impl AcpTimingState {
         state
     }
 
+    pub fn from_timeline_item_refs<'a>(items: impl IntoIterator<Item = &'a AcpUiEvent>) -> Self {
+        let mut state = Self::default();
+        let mut items = items.into_iter().collect::<Vec<_>>();
+        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
+        for item in items {
+            state.observe_event(item);
+        }
+        state
+    }
+
     pub fn observe_event(&mut self, event: &AcpUiEvent) {
         self.revision = Some(
             self.revision

@@ -886,6 +886,11 @@ impl App {
         self
     }
 
+    pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
+        self.lifecycle_bus = lifecycle_bus;
+        self
+    }
+
     pub fn with_lifecycle_subscriber(
         self,
         subscriber: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,

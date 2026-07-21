@@ -5,9 +5,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_vm, dynamic_acp_session_vm,
-    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, acp_session_vm,
+    dynamic_acp_session_status, dynamic_acp_session_vm, dynamic_runtime_graph_vm,
+    latest_control_failure_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
 };
 use gold_band::app::App;
 use gold_band::app::CreateTaskInput;
@@ -1531,7 +1531,7 @@ pub fn conversation_run_vm(
                                 dyn_runtime_status.clone()
                             };
                             for dyn_attempt_id in &dyn_attempt_ids {
-                                let dyn_session_vm = dynamic_acp_session_vm(
+                                let dyn_session_status = dynamic_acp_session_status(
                                     app,
                                     task_id,
                                     run_id,
@@ -1540,8 +1540,6 @@ pub fn conversation_run_vm(
                                     &latest_attempt.attempt_id,
                                     &dyn_node.id,
                                     dyn_attempt_id,
-                                    None,
-                                    None,
                                 )?;
                                 let dyn_pause_reason = display_pause_reason_for_dynamic_attempt(
                                     app,
@@ -1569,9 +1567,7 @@ pub fn conversation_run_vm(
                                         dyn_pause_reason.as_deref(),
                                     );
                                 let lifecycle = derive_conversation_attempt_lifecycle(
-                                    dyn_session_vm
-                                        .as_ref()
-                                        .map(|session| session.status.as_str()),
+                                    dyn_session_status.as_deref(),
                                     &dyn_status,
                                     dyn_outcome.as_deref(),
                                     dyn_current,
@@ -1668,15 +1664,13 @@ pub fn conversation_run_vm(
             let mut leafs: Vec<ConversationSessionLeafVm> = Vec::new();
             if !is_ai_dynamic {
                 for attempt in &all_attempts {
-                    let session_vm = acp_session_vm(
+                    let session_status = acp_session_status(
                         app,
                         task_id,
                         run_id,
                         &round.id,
                         &node.node_id,
                         &attempt.attempt_id,
-                        None,
-                        None,
                     )?;
                     let runtime_status = enum_label(&attempt.status);
                     let display_pause_reason = display_pause_reason_for_attempt(
@@ -1694,7 +1688,7 @@ pub fn conversation_run_vm(
                         && run.current_attempt.as_deref() == Some(&attempt.attempt_id);
                     let manual_check_pending = attempt.manual_check_pending;
                     let lifecycle = derive_conversation_attempt_lifecycle(
-                        session_vm.as_ref().map(|session| session.status.as_str()),
+                        session_status.as_deref(),
                         &runtime_status,
                         outcome.as_deref(),
                         current,
@@ -3283,6 +3277,52 @@ mod tests {
             .unwrap();
         assert_eq!(leaf.artifact_count, 1);
         assert_eq!(leaf.attachment_count, 1);
+    }
+
+    #[test]
+    fn conversation_run_vm_ignores_unreadable_timeline_for_non_selected_session() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-001");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &app.paths
+                .node_file("task-046", "run-060", "round-001", "测试", "attempt-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "node_id": "测试",
+                "node_type": "worker",
+                "run_id": "run-060",
+                "round_id": "round-001",
+                "attempt_id": "attempt-001",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-06-15T00:00:00Z",
+                "finished_at": "2026-06-15T00:00:01Z",
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        std::fs::create_dir_all(attempt_dir.join("acp.timeline.jsonl").as_std_path()).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+
+        assert_eq!(vm.session_tree.rounds[0].nodes[0].attempts.len(), 2);
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/测试/attempt-002")
+        );
     }
 
     #[test]

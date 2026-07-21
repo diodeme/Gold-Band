@@ -3441,6 +3441,46 @@ pub fn dynamic_acp_session_vm(
     Ok(Some(result))
 }
 
+pub fn dynamic_acp_session_status(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    outer_node_id: &str,
+    outer_attempt_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<Option<String>> {
+    let attempt_dir = app.paths.dynamic_node_attempt_dir(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        node_id,
+        attempt_id,
+    );
+    let Some(mut session) = session_metadata_from_attempt_dir(&attempt_dir) else {
+        return Ok(None);
+    };
+    let node_path = app.paths.dynamic_node_file(
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+        node_id,
+    );
+    apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
+    Ok(Some(
+        session
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    ))
+}
+
 pub fn acp_session_vm(
     app: &App,
     task_id: &str,
@@ -3704,6 +3744,72 @@ pub fn acp_session_vm(
         pending_permissions,
     };
     Ok(Some(result))
+}
+
+pub fn acp_session_status(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<Option<String>> {
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+    let Some(mut session) = session_metadata_from_attempt_dir(&attempt_dir) else {
+        return Ok(None);
+    };
+    let node_path = app
+        .paths
+        .node_file(task_id, run_id, round_id, node_id, attempt_id);
+    apply_stale_session_completion_fuse(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        &node_path,
+        &mut session,
+    )?;
+    Ok(Some(
+        session
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    ))
+}
+
+fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<serde_json::Value> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let has_acp_artifact = snapshot_path.exists()
+        || session_path.exists()
+        || [
+            "acp.timeline.jsonl",
+            "acp.events.jsonl",
+            "acp.raw.jsonl",
+            "acp.diagnostics.jsonl",
+        ]
+        .into_iter()
+        .any(|file_name| attempt_dir.join(file_name).exists());
+    if !has_acp_artifact {
+        return None;
+    }
+    if snapshot_path.exists() {
+        return Some(
+            read_json::<serde_json::Value>(&snapshot_path)
+                .unwrap_or_else(|_| serde_json::json!({})),
+        );
+    }
+    if session_path.exists() {
+        return Some(
+            read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({})),
+        );
+    }
+    Some(serde_json::json!({}))
 }
 
 struct AcpEventScan {

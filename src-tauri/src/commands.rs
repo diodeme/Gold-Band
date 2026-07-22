@@ -1,7 +1,6 @@
 use gold_band::acp::client;
 use gold_band::acp::elicitation::{
-    ElicitationAction, cancel_pending_elicitation_requests, remove_elicitation_signal_files,
-    write_elicitation_response,
+    ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
 use gold_band::acp::events::{AcpUiEvent, current_timestamp};
 use gold_band::acp::permission::{
@@ -2405,33 +2404,6 @@ fn write_acp_permission_response_signal(
     )
 }
 
-fn attempt_session_is_active(
-    snapshot_path: &camino::Utf8Path,
-    session_path: &camino::Utf8Path,
-) -> bool {
-    let metadata = if snapshot_path.exists() {
-        read_json::<serde_json::Value>(snapshot_path).ok()
-    } else if session_path.exists() {
-        read_json::<serde_json::Value>(session_path).ok()
-    } else {
-        None
-    };
-    let Some(metadata) = metadata else {
-        return false;
-    };
-    let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
-        return false;
-    };
-    matches!(
-        status
-            .trim()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .as_str(),
-        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
-    )
-}
-
 #[tauri::command]
 pub fn cancel_acp_session(
     app_handle: AppHandle,
@@ -3342,9 +3314,6 @@ pub fn respond_elicitation(
         app.paths
             .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
     };
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-
     write_elicitation_response(
         &attempt_dir,
         &elicitation_id,
@@ -3354,13 +3323,9 @@ pub fn respond_elicitation(
     )
     .map_err(command_error)?;
 
-    if !attempt_session_is_active(&snapshot_path, &session_path) {
-        let _ = remove_elicitation_signal_files(&attempt_dir, &elicitation_id);
-    }
-
     // Emit session update so the frontend can refresh the timeline
-    // with the elicitation response event written either by the runtime
-    // or by the command-side durable replay fallback.
+    // immediately. The runtime owns consumption and cleanup of the durable
+    // response signal; snapshot/session status is not proof that no waiter exists.
     let session =
         if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
             crate::view_models::dynamic_acp_session_vm(

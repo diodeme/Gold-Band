@@ -14,9 +14,10 @@ use crate::frontmatter::{
     update_frontmatter_document,
 };
 use crate::prompts::{
-    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
-    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language,
+    PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
+    PROFILE_DEV_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
+    PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
+    PROFILE_TEST_ZH_CN, prompt_by_language,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -661,9 +662,7 @@ profile body
         )
         .unwrap();
 
-        let corrupt = paths
-            .user_context_profiles_dir()
-            .join("broken-pf-bad.md");
+        let corrupt = paths.user_context_profiles_dir().join("broken-pf-bad.md");
         fs::write(corrupt.as_std_path(), "no front matter here\n").unwrap();
 
         let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();

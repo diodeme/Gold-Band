@@ -429,8 +429,14 @@ mod tests {
         let document =
             parse_frontmatter_document("\u{FEFF}---\nname: demo\nnext: value\n---\nbody").unwrap();
 
-        assert_eq!(document.fields.get("name").map(String::as_str), Some("demo"));
-        assert_eq!(document.fields.get("next").map(String::as_str), Some("value"));
+        assert_eq!(
+            document.fields.get("name").map(String::as_str),
+            Some("demo")
+        );
+        assert_eq!(
+            document.fields.get("next").map(String::as_str),
+            Some("value")
+        );
         assert_eq!(document.body, "body");
     }
 }

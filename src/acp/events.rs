@@ -591,7 +591,12 @@ pub struct SessionMetrics {
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
 pub fn read_session_tokens(session_path: &Utf8Path) -> (u64, u64, u64, u64) {
     let m = read_session_metrics(session_path);
-    (m.input_tokens, m.output_tokens, m.cache_read_tokens, m.total_tokens)
+    (
+        m.input_tokens,
+        m.output_tokens,
+        m.cache_read_tokens,
+        m.total_tokens,
+    )
 }
 
 /// Read token totals and session elapsed seconds from the ACP session metadata

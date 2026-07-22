@@ -712,8 +712,8 @@ export interface AcpPermissionOptionVm {
   kind: string;
 }
 
-// Toast銆屾煡鐪嬭鎯呫€嶇偣鍑诲悗鍚庣 emit 鐨勫鑸簨浠?payload锛堝惈瀹屾暣瀹氫綅瀛楁 + dedupKey锛夈€?
-// 搴旂敤鍐呬笉鍐嶄繚鐣欏彸涓婅寮圭獥锛涚郴缁熺骇 Toast 鏄敮涓€骞查鎻愰啋琛ㄩ潰銆?
+// Navigation payload emitted after clicking "View details" in a system toast.
+// It carries the complete attempt locator and a deduplication key.
 export interface InterventionNavigateEventVm {
   taskId: string;
   runId: string;
@@ -874,7 +874,7 @@ export type RoundSelection = RoundSelectionContext & (
   | { kind: 'log'; id: string; nodeId?: string; attemptId?: string }
 );
 
-// 鈹€鈹€ Conversation UI types 鈹€鈹€
+// Conversation UI types
 
 export type DesktopUiMode = 'conversation' | 'workbench';
 
@@ -1119,7 +1119,7 @@ export interface AcpModelVm {
   name: string;
 }
 
-// 鈹€鈹€ MCP & SKILL types 鈹€鈹€
+// MCP and skill types
 
 export interface McpServerHealthResult {
   status: 'healthy' | 'unhealthy' | 'auth_required' | 'unknown';

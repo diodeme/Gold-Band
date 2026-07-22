@@ -38,7 +38,6 @@ import {
   addConversationWorkspace,
   removeConversationWorkspace,
   syncConversationWorkspace,
-  saveDesktopUiMode,
   saveConversationRunMode,
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
@@ -195,11 +194,6 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
   return false;
 }
 
-function workspacePathForProject(sidebar: ConversationSidebarVm, projectId?: string | null) {
-  if (!projectId) return undefined;
-  return sidebar.workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
-}
-
 function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
   const selectedKey = tree?.selectedSessionKey;
   if (!tree || !selectedKey) return null;
@@ -220,8 +214,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 
 export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
-  const savedUiMode = (typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-ui-mode')) as DesktopUiMode | null;
-  const [uiMode, setUiMode] = useState<DesktopUiMode>(savedUiMode ?? initialRoute.uiMode);
+  const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
@@ -472,7 +465,7 @@ export function App() {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
     const onPopState = () => {
       const nextRoute = routeFromPath(window.location.pathname);
-      if (savedUiMode) setUiMode(savedUiMode);
+      setUiMode(nextRoute.uiMode);
       setPrimaryModule(nextRoute.module);
       setTaskPage(nextRoute.taskPage);
       setConversationPage(nextRoute.conversationPage);
@@ -1236,50 +1229,6 @@ export function App() {
           ? <ContextManagementPage />
           : renderTaskContent();
 
-  const persistUiMode = (nextMode: DesktopUiMode) => {
-    setUiMode(nextMode);
-    if (typeof localStorage !== 'undefined') localStorage.setItem('gold-band-ui-mode', nextMode);
-    saveDesktopUiMode(nextMode).catch(() => {});
-  };
-
-  const onToggleUiMode = () => {
-    const nextMode: DesktopUiMode = uiMode === 'conversation' ? 'workbench' : 'conversation';
-    if (nextMode === 'workbench') {
-      const targetProjectId = activeWorkspaceIdRef.current ?? effectiveWorkspaceId;
-      const targetWorkspace = workspacePathForProject(conversationSidebarRef.current, targetProjectId)
-        ?? activeWorkspace?.workspacePath;
-      if (targetWorkspace && targetWorkspace !== bootstrap?.repoRoot) {
-        setBusy(true);
-        setError(null);
-        selectRecentWorkspace(targetWorkspace)
-          .then((nextBootstrap) => {
-            persistUiMode('workbench');
-            applyWorkspace(nextBootstrap);
-          })
-          .catch((err) => setError(displayAppError(t, err)))
-          .finally(() => setBusy(false));
-        return;
-      }
-      persistUiMode('workbench');
-      setWorkspacePickerOpen(Boolean(bootstrap?.needsWorkspace));
-      pushRoute(primaryModule, taskPage);
-      return;
-    }
-
-    persistUiMode('conversation');
-    setWorkspacePickerOpen(false);
-    if (bootstrap?.repoRoot && !bootstrap.needsWorkspace) {
-      syncConversationWorkspace(bootstrap.repoRoot)
-        .then((sidebar) => {
-          activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
-          setActiveWorkspaceId(sidebar.lastActiveWorkspaceId ?? null);
-          applyConversationSidebar(sidebar, sidebar.lastActiveWorkspaceId);
-        })
-        .catch(() => {});
-    }
-    pushRoute(primaryModule, taskPage, conversationPage);
-  };
-
   const onSelectConversation = (page: ConversationPage) => {
     setWorkspacePickerOpen(false);
     setConversationPage(page);
@@ -1315,7 +1264,6 @@ export function App() {
         pushRoute(module, nextTaskPage);
       }}
       onSelectConversation={onSelectConversation}
-      onToggleUiMode={onToggleUiMode}
       onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {

@@ -74,19 +74,23 @@ export type ChainOfThoughtContentProps = React.ComponentProps<
   typeof CollapsibleContent
 > & {
   animated?: boolean
+  preserveMount?: boolean
 }
 
 export const ChainOfThoughtContent = ({
   children,
   className,
   animated = true,
+  preserveMount = false,
   ...props
 }: ChainOfThoughtContentProps) => {
   return (
     <CollapsibleContent
+      forceMount={preserveMount ? true : undefined}
       className={cn(
         "text-popover-foreground overflow-hidden",
         animated && "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down",
+        preserveMount && "data-[state=closed]:hidden",
         className
       )}
       {...props}

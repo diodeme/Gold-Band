@@ -3,7 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Copy, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
-import type { DesktopPlatform, DesktopUiMode } from '../types';
+import type { DesktopPlatform } from '../types';
 import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
@@ -14,19 +14,15 @@ const titleBarNonDragSelector = 'button, a, input, textarea, select, [role="butt
 interface AppTitleBarProps {
   appName: string;
   platform?: DesktopPlatform | null;
-  uiMode: DesktopUiMode;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
-  onToggleUiMode: () => void;
 }
 
 export function AppTitleBar({
   appName,
   platform,
-  uiMode,
   sidebarCollapsed,
   onToggleSidebar,
-  onToggleUiMode,
 }: AppTitleBarProps) {
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
@@ -92,7 +88,6 @@ export function AppTitleBar({
     getCurrentWindow().startDragging().catch(() => {});
   };
 
-  const modeLabel = uiMode === 'conversation' ? t('common.conversation') : t('common.workbench');
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
 
   return (
@@ -125,39 +120,9 @@ export function AppTitleBar({
         </div>
       </div>
 
-      <div className="app-titlebar-no-drag flex items-center gap-1 rounded-lg border border-titlebar-border bg-background/40 p-0.5" data-titlebar-no-drag="true">
-        <button
-          type="button"
-          className={cn(
-            'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-            uiMode === 'conversation'
-              ? 'bg-primary/14 text-primary'
-              : 'text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
-          )}
-          onClick={uiMode === 'conversation' ? undefined : onToggleUiMode}
-          aria-pressed={uiMode === 'conversation'}
-        >
-          {t('common.conversation')}
-        </button>
-        <button
-          type="button"
-          className={cn(
-            'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-            uiMode === 'workbench'
-              ? 'bg-primary/14 text-primary'
-              : 'text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
-          )}
-          onClick={uiMode === 'workbench' ? undefined : onToggleUiMode}
-          aria-pressed={uiMode === 'workbench'}
-        >
-          {t('common.workbench')}
-        </button>
-      </div>
-
       <div
         data-tauri-drag-region
         className="min-w-0 flex-1 self-stretch"
-        aria-label={modeLabel}
       />
 
       {policy.showCustomControls ? (

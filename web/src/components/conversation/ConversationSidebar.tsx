@@ -16,7 +16,6 @@ interface ConversationSidebarProps {
   active: ConversationPage;
   activeWorkspaceId?: string | null;
   onSelect: (page: ConversationPage) => void;
-  onToggleUiMode: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string) => void;
@@ -36,7 +35,6 @@ export function ConversationSidebar({
   active,
   activeWorkspaceId,
   onSelect,
-  onToggleUiMode: _onToggleUiMode,
   onNewConversation,
   onSearch,
   onSelectTask,

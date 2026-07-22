@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAcpTimeline, createAcpSessionCacheKey, isTopLevelPlanEvent, limitAcpEvents, mergeAcpEvents, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
+import { buildAcpTimeline, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
@@ -22,6 +22,53 @@ function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' 
 }
 
 describe('ACPChatDialog timeline helpers', () => {
+  it('marks only the newest active text or thought stream for paced Markdown', () => {
+    const thought = event({
+      id: 'thought-1',
+      seq: 1,
+      endedSeq: 4,
+      timestamp: '1Z',
+      kind: 'thoughtDelta',
+      content: '**thinking**',
+    });
+    const text = event({
+      id: 'message-1',
+      seq: 2,
+      endedSeq: 3,
+      timestamp: '2Z',
+      kind: 'textDelta',
+      content: 'older response',
+    });
+
+    expect(latestStreamingMarkdownItemKey(buildAcpTimeline([thought, text]))).toBe(
+      'thoughtDelta-thought-1',
+    );
+    expect(latestStreamingMarkdownItemKeyFromEvents([
+      thought,
+      text,
+      event({
+        id: 'optimistic-user',
+        seq: Number.MAX_SAFE_INTEGER,
+        timestamp: '3Z',
+        kind: 'userTextDelta',
+        content: 'prompt',
+        raw: { optimistic: true },
+      }),
+    ])).toBe(
+      'thoughtDelta-thought-1',
+    );
+    expect(latestStreamingMarkdownItemKeyFromEvents([
+      thought,
+      event({
+        id: 'tool-1',
+        seq: 5,
+        timestamp: '5Z',
+        kind: 'toolCall',
+        toolCallId: 'tool-1',
+      }),
+    ])).toBeNull();
+  });
+
   it('keeps stable keys for timeline items', () => {
     const timeline = buildAcpTimeline([
       event({ id: 'tool-raw', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'call-1' }),

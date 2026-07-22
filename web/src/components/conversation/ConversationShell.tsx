@@ -13,7 +13,6 @@ interface ConversationShellProps {
   active: ConversationPage;
   sidebarCollapsed: boolean;
   onSelect: (page: ConversationPage) => void;
-  onToggleUiMode: () => void;
   onToggleSidebar: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
@@ -61,7 +60,6 @@ export function ConversationShell({
   active,
   sidebarCollapsed,
   onSelect,
-  onToggleUiMode,
   onToggleSidebar,
   onNewConversation,
   onSearch,
@@ -135,10 +133,8 @@ export function ConversationShell({
       <AppTitleBar
         appName={appName}
         platform={platform}
-        uiMode="conversation"
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}
-        onToggleUiMode={onToggleUiMode}
       />
       <div className="flex min-h-0 flex-1 bg-sidebar">
         <div
@@ -160,7 +156,6 @@ export function ConversationShell({
               active={active}
               activeWorkspaceId={activeWorkspaceId}
               onSelect={onSelect}
-              onToggleUiMode={onToggleUiMode}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
               onSelectTask={onSelectTask}

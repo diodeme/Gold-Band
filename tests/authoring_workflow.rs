@@ -896,4 +896,3 @@ fn builtin_interview_profile_exists_and_has_content() {
     assert!(shown.is_built_in);
     assert!(!shown.content.trim().is_empty());
 }
-

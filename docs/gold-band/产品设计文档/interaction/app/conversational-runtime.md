@@ -133,11 +133,11 @@
 
 ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention notification 机制：runtime 控制下的暂停由 lifecycle 事件触发通知，ACP live event 同时做旁路桥接补齐实时提醒。这样权限请求、elicitation、人工判断、异常中断和任务完成共享同一套去重、点击跳转和前台抑制规则；其中 elicitation 必须使用独立 dedup key，不能与 `waiting-for-user-input` 的人工确认通知互相覆盖。
 
-ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。
+ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
 
 ElicitationCard 属于高频表单卡片，不使用宽松的营销式留白。卡片本体、步骤指示器、题干、选项行和底部操作区应保持紧凑节奏：优先压缩上下 padding、控制项高度和区块间距，同时保留稳定点击面积与清晰层级，避免在会话消息流中形成过厚的大白块。
 
-已确认的 elicitation 回答同样按紧凑信息行展示，确认图标、问题摘要与答案保持单行优先、低高度呈现。多步骤提问的步骤指示器、题干 Markdown、选项行、可选跳过与提交按钮共用同一套 13px 级正文节奏，底部主操作按钮保持固定高度，避免消息流在等待用户决策时出现明显高度跳变。
+多步骤提问的步骤指示器、题干 Markdown、选项行、可选跳过与提交按钮共用同一套 13px 级正文节奏，底部主操作按钮保持固定高度，避免消息流在等待用户决策时出现明显高度跳变。提交完成后不保留额外的“已确认回答”信息行或用户气泡，历史语义由 `AskUserQuestion` 工具卡片与结构化 timeline 事实承担。
 
 ## 流式渲染性能
 
@@ -215,8 +215,8 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - ACP permission request 的业务身份是 canonical request id（去除重复 `permission-` 展示前缀后的 `raw.requestId` / `id`），不是 `sessionId`、attempt id 或 timeline display id。前端 live/cache/session merge 必须按 canonical request id 替换旧事件；后端补写 `cancelled` 终态时应继承原 pending event 的 `sessionId`、`toolCallId`、title 与 raw options，避免同一权限请求在 UI 中裂变成“旧 pending + 新 cancelled”两条事实。
 - ACP permission 的状态机由后端 permission lifecycle 统一拥有：收到 request 时写入 `pending`，用户 Allow / Reject 写入 response signal 时必须同步 upsert `permissionRequest(status=selected)` 到 `acp.timeline.jsonl` / legacy `acp.events.jsonl`，并继承原 pending event 的 `sessionId`、`toolCallId`、title 与 raw options；runtime waiter 消费 response 后也要再次确认终态已落盘。正常决策、停止取消和非活跃 fallback 不能分散维护 timeline 终态，否则重进会话会把历史 pending 重新识别为弹窗。
 - 活跃 ACP runtime 的内存 timeline map 与磁盘 timeline 同属权限状态事实源。权限 response 被 live waiter 消费时，终态事件必须通过 runtime 自身的 `persist_event` 合并进内存 timeline，再写 patch / final timeline；不能只由 Tauri command 或 helper 直接改磁盘，否则 runtime shutdown 时旧的 pending 内存快照会覆盖刚写入的 selected/cancelled。
-- ACP elicitation 的状态机由后端 elicitation lifecycle 统一拥有：收到 `elicitation/create` 时写入 `elicitationRequest(pending)`，用户提交、跳过、停止取消或超时返回时必须同步 upsert `elicitationResponse(completed)` 到 `acp.timeline.jsonl` / legacy `acp.events.jsonl`。前端只要看到同一 `elicitationId` 的 response event，就不能再恢复旧 request 弹窗；command fallback、runtime waiter 与停止流程不得各自维护 response timeline 写入。
-- `acp.permission-request/response.*.json` 与 `acp.elicitation-request/response.*.json` 只作为 runtime 阻塞等待与 Tauri command 之间的临时信号文件，不作为长期事实源。permission/elicitation 的历史事实统一落在 `acp.timeline.jsonl` / legacy `acp.events.jsonl`；runtime 消费响应并写入终态事件后必须清理对应信号文件。停止流程写出的 cancelled response 必须保留到 live waiter 消费，不能写完立即删除。
+- ACP elicitation 的状态机由后端 elicitation lifecycle 统一拥有：收到 `elicitation/create` 时写入 `elicitationRequest(pending)`；Tauri command 提交用户决策时写入 durable response signal 并 upsert `elicitationResponse(completed)`，前端据此立即关闭卡片。runtime waiter 读取同一 signal、持久化规范终态、发送 ACP JSON-RPC response 后，才清理 request/response signal。不得根据 `acp.snapshot.json` / `acp.session.json` 的 completed 等元数据提前删除 signal，因为已完成 run 的 follow-up prompt 仍可能存在活跃阻塞 waiter。
+- `acp.permission-request/response.*.json` 与 `acp.elicitation-request/response.*.json` 只作为 runtime 阻塞等待与 Tauri command 之间的临时信号文件，不作为长期事实源。permission/elicitation 的历史事实统一落在 `acp.timeline.jsonl` / legacy `acp.events.jsonl`；elicitation response 的所有权固定为“command 生产、runtime 消费并在成功回包后清理”。显式 stop/close/timeout 负责未决交互的取消和陈旧文件收敛，不能由展示层会话状态推断 waiter 是否存在。
 - `stop_active_session` 返回成功代表后端已完成本次停止请求的业务落盘收敛：目标 leaf attempt 已进入可继续暂停态，目标 ACP session/snapshot 已写为 `cancelled`；父 run 是否 paused 由 graph 聚合状态决定。`session/cancel` 是无 response 的 notification，因此前端不能把命令返回理解成 provider 已确认取消；命令 pending 期间显示“正在停止”遮罩，返回后按后端 lifecycle 恢复目标 leaf 的可继续态，后续 ACP terminal snapshot 继续刷新消息流。
 - 停止过程中可能同时出现 `run paused/process-interrupted` 与 ACP channel 仍在 drain 的事实；composer 展示优先级必须以停止流程为准：本地 stop 命令未返回、lifecycle 的 ACP facet 为 `stopping`、或 session metadata 为 `cancelling/cancel-requested` 时显示“正在停止当前会话…”并保持输入锁定。`provider.pid` 只作为 adapter process metadata，不参与停止完成、active/stopping 或 composer 状态推导。
 - ACP adapter 生命周期按 `provider_id + workspace_root` 复用长连接；这里的 `workspace_root` 是用户打开的逻辑项目根目录，同一 workspace 下同一 provider 的多个 ACP session 共享一个 adapter process，不同 workspace 的 connection 可以在新 UI 中并存。AI-DYNAMIC worktree 只是 session 执行目录，不作为新的 adapter workspace key；adapter process 仍归属原始逻辑 workspace，`session/new.cwd` 才指向具体 worktree。后端 connection manager 按 JSON-RPC request id 与 `sessionId` 路由 response、timeline update 和 permission request。用户不感知 adapter pool，也不在前端暴露 cancel/close/delete 协议概念。

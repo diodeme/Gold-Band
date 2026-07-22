@@ -2317,6 +2317,13 @@ impl<'a> AcpRuntime<'a> {
             content: String::new(),
         });
         if let Some(content) = item.content.as_deref() {
+            if should_separate_streaming_thought_chunks(
+                item.kind.as_str(),
+                &stream.content,
+                content,
+            ) {
+                append_bounded(&mut stream.content, "\n\n", max_chars);
+            }
             append_bounded(&mut stream.content, content, max_chars);
         }
         item.id = stream.item_id.clone();
@@ -2710,6 +2717,21 @@ fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
     target.push('…');
 }
 
+fn should_separate_streaming_thought_chunks(kind: &str, accumulated: &str, incoming: &str) -> bool {
+    if kind != "thoughtDelta" || accumulated.is_empty() {
+        return false;
+    }
+    if accumulated.ends_with('\n') || incoming.starts_with('\n') {
+        return false;
+    }
+    let accumulated = accumulated.trim_end_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+    let incoming = incoming.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+    accumulated.ends_with("**")
+        && incoming.len() > 4
+        && incoming.starts_with("**")
+        && incoming.ends_with("**")
+}
+
 fn rpc_id_to_string(id: &Value) -> String {
     id.as_str()
         .map(str::to_string)
@@ -3048,6 +3070,124 @@ mod tests {
         assert_eq!(second.ended_seq, Some(11));
         assert_eq!(second.started_at.as_deref(), Some("10Z"));
         assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn streaming_thought_blocks_preserve_chunk_boundaries_as_paragraphs() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "thought-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("**Designing routes**".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-thought-1",
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut second = AcpUiEvent {
+            id: "thought-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("**Planning branches**".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-thought-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(
+            second.content.as_deref(),
+            Some("**Designing routes**\n\n**Planning branches**")
+        );
+    }
+
+    #[test]
+    fn streaming_thought_token_chunks_remain_contiguous() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "thought-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: None,
+            content: Some("thinking ".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-thought-1",
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut second = AcpUiEvent {
+            id: "thought-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: None,
+            content: Some("more".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-thought-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(second.content.as_deref(), Some("thinking more"));
     }
 
     #[test]

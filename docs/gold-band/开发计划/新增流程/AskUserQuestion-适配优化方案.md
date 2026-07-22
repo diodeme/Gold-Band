@@ -146,81 +146,9 @@ function handleStepSubmit(value: unknown) {
 
 ---
 
-### 优化 2：答案文本格式化改进（P1）
+### 优化 2：答案数据保持结构化（P1）✅
 
-#### 问题
-
-当前 `format_elicitation_answer` 将所有答案用 `；` 连接为一行：
-
-```
-MySQL；用户认证、日志系统
-```
-
-这丢失了问题-答案的对应关系。用户和 AI 都无法分辨哪个值回答的哪个问题。
-
-#### Claude Code 的做法
-
-Claude Code TUI 中，答案通过 `answers` 字典返回，键为问题的完整 `question` 文本。AI 看到的是结构化 JSON，自然知道映射关系：
-
-```json
-{
-  "answers": {
-    "Which database type?": "MySQL",
-    "Which features?": "Authentication, Caching"
-  }
-}
-```
-
-但在 Gold Band 的时间线中，答案以用户消息气泡展示，不能是裸 JSON。需要人类可读的格式化文本。
-
-#### 优化方案
-
-**修改 `format_elicitation_answer`，输出逐行格式**：
-
-```rust
-// elicitation.rs
-pub fn format_elicitation_answer(schema: &Value, content: &Value) -> String {
-    let properties = schema.get("properties").and_then(|v| v.as_object());
-    let content_obj = content.as_object();
-
-    let mut lines: Vec<String> = Vec::new();
-
-    if let (Some(props), Some(obj)) = (properties, content_obj) {
-        for (key, prop_schema) in props {
-            let Some(val) = obj.get(key) else { continue };
-            let label = prop_schema
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or(key);
-            let value_str = format_single_value(prop_schema, val);
-            lines.push(format!("**{}**：{}", label, value_str));
-        }
-    }
-
-    if lines.is_empty() {
-        // 回退
-        return "已选择".to_string();
-    }
-
-    lines.join("\n")
-}
-```
-
-**输出效果**（单问题）：
-
-```
-**数据库**：MySQL
-```
-
-**输出效果**（多问题）：
-
-```
-**数据库**：MySQL
-**功能模块**：用户认证、日志系统
-**部署平台**：AWS
-```
-
-**前端适配**：答案以 `userTextDelta` 发出，配合优化 4（Markdown 渲染），`MessageBubble` 会以粗体标题 + 答案的形式渲染，视觉效果清晰。
+答案继续以 elicitation response 的结构化 `content` 返回 Agent，并持久化到 `elicitationResponse` 事实中。前端不再把它格式化为独立用户消息；用户可见的历史由 `AskUserQuestion` 工具卡片承载，因此无需维护第二套 `format_elicitation_answer` 展示格式。
 
 ---
 
@@ -279,58 +207,9 @@ function handleConfirm() {
 
 ---
 
-### 优化 4：用户消息气泡 Markdown 渲染（P2）
+### 优化 4：回答历史展示收敛 ✅
 
-#### 问题
-
-elicitation 答案以 `userTextDelta` 事件发出，但 `MessageBubble` 对 `userTextDelta` 走纯文本渲染分支（`event.content`），不经过 Markdown。优化 2 产生的 `**数据库**：MySQL` 格式不会被加粗渲染。
-
-#### Claude Code 的做法
-
-Claude Code 的 TUI 中答案不是人类可见的消息——它直接返回给 AI 处理。但在 Gold Band 的时间线中，答案需要作为用户消息展示。
-
-#### 优化方案
-
-**在 `user_prompt_event` 中增加标记，前端按标记走 Markdown 渲染**：
-
-Rust 侧（`client.rs`，`handle_elicitation_request`）：
-```rust
-// 改造 user_prompt_event，支持传入额外 raw 字段
-// 或者直接构造带 raw 标记的 AcpUiEvent
-
-let mut user_delta = crate::acp::events::user_prompt_event(
-    self.seq,
-    self.session_id.clone().unwrap_or_default(),
-    answer_text,
-    None,
-    false,
-    Vec::new(),
-);
-// 标记为 elicitation 答案，前端据此走 Markdown 渲染
-if let Some(raw) = user_delta.raw.as_mut() {
-    raw["elicitationAnswer"] = json!(true);
-}
-self.persist_event(&user_delta)?;
-```
-
-前端侧（`ACPChatDialog.tsx`，`MessageBubble`）：
-```tsx
-const isUser = event.kind === "userTextDelta";
-const isElicitationAnswer = rawObject(event.raw)?.elicitationAnswer === true;
-
-// 渲染内容分支：
-{isUser ? (
-  isElicitationAnswer ? (
-    <Markdown>{event.content ?? ""}</Markdown>  // elicitation 答案走 Markdown
-  ) : (
-    event.content  // 普通用户输入走纯文本
-  )
-) : (
-  <Markdown>{event.content ?? ""}</Markdown>  // AI 消息走 Markdown
-)}
-```
-
-**效果**：`**数据库**：MySQL` 渲染为 **数据库**：MySQL。
+elicitation 答案属于 `AskUserQuestion` 工具交互结果，不是新的用户 prompt。最终方案不再生成 `userTextDelta` 或独立回答气泡：提交后交互卡片消失，`elicitationResponse` 仅用于 answered 状态回放；消息流保留原生 `AskUserQuestion` 的 tool call 卡片、completed 状态与工具输出。这样与 Claude Code TUI 的交互语义一致，也避免同一回答同时以工具输出和用户气泡重复展示。
 
 ---
 
@@ -361,12 +240,8 @@ const isElicitationAnswer = rawObject(event.raw)?.elicitationAnswer === true;
 
 #### 优化方案
 
-1. `respond_elicitation` 增加 durable replay fallback
-   当 attempt 对应 session 已经不是 active 状态时，除了写 `acp.elicitation-response.<id>.json`，还要补写：
-   - `elicitationResponse` timeline item
-   - 对应的 synthetic `userTextDelta`
-
-   这样即使 runtime waiter 不在，UI 重新进入会话也能看到“该问题已结束”的事实。
+1. `respond_elicitation` 写入 durable response signal
+   command 提交用户决策时写 `acp.elicitation-response.<id>.json` 并 upsert `elicitationResponse`，但不根据 snapshot/session 状态删除 signal。run 已完成后的 follow-up prompt 仍可能有活跃 waiter，因此是否可清理只能由真正消费信号并完成 JSON-RPC 回包的 runtime 决定。
 
 2. 应用关闭 / 启动恢复统一扫描 active ACP attempts
    现有 `stop_all_running_sessions()` / `recover_interrupted_running_sessions()` 只覆盖 workflow 维度的 running run，不足以覆盖“run 已完成但 follow-up ACP session 仍 active”的场景。需要新增 attempt 级扫描：
@@ -374,16 +249,17 @@ const isElicitationAnswer = rawObject(event.raw)?.elicitationAnswer === true;
    - 识别 `acp.snapshot.json` / `acp.session.json` 仍为 active 的 ACP session
    - 统一调用 pending permission / pending elicitation cancel，并把 snapshot 收敛为 cancelled
 
-3. 保持与 permission 机制一致
-   elicitation 的命令侧补写策略与 permission decision artifact 一样，目标都是保证 replay 一致性；区别只在于：
-   - active live session 优先由 runtime 自己落盘
-   - inactive session 才走命令侧 durable fallback，避免与 runtime 内存态重复写入
+3. 固定 signal 所有权与清理顺序
+   - command 是 response signal producer
+   - runtime waiter 是 consumer
+   - runtime 读取 signal 后持久化规范 response，发送 JSON-RPC response 成功后清理 request/response
+   - stop/close/timeout 负责取消和陈旧信号收敛
 
 #### 验收标准
 
 - 用户在会话提问卡片弹出后直接关闭应用，再打开并重进会话，不会再次看到已回答或已跳过的同一张卡片
 - runtime 执行中断与成功后 follow-up 追问，在 pending elicitation 收敛上的最终可观察结果一致
-- `acp.timeline.jsonl` 中始终能找到与最终 UI 状态一致的 `elicitationResponse` / synthetic user message
+- `acp.timeline.jsonl` 中始终能找到与最终 UI 状态一致的 `elicitationResponse`，且不会额外生成 synthetic user message
 
 `ELICITATION_DEFAULT_TIMEOUT` 当前为 `Duration::MAX`，ACP runtime 默认持续等待直到用户响应或运行被取消。
 
@@ -425,7 +301,7 @@ Claude Code 的 ACP adapter 单选使用 `oneOf`，多选使用 `type=array + it
 
 #### 优化方案
 
-**在前端 `ElicitationCard` 和后端 `format_elicitation_answer` 各增加一个格式分支**：
+**在前端 `ElicitationCard` 增加枚举格式分支**；后端直接透传结构化 content，无需维护展示格式化器：
 
 ```typescript
 // ElicitationCard.tsx — fields 计算中新增枚举处理
@@ -442,21 +318,6 @@ if (prop.enum && Array.isArray(prop.enum)) {
       label: enumLabels[i] ?? value,
     })),
   });
-}
-```
-
-```rust
-// elicitation.rs — format_elicitation_answer 中新增
-if let (Some(enum_vals), Some(enum_names)) = (
-    prop_schema.get("enum").and_then(|v| v.as_array()),
-    prop_schema.get("enumNames").and_then(|v| v.as_array()),
-) {
-    if let Some(s) = val.as_str() {
-        if let Some(idx) = enum_vals.iter().position(|v| v.as_str() == Some(s)) {
-            let label = enum_names.get(idx).and_then(|v| v.as_str()).unwrap_or(s);
-            parts.push(label.to_string());
-        }
-    }
 }
 ```
 
@@ -560,7 +421,7 @@ const isRequired = schema.required?.includes(currentField.key);
 | 1 | **P0** | 多问题向导式逐个展示 | 逐个呈现问题，阻塞式模态框 | `ElicitationCard.tsx` | 中 |
 | 2 | P1 | 答案文本格式化 | `answers` 字典（结构化 JSON）→ Gold Band 需人类可读 | `elicitation.rs` | 小 |
 | 3 | P1 | 单选选中态+确认按钮 | 数字选择 + 回车确认 | `ElicitationCard.tsx` | 小 |
-| 4 | P2 | 消息气泡 Markdown 渲染 | TUI 中不展示用户消息 | `events.rs` + `ACPChatDialog.tsx` | 小 |
+| 4 | ✅ | 回答历史展示收敛 | TUI 中不展示独立用户消息 | 关闭交互卡片并保留 AskUserQuestion 工具卡片 | 已完成 |
 | 5 | P2 | 超时时长可配置 | TUI 无超时；ACP 模式需要 | `elicitation.rs` + config | 小 |
 | 6 | P3 | `enum`/`enumNames` 支持 | ACP adapter 用 `oneOf`/`anyOf` | `ElicitationCard.tsx` + `elicitation.rs` | 小 |
 | 7 | P3 | 进度指示器 | TUI 无显式进度 | `ElicitationCard.tsx` | 小 |

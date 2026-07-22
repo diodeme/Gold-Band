@@ -2,7 +2,6 @@ use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
 pub use crate::domain::SessionRef;
-use crate::storage::active_storage_path_config;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
@@ -10,6 +9,7 @@ use crate::prompts::{
     render as render_template,
 };
 use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
+use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use indexmap::IndexMap;

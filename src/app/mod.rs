@@ -118,13 +118,15 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
+pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
     language: DesktopLanguage,
 ) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
-        id: "default".to_string(),
+        id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: "默认工作流".to_string(),
         workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
         created_at: now.clone(),
@@ -4305,12 +4307,10 @@ mod tests {
     }
     #[test]
     fn default_workflow_interview_node_succeeds_without_manual_check() {
-        let paths = crate::storage::GoldBandPaths::new(Utf8PathBuf::from(
-            "/tmp/interview-default-success",
-        ));
+        let paths =
+            crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
         let profiles = super::ensure_default_user_profiles(&paths).unwrap();
-        let workflow =
-            super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+        let workflow = super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
 
         let interview = workflow
             .nodes

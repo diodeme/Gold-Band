@@ -152,6 +152,55 @@ describe('ACP chat event handling', () => {
     expect(pendingElicitationFromEvents(events, new Map())).toBeNull();
   });
 
+  it('removes the answered interaction card without creating an answer bubble and keeps the tool card', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'ask-tool',
+        seq: 10,
+        kind: 'toolCall',
+        toolCallId: 'ask-call',
+        status: 'pending',
+        title: 'Asking for your input',
+        raw: { _meta: { claudeCode: { toolName: 'AskUserQuestion' } } },
+      }),
+      event({
+        id: 'elicit-answered',
+        seq: 11,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: 'Choose one',
+        raw: { type: 'object', properties: { answer: { type: 'string' } } },
+      }),
+      event({
+        id: 'elicit-answered-response',
+        seq: 12,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: {
+          elicitationId: 'elicit-answered',
+          action: 'accept',
+          content: { answer: 'Tea' },
+        },
+      }),
+      event({
+        id: 'ask-tool-update',
+        seq: 13,
+        kind: 'toolCallUpdate',
+        toolCallId: 'ask-call',
+        status: 'completed',
+        content: 'User answered questions',
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toMatchObject({
+      kind: 'toolCall',
+      toolCallId: 'ask-call',
+      status: 'completed',
+      content: 'User answered questions',
+    });
+  });
+
   it('keeps unanswered elicitation requests pending until a response event exists', () => {
     const events = [
       event({

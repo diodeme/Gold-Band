@@ -111,9 +111,10 @@ pub fn wait_for_elicitation_response(
     let started_at = std::time::Instant::now();
     loop {
         if path.exists() {
-            let response = read_json(&path)?;
-            let _ = fs::remove_file(path.as_std_path());
-            return Ok(response);
+            // The response file is a durable hand-off signal. The runtime must
+            // keep it until the ACP response has been persisted and sent, then
+            // remove request and response files together.
+            return read_json(&path);
         }
         if is_elicitation_cancel_requested(attempt_dir) {
             return Ok(ElicitationResponseState {
@@ -262,7 +263,6 @@ pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value
     result
 }
 
-
 fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|ch| {
@@ -348,6 +348,45 @@ mod tests {
             response.content,
             Some(serde_json::json!({"answer": "mysql"}))
         );
+        assert!(elicitation_response_file(&attempt_dir, elicitation_id).exists());
+        remove_elicitation_signal_files(&attempt_dir, elicitation_id).unwrap();
+        assert!(!elicitation_response_file(&attempt_dir, elicitation_id).exists());
+    }
+
+    #[test]
+    fn response_signal_survives_timeline_persistence_until_runtime_cleanup() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        let elicitation_id = "elicit-completed-session-follow-up";
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.to_string(),
+                jsonrpc_id: serde_json::json!(42),
+                message: "Continue the completed session".to_string(),
+                requested_schema: serde_json::json!({ "type": "object" }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+        write_elicitation_response(
+            &attempt_dir,
+            elicitation_id,
+            ElicitationAction::Accept,
+            Some(serde_json::json!({ "answer": "continue" })),
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        let response =
+            wait_for_elicitation_response(&attempt_dir, elicitation_id, Duration::from_millis(10))
+                .unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept));
+        assert!(pending_elicitation_file(&attempt_dir, elicitation_id).exists());
+        assert!(elicitation_response_file(&attempt_dir, elicitation_id).exists());
+
+        remove_elicitation_signal_files(&attempt_dir, elicitation_id).unwrap();
+        assert!(!pending_elicitation_file(&attempt_dir, elicitation_id).exists());
+        assert!(!elicitation_response_file(&attempt_dir, elicitation_id).exists());
     }
 
     #[test]

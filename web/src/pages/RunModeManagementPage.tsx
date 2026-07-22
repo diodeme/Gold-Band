@@ -18,7 +18,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { displayAppError } from '@/i18n';
 import { selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft } from '@/lib/workflow-template';
-import { stripInterviewNode, mergeInterviewNode } from '@/lib/workflow-interview';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -216,7 +215,7 @@ export function RunModeManagementPage({
   const [autoTemplatePickerOpen, setAutoTemplatePickerOpen] = useState(false);
   const autoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 鈹€鈹€ Workflow template editor state 鈹€鈹€
+  // Workflow template editor state
   const [wfEditTemplateId, setWfEditTemplateId] = useState<string | null>(null);
   const [wfEditWorkflow, setWfEditWorkflow] = useState<WorkflowDsl | null>(null);
   const [wfTemplatePickerOpen, setWfTemplatePickerOpen] = useState(false);
@@ -477,7 +476,7 @@ export function RunModeManagementPage({
     showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateDeleted') });
   };
 
-  // 鈹€鈹€ Workflow template editor helpers 鈹€鈹€
+  // Workflow template editor helpers
   const initWfEditor = () => {
     const preselectedId = workflowTemplateId || effectiveWorkflowTemplates?.lastUsedTemplateId;
     const initialTemplate = preselectedId
@@ -1046,21 +1045,9 @@ export function RunModeManagementPage({
 
             {/* Embedded workflow editor */}
             <div className="min-h-[480px] min-w-0">
-              {(() => {
-                const displayWorkflow = wfEditWorkflow && runMode.includeInterview === false
-                  ? stripInterviewNode(wfEditWorkflow)
-                  : wfEditWorkflow;
-                if (!displayWorkflow) return null;
-                const handleWfChange = (next: WorkflowDsl) => {
-                  if (runMode.includeInterview === false && wfEditWorkflow) {
-                    setWfEditWorkflow(mergeInterviewNode(wfEditWorkflow, next));
-                  } else {
-                    setWfEditWorkflow(next);
-                  }
-                };
-                return (
+              {wfEditWorkflow ? (
                   <WorkflowEditor
-                    value={displayWorkflow}
+                    value={wfEditWorkflow}
                     agentRegistry={agentRegistry}
                     profiles={profiles}
                     workflowTemplates={effectiveWorkflowTemplates}
@@ -1068,14 +1055,13 @@ export function RunModeManagementPage({
                     currentTemplateName={selectedWfTemplate?.name ?? null}
                     showSaveAction={false}
                     allowAiDynamic={true}
-                    onChange={handleWfChange}
+                    onChange={setWfEditWorkflow}
                     onSave={async () => {
                       if (canUpdateWfTemplate) await saveWfCurrent();
                       else await saveWfAsNew();
                     }}
                   />
-                );
-              })()}
+              ) : null}
               {!wfEditWorkflow ? (
                 <div className="flex h-[480px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
                   {workflowTemplateList.length > 0

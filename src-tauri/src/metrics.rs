@@ -438,13 +438,25 @@ pub fn create_metrics_subscriber<R: Runtime>(
                 let predecessor_item = match &predecessor {
                     Some(pred) => {
                         // Read predecessor tokens from ITS attempt_dir
-                        let (input_tokens, output_tokens, cache_read_tokens, total_tokens, session_elapsed_seconds) = pred
+                        let (
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens,
+                            total_tokens,
+                            session_elapsed_seconds,
+                        ) = pred
                             .attempt_dir
                             .as_ref()
                             .map(|d| {
                                 let path = Utf8PathBuf::from(d).join("acp.session.json");
                                 let m = gold_band::acp::events::read_session_metrics(&path);
-                                (m.input_tokens, m.output_tokens, m.cache_read_tokens, m.total_tokens, m.session_elapsed_seconds)
+                                (
+                                    m.input_tokens,
+                                    m.output_tokens,
+                                    m.cache_read_tokens,
+                                    m.total_tokens,
+                                    m.session_elapsed_seconds,
+                                )
                             })
                             .unwrap_or((0, 0, 0, 0, 0));
 

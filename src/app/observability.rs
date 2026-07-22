@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, RwLock};
 
@@ -15,9 +16,15 @@ struct RuntimeLifecycleSubscriber {
     handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
 }
 
+#[derive(Default)]
+struct RuntimeLifecycleSubscribers {
+    entries: Vec<RuntimeLifecycleSubscriber>,
+    names: HashSet<&'static str>,
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeLifecycleBus {
-    subscribers: Arc<RwLock<Vec<RuntimeLifecycleSubscriber>>>,
+    subscribers: Arc<RwLock<RuntimeLifecycleSubscribers>>,
 }
 
 impl RuntimeLifecycleBus {
@@ -33,6 +40,33 @@ impl RuntimeLifecycleBus {
         self.subscribe_with_mode(SubscriberMode::Inline, handler);
     }
 
+    pub fn subscribe_named(
+        &self,
+        name: &'static str,
+        handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+    ) -> bool {
+        self.subscribe_named_with_mode(name, SubscriberMode::Async, handler)
+    }
+
+    pub fn subscribe_named_with_mode(
+        &self,
+        name: &'static str,
+        mode: SubscriberMode,
+        handler: Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync>,
+    ) -> bool {
+        let mut subscribers = self
+            .subscribers
+            .write()
+            .expect("RuntimeLifecycleBus subscriber state poisoned; this is a bug");
+        if !subscribers.names.insert(name) {
+            return false;
+        }
+        subscribers
+            .entries
+            .push(RuntimeLifecycleSubscriber { mode, handler });
+        true
+    }
+
     pub fn subscribe_with_mode(
         &self,
         mode: SubscriberMode,
@@ -40,7 +74,8 @@ impl RuntimeLifecycleBus {
     ) {
         self.subscribers
             .write()
-            .expect("RuntimeLifecycleBus subscriber list poisoned; this is a bug")
+            .expect("RuntimeLifecycleBus subscriber state poisoned; this is a bug")
+            .entries
             .push(RuntimeLifecycleSubscriber { mode, handler });
     }
 
@@ -48,7 +83,8 @@ impl RuntimeLifecycleBus {
         let subscribers = self
             .subscribers
             .read()
-            .expect("RuntimeLifecycleBus subscriber list poisoned; this is a bug")
+            .expect("RuntimeLifecycleBus subscriber state poisoned; this is a bug")
+            .entries
             .clone();
         for subscriber in subscribers {
             let event = event.clone();
@@ -128,5 +164,53 @@ mod tests {
         cloned.emit(sample_event());
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn named_subscriber_is_registered_once_across_clones() {
+        let bus = RuntimeLifecycleBus::new();
+        let cloned = bus.clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let first_count = count.clone();
+        let duplicate_count = count.clone();
+
+        assert!(bus.subscribe_named_with_mode(
+            "desktop.metrics",
+            SubscriberMode::Inline,
+            Arc::new(move |_| {
+                first_count.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        assert!(!cloned.subscribe_named_with_mode(
+            "desktop.metrics",
+            SubscriberMode::Inline,
+            Arc::new(move |_| {
+                duplicate_count.fetch_add(100, Ordering::SeqCst);
+            }),
+        ));
+
+        cloned.emit(sample_event());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn different_named_subscribers_are_all_registered() {
+        let bus = RuntimeLifecycleBus::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        for name in ["desktop.metrics", "desktop.notifications"] {
+            let count = count.clone();
+            assert!(bus.subscribe_named_with_mode(
+                name,
+                SubscriberMode::Inline,
+                Arc::new(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }),
+            ));
+        }
+
+        bus.emit(sample_event());
+
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 }

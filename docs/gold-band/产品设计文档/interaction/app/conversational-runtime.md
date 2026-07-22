@@ -6,6 +6,16 @@
 
 运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
+## 运行时数据与内存边界
+
+- `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
+- timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
+- 会话树刷新只读取 attempt 的 session metadata 与 lifecycle 摘要；仅当前选中会话读取完整 timeline 事件页。非选中会话的超大或不可读 timeline 不得阻断 run/session tree 刷新；选中会话仍保持既有事件窗口配置、cursor 和终态覆盖语义。
+- 每个 ACP session route 是无损 FIFO 有界队列：最多 4 MiB 且最多 256 帧；队列为空时允许一个超过 4 MiB 的合法单帧进入。达到任一上限后 producer 阻塞等待消费，不合并、不丢弃、不重排；receiver drop、route 注销或连接关闭必须唤醒等待者。
+- 桌面进程共享单一 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 使用固定具名幂等订阅并只在 setup 注册一次；创建、重跑、继续与 prompt 路径不得重复挂载订阅。
+- 未路由 ACP frame 的 runtime 日志只记录 connection/provider、sessionId、JSON-RPC method、sessionUpdate 类型、原始字节数与限频摘要，不记录 prompt、技能列表、工具输出或完整 JSON。`runtime.log` 活跃文件上限 8 MiB，保留 4 个轮转文件并继续遵守 30 天清理；`acp.raw.jsonl` 保持完整原始排障来源及既有轮转配置。
+- 以上均为隐性稳定性约束：不得改变消息内容、事件顺序、工具详情、流式节奏、权限语义、页面交互、ViewModel/API JSON、工作流并行度或既有 `acpChatEventPageSize` 配置值。本边界不包含 WebView 自动恢复、自动重载或内存压力下降低并行度。
+
 ## 顶部信息栏
 
 - 标题显示：可 inline edit，修改后同步到 task 和所有 run
@@ -142,7 +152,9 @@ ElicitationCard 属于高频表单卡片，不使用宽松的营销式留白。�
 - Conversation run 级 live update 必须与当前 ACP 消息热路径分层调度：当前 selected session 的普通 timeline event 只进入 ACPChatDialog 局部合并；已存在于 session tree 里的后台 session 普通 live event 不得触发 `getConversationRun` 和整页 React state 更新；只有新 session 锚点缺失、terminal snapshot、权限/暂停/等待输入等交互态才允许排队完整 run refresh。后台非终态 session snapshot 只允许做轻量运行态 patch，且不能替换当前 selected session payload。
 - ACP 消息滚动容器的 `scroll` 事件不得同步读取 `scrollHeight/clientHeight/getBoundingClientRect`。滚动期间只允许记录交互和排一个 `requestAnimationFrame`，在 rAF 中合并完成贴底状态、历史分页触发和 `isAtBottom` 更新；timeline 更新后的自动贴底也必须尊重 interaction quiet window，用户正在滚动时不得抢写 `scrollTop`。
 - 关闭状态的系统提示弹窗、产物弹窗和工作流 sheet 不应解析大文本或 workflow JSON；打开时再计算内容，并尽量使用 memo 化结果，避免被 live stream render 带着重复执行。
-- 正在流式增长的 assistant 文本以轻量纯文本草稿形态展示，避免每个 chunk 都重新执行完整 Markdown 解析；消息稳定后再切换为 Markdown 渲染。
+- ACP 事实状态刷新节奏与用户可见呈现节奏必须分层：timeline/live flush 继续负责把同一稳定 item 合并成最新累计快照；当前活跃 text/thought item 由独立 presentation controller 维护“canonical 目标 + 可见 offset + 速率余量”，只把已经到达可见 offset 的 Markdown 前缀放入 DOM。不得把完整 snapshot 先布局后仅用 opacity/stagger 隐藏未显示字符，否则消息容器会按最终高度提前撑开，并让多个 Markdown block 在不同位置提前出现；presentation controller 也不得反向修改 timeline canonical 或让每个字符进入会话级 state。默认以约 32ms 的有界呈现帧推进，并根据积压量在统一速率范围内追赶，从而把 75ms/125ms 的不稳定快照批次平滑成稳定视觉节奏。
+- 正在流式增长的 assistant 消息与思考过程必须共用 prompt-kit `Markdown` copy-in，不得让 thought 继续走 `whitespace-pre-wrap` 纯文本旁路。Streamdown streaming mode 只解析当前可见前缀，语法门控在推进 offset 时吞并纯 Markdown 控制符、未完成链接地址和代码围栏后缀，避免 `**`、反引号或 `[blocked]` 占用独立显示帧。不得同时启用 Streamdown 全字符 opacity/stagger：可见 offset 已是唯一呈现状态，第二套字符动画会在 block 重建时把历史字符重新判为新增字符，并让透明字符继续参与布局。thought chunk 的语义分段必须由后端 timeline accumulator 写入 canonical：完整的独立 strong block 之间写入段落分隔，token 级 thought chunk 继续无缝拼接；前端不得为了兼容旧会话重写 canonical。消息离开最新活跃 stream 后允许呈现队列短暂收敛，收敛后关闭 incomplete repair，但同一已流式组件必须继续保持 block renderer 路径，不能在完成瞬间切换成另一棵 static renderer DOM；重新加载的历史静态消息可以直接使用 static mode。最新活跃 stream 必须按最大 `endedSeq/seq` 的事件种类判定，tool、plan、permission 等生命周期事件到达后不得让旧 text/thought 继续处于 streaming。默认不因聊天主路径引入 Mermaid、完整 Shiki 语言包或 KaTeX 等未启用插件。
+- 正在输出的 thought disclosure 收起时不得卸载 Markdown presentation。prompt-kit `ChainOfThoughtContent` 对 active streaming thought 使用 Radix `forceMount` 保留组件实例，并在 closed 状态通过 `display: none` 脱离布局；重新展开必须复用原 visible offset 与 DOM，而不是从 offset 0 重放。thought 结束后恢复普通 Collapsible unmount 生命周期，避免所有历史思考内容长期常驻。
 - timeline item 必须保持稳定 id；未变化的历史 item 应尽量复用对象引用，让消息、工具卡、thought 和子 Agent 分组的 memo 化渲染有效。
 - Raw frames 面板默认只展示行摘要；展开单条 frame 时才做 JSON pretty print 和长段落换行，不允许折叠态批量解析完整 raw 内容。
 - 会话式运行页的工作流 Sheet 与 `GraphView` 必须把拓扑布局和运行态映射分开：布局只依赖节点 id/order 与边 from/to/label，ACP live payload、selected session、node status/current 等运行态刷新只能映射到既有坐标，不得重复执行布局。

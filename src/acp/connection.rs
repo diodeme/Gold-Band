@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin};
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -20,6 +20,198 @@ use crate::storage::{ensure_parent_dir, read_json, write_json};
 
 const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
 const CLOSE_RAW_TARGET_SIZE: u64 = 4 * 1024 * 1024;
+const SESSION_ROUTE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const SESSION_ROUTE_MAX_FRAMES: usize = 256;
+const SESSION_ROUTE_BACKPRESSURE_WARN_AFTER: Duration = Duration::from_millis(250);
+const UNROUTED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Debug)]
+struct SessionRouteFrame {
+    value: Value,
+    bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct SessionRouteState {
+    queue: VecDeque<SessionRouteFrame>,
+    queued_bytes: usize,
+    high_water_bytes: usize,
+    high_water_frames: usize,
+    closed: bool,
+    receiver_alive: bool,
+}
+
+#[derive(Debug)]
+struct SessionRouteInner {
+    state: Mutex<SessionRouteState>,
+    not_full: Condvar,
+}
+
+impl SessionRouteInner {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SessionRouteState {
+                receiver_alive: true,
+                ..SessionRouteState::default()
+            }),
+            not_full: Condvar::new(),
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+        self.not_full.notify_all();
+    }
+}
+
+#[derive(Clone)]
+struct SessionRouteSender {
+    inner: Arc<SessionRouteInner>,
+    adapter_id: String,
+    session_id: String,
+}
+
+impl SessionRouteSender {
+    fn send(&self, value: Value, bytes: usize) -> bool {
+        let started_waiting = Instant::now();
+        let mut waited = false;
+        let Ok(mut state) = self.inner.state.lock() else {
+            return false;
+        };
+        while !state.closed && state.receiver_alive && !session_route_has_capacity(&state, bytes) {
+            waited = true;
+            let Ok(next) = self.inner.not_full.wait(state) else {
+                return false;
+            };
+            state = next;
+        }
+        if state.closed || !state.receiver_alive {
+            return false;
+        }
+        state.queued_bytes = state.queued_bytes.saturating_add(bytes);
+        state.queue.push_back(SessionRouteFrame { value, bytes });
+        state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
+        state.high_water_frames = state.high_water_frames.max(state.queue.len());
+        let queued_bytes = state.queued_bytes;
+        let queued_frames = state.queue.len();
+        let high_water_bytes = state.high_water_bytes;
+        let high_water_frames = state.high_water_frames;
+        drop(state);
+        if waited && started_waiting.elapsed() >= SESSION_ROUTE_BACKPRESSURE_WARN_AFTER {
+            warn!(
+                adapter = %self.adapter_id,
+                session_id = %self.session_id,
+                wait_ms = started_waiting.elapsed().as_millis(),
+                queued_bytes,
+                queued_frames,
+                high_water_bytes,
+                high_water_frames,
+                "ACP session route applied bounded backpressure"
+            );
+        }
+        true
+    }
+
+    fn close(&self) {
+        self.inner.close();
+    }
+}
+
+fn session_route_has_capacity(state: &SessionRouteState, incoming_bytes: usize) -> bool {
+    if state.queue.is_empty() {
+        return true;
+    }
+    state.queue.len() < SESSION_ROUTE_MAX_FRAMES
+        && state.queued_bytes.saturating_add(incoming_bytes) <= SESSION_ROUTE_MAX_BYTES
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRouteTryRecvError {
+    Empty,
+    Disconnected,
+}
+
+pub struct SessionRouteReceiver {
+    inner: Arc<SessionRouteInner>,
+}
+
+impl SessionRouteReceiver {
+    pub fn try_recv(&self) -> std::result::Result<Value, SessionRouteTryRecvError> {
+        let Ok(mut state) = self.inner.state.lock() else {
+            return Err(SessionRouteTryRecvError::Disconnected);
+        };
+        if let Some(frame) = state.queue.pop_front() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
+            drop(state);
+            self.inner.not_full.notify_all();
+            return Ok(frame.value);
+        }
+        if state.closed || !state.receiver_alive {
+            Err(SessionRouteTryRecvError::Disconnected)
+        } else {
+            Err(SessionRouteTryRecvError::Empty)
+        }
+    }
+}
+
+impl Drop for SessionRouteReceiver {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.inner.state.lock() {
+            state.receiver_alive = false;
+            state.queue.clear();
+            state.queued_bytes = 0;
+        }
+        self.inner.not_full.notify_all();
+    }
+}
+
+fn session_route_pair(
+    adapter_id: impl Into<String>,
+    session_id: impl Into<String>,
+) -> (SessionRouteSender, SessionRouteReceiver) {
+    let inner = Arc::new(SessionRouteInner::new());
+    (
+        SessionRouteSender {
+            inner: Arc::clone(&inner),
+            adapter_id: adapter_id.into(),
+            session_id: session_id.into(),
+        },
+        SessionRouteReceiver { inner },
+    )
+}
+
+#[derive(Debug)]
+struct UnroutedWarningState {
+    last_logged_at: Instant,
+    suppressed: u64,
+}
+
+fn record_unrouted_warning(
+    warnings: &mut HashMap<String, UnroutedWarningState>,
+    warning_key: String,
+    now: Instant,
+) -> Option<u64> {
+    if let Some(state) = warnings.get_mut(&warning_key) {
+        if now.duration_since(state.last_logged_at) < UNROUTED_WARNING_INTERVAL {
+            state.suppressed = state.suppressed.saturating_add(1);
+            return None;
+        }
+        let suppressed = state.suppressed;
+        state.last_logged_at = now;
+        state.suppressed = 0;
+        return Some(suppressed);
+    }
+    warnings.insert(
+        warning_key,
+        UnroutedWarningState {
+            last_logged_at: now,
+            suppressed: 0,
+        },
+    );
+    Some(0)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AdapterConnectionKey {
@@ -115,7 +307,8 @@ pub struct AdapterConnection {
     stdin: Mutex<ChildStdin>,
     next_id: Mutex<u64>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
-    session_routes: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+    session_routes: Mutex<HashMap<String, SessionRouteSender>>,
+    unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialized_capabilities: Mutex<Option<Value>>,
     active_prompts: Mutex<usize>,
     transport_closed: Mutex<bool>,
@@ -175,6 +368,7 @@ impl AdapterConnection {
             next_id: Mutex::new(1),
             pending: Mutex::new(HashMap::new()),
             session_routes: Mutex::new(HashMap::new()),
+            unrouted_warnings: Mutex::new(HashMap::new()),
             initialized_capabilities: Mutex::new(None),
             active_prompts: Mutex::new(0),
             transport_closed: Mutex::new(false),
@@ -317,17 +511,24 @@ impl AdapterConnection {
         Ok(())
     }
 
-    pub fn register_session_route(&self, session_id: &str) -> mpsc::Receiver<Value> {
-        let (tx, rx) = mpsc::channel();
-        if let Ok(mut routes) = self.session_routes.lock() {
-            routes.insert(session_id.to_string(), tx);
+    pub fn register_session_route(&self, session_id: &str) -> SessionRouteReceiver {
+        let (tx, rx) = session_route_pair(self.adapter.adapter_id.clone(), session_id.to_string());
+        match self.session_routes.lock() {
+            Ok(mut routes) => {
+                if let Some(previous) = routes.insert(session_id.to_string(), tx) {
+                    previous.close();
+                }
+            }
+            Err(_) => tx.close(),
         }
         rx
     }
 
     pub fn unregister_session_route(&self, session_id: &str) {
         if let Ok(mut routes) = self.session_routes.lock() {
-            routes.remove(session_id);
+            if let Some(route) = routes.remove(session_id) {
+                route.close();
+            }
         }
     }
 
@@ -362,8 +563,44 @@ impl AdapterConnection {
             pending.clear();
         }
         if let Ok(mut routes) = self.session_routes.lock() {
-            routes.clear();
+            for route in routes.drain().map(|(_, route)| route) {
+                route.close();
+            }
         }
+    }
+
+    fn warn_unrouted_frame(&self, value: &Value, frame_bytes: usize) {
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let session_id = session_id_from_frame(value).unwrap_or("unknown");
+        let session_update = value
+            .pointer("/params/update/sessionUpdate")
+            .or_else(|| value.pointer("/params/sessionUpdate"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let warning_key = format!("{method}:{session_update}");
+        let now = Instant::now();
+        let suppressed = match self.unrouted_warnings.lock() {
+            Ok(mut warnings) => {
+                let Some(suppressed) = record_unrouted_warning(&mut warnings, warning_key, now)
+                else {
+                    return;
+                };
+                suppressed
+            }
+            Err(_) => 0,
+        };
+        warn!(
+            adapter = %self.adapter.adapter_id,
+            session_id,
+            method,
+            session_update,
+            frame_bytes,
+            suppressed,
+            "ACP inbound frame had no registered session route"
+        );
     }
 
     pub fn close_session_bounded(&self, session_id: &str, timeout: Duration) -> Result<()> {
@@ -492,13 +729,16 @@ impl AdapterConnection {
 }
 
 fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl std::io::Read + Send + 'static) {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        match line {
-            Ok(line) if line.trim().is_empty() => {}
-            Ok(line) => match serde_json::from_str::<Value>(&line) {
-                Ok(value) => route_inbound_frame(&connection, value),
-                Err(error) => warn!(%error, line = %line, "invalid ACP stdout frame"),
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) if line.iter().all(u8::is_ascii_whitespace) => {}
+            Ok(frame_bytes) => match serde_json::from_slice::<Value>(&line) {
+                Ok(value) => route_inbound_frame(&connection, value, frame_bytes),
+                Err(error) => warn!(%error, frame_bytes, "invalid ACP stdout frame"),
             },
             Err(error) => {
                 warn!(%error, "failed reading ACP stdout");
@@ -509,7 +749,7 @@ fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl std::io::Read + 
     connection.mark_transport_closed();
 }
 
-fn route_inbound_frame(connection: &AdapterConnection, value: Value) {
+fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes: usize) {
     if value.get("method").is_none() {
         if let Some(id) = value.get("id").and_then(Value::as_u64) {
             if let Some(tx) = connection
@@ -532,12 +772,12 @@ fn route_inbound_frame(connection: &AdapterConnection, value: Value) {
             .ok()
             .and_then(|routes| routes.get(session_id).cloned())
         {
-            let _ = tx.send(value);
+            let _ = tx.send(value, frame_bytes);
             return;
         }
     }
 
-    warn!(frame = %value, "ACP inbound frame had no registered session route");
+    connection.warn_unrouted_frame(&value, frame_bytes);
 }
 
 fn session_id_from_frame(value: &Value) -> Option<&str> {
@@ -902,10 +1142,14 @@ static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
 mod tests {
     use camino::Utf8PathBuf;
     use serde_json::json;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     use super::{
-        AdapterConnectionKey, persist_cancelled_session_snapshot, session_id_from_frame,
+        AdapterConnectionKey, SessionRouteTryRecvError, persist_cancelled_session_snapshot,
+        record_unrouted_warning, session_id_from_frame, session_route_pair,
         settle_attempt_for_session_close,
     };
     use crate::{
@@ -945,6 +1189,166 @@ mod tests {
 
         assert_eq!(session_id_from_frame(&direct), Some("session-a"));
         assert_eq!(session_id_from_frame(&nested), Some("session-b"));
+    }
+
+    #[test]
+    fn unrouted_warning_rate_limit_summarizes_repeated_frames() {
+        let mut warnings = std::collections::HashMap::new();
+        let started = std::time::Instant::now();
+
+        assert_eq!(
+            record_unrouted_warning(
+                &mut warnings,
+                "session/update:agent_message_chunk".to_string(),
+                started,
+            ),
+            Some(0)
+        );
+        for _ in 0..9_999 {
+            assert_eq!(
+                record_unrouted_warning(
+                    &mut warnings,
+                    "session/update:agent_message_chunk".to_string(),
+                    started + Duration::from_secs(1),
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            record_unrouted_warning(
+                &mut warnings,
+                "session/update:agent_message_chunk".to_string(),
+                started + Duration::from_secs(60),
+            ),
+            Some(9_999)
+        );
+    }
+
+    #[test]
+    fn session_route_preserves_order_under_sustained_load() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        let producer = thread::spawn(move || {
+            for index in 0..10_000_u64 {
+                let value = json!({
+                    "index": index,
+                    "payload": format!("frame-{index:05}-abcdefghijklmnopqrstuvwxyz")
+                });
+                let frame_bytes = serde_json::to_vec(&value).unwrap().len();
+                assert!(sender.send(value, frame_bytes));
+            }
+        });
+
+        for expected in 0..10_000_u64 {
+            loop {
+                match receiver.try_recv() {
+                    Ok(value) => {
+                        let expected_value = json!({
+                            "index": expected,
+                            "payload": format!("frame-{expected:05}-abcdefghijklmnopqrstuvwxyz")
+                        });
+                        assert_eq!(
+                            serde_json::to_vec(&value).unwrap(),
+                            serde_json::to_vec(&expected_value).unwrap()
+                        );
+                        break;
+                    }
+                    Err(SessionRouteTryRecvError::Empty) => thread::yield_now(),
+                    Err(SessionRouteTryRecvError::Disconnected) => {
+                        panic!("session route disconnected before all frames were received")
+                    }
+                }
+            }
+        }
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn session_route_blocks_at_frame_limit_and_resumes_after_receive() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        for index in 0..256_u64 {
+            assert!(sender.send(json!({ "index": index }), 1));
+        }
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            let sent = sender.send(json!({ "index": 256 }), 1);
+            done_tx.send(sent).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(receiver.try_recv().is_ok());
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap(), true);
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn session_route_blocks_at_byte_limit_and_resumes_after_receive() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        assert!(sender.send(json!({ "index": 0 }), 4 * 1024 * 1024));
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            done_tx.send(sender.send(json!({ "index": 1 }), 1)).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(receiver.try_recv().is_ok());
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn session_route_allows_one_oversized_frame_when_empty() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        assert!(sender.send(json!({ "large": true }), 8 * 1024 * 1024));
+        assert_eq!(receiver.try_recv().unwrap()["large"], json!(true));
+    }
+
+    #[test]
+    fn dropping_receiver_unblocks_waiting_sender() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        for index in 0..256_u64 {
+            assert!(sender.send(json!({ "index": index }), 1));
+        }
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            done_tx
+                .send(sender.send(json!({ "afterDrop": true }), 1))
+                .unwrap();
+        });
+
+        drop(receiver);
+
+        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn closing_route_unblocks_waiting_sender_and_allows_receiver_to_drain() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-1");
+        for index in 0..256_u64 {
+            assert!(sender.send(json!({ "index": index }), 1));
+        }
+        let closing_sender = sender.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            done_tx
+                .send(sender.send(json!({ "afterClose": true }), 1))
+                .unwrap();
+        });
+
+        closing_sender.close();
+
+        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        for expected in 0..256_u64 {
+            assert_eq!(
+                receiver.try_recv().unwrap()["index"].as_u64(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            receiver.try_recv(),
+            Err(SessionRouteTryRecvError::Disconnected)
+        );
+        producer.join().unwrap();
     }
 
     #[test]

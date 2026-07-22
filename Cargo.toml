@@ -31,6 +31,7 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+file-rotate = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
 figlet-rs = "1.0.0"

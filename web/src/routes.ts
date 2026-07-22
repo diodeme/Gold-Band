@@ -13,6 +13,10 @@ export const conversationHomePage: ConversationPage = { kind: 'conversation-home
 export function routeFromPath(pathname: string): AppRoute {
   const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent);
 
+  if (segments.length === 0) {
+    return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: conversationHomePage };
+  }
+
   // ── Conversation paths ──
   if (segments[0] === 'chat') {
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };

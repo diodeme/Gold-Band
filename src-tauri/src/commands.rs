@@ -369,15 +369,18 @@ fn resolve_command_app(
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
-    app.lifecycle_bus
-        .subscribe(crate::metrics::create_metrics_subscriber(
-            app_handle.clone(),
-        ));
-    app.lifecycle_bus.subscribe(
+    app.lifecycle_bus.subscribe_named(
+        "desktop.metrics",
+        crate::metrics::create_metrics_subscriber(app_handle.clone()),
+    );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.notifications",
         crate::notifications::create_intervention_notification_subscriber(app_handle.clone()),
     );
-    app.lifecycle_bus
-        .subscribe(create_conversation_run_state_subscriber(app_handle.clone()));
+    app.lifecycle_bus.subscribe_named(
+        "desktop.conversation-run-state",
+        create_conversation_run_state_subscriber(app_handle.clone()),
+    );
 }
 
 fn create_conversation_run_state_subscriber(
@@ -452,7 +455,6 @@ fn resolve_command_app_with_emitters(
     let app = app
         .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid));
-    register_lifecycle_subscribers(&app, app_handle);
     Ok(app)
 }
 
@@ -1082,7 +1084,6 @@ pub fn start_run(
     let app = base_app
         .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
-    register_lifecycle_subscribers(&app, &app_handle);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1208,7 +1209,6 @@ pub fn retry_run(
     let app = base_app
         .with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
-    register_lifecycle_subscribers(&app, &app_handle);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)

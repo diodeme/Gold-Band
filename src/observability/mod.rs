@@ -1,9 +1,12 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write as _;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use camino::Utf8Path;
+use file_rotate::compression::Compression;
+use file_rotate::suffix::AppendCount;
+use file_rotate::{ContentLimit, FileRotate};
 use serde::Serialize;
 use tracing::warn;
 use tracing_subscriber::filter::FilterFn;
@@ -19,6 +22,8 @@ use crate::runtime::RunState;
 use crate::storage::{GoldBandPaths, append_jsonl, ensure_parent_dir, write_json};
 
 const PROGRESS_TARGET: &str = "gold_band.progress";
+const RUNTIME_LOG_MAX_BYTES: usize = 8 * 1024 * 1024;
+const RUNTIME_LOG_ROTATED_FILES: usize = 4;
 static TRACE_ID: OnceLock<String> = OnceLock::new();
 static TRACING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_LEVEL: AtomicU8 = AtomicU8::new(RuntimeLogLevel::Info.as_u8());
@@ -169,20 +174,17 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     }
 
     let log_path = paths.runtime_log_file();
-    let file_writer_path = log_path.clone();
     let stderr_writer = BoxMakeWriter::new(std::io::stderr);
 
     let progress_filter = EnvFilter::new(format!("{PROGRESS_TARGET}=info"));
 
     let file_layer = fmt::layer()
         .with_ansi(false)
-        .with_writer(move || {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_writer_path.as_std_path())
-                .expect("open runtime log")
-        })
+        .with_writer(Mutex::new(runtime_log_writer(
+            log_path.as_std_path(),
+            RUNTIME_LOG_MAX_BYTES,
+            RUNTIME_LOG_ROTATED_FILES,
+        )))
         .with_target(true)
         .with_filter(FilterFn::new(runtime_log_filter));
 
@@ -198,6 +200,20 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
     } else {
         registry.init();
     }
+}
+
+fn runtime_log_writer(
+    path: &std::path::Path,
+    max_bytes: usize,
+    rotated_files: usize,
+) -> FileRotate<AppendCount> {
+    FileRotate::new(
+        path,
+        AppendCount::new(rotated_files),
+        ContentLimit::Bytes(max_bytes),
+        Compression::None,
+        None,
+    )
 }
 
 pub fn set_runtime_log_level(level: RuntimeLogLevel) {
@@ -396,5 +412,33 @@ pub fn touch_log_file_best_effort(paths: &GoldBandPaths) {
         .and_then(|mut file| file.write_all(b""))
     {
         warn!(path = %path, error = %err, "failed to touch runtime log file");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::runtime_log_writer;
+
+    #[test]
+    fn runtime_log_rotates_by_size_and_keeps_configured_backups() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let log_path = temp.path().join("runtime.log");
+        let mut writer = runtime_log_writer(&log_path, 8, 4);
+
+        writer
+            .write_all(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH")
+            .expect("write log data");
+        writer.flush().expect("flush log data");
+
+        assert!(log_path.exists());
+        assert!(std::fs::metadata(&log_path).unwrap().len() <= 8);
+        for suffix in 1..=4 {
+            let rotated = temp.path().join(format!("runtime.log.{suffix}"));
+            assert!(rotated.exists(), "missing {}", rotated.display());
+            assert!(std::fs::metadata(rotated).unwrap().len() <= 8);
+        }
+        assert!(!temp.path().join("runtime.log.5").exists());
     }
 }

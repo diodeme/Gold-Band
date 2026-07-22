@@ -82,6 +82,7 @@ fn run() -> anyhow::Result<()> {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(runtime_app) = state.app() {
+                commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 let _ = runtime_app.recover_interrupted_running_sessions();
             }
             // Initialize SQLite search index (best-effort; failures are non-fatal).

@@ -1,8 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{
-    Arc, LazyLock, Mutex,
-    mpsc::{Receiver, RecvTimeoutError, TryRecvError},
-};
+use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -18,7 +15,10 @@ struct AcpTimelineStreamState {
     content: String,
 }
 
-use crate::acp::connection::{AdapterConnection, AdapterConnectionKey, AdapterConnectionManager};
+use crate::acp::connection::{
+    AdapterConnection, AdapterConnectionKey, AdapterConnectionManager, SessionRouteReceiver,
+    SessionRouteTryRecvError,
+};
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
     elicitation_response_result, remove_elicitation_signal_files,
@@ -29,7 +29,6 @@ use crate::acp::events::{
     append_diagnostic, append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
     initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
     normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
-    write_timeline_items,
 };
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
@@ -47,7 +46,6 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, wr
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
-const TIMELINE_COMPACT_EVERY_REVISIONS: u64 = 128;
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
@@ -320,7 +318,7 @@ struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
     connection_key: Option<AdapterConnectionKey>,
     connection: Arc<AdapterConnection>,
-    rx: Option<Receiver<Value>>,
+    rx: Option<SessionRouteReceiver>,
     seq: u64,
     timeline_revision: u64,
     timeline_items: HashMap<String, AcpUiEvent>,
@@ -738,36 +736,6 @@ fn timing_patch_reason(event: &AcpUiEvent) -> &'static str {
     "active"
 }
 
-fn should_sync_timing_state_from_timeline(event: &AcpUiEvent) -> bool {
-    matches!(
-        event.kind.as_str(),
-        "permissionRequest" | "elicitationRequest" | "elicitationResponse"
-    )
-}
-
-fn is_pending_user_wait_event(event: &AcpUiEvent) -> bool {
-    matches!(
-        event.kind.as_str(),
-        "permissionRequest" | "elicitationRequest"
-    ) && event
-        .status
-        .as_deref()
-        .is_some_and(|status| status.eq_ignore_ascii_case("pending"))
-}
-
-fn timing_state_from_timeline_items_with_replacement(
-    timeline_items: &HashMap<String, AcpUiEvent>,
-    replacement: &AcpUiEvent,
-) -> AcpTimingState {
-    let mut items = timeline_items
-        .values()
-        .filter(|item| item.id != replacement.id)
-        .cloned()
-        .collect::<Vec<_>>();
-    items.push(replacement.clone());
-    AcpTimingState::from_timeline_items(items)
-}
-
 fn timing_patch_display_values_equal(
     left: &crate::acp::events::AcpTimingPatch,
     right: &crate::acp::events::AcpTimingPatch,
@@ -835,10 +803,14 @@ fn read_prior_session_metrics(snapshot_path: &Utf8Path) -> PriorSessionMetrics {
 impl<'a> AcpRuntime<'a> {
     fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
         cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
-        self.timeline_items = load_timeline_items(&self.paths.timeline)?
-            .into_iter()
-            .map(|item| (item.id.clone(), item))
-            .collect::<HashMap<_, _>>();
+        let timeline_items = load_timeline_items(&self.paths.timeline)?;
+        self.timing_state = AcpTimingState::from_timeline_item_refs(&timeline_items);
+        (
+            self.active_text_stream,
+            self.active_thought_stream,
+            self.active_plan_stream,
+        ) = active_timeline_streams(&timeline_items);
+        self.timeline_items = runtime_hot_timeline_items(timeline_items);
         Ok(())
     }
 
@@ -982,11 +954,10 @@ impl<'a> AcpRuntime<'a> {
         let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
         let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
-        let timing_state = AcpTimingState::from_timeline_items(loaded_timeline_items.clone());
-        let timeline_items = loaded_timeline_items
-            .into_iter()
-            .map(|item| (item.id.clone(), item))
-            .collect::<HashMap<_, _>>();
+        let timing_state = AcpTimingState::from_timeline_item_refs(&loaded_timeline_items);
+        let (active_text_stream, active_thought_stream, active_plan_stream) =
+            active_timeline_streams(&loaded_timeline_items);
+        let timeline_items = runtime_hot_timeline_items(loaded_timeline_items);
         let timeline_revision = seq;
         let prior = read_prior_session_metrics(&paths.snapshot);
         Ok(Self {
@@ -1016,9 +987,9 @@ impl<'a> AcpRuntime<'a> {
             cached_read_tokens: prior.cached_read_tokens,
             cached_write_tokens: prior.cached_write_tokens,
             total_tokens: prior.total_tokens,
-            active_text_stream: None,
-            active_thought_stream: None,
-            active_plan_stream: None,
+            active_text_stream,
+            active_thought_stream,
+            active_plan_stream,
             timing_state,
             live_update,
             pending_live_update: None,
@@ -2040,10 +2011,10 @@ impl<'a> AcpRuntime<'a> {
             if self.is_prompt_cancel_requested() {
                 self.send_cancel_notification_best_effort();
             }
-            let value = match self.rx.as_ref().map(Receiver::try_recv) {
+            let value = match self.rx.as_ref().map(SessionRouteReceiver::try_recv) {
                 Some(Ok(value)) => value,
-                Some(Err(TryRecvError::Empty)) | None => return Ok(()),
-                Some(Err(TryRecvError::Disconnected)) => {
+                Some(Err(SessionRouteTryRecvError::Empty)) | None => return Ok(()),
+                Some(Err(SessionRouteTryRecvError::Disconnected)) => {
                     return Err(anyhow!(AcpTransportInterrupted));
                 }
             };
@@ -2207,33 +2178,19 @@ impl<'a> AcpRuntime<'a> {
             append_ui_event(&self.paths.events, event)?;
         }
         let mut timeline_item = self.timeline_item_for_event(event);
-        if should_sync_timing_state_from_timeline(&timeline_item) {
-            self.timing_state = timing_state_from_timeline_items_with_replacement(
-                &self.timeline_items,
-                &timeline_item,
-            );
-        } else {
-            self.timing_state.observe_event(&timeline_item);
-        }
+        self.timing_state.observe_event(&timeline_item);
         if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
             timeline_item.timing = self
                 .timing_state
                 .patch_at(timestamp, timing_patch_reason(&timeline_item));
         }
-        self.timeline_items
-            .insert(timeline_item.id.clone(), timeline_item.clone());
         self.timeline_revision = self.timeline_revision.saturating_add(1);
         self.persist_timeline_update(timeline_item.clone())?;
+        update_runtime_hot_timeline_items(&mut self.timeline_items, &timeline_item);
         if emit_live_update {
             self.emit_timeline_live_update(timeline_item)?;
         }
         Ok(())
-    }
-
-    fn persist_timeline_items(&self) -> Result<()> {
-        let mut items = self.timeline_items.values().cloned().collect::<Vec<_>>();
-        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-        write_timeline_items(&self.paths.timeline, &items)
     }
 
     fn persist_timeline_update(&mut self, item: crate::acp::events::AcpUiEvent) -> Result<()> {
@@ -2286,11 +2243,7 @@ impl<'a> AcpRuntime<'a> {
         item: &crate::acp::events::AcpUiEvent,
         now: Instant,
     ) -> Result<()> {
-        if revision % TIMELINE_COMPACT_EVERY_REVISIONS == 0 {
-            self.persist_timeline_items()
-        } else {
-            append_timeline_patch(&self.paths.timeline, item.id.clone(), revision, item)
-        }?;
+        append_timeline_patch(&self.paths.timeline, item.id.clone(), revision, item)?;
         self.last_timeline_patch_at = Some(now);
         Ok(())
     }
@@ -2339,11 +2292,6 @@ impl<'a> AcpRuntime<'a> {
         {
             return Ok(());
         }
-        if self.timeline_has_pending_user_wait() {
-            self.timing_state = AcpTimingState::from_timeline_items(
-                self.timeline_items.values().cloned().collect::<Vec<_>>(),
-            );
-        }
         let timestamp = current_timestamp();
         let Some(epoch_seconds) = parse_event_epoch_seconds(&timestamp) else {
             return Ok(());
@@ -2388,10 +2336,6 @@ impl<'a> AcpRuntime<'a> {
         self.emit_live_update_now(&event, now)
     }
 
-    fn timeline_has_pending_user_wait(&self) -> bool {
-        self.timeline_items.values().any(is_pending_user_wait_event)
-    }
-
     fn emit_live_update_now(
         &mut self,
         item: &crate::acp::events::AcpUiEvent,
@@ -2425,6 +2369,13 @@ impl<'a> AcpRuntime<'a> {
             content: String::new(),
         });
         if let Some(content) = item.content.as_deref() {
+            if should_separate_streaming_thought_chunks(
+                item.kind.as_str(),
+                &stream.content,
+                content,
+            ) {
+                append_bounded(&mut stream.content, "\n\n", max_chars);
+            }
             append_bounded(&mut stream.content, content, max_chars);
         }
         item.id = stream.item_id.clone();
@@ -2582,7 +2533,6 @@ impl<'a> AcpRuntime<'a> {
         debug!(adapter = %self.connection.adapter().adapter_id, "releasing ACP runtime session");
         let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
-        let _ = self.persist_timeline_items();
         if let Some(session_id) = self.session_id.as_deref() {
             self.connection.unregister_session_route(session_id);
         }
@@ -2673,6 +2623,84 @@ fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool 
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
 }
 
+fn runtime_hot_timeline_items(
+    items: Vec<crate::acp::events::AcpUiEvent>,
+) -> HashMap<String, crate::acp::events::AcpUiEvent> {
+    let mut hot = HashMap::new();
+    for item in items {
+        update_runtime_hot_timeline_items(&mut hot, &item);
+    }
+    hot
+}
+
+fn active_timeline_streams(
+    items: &[crate::acp::events::AcpUiEvent],
+) -> (
+    Option<AcpTimelineStreamState>,
+    Option<AcpTimelineStreamState>,
+    Option<AcpTimelineStreamState>,
+) {
+    let Some(item) = items
+        .iter()
+        .max_by_key(|item| (item.ended_seq.unwrap_or(item.seq), item.seq))
+    else {
+        return (None, None, None);
+    };
+    let stream = || AcpTimelineStreamState {
+        item_id: item.id.clone(),
+        started_seq: item.started_seq.unwrap_or(item.seq),
+        started_at: item
+            .started_at
+            .clone()
+            .unwrap_or_else(|| item.timestamp.clone()),
+        content: item.content.clone().unwrap_or_default(),
+    };
+    match item.kind.as_str() {
+        "textDelta" => (Some(stream()), None, None),
+        "thoughtDelta" => (None, Some(stream()), None),
+        "plan" => (None, None, Some(stream())),
+        _ => (None, None, None),
+    }
+}
+
+fn update_runtime_hot_timeline_items(
+    items: &mut HashMap<String, crate::acp::events::AcpUiEvent>,
+    item: &crate::acp::events::AcpUiEvent,
+) {
+    if retains_runtime_timeline_context(item) {
+        items.insert(item.id.clone(), item.clone());
+    } else {
+        items.remove(&item.id);
+    }
+    if item.kind == "elicitationResponse" {
+        let request_id = item
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("elicitationId"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| item.id.trim_end_matches("-response"));
+        items.remove(request_id);
+    }
+}
+
+fn retains_runtime_timeline_context(item: &crate::acp::events::AcpUiEvent) -> bool {
+    match item.kind.as_str() {
+        "toolCall" => !is_terminal_tool_status(item.status.as_deref()),
+        "permissionRequest" | "elicitationRequest" => item
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("pending")),
+        _ => false,
+    }
+}
+
+fn is_terminal_tool_status(status: Option<&str>) -> bool {
+    matches!(
+        status.unwrap_or_default().to_ascii_lowercase().as_str(),
+        "completed" | "success" | "succeeded" | "failed" | "error" | "cancelled" | "canceled"
+    )
+}
+
 fn take_pending_live_update_for_stream_switch(
     pending: &mut Option<crate::acp::events::AcpUiEvent>,
     item: &crate::acp::events::AcpUiEvent,
@@ -2739,6 +2767,21 @@ fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
     }
     target.extend(content.chars().take(remaining));
     target.push('…');
+}
+
+fn should_separate_streaming_thought_chunks(kind: &str, accumulated: &str, incoming: &str) -> bool {
+    if kind != "thoughtDelta" || accumulated.is_empty() {
+        return false;
+    }
+    if accumulated.ends_with('\n') || incoming.starts_with('\n') {
+        return false;
+    }
+    let accumulated = accumulated.trim_end_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+    let incoming = incoming.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+    accumulated.ends_with("**")
+        && incoming.len() > 4
+        && incoming.starts_with("**")
+        && incoming.ends_with("**")
 }
 
 fn rpc_id_to_string(id: &Value) -> String {
@@ -2873,19 +2916,139 @@ fn permission_decision_timeline_event(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use serde_json::{Value, json};
 
     use super::{
         AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility,
-        RuntimeStopProbe, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
-        permission_decision_timeline_event, resolve_permission_mode,
-        retain_bounded_doctor_acp_failure_bundle, session_load_params, session_new_params,
-        session_prompt_params, session_prompt_text, take_pending_live_update_for_stream_switch,
-        timing_state_from_timeline_items_with_replacement,
+        RuntimeStopProbe, active_timeline_streams, cleanup_doctor_acp_dir_after_success,
+        contributes_to_final_text, merge_tool_raw_input, permission_decision_timeline_event,
+        resolve_permission_mode, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, take_pending_live_update_for_stream_switch,
     };
-    use crate::acp::{events::AcpUiEvent, permission::PermissionResponseState};
+    use crate::acp::{
+        events::{AcpTimingState, AcpUiEvent},
+        permission::PermissionResponseState,
+    };
+
+    fn timeline_event(
+        id: &str,
+        seq: u64,
+        kind: &str,
+        status: Option<&str>,
+        content: Option<&str>,
+        raw: Option<Value>,
+    ) -> AcpUiEvent {
+        AcpUiEvent {
+            id: id.to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            kind: kind.to_string(),
+            session_id: Some("session-1".to_string()),
+            content: content.map(str::to_string),
+            title: None,
+            tool_call_id: None,
+            status: status.map(str::to_string),
+            started_seq: Some(seq),
+            ended_seq: Some(seq),
+            started_at: Some(format!("{seq}Z")),
+            ended_at: Some(format!("{seq}Z")),
+            timing: None,
+            raw,
+        }
+    }
+
+    #[test]
+    fn runtime_hot_timeline_keeps_only_unfinished_interactions() {
+        let completed_tool = timeline_event(
+            "tool-call-finished",
+            1,
+            "toolCall",
+            Some("completed"),
+            None,
+            Some(json!({ "rawInput": { "path": "done.txt" } })),
+        );
+        let pending_tool = timeline_event(
+            "tool-call-pending",
+            2,
+            "toolCall",
+            Some("in_progress"),
+            None,
+            Some(json!({ "rawInput": { "path": "pending.txt" } })),
+        );
+        let pending_permission = timeline_event(
+            "permission-1",
+            3,
+            "permissionRequest",
+            Some("pending"),
+            None,
+            None,
+        );
+        let selected_permission = timeline_event(
+            "permission-2",
+            4,
+            "permissionRequest",
+            Some("selected"),
+            None,
+            None,
+        );
+
+        let hot = runtime_hot_timeline_items(vec![
+            completed_tool,
+            pending_tool,
+            pending_permission,
+            selected_permission,
+        ]);
+
+        assert_eq!(hot.len(), 2);
+        assert!(hot.contains_key("tool-call-pending"));
+        assert!(hot.contains_key("permission-1"));
+    }
+
+    #[test]
+    fn active_timeline_stream_restores_only_latest_open_stream() {
+        let prior_text = timeline_event("message-1", 1, "textDelta", None, Some("old"), None);
+        let current_thought =
+            timeline_event("thought-1", 2, "thoughtDelta", None, Some("thinking"), None);
+
+        let (text, thought, plan) = active_timeline_streams(&[prior_text, current_thought]);
+
+        assert!(text.is_none());
+        assert_eq!(thought.unwrap().content, "thinking");
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn terminal_tool_update_preserves_intermediate_raw_input_before_release() {
+        let intermediate = timeline_event(
+            "tool-call-1",
+            1,
+            "toolCall",
+            Some("in_progress"),
+            None,
+            Some(json!({ "rawInput": { "path": "report.md" } })),
+        );
+        let mut terminal = timeline_event(
+            "tool-call-1",
+            2,
+            "toolCall",
+            Some("completed"),
+            None,
+            Some(json!({ "content": "done" })),
+        );
+
+        merge_tool_raw_input(&mut terminal, &intermediate);
+
+        assert_eq!(
+            terminal
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("rawInput"))
+                .cloned(),
+            Some(json!({ "path": "report.md" }))
+        );
+        assert!(runtime_hot_timeline_items(vec![terminal]).is_empty());
+    }
 
     #[test]
     fn final_text_ignores_user_prompt_deltas() {
@@ -2959,6 +3122,124 @@ mod tests {
         assert_eq!(second.ended_seq, Some(11));
         assert_eq!(second.started_at.as_deref(), Some("10Z"));
         assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn streaming_thought_blocks_preserve_chunk_boundaries_as_paragraphs() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "thought-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("**Designing routes**".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-thought-1",
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut second = AcpUiEvent {
+            id: "thought-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("**Planning branches**".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-thought-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(
+            second.content.as_deref(),
+            Some("**Designing routes**\n\n**Planning branches**")
+        );
+    }
+
+    #[test]
+    fn streaming_thought_token_chunks_remain_contiguous() {
+        let mut stream = None;
+        let mut first = AcpUiEvent {
+            id: "thought-1".to_string(),
+            seq: 10,
+            timestamp: "10Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: None,
+            content: Some("thinking ".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-thought-1",
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut second = AcpUiEvent {
+            id: "thought-2".to_string(),
+            seq: 11,
+            timestamp: "11Z".to_string(),
+            kind: "thoughtDelta".to_string(),
+            session_id: None,
+            content: Some("more".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-thought-1",
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(second.content.as_deref(), Some("thinking more"));
     }
 
     #[test]
@@ -3146,23 +3427,6 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         };
-        let pending_permission = AcpUiEvent {
-            id: "permission-1".to_string(),
-            seq: 4,
-            timestamp: "214Z".to_string(),
-            kind: "permissionRequest".to_string(),
-            session_id: Some("session-1".to_string()),
-            content: None,
-            title: Some("Write file".to_string()),
-            tool_call_id: Some("tool-1".to_string()),
-            status: Some("pending".to_string()),
-            started_seq: Some(4),
-            ended_seq: Some(4),
-            started_at: Some("214Z".to_string()),
-            ended_at: Some("214Z".to_string()),
-            timing: None,
-            raw: Some(json!({ "requestId": "1" })),
-        };
         let selected_permission = AcpUiEvent {
             id: "permission-1".to_string(),
             seq: 5,
@@ -3180,17 +3444,8 @@ mod tests {
             timing: None,
             raw: Some(json!({ "requestId": "1", "optionId": "allow" })),
         };
-        let timeline_items = HashMap::from([
-            (prompt_1.id.clone(), prompt_1),
-            (usage_1.id.clone(), usage_1),
-            (prompt_2.id.clone(), prompt_2),
-            (pending_permission.id.clone(), pending_permission),
-        ]);
-
-        let timing_state = timing_state_from_timeline_items_with_replacement(
-            &timeline_items,
-            &selected_permission,
-        );
+        let timeline_items = vec![prompt_1, usage_1, prompt_2, selected_permission];
+        let timing_state = AcpTimingState::from_timeline_item_refs(&timeline_items);
         let snapshot = timing_state.snapshot_at(false, None).unwrap();
 
         assert_eq!(snapshot.session_elapsed_seconds, 44);

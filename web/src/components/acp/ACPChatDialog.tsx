@@ -910,8 +910,8 @@ export const ACPChatDialog = forwardRef<
   const timeline = useStableAcpTimeline(rebuiltTimeline);
   const acpSessionActive = isSessionActiveStatus(effective?.status);
   const sessionActive = acpSessionActive || runtimeActive;
-  const streamingTextItemKey = sessionActive
-    ? latestStreamingTextItemKey(timeline)
+  const streamingMarkdownItemKey = sessionActive
+    ? latestStreamingMarkdownItemKeyFromEvents(effectiveEvents)
     : null;
   const handleTimelineItemOpenChange = useCallback(
     (key: string, open: boolean) => {
@@ -2428,7 +2428,7 @@ export const ACPChatDialog = forwardRef<
                       <ACPTimelineItemRenderer
                         event={item}
                         expansionControls={expansionControls}
-                        streamingTextItemKey={streamingTextItemKey}
+                        streamingMarkdownItemKey={streamingMarkdownItemKey}
                         messageAttachmentLocator={messageAttachmentLocator}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
                       />
@@ -3510,7 +3510,9 @@ export function ACPMessageList({
   onLayoutChange?: () => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
-  const streamingTextItemKey = active ? latestStreamingTextItemKey(timeline) : null;
+  const streamingMarkdownItemKey = active
+    ? latestStreamingMarkdownItemKey(timeline)
+    : null;
   const expansionControls = useMemo<AcpExpansionControls>(
     () => ({
       expandedItems: {},
@@ -3528,7 +3530,7 @@ export function ACPMessageList({
           key={timelineEventKey(item)}
           event={item}
           expansionControls={expansionControls}
-          streamingTextItemKey={streamingTextItemKey}
+          streamingMarkdownItemKey={streamingMarkdownItemKey}
         />
       ))}
     </div>
@@ -3573,13 +3575,13 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
 const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
   expansionControls,
-  streamingTextItemKey,
+  streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
-  streamingTextItemKey?: string | null;
+  streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
@@ -3589,7 +3591,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
         <ChildAgentGroupCard
           event={event}
           expansionControls={expansionControls}
-          streamingTextItemKey={streamingTextItemKey}
+          streamingMarkdownItemKey={streamingMarkdownItemKey}
           messageAttachmentLocator={messageAttachmentLocator}
           onMessageAttachmentClick={onMessageAttachmentClick}
         />
@@ -3598,9 +3600,9 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} streamingTextItemKey={streamingTextItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
+    return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
-    return <ThoughtBlock event={event} expansionControls={expansionControls} />;
+    return <ThoughtBlock event={event} expansionControls={expansionControls} streamingMarkdownItemKey={streamingMarkdownItemKey} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
     return <ToolBlock event={event} expansionControls={expansionControls} />;
   if (event.kind === "plan")
@@ -3615,14 +3617,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   event,
   expansionControls,
-  streamingTextItemKey,
+  streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
   onLayoutChange,
 }: {
   event: AcpChildAgentGroup;
   expansionControls: AcpExpansionControls;
-  streamingTextItemKey?: string | null;
+  streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   onLayoutChange?: () => void;
@@ -3738,7 +3740,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                       key={timelineEventKey(child)}
                       event={child}
                       expansionControls={expansionControls}
-                      streamingTextItemKey={streamingTextItemKey}
+                      streamingMarkdownItemKey={streamingMarkdownItemKey}
                       messageAttachmentLocator={messageAttachmentLocator}
                       onMessageAttachmentClick={onMessageAttachmentClick}
                     />
@@ -3850,12 +3852,12 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
 
 const MessageBubble = memo(function MessageBubble({
   event,
-  streamingTextItemKey,
+  streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
 }: {
   event: AcpTimelineEvent;
-  streamingTextItemKey?: string | null;
+  streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
 }) {
@@ -3863,7 +3865,7 @@ const MessageBubble = memo(function MessageBubble({
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
   const streamingDraft =
-    !isUser && timelineEventKey(event) === streamingTextItemKey;
+    !isUser && timelineEventKey(event) === streamingMarkdownItemKey;
   const rawAttachments: MessageAttachmentPreview[] =
     rawObject(event.raw)?.attachments as any ?? [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
@@ -3903,10 +3905,8 @@ const MessageBubble = memo(function MessageBubble({
           >
             {isUser ? (
               <HiddenPromptMessageContent content={event.content ?? ""} />
-            ) : streamingDraft ? (
-              <StreamingTextDraft>{event.content ?? ""}</StreamingTextDraft>
             ) : (
-              <Markdown>{messageText}</Markdown>
+              <Markdown streaming={streamingDraft}>{messageText}</Markdown>
             )}
           </MessageContent>
         ) : null}
@@ -4174,18 +4174,6 @@ const MessageImagePreviewDialog = memo(function MessageImagePreviewDialog({
   );
 });
 
-const StreamingTextDraft = memo(function StreamingTextDraft({
-  children,
-}: {
-  children: string;
-}) {
-  return (
-    <div className="min-w-0 max-w-full whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">
-      {children}
-    </div>
-  );
-});
-
 const AnimatedEllipsis = memo(function AnimatedEllipsis() {
   return (
     <span
@@ -4202,14 +4190,17 @@ const AnimatedEllipsis = memo(function AnimatedEllipsis() {
 const ThoughtBlock = memo(function ThoughtBlock({
   event,
   expansionControls,
+  streamingMarkdownItemKey,
 }: {
   event: AcpTimelineEvent;
   expansionControls: AcpExpansionControls;
+  streamingMarkdownItemKey?: string | null;
 }) {
   const { t } = useTranslation();
   if (!event.content?.trim()) return null;
   const itemKey = timelineEventKey(event);
   const open = isTimelineItemOpen(itemKey, expansionControls);
+  const streaming = itemKey === streamingMarkdownItemKey;
   const duration = formatThinkingDuration(t, event.durationMs);
   return (
     <AssistantTimelineRow timestamp={event.timestamp}>
@@ -4231,9 +4222,11 @@ const ThoughtBlock = memo(function ThoughtBlock({
               ) : null}
             </span>
           </ChainOfThoughtTrigger>
-          <ChainOfThoughtContent animated={false}>
-            <ChainOfThoughtItem className="break-words whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
-              {event.content}
+          <ChainOfThoughtContent animated={false} preserveMount={streaming}>
+            <ChainOfThoughtItem className="min-w-0 break-words text-muted-foreground [overflow-wrap:anywhere]">
+              <Markdown streaming={streaming} className="text-muted-foreground">
+                {event.content}
+              </Markdown>
             </ChainOfThoughtItem>
           </ChainOfThoughtContent>
         </ChainOfThoughtStep>
@@ -5097,17 +5090,44 @@ function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
   );
 }
 
-function latestStreamingTextItemKey(items: AcpTimelineItem[]): string | null {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
+function latestStreamingMarkdownItemKey(items: AcpTimelineItem[]): string | null {
+  const candidates: AcpTimelineEvent[] = [];
+  const visit = (item: AcpTimelineItem) => {
     if (isChildAgentGroup(item)) {
-      const childKey: string | null = latestStreamingTextItemKey(item.events);
-      if (childKey) return childKey;
-      continue;
+      visit(item.toolEvent);
+      item.events.forEach(visit);
+      return;
     }
-    if (item.kind === "textDelta") return timelineEventKey(item);
+    candidates.push(item);
+  };
+  items.forEach(visit);
+  const latest = candidates.reduce<AcpTimelineEvent | null>(
+    (current, candidate) =>
+      !current || timelineEventPosition(candidate) > timelineEventPosition(current)
+        ? candidate
+        : current,
+    null,
+  );
+  return latest && (latest.kind === "textDelta" || latest.kind === "thoughtDelta")
+    ? timelineEventKey(latest)
+    : null;
+}
+
+function latestStreamingMarkdownItemKeyFromEvents(events: AcpUiEventVm[]) {
+  let latest: AcpUiEventVm | null = null;
+  for (const event of events) {
+    if (event.kind === "timingUpdate" || isOptimisticEvent(event)) continue;
+    if (!latest || timelineEventPosition(event) > timelineEventPosition(latest)) {
+      latest = event;
+    }
   }
-  return null;
+  return latest && (latest.kind === "textDelta" || latest.kind === "thoughtDelta")
+    ? `${latest.kind}-${latest.id}`
+    : null;
+}
+
+function timelineEventPosition(event: Pick<AcpUiEventVm, "seq" | "endedSeq">) {
+  return event.endedSeq ?? event.seq;
 }
 
 function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
@@ -6009,6 +6029,8 @@ function acpSessionMetadataSignature(session: AcpSessionVm) {
 export {
   timelineEventKey,
   buildAcpTimeline,
+  latestStreamingMarkdownItemKey,
+  latestStreamingMarkdownItemKeyFromEvents,
   calculateSessionElapsedSeconds,
   createLiveAcpSessionShell,
   createVisibleAcpSession,

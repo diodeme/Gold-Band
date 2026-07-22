@@ -14,10 +14,8 @@ describe('AppTitleBar', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',
       platform: 'macos',
-      uiMode: 'workbench',
       sidebarCollapsed: false,
       onToggleSidebar: () => {},
-      onToggleUiMode: () => {},
     }));
 
     expect(html).toContain('pl-[72px]');
@@ -29,10 +27,8 @@ describe('AppTitleBar', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',
       platform: 'windows',
-      uiMode: 'conversation',
       sidebarCollapsed: false,
       onToggleSidebar: () => {},
-      onToggleUiMode: () => {},
     }));
 
     expect(html).toContain('common.minimizeWindow');
@@ -43,15 +39,26 @@ describe('AppTitleBar', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',
       platform: 'windows',
-      uiMode: 'workbench',
       sidebarCollapsed: false,
       onToggleSidebar: () => {},
-      onToggleUiMode: () => {},
     }));
 
     expect(html).toContain('app-titlebar-drag-region');
     expect(html).toContain('data-tauri-drag-region');
     expect(html).toContain('app-titlebar-no-drag');
     expect(html).toContain('data-titlebar-no-drag="true"');
+  });
+
+  it('does not expose the workbench mode switch', () => {
+    const html = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+
+    expect(html).not.toContain('common.workbench');
+    expect(html).not.toContain('common.conversation');
+    expect(html).not.toContain('aria-pressed');
   });
 });

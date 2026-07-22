@@ -9,7 +9,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ 共享顶栏：折叠按钮 / 品牌 icon+标题 / Workbench·Conversation toggle / 窗口控制 │
+│ 共享顶栏：折叠按钮 / 品牌 icon+标题 / 可拖拽空白区 / 窗口控制               │
 ├───────────────┬──────────────────────────────────────────────┤
 │ Logo          │ 当前一级功能区                                │
 │               │                                              │
@@ -46,7 +46,7 @@
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
 - **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
-- **新旧 UI 切换同步**：旧 UI → 新 UI 时，如果旧 UI 已有有效 workspace，将该 workspace 同步进入 conversation workspace 列表并设置为最近工作空间，展开该 workspace；如果旧 UI 仍处于“选择工作空间”状态，则只切换到新 UI 的会话主页，不把占位 cwd 同步为 conversation workspace，也不继续显示旧 UI 选择页。新 UI → 旧 UI 时，将新 UI 最后活跃 workspace 切换为旧 UI 当前 workspace（通过 `select_recent_workspace`）；若没有可用目标且旧 UI 仍需要 workspace，则显示旧 UI workspace 选择页。查看历史 run 或切换 composer 草稿目标不改变该同步目标。
+- **工作台观察期边界**：2026-07-22 起产品内隐藏 Workbench / Conversation 形态切换入口，桌面根路径默认进入 `/chat` 会话主页；旧工作台页面、路由与单 workspace 状态暂时保留，只允许通过显式 `/tasks`、`/agents`、`/contexts`、`/settings` 等 deep link 访问，不再读取历史 UI 模式偏好覆盖默认入口。
 - **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
 - **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 
@@ -148,8 +148,8 @@ round 详情
 - 小窗口下保留左侧一级导航和当前页面核心内容
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
-- 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；Workbench / Conversation 形态切换集中到顶栏中部
-- 共享顶栏除按钮、toggle、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
+- 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；观察期内不展示 Workbench / Conversation 形态切换控件
+- 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
 - 桌面根壳层需要通过 overlay 提供主题化 1px 窗口外轮廓，顶部轮廓使用独立 token 略强于左右/底部边界，弥补 Windows 10 在无原生 decorations 时缺少 Win11 圆角/阴影所导致的顶部边界丢失
@@ -178,6 +178,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 - 2026-06-19 起桌面 bootstrap 暴露 `platform` 作为前端唯一平台事实源：macOS 启用原生 traffic lights + overlay 标题栏并隐藏系统标题文本；Windows/Linux 继续关闭整窗 decorations，由共享顶栏右侧自定义窗口控制接管最小化、最大化/还原和关闭。
 - 2026-06-29 起共享顶栏拖拽命中升级为“整条顶栏默认可拖，交互控件显式 no-drag”，并由根壳层 overlay 提供主题化外轮廓；顶部轮廓单独加强，保证 Windows 10/11 在无原生 decorations 下都有可感知窗口边界。
+- 2026-07-22 起共享顶栏隐藏 Workbench / Conversation toggle，根路径统一进入会话主页；旧工作台仅保留显式 deep link，供观察期继续验证而不暴露产品入口。
 
 ---
 

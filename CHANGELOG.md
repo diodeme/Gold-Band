@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.0](https://github.com/diodeme/Gold-Band/compare/v0.8.0...v0.9.0) (2026-07-22)
+
+
+### Features
+
+* add interview node with toggle for requirement gathering ([7bee4c0](https://github.com/diodeme/Gold-Band/commit/7bee4c0f5b7d9c3d19d27a048fb93b24cbef79b8))
+* **web:** 默认进入会话主页并隐藏工作台入口 ([2982bae](https://github.com/diodeme/Gold-Band/commit/2982bae115159eb1c8b8b33fbb51fc843b742dc8))
+* **workflow:** 采访节点默认成功，不再要求人工判定 ([6c0c56b](https://github.com/diodeme/Gold-Band/commit/6c0c56b2983850c0683a7aa7844cd5344cfe7713))
+
+
+### Bug Fixes
+
+* **acp:** stabilize interview and elicitation flows ([2ff5f0f](https://github.com/diodeme/Gold-Band/commit/2ff5f0f114e14427ea1a0f54648df60d9c4590a9))
+* **context:** 修复 profile 读取在坏文件下整页报错的问题 ([c55584b](https://github.com/diodeme/Gold-Band/commit/c55584b2484594468926600fc0d04c51fb507cc1))
+* **metrics:** add session elapsed seconds and preserve cumulative tokens on resume ([688984e](https://github.com/diodeme/Gold-Band/commit/688984ec26e254d396da6f17922c36c4b86b38c1))
+* **prompts:** make config dir name injectable and decouple interview from elicitation tool ([6374054](https://github.com/diodeme/Gold-Band/commit/6374054fc5645072520bc01e5eb0ef3af4a306e5))
+
+
+### Performance Improvements
+
+* **acp:** smooth streaming Markdown rendering ([f22b452](https://github.com/diodeme/Gold-Band/commit/f22b45231221fe9452fe542eec6190029c26fb60))
+* **acp:** 收敛工作流运行期内存与日志增长 ([ef4e430](https://github.com/diodeme/Gold-Band/commit/ef4e4302f2340d22a57ed459e41504f0478641c9))
+
 ## [0.8.0](https://github.com/diodeme/Gold-Band/compare/v0.7.1...v0.8.0) (2026-07-10)
 
 

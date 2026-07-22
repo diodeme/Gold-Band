@@ -21,7 +21,6 @@ interface ShellProps {
   sidebarCollapsed: boolean;
   onSelect: (module: PrimaryModule) => void;
   onSelectConversation: (page: ConversationPage) => void;
-  onToggleUiMode: () => void;
   onToggleSidebar: () => void;
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
@@ -41,7 +40,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleUiMode, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
@@ -51,7 +50,6 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}
         onSelect={onSelectConversation}
-        onToggleUiMode={onToggleUiMode}
         onToggleSidebar={onToggleSidebar}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
@@ -82,7 +80,6 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
       showSettingsUpdateDot={showSettingsUpdateDot}
       sidebarCollapsed={sidebarCollapsed}
       onSelect={onSelect}
-      onToggleUiMode={onToggleUiMode}
       onToggleSidebar={onToggleSidebar}
       onChooseWorkspace={onChooseWorkspace}
     >
@@ -102,13 +99,12 @@ interface WorkbenchShellProps {
   showSettingsUpdateDot?: boolean;
   sidebarCollapsed: boolean;
   onSelect: (module: PrimaryModule) => void;
-  onToggleUiMode: () => void;
   onToggleSidebar: () => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onToggleUiMode, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -116,10 +112,8 @@ function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, s
         <AppTitleBar
           appName={appName}
           platform={platform}
-          uiMode="workbench"
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
-          onToggleUiMode={onToggleUiMode}
         />
         <div className="flex min-h-0 flex-1 bg-sidebar">
           <div

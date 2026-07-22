@@ -641,6 +641,30 @@ attempt-001/
 
 ---
 
+## 2026-07-21：工作流长运行内存稳定性隐性优化
+
+- 生命周期：桌面进程共享一个 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 在 setup 以固定键幂等订阅一次；保留匿名订阅供测试和内部场景使用。
+- ACP 传输：每 session route 使用 4 MiB / 256 帧无损 FIFO 背压，允许空队列单个超大帧；不影响 RPC pending response，不丢弃、不合并、不重排。
+- Timeline：磁盘 `acp.timeline.jsonl` 是完整事实源，内存只保留当前 text/thought/plan 流、未终态 tool、未决 permission/elicitation 及 metadata/usage/timing；会话树只加载 metadata/lifecycle，选中会话才加载完整事件页。
+- 日志：未路由 frame 仅记录摘要并按连接/事件类型限频；`runtime.log` 8 MiB 轮转、保留 4 份并继续执行 30 天清理，`acp.raw.jsonl` 保持现状。
+- 兼容边界：Tauri command、Runtime API、ViewModel JSON、前端类型、既有事件窗口配置、75ms/125ms 流式刷新、消息/工具/权限/分页/自动跟随与 workflow 并行度全部不变；不包含 WebView 恢复和高内存降并行。
+- 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、字节/帧背压、超大帧与关闭唤醒、热状态释放后 timeline 可读、tool input/output 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
+- 本次结果：Rust workspace 全量通过；Release ACP route 10 项通过；Web 54 个测试文件、362 项通过且生产构建成功；桌面端现有 run/session deep-link 冒烟通过，测试实例与 dev server 已清理。字体测试仅修正元素定位，未改变 UI。
+
+---
+
+## 2026-07-22：ACP 流式 Markdown 顺滑呈现
+
+- 根因修复：不再把 75ms/125ms 的 canonical snapshot 合并节奏直接当成视觉输出帧率，也不再把完整 snapshot 提前放入 DOM 后用透明字符模拟逐字。唯一活跃 text/thought item 使用局部 presentation controller 稳定推进可见 offset，消息框只按真实可见前缀增长，消除底部大块预留空白和跨 block 零散字符。
+- Markdown：prompt-kit Markdown copy-in 使用模块化 `streamdown` 核心，流式阶段对当前可见前缀做不完整语法修复；完成后停止 presentation/incomplete repair，但已流式组件保持同一 block renderer DOM，重新加载的历史消息才直接 static。syntax guard 吞并纯 Markdown 控制符和未完成链接地址。Streamdown 不再启用全字符 opacity/stagger，避免 block 更新重播历史字符。思考过程与普通 assistant 消息统一实时 Markdown。
+- Thought canonical：Claude Code 独立 thought chunk 原始数据不带换行，后端 accumulator 对完整 strong block chunk 写入段落分隔，token 级 chunk 保持连续；前端只展示 timeline canonical，不对旧会话增加内容修复或兼容重写。
+- Thought 折叠生命周期：active streaming thought 收起时通过 Radix `forceMount + hidden` 保留 Markdown presentation 实例与 visible offset，再展开不重放；完成后的历史 thought 恢复普通按需挂载，控制常驻开销。
+- 活跃生命周期：按最大 `endedSeq/seq` 的最新非 timing、非 optimistic 事件选择唯一 streaming item；tool、plan、permission 或其他生命周期边界到达后，旧 text/thought 不再继续动画。保留 timeline 稳定 id、工具/权限即时路径、分页和自动跟随。
+- 性能边界：只有当前活跃尾部运行约 32ms 的呈现帧，历史消息无 timer；速率根据 backlog 在统一变量范围内自适应，单帧 elapsed 有上限，避免标签页恢复或大批次导致瞬间跳跃。不启用 Shiki、Mermaid、KaTeX 插件。
+- 回归要求：必须通过 presentation/Markdown/活跃流接口单测、全量 Web test、生产构建，并在前端 deep link 中验证 thought 与普通消息的实时粗体、列表、代码围栏、容器无预布局空白、批次积压平滑追赶及 terminal 最终收敛。
+
+---
+
 ## 结论
 
 建议主实现语言使用 Rust，先围绕 CLI + runtime + Claude Code provider 跑通 MVP 闭环，再逐步补 provider 扩展、progress 观测与插件层。

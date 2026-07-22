@@ -111,9 +111,10 @@ pub fn wait_for_elicitation_response(
     let started_at = std::time::Instant::now();
     loop {
         if path.exists() {
-            let response = read_json(&path)?;
-            let _ = fs::remove_file(path.as_std_path());
-            return Ok(response);
+            // The response file is a durable hand-off signal. The runtime must
+            // keep it until the ACP response has been persisted and sent, then
+            // remove request and response files together.
+            return read_json(&path);
         }
         if is_elicitation_cancel_requested(attempt_dir) {
             return Ok(ElicitationResponseState {
@@ -262,156 +263,6 @@ pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value
     result
 }
 
-/// 根据 schema 中的 label 将用户回答的 JSON content 格式化为人类可读文本。
-///
-/// 单问题：直接返回答案值（如 `"MySQL"` 或 `"用户认证、日志系统"`）。
-/// 多问题：逐行格式化，每行 `{field title}：{value}`，用换行分隔。
-///
-/// 示例（多问题）：
-/// ```text
-/// 数据库：MySQL
-/// 功能模块：用户认证、日志系统
-/// ```
-pub fn format_elicitation_answer(schema: &Value, content: &Value) -> String {
-    let properties = schema.get("properties").and_then(|v| v.as_object());
-    let content_obj = content.as_object();
-
-    let mut parts: Vec<String> = Vec::new();
-
-    if let (Some(props), Some(obj)) = (properties, content_obj) {
-        // Collect titles of "real" questions (select fields) for context.
-        // When a custom/Other field has a value, we prefer the parent
-        // question's title over the generic "Other" label.
-        let question_titles: Vec<&str> = props
-            .iter()
-            .filter(|(k, v)| {
-                !k.ends_with("_custom")
-                    && *k != "customAnswer"
-                    && *k != "other"
-                    && *k != "custom"
-                    && (v.get("oneOf").is_some() || v.get("anyOf").is_some())
-            })
-            .filter_map(|(_, v)| v.get("title").and_then(|t| t.as_str()))
-            .collect();
-
-        for (key, prop_schema) in props {
-            let Some(val) = obj.get(key) else { continue };
-            let value_str = format_single_value(prop_schema, val);
-
-            if value_str.is_empty() {
-                continue;
-            }
-
-            // 多问题时带上 field 标题，单问题时直接用值
-            if props.len() > 1 {
-                let label = resolve_elicitation_label(key, prop_schema, props, &question_titles);
-                parts.push(format!("{label}：{value_str}"));
-            } else {
-                parts.push(value_str);
-            }
-        }
-    }
-
-    if parts.is_empty() {
-        // 回退：直接提取 content 中的字符串值
-        if let Some(obj) = content_obj {
-            parts = obj
-                .values()
-                .filter_map(|v| {
-                    v.as_str()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                })
-                .collect();
-        }
-    }
-
-    if parts.is_empty() {
-        "已选择".to_string()
-    } else {
-        parts.join("\n")
-    }
-}
-
-/// Resolve a human-readable label for a schema property.  For custom/Other
-/// fields (`_custom`, `customAnswer`, `other`, `custom`), use the parent
-/// question's title so the answer reads ``拓扑确认：xxx`` instead of
-/// ``Other：xxx``.
-fn resolve_elicitation_label<'a>(
-    key: &'a str,
-    prop_schema: &'a Value,
-    props: &'a serde_json::Map<String, Value>,
-    question_titles: &'a [&'a str],
-) -> &'a str {
-    // _custom suffix → derive parent key, use parent's title
-    if let Some(base_key) = key.strip_suffix("_custom") {
-        if let Some(parent_title) = props
-            .get(base_key)
-            .and_then(|v| v.get("title"))
-            .and_then(|v| v.as_str())
-        {
-            return parent_title;
-        }
-    }
-    // Generic custom keys → use first available question title
-    if key == "customAnswer" || key == "other" || key == "custom" {
-        if let Some(title) = question_titles.first().copied() {
-            return title;
-        }
-    }
-    // Default: use the property's own title
-    prop_schema
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or(key)
-}
-
-/// 将单个字段的值格式化为可读字符串
-fn format_single_value(prop_schema: &Value, val: &Value) -> String {
-    // oneOf 单选 → 用 label 替代 const 值
-    if let Some(one_of) = prop_schema.get("oneOf").and_then(|v| v.as_array()) {
-        if let Some(s) = val.as_str() {
-            return one_of
-                .iter()
-                .find(|opt| opt.get("const").and_then(|v| v.as_str()) == Some(s))
-                .and_then(|opt| opt.get("title").and_then(|v| v.as_str()))
-                .unwrap_or(s)
-                .to_string();
-        }
-    }
-
-    // anyOf 多选 → 用 label 列表，中文顿号连接
-    if let Some(any_of) = prop_schema.get("anyOf").and_then(|v| v.as_array()) {
-        if let Some(arr) = val.as_array() {
-            let labels: Vec<&str> = arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| {
-                    any_of
-                        .iter()
-                        .find(|opt| opt.get("const").and_then(|v| v.as_str()) == Some(s))
-                        .and_then(|opt| opt.get("title").and_then(|v| v.as_str()))
-                        .unwrap_or(s)
-                })
-                .collect();
-            if !labels.is_empty() {
-                return labels.join("、");
-            }
-        }
-    }
-
-    // 普通字符串
-    if let Some(s) = val.as_str() {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    // 兜底
-    val.to_string()
-}
-
 fn sanitize_id(id: &str) -> String {
     id.chars()
         .map(|ch| {
@@ -497,6 +348,45 @@ mod tests {
             response.content,
             Some(serde_json::json!({"answer": "mysql"}))
         );
+        assert!(elicitation_response_file(&attempt_dir, elicitation_id).exists());
+        remove_elicitation_signal_files(&attempt_dir, elicitation_id).unwrap();
+        assert!(!elicitation_response_file(&attempt_dir, elicitation_id).exists());
+    }
+
+    #[test]
+    fn response_signal_survives_timeline_persistence_until_runtime_cleanup() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        let elicitation_id = "elicit-completed-session-follow-up";
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.to_string(),
+                jsonrpc_id: serde_json::json!(42),
+                message: "Continue the completed session".to_string(),
+                requested_schema: serde_json::json!({ "type": "object" }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+        write_elicitation_response(
+            &attempt_dir,
+            elicitation_id,
+            ElicitationAction::Accept,
+            Some(serde_json::json!({ "answer": "continue" })),
+            "2Z".to_string(),
+        )
+        .unwrap();
+
+        let response =
+            wait_for_elicitation_response(&attempt_dir, elicitation_id, Duration::from_millis(10))
+                .unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept));
+        assert!(pending_elicitation_file(&attempt_dir, elicitation_id).exists());
+        assert!(elicitation_response_file(&attempt_dir, elicitation_id).exists());
+
+        remove_elicitation_signal_files(&attempt_dir, elicitation_id).unwrap();
+        assert!(!pending_elicitation_file(&attempt_dir, elicitation_id).exists());
+        assert!(!elicitation_response_file(&attempt_dir, elicitation_id).exists());
     }
 
     #[test]

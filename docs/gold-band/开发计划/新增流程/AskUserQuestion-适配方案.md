@@ -29,17 +29,17 @@ Gold Band Rust Backend  (client.rs handle_elicitation_request)
   │
   │   ... 用户在前端做出选择 ...
   │
-  ├─ ④ 读取响应文件 → acp.elicitation-response.{id}.json
-  ├─ ⑤ send_frame → JSON-RPC response { "action": "accept", "content": {...} }
-  └─ ⑥ runtime 消费响应后持久化 timeline event → elicitationResponse (status: "completed")
+  ├─ ④ 读取 durable 响应文件 → acp.elicitation-response.{id}.json（读取时不删除）
+  ├─ ⑤ 持久化 elicitationResponse，并发送 JSON-RPC response
+  └─ ⑥ 成功回包后由 runtime 清理 request/response signal
 
 Frontend (ACPChatDialog)
   │
   ├─ session prop / live update 合并 → effectiveEvents
   ├─ applyEventUpdates 保留 permission / elicitation 交互事件
-  ├─ pendingElicitationFromEvents 扫描 request/response → 推导当前 pending
-  └─ ElicitationCard 渲染 (内联卡片，非弹窗)
-```
+pendingElicitationFromEvents 扫描 request/response → 只推导当前未回答的 pending
+  ├─ ElicitationCard 仅渲染待交互卡片，回答后消失
+  └─ AskUserQuestion 的 toolCall/toolCallUpdate 继续渲染历史工具卡片，不合成回答气泡```
 
 ### 协议消息示例
 
@@ -175,7 +175,7 @@ cancel_pending_elicitation_requests() → 批量写入 Decline 响应文件
 2. `write_pending_elicitation` 持久化
 3. `elicitation_request_event` → `persist_event` 发送 UI 事件
 4. `wait_for_elicitation_response` **同步阻塞**等待
-5. runtime 在消费响应文件后先持久化 `elicitationResponse` 事件，再返回 JSON-RPC response，并追加用户可读的 `userTextDelta`
+5. runtime 读取但不提前删除 response signal，先持久化 `elicitationResponse`，发送 JSON-RPC response 成功后再清理 request/response 文件；不得追加 synthetic `userTextDelta`
 
 取消集成：在 `run_prompt` 的 cancel 和 error 分支中调用 `cancel_pending_elicitation_requests`。
 
@@ -462,14 +462,14 @@ ACPChatDialog 挂载
 
 Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 
-| Schema 关键字 | Gold Band ElicitationCard | Gold Band format_elicitation_answer | MCP 标准 | Claude Code ACP adapter |
-|--------------|--------------------------|-------------------------------------|---------|------------------------|
-| `oneOf` + `const`/`title` | ✅ | ✅ | ❌ 不支持 | ✅ 使用 |
-| `anyOf` + `const`/`title` | ✅ | ✅ | ❌ 不支持 | 部分历史/兼容格式 |
-| `type: "array"` + `items.anyOf` | ✅ | ✅ | ✅ 常见数组枚举表达 | ✅ AskUserQuestion 多选实际使用 |
-| `enum` + `enumNames` | ❌ 不支持 | ❌ 不支持 | ✅ 标准格式 | ❌ 不使用 |
-| `type: "string"` (自由文本) | ✅ | ✅ | ✅ | ✅ |
-| `type: "array"` (多选) | ✅ | ✅ | ✅ | ✅ |
+| Schema 关键字 | Gold Band ElicitationCard | MCP 标准 | Claude Code ACP adapter |
+|--------------|--------------------------|---------|------------------------|
+| `oneOf` + `const`/`title` | ✅ | ❌ 不支持 | ✅ 使用 |
+| `anyOf` + `const`/`title` | ✅ | ❌ 不支持 | 部分历史/兼容格式 |
+| `type: "array"` + `items.anyOf` | ✅ | ✅ 常见数组枚举表达 | ✅ AskUserQuestion 多选实际使用 |
+| `enum` + `enumNames` | ❌ 不支持 | ✅ 标准格式 | ❌ 不使用 |
+| `type: "string"` (自由文本) | ✅ | ✅ | ✅ |
+| `type: "array"` (多选) | ✅ | ✅ | ✅ |
 
 **结论**：当前对齐 Claude Code ACP adapter 的实际格式（单选 `oneOf`，多选 `type=array + items.anyOf`），工作正常。MCP 标准 `enum`/`enumNames` 格式作为保底可后续支持。
 
@@ -477,7 +477,7 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 
 ## 待优化项（按优先级排列）
 
-### P0 — 多问题逐个展示（向导式流程）
+### P0 — 多问题逐个展示（向导式流程） ✅ 已完成
 
 **现状**：当一个 `elicitation/create` 请求的 `requestedSchema` 包含多个 properties 时，`ElicitationCard` 将它们全部渲染在同一张卡片中。当用户点击一个单选选项时，`onRespond(content)` 立即被调用，此时只填充了该单选字段的值，其他字段的答案丢失。
 
@@ -518,29 +518,11 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 - 进度指示器（可选 P3）
 - 答案逐步积累在内部 state 中（`answers: Record<string, unknown>`）
 
-### P1 — 答案文本格式化改进
+### P1 — 答案数据与历史展示分层 ✅ 已完成
 
-**现状**：后端 `format_elicitation_answer` 将所有答案字段用 `；` 连接为一行：
+Agent 消费结构化 elicitation `content`；UI 不再生成第二份格式化回答气泡。历史展示保留 `AskUserQuestion` 工具卡片，pending/answered 恢复由 request/response timeline 事件负责。
 
-```
-MySQL；用户认证、日志系统
-```
-
-**问题**：丢失了问题-答案的对应关系。
-
-**期望行为**：逐行格式化：
-
-```
-数据库：MySQL
-功能模块：用户认证、日志系统
-```
-
-**实现要点**：
-- 修改 `format_elicitation_answer` 输出逐行格式（`\n` 分隔或 Markdown 列表）
-- 在 `user_prompt_event` 构造时保持消息气泡内容为格式化文本
-- 可配合 P2（Markdown 渲染）实现更好的视觉效果
-
-### P1 — 单选改为"选中态 + 确认按钮"
+### P1 — 单选改为"选中态 + 确认按钮" ✅ 已完成
 
 **现状**：单选字段（`oneOf`）点击即提交。优点：步数少。缺点：用户无法反悔。
 
@@ -555,13 +537,9 @@ MySQL；用户认证、日志系统
 - 点击选项设置 `selectedValue` → 显示确认按钮
 - 确认按钮点击 → 调用 `handleSelect`（单步选择）或 `onRespond`（最后一步提交）
 
-### P2 — 用户消息气泡 Markdown 渲染
+### 回答历史展示决策 ✅ 已收敛
 
-**现状**：`userTextDelta` 事件在 `MessageBubble` 中以纯文本渲染。elicitation 答案源为 `userTextDelta` 时也是纯文本。
-
-**期望行为**：elicitation 答案气泡使用 Markdown 渲染，支持粗体、列表等轻量格式。
-
-**实现方式**：在 `user_prompt_event` 构造时增加 `raw` 标记（如 `"elicitationAnswer": true`），前端 `MessageBubble` 检测此标记后走 Markdown 渲染分支，而非纯文本分支。
+elicitation 答案是结构化工具交互结果，不是新的用户 prompt。回答提交后仅关闭交互卡片，不生成独立用户消息气泡；历史消息流保留 Agent 原生 `AskUserQuestion` 工具卡片及其 completed 输出，pending/answered 恢复继续依赖 `elicitationRequest` / `elicitationResponse` timeline 事实。
 
 ### P2 — 超时时长可配置
 
@@ -581,13 +559,13 @@ MySQL；用户认证、日志系统
 }
 ```
 
-**实现**：`ElicitationCard.tsx` 的 `fields` 计算 + `elicitation.rs` 的 `format_elicitation_answer` 各新增一个 `enum`/`enumNames` 解析分支。
+**实现**：在 `ElicitationCard.tsx` 的 `fields` 计算中新增 `enum`/`enumNames` 解析分支；后端继续透传结构化 content。
 
-### P3 — 进度指示器
+### P3 — 进度指示器 ✅ 已完成
 
 多问题向导式流程的顶部步骤进度 UI（`步骤 2/3`、步骤条、圆点指示器）。
 
-### P3 — 跳过可选问题
+### P3 — 跳过可选问题 ✅ 已完成
 
 检测 `requestedSchema.properties[].optional` 或 MCP `required` 数组，非必答问题提供"跳过"按钮。
 
@@ -598,14 +576,18 @@ MySQL；用户认证、日志系统
 | 优先级 | 项目 | 影响范围 | 预期工作量 |
 |--------|------|---------|-----------|
 | ✅ 已完成 | 单选/多选/自定义文本基本交互 | — | — |
-| ✅ 已完成 | 后端 userTextDelta 用户消息气泡 | — | — |
 | ✅ 已完成 | key prop 修复选项陈旧问题 | — | — |
 | ✅ 已完成 | project_id 修复响应文件目录错位 | — | — |
-| **P0** | **多问题逐个展示（向导式流程）** | ElicitationCard.tsx | 中 |
-| **P1** | **答案文本格式化改进** | elicitation.rs | 小 |
-| **P1** | **单选改为选中态+确认按钮** | ElicitationCard.tsx | 小 |
-| P2 | 消息气泡 Markdown 渲染 | events.rs + ACPChatDialog.tsx | 小 |
+| ✅ 已完成 | 多问题逐个展示（向导式流程） | ElicitationCard.tsx | 中 |
+| ✅ 已完成 | 单选改为选中态+确认按钮 | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 进度指示器（步骤圆点） | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 跳过可选问题（非必填字段跳过） | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 跳过整个问题（decline 操作路径） | ElicitationCard.tsx + ACPChatDialog.tsx | 中 |
+| ✅ 已完成 | 回答后关闭交互卡片，不合成独立消息气泡；保留 AskUserQuestion 工具卡片 | ACPChatDialog.tsx | 中 |
+| ✅ 已完成 | 后端事件 title i18n 化（title: None） | events.rs | 小 |
+| ✅ 已完成 | 删除死代码 ElicitationDialog.tsx | web/src/components/acp/ | — |
+| ✅ 已完成 | 删除死代码 format_elicitation_answer | elicitation.rs | — |
+| ✅ 已完成 | 答案文本格式化改用 i18n 分隔符 | ElicitationCard.tsx (formatConfirmedChoice) + i18n.ts | 小 |
 | P2 | 可配置超时时长 | elicitation.rs + config | 小 |
 | P3 | enum/enumNames 支持 | ElicitationCard.tsx + elicitation.rs | 小 |
-| P3 | 进度指示器 | ElicitationCard.tsx | 小 |
-| P3 | 跳过可选问题 | ElicitationCard.tsx | 小 |
+

@@ -4,8 +4,9 @@ import { Send, Paperclip, Workflow, Bot, Folders } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
-import { normalizeConversationAutoConfigForSubmit, optionalRunModeText } from '@/lib/conversation-run-mode-config';
+import { includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
 import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
@@ -89,6 +90,8 @@ export function ConversationComposer({
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
   const templates = workflowTemplates?.templates ?? [];
+  const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
+  const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
 
   useEffect(() => {
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
@@ -144,7 +147,8 @@ export function ConversationComposer({
       projectId: selectedProjectId,
       content: trimmed,
       runMode: runMode.mode,
-      workflowTemplateId: isAuto ? undefined : workflowTemplateId || runMode.workflowTemplateId || undefined,
+      workflowTemplateId: isAuto ? undefined : selectedWorkflowTemplateId,
+      includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
       autoConfig: isAuto
         ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
         : undefined,
@@ -287,7 +291,7 @@ export function ConversationComposer({
                 'rounded-md px-3 py-1 text-xs font-medium transition-colors',
                 !isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
               )}
-              onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId })}
+              onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview })}
             >
               {t('conversation.home.workflow')}
             </button>
@@ -390,7 +394,7 @@ export function ConversationComposer({
         ) : (
           <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
             <Workflow className="size-4 text-muted-foreground" />
-            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id }); }}>
+            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, includeInterview: runMode.includeInterview }); }}>
               <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
                 <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
               </SelectTrigger>
@@ -403,6 +407,15 @@ export function ConversationComposer({
                 ) : null}
               </SelectContent>
             </Select>
+            {showInterviewToggle ? (
+              <label className="flex shrink-0 items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">{t('conversation.home.includeInterview')}</span>
+                <Switch
+                  checked={runMode.includeInterview ?? true}
+                  onCheckedChange={(checked) => onRunModeChange({ ...runMode, includeInterview: checked })}
+                />
+              </label>
+            ) : null}
             <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
               <Workflow className="size-3" />
               {t('conversation.home.configureWorkflow')}

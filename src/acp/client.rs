@@ -749,6 +749,57 @@ fn timing_patch_display_values_equal(
         && left.paused == right.paused
 }
 
+/// Token and cost fields recovered from a prior `acp.snapshot.json` when
+/// resuming a session. All fields default to `None` so that a fresh session
+/// (no prior snapshot) behaves exactly as before.
+struct PriorSessionMetrics {
+    used_tokens: Option<u64>,
+    context_window_size: Option<u64>,
+    total_cost_usd: Option<f64>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_read_tokens: Option<u64>,
+    cached_write_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+impl Default for PriorSessionMetrics {
+    fn default() -> Self {
+        Self {
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        }
+    }
+}
+
+/// Read token/cost fields from an existing `acp.snapshot.json` so that a
+/// resumed session preserves the cumulative token counts from prior turns.
+/// Returns `Default` (all `None`) when the file is missing or unreadable.
+fn read_prior_session_metrics(snapshot_path: &Utf8Path) -> PriorSessionMetrics {
+    if !snapshot_path.exists() {
+        return PriorSessionMetrics::default();
+    }
+    let Ok(meta) = read_json::<crate::acp::events::AcpSessionMetadata>(snapshot_path) else {
+        return PriorSessionMetrics::default();
+    };
+    PriorSessionMetrics {
+        used_tokens: meta.used_tokens,
+        context_window_size: meta.context_window_size,
+        total_cost_usd: meta.total_cost_usd,
+        input_tokens: meta.input_tokens,
+        output_tokens: meta.output_tokens,
+        cached_read_tokens: meta.cached_read_tokens,
+        cached_write_tokens: meta.cached_write_tokens,
+        total_tokens: meta.total_tokens,
+    }
+}
+
 impl<'a> AcpRuntime<'a> {
     fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
         cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
@@ -908,6 +959,7 @@ impl<'a> AcpRuntime<'a> {
             active_timeline_streams(&loaded_timeline_items);
         let timeline_items = runtime_hot_timeline_items(loaded_timeline_items);
         let timeline_revision = seq;
+        let prior = read_prior_session_metrics(&paths.snapshot);
         Ok(Self {
             paths,
             connection_key,
@@ -926,15 +978,15 @@ impl<'a> AcpRuntime<'a> {
             config_options: None,
             system_prompt_append: None,
             session_title: None,
-            used_tokens: None,
-            context_window_size: None,
-            total_cost_usd: None,
+            used_tokens: prior.used_tokens,
+            context_window_size: prior.context_window_size,
+            total_cost_usd: prior.total_cost_usd,
             accumulated_used_tokens: 0,
-            input_tokens: None,
-            output_tokens: None,
-            cached_read_tokens: None,
-            cached_write_tokens: None,
-            total_tokens: None,
+            input_tokens: prior.input_tokens,
+            output_tokens: prior.output_tokens,
+            cached_read_tokens: prior.cached_read_tokens,
+            cached_write_tokens: prior.cached_write_tokens,
+            total_tokens: prior.total_tokens,
             active_text_stream,
             active_thought_stream,
             active_plan_stream,
@@ -3671,5 +3723,71 @@ mod tests {
         };
 
         assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn prior_session_metrics_reads_tokens_from_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot_path = dir.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "usedTokens":5000,"contextWindowSize":200000,
+            "totalCostUsd":0.05,
+            "inputTokens":3000,"outputTokens":2000,
+            "cachedReadTokens":500,"cachedWriteTokens":100,"totalTokens":5100
+        }"#,
+        )
+        .unwrap();
+        let path = camino::Utf8Path::from_path(&snapshot_path).unwrap();
+        let prior = super::read_prior_session_metrics(path);
+        assert_eq!(prior.used_tokens, Some(5000));
+        assert_eq!(prior.context_window_size, Some(200000));
+        assert!((prior.total_cost_usd.unwrap() - 0.05).abs() < 0.0001);
+        assert_eq!(prior.input_tokens, Some(3000));
+        assert_eq!(prior.output_tokens, Some(2000));
+        assert_eq!(prior.cached_read_tokens, Some(500));
+        assert_eq!(prior.cached_write_tokens, Some(100));
+        assert_eq!(prior.total_tokens, Some(5100));
+    }
+
+    #[test]
+    fn prior_session_metrics_defaults_when_no_snapshot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("nonexistent.snapshot.json");
+        let prior = super::read_prior_session_metrics(&snapshot_path);
+        assert_eq!(prior.used_tokens, None);
+        assert_eq!(prior.context_window_size, None);
+        assert_eq!(prior.total_cost_usd, None);
+        assert_eq!(prior.input_tokens, None);
+        assert_eq!(prior.output_tokens, None);
+        assert_eq!(prior.cached_read_tokens, None);
+        assert_eq!(prior.cached_write_tokens, None);
+        assert_eq!(prior.total_tokens, None);
+    }
+
+    #[test]
+    fn prior_session_metrics_reads_null_token_fields_as_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let snapshot_path = dir.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":null,"outputTokens":null,"totalTokens":null,
+            "timing":{"sessionElapsedSeconds":300}
+        }"#,
+        )
+        .unwrap();
+        let path = camino::Utf8Path::from_path(&snapshot_path).unwrap();
+        let prior = super::read_prior_session_metrics(path);
+        assert_eq!(prior.input_tokens, None);
+        assert_eq!(prior.output_tokens, None);
+        assert_eq!(prior.total_tokens, None);
     }
 }

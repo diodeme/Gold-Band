@@ -12,7 +12,7 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
 
 1. Read the current task attachments, artifacts, and predecessor reports declared by the runtime context. If only predecessor nodes are provided without a file list, first try to obtain the corresponding artifacts by node.
 2. Consolidate final facts without reinterpreting or beautifying failures.
-3. Archive the current requirement materials under `.gold-band/docs/tasks/<requirement-slug>/`.
+3. Archive the current requirement materials under `<project data directory>/docs/tasks/<requirement-slug>/`.
 4. Summarize follow-up items that do not block acceptance for this round.
 5. Summarize reusable lessons from this round.
 6. Inspect the git working tree and handle only files related to this requirement; do not touch the user's unrelated changes.
@@ -22,10 +22,10 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
 
 ## Archive directory
 
-Create a directory under `.gold-band/docs/tasks/` using the requirement slug:
+Create a directory under the project data directory's `docs/tasks/` using the requirement slug (the project data directory name is given as `config_dir_name` in the system prompt runtime context):
 
 ```text
-.gold-band/docs/tasks/<requirement-slug>/
+<project data directory>/docs/tasks/<requirement-slug>/
   requirements.md
   tech-plan.md
   dev-report.md

@@ -928,6 +928,10 @@ const resources = {
           questionFallback: "请选择一个答案",
           customPlaceholder: "其他答案...",
           backToOptions: "返回选项",
+          skipped: "已跳过",
+          skipQuestion: "跳过此问题",
+          multiSeparator: "、",
+          fieldSeparator: "，",
         },
         usagePanel: {
           contextWindow: "上下文窗口",
@@ -1121,6 +1125,7 @@ const resources = {
           configureNow: "去配置",
           configureAuto: "修改 AUTO",
           configureWorkflow: "修改工作流",
+          includeInterview: "需求采访",
         },
         runtime: {
           justNow: "刚刚",
@@ -2185,6 +2190,10 @@ const resources = {
           questionFallback: "Choose an answer",
           customPlaceholder: "Other...",
           backToOptions: "Back to options",
+          skipped: "Skipped",
+          skipQuestion: "Skip this question",
+          multiSeparator: ",",
+          fieldSeparator: ", ",
         },
         usagePanel: {
           contextWindow: "Context Window",
@@ -2388,6 +2397,7 @@ const resources = {
           configureNow: "Configure",
           configureAuto: "Edit AUTO",
           configureWorkflow: "Edit Workflow",
+          includeInterview: "Requirement Interview",
         },
         runtime: {
           justNow: "Just now",

@@ -712,8 +712,8 @@ export interface AcpPermissionOptionVm {
   kind: string;
 }
 
-// Toast「查看详情」点击后后端 emit 的导航事件 payload（含完整定位字段 + dedupKey）。
-// 应用内不再保留右上角弹窗；系统级 Toast 是唯一干预提醒表面。
+// Navigation payload emitted after clicking "View details" in a system toast.
+// It carries the complete attempt locator and a deduplication key.
 export interface InterventionNavigateEventVm {
   taskId: string;
   runId: string;
@@ -874,7 +874,7 @@ export type RoundSelection = RoundSelectionContext & (
   | { kind: 'log'; id: string; nodeId?: string; attemptId?: string }
 );
 
-// ── Conversation UI types ──
+// Conversation UI types
 
 export type DesktopUiMode = 'conversation' | 'workbench';
 
@@ -1060,6 +1060,7 @@ export interface ConversationActiveSessionVm {
 export interface ConversationRunModeVm {
   mode: 'auto' | 'workflow';
   workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
   autoConfig?: ConversationAutoConfigVm | null;
 }
 
@@ -1086,6 +1087,7 @@ export interface ConversationCreateInput {
   content: string;
   runMode: 'auto' | 'workflow';
   workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
 }
@@ -1117,7 +1119,7 @@ export interface AcpModelVm {
   name: string;
 }
 
-// ── MCP & SKILL types ──
+// MCP and skill types
 
 export interface McpServerHealthResult {
   status: 'healthy' | 'unhealthy' | 'auth_required' | 'unknown';

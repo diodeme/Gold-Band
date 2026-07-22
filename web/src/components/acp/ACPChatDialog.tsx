@@ -2203,6 +2203,35 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
+  const declineElicitation = async (elicitationId: string) => {
+    setAnsweredElicitations((current) => {
+      const next = new Map(current);
+      next.set(elicitationId, { __declined: true });
+      return next;
+    });
+    try {
+      await respondElicitation(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        elicitationId,
+        "decline",
+        null,
+        outerNodeId,
+        outerAttemptId,
+      );
+    } catch {
+      setAnsweredElicitations((current) => {
+        const next = new Map(current);
+        next.delete(elicitationId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
     if (
       !queuedInterventionPrompt ||
@@ -2440,12 +2469,14 @@ export const ACPChatDialog = forwardRef<
                     elicitationId={pendingElicitation.elicitationId}
                     message={pendingElicitation.message}
                     schema={pendingElicitation.requestedSchema}
-                    confirmedContent={pendingElicitation.confirmedContent}
                     onRespond={(content) =>
                       answerElicitation(
                         pendingElicitation.elicitationId,
                         content,
                       )
+                    }
+                    onDecline={() =>
+                      declineElicitation(pendingElicitation.elicitationId)
                     }
                   />
                 ) : null}
@@ -4868,9 +4899,13 @@ interface PendingElicitationVm {
   elicitationId: string;
   message: string;
   requestedSchema: ElicitationSchema;
-  confirmedContent?: Record<string, unknown> | null;
 }
 
+/**
+ * Scan events backward to find the latest unanswered pending elicitation.
+ * The request/response events are durable interaction state, while the normal
+ * AskUserQuestion tool call remains responsible for historical display.
+ */
 export function pendingElicitationFromEvents(
   events: AcpUiEventVm[],
   answeredElicitations: Map<string, Record<string, unknown>>,

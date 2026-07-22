@@ -1,11 +1,10 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { cn } from "@/lib/utils";
-import { Check, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
+import { Ban, Check, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 
 export interface ElicitationSchema {
   type: "object";
@@ -28,36 +27,8 @@ export interface ElicitationCardProps {
   elicitationId: string;
   message: string;
   schema: ElicitationSchema;
-  onRespond: (content: Record<string, unknown>) => void;
-  /** 已确认的回答内容，设置后卡片变为只读展示态 */
-  confirmedContent?: Record<string, unknown> | null;
-}
-
-function formatConfirmedChoice(
-  schema: ElicitationSchema,
-  content: Record<string, unknown>,
-): string {
-  if (!schema.properties) return JSON.stringify(content);
-  const labels: string[] = [];
-  for (const [key, prop] of Object.entries(schema.properties)) {
-    const val = content[key];
-    if (val === undefined || val === null) continue;
-    if (prop.oneOf) {
-      const match = prop.oneOf.find((o) => o.const === val);
-      labels.push(match?.title ?? String(val));
-    } else if (prop.anyOf && Array.isArray(val)) {
-      const matches = val
-        .map(
-          (v: unknown) =>
-            prop.anyOf!.find((o) => o.const === String(v))?.title ?? String(v),
-        )
-        .join("、");
-      labels.push(matches);
-    } else if (typeof val === "string" && val.trim()) {
-      labels.push(val.trim());
-    }
-  }
-  return labels.length > 0 ? labels.join("；") : JSON.stringify(content);
+  onRespond?: (content: Record<string, unknown>) => void;
+  onDecline?: () => void;
 }
 
 export function elicitationOptions(
@@ -122,7 +93,7 @@ export function ElicitationCard({
   message,
   schema,
   onRespond,
-  confirmedContent,
+  onDecline,
 }: ElicitationCardProps) {
   const { t } = useTranslation();
 
@@ -208,7 +179,7 @@ export function ElicitationCard({
     setCustomActive(false);
   }, [currentStep]);
 
-  // ── elicitationId 变化时完全重置（key prop 已保证重新挂载，此处是兜底）──
+  // elicitationId 变化时完全重置（key prop 已保证重新挂载，此处是兜底）
   useEffect(() => {
     setCurrentStep(0);
     setAnswers({});
@@ -218,7 +189,7 @@ export function ElicitationCard({
     setCustomActive(false);
   }, [elicitationId]);
 
-  // ── 构建完整 content ──
+  // 构建完整 content
   const buildContent = useCallback(
     (overrides?: Record<string, unknown>) => {
       const merged = { ...answers, ...overrides };
@@ -242,16 +213,23 @@ export function ElicitationCard({
     [fields, answers],
   );
 
-
-  // ── 步骤提交：保存答案 → 下一步或最终提交 ──
+  // 步骤提交：保存答案 → 下一步或最终提交
   const handleStepSubmit = useCallback(
     (value: unknown, fieldKey?: string) => {
       if (!currentField) return;
       const ek = fieldKey ?? (currentField.key as string);
-      const nextAnswers = { ...answers, [ek]: value };
+      // When the user types custom text for a select field, the value is
+      // submitted under the _custom variant key. Also set the main field key
+      // to the same value so the agent always receives a non-empty answer
+      // regardless of which key it reads.
+      const isCustomVariant = fieldKey != null && fieldKey !== currentField.key;
+      const overrides: Record<string, unknown> = isCustomVariant
+        ? { [ek]: value, [currentField.key as string]: value }
+        : { [ek]: value };
+      const nextAnswers = { ...answers, ...overrides };
       if (isLastStep) {
-        const content = buildContent({ [ek]: value });
-        onRespond(content);
+        const content = buildContent(overrides);
+        onRespond?.(content);
       } else {
         setAnswers(nextAnswers);
         setCurrentStep((prev) => prev + 1);
@@ -260,38 +238,23 @@ export function ElicitationCard({
     [answers, currentField, isLastStep, buildContent, onRespond],
   );
 
-
-  // ── 跳过当前步骤 ──
+  // 跳过当前步骤
   const handleSkip = useCallback(() => {
     if (!currentField) return;
     if (isLastStep) {
       const content = buildContent();
-      onRespond(content);
+      onRespond?.(content);
     } else {
       setCurrentStep((prev) => prev + 1);
     }
   }, [currentField, isLastStep, buildContent, onRespond]);
 
-  // ── 回退到上一步 ──
+  // 回退到上一步
   const handleBack = useCallback(() => {
     if (currentStep > 0) {
       setCurrentStep((prev) => prev - 1);
     }
   }, [currentStep]);
-
-  // ── 已确认状态：只读展示 ──
-  if (confirmedContent) {
-    const choice = formatConfirmedChoice(schema, confirmedContent);
-    return (
-      <Card className="my-2 gap-0 py-0 border-primary/20 bg-background">
-        <CardContent className="flex items-center gap-2 py-2.5 text-sm">
-          <Check className="size-4 text-primary shrink-0" />
-          <span className="text-muted-foreground">{message}</span>
-          <span className="font-medium">{choice}</span>
-        </CardContent>
-      </Card>
-    );
-  }
 
   if (!currentField) {
     return null;
@@ -368,35 +331,33 @@ export function ElicitationCard({
         {/* 单选：选中态 + 确认按钮 */}
         {currentField.isSelect && !currentField.isMulti && (
           <div className="space-y-1">
-            {!customActive ? (<>
-              {currentField.options!.map((o) => {
-                const sel = selectedValue === o.value;
-                return (<button key={o.value} type="button" onClick={() => setSelectedValue(o.value)}
+            {currentField.options!.map((o) => {
+              const sel = !customActive && selectedValue === o.value;
+              return (<button key={o.value} type="button"
+                  onClick={() => { setSelectedValue(o.value); setCustomActive(false); setCustomText(""); }}
                   className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
                     sel ? "border-primary bg-primary/5 shadow-sm" : "hover:border-primary/40 hover:bg-muted/50",
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
                 ><span className="font-medium">{o.label}</span>
                   {sel ? <Check className="size-4 text-primary shrink-0" /> : <ChevronRight className="size-4 opacity-0 transition-opacity group-hover:opacity-50 text-muted-foreground" />}</button>);
-              })}
-              {currentField.hasCustomVariant && (
-                <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
-                  className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
-                    "hover:border-primary hover:text-foreground")}
-                ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
-              )}
-            </>) : (
+            })}
+            {currentField.hasCustomVariant && !customActive && (
+              <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
+                className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
+                  "hover:border-primary hover:text-foreground")}
+              ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
+            )}
+            {currentField.hasCustomVariant && customActive && (
               <div className="space-y-1.5">
                 <button type="button" onClick={() => { setCustomActive(false); setCustomText(""); }}
                   className={cn("text-xs text-muted-foreground hover:text-foreground transition-colors")}
                 >← {t("acp.elicitation.backToOptions", "返回选项")}</button>
-                <div className="flex gap-2">
-                  <Input autoFocus value={customText}
-                    onChange={(e) => setCustomText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && customText.trim()) {
-                      handleStepSubmit(customText.trim(), currentField.customVariantKey); }}}
-                    placeholder={currentField.customVariantDescription || t("acp.elicitation.customPlaceholder", "输入答案后按回车...")}
-                    className="flex-1" />
-                </div>
+                <Input autoFocus value={customText}
+                  onChange={(e) => setCustomText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && customText.trim()) {
+                    handleStepSubmit(customText.trim(), currentField.customVariantKey); }}}
+                  placeholder={currentField.customVariantDescription || t("acp.elicitation.customPlaceholder", "输入答案后按回车...")}
+                  className="flex-1" />
               </div>
             )}
           </div>
@@ -492,7 +453,19 @@ export function ElicitationCard({
 
         {/* ── 操作按钮区 ── */}
         <div className="flex items-center justify-between pt-0.5">
-          {BackButton}
+          <div className="flex items-center gap-2">
+            {BackButton}
+            {onDecline && (
+              <button
+                type="button"
+                onClick={onDecline}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Ban className="size-3" />
+                {t("acp.elicitation.skipQuestion", "跳过此问题")}
+              </button>
+            )}
+          </div>
           <div className="ml-auto flex items-center gap-1.5">
             {/* 跳过按钮（非必填字段） */}
             {!currentIsRequired && (

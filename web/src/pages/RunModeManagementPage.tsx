@@ -215,7 +215,7 @@ export function RunModeManagementPage({
   const [autoTemplatePickerOpen, setAutoTemplatePickerOpen] = useState(false);
   const autoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Workflow template editor state ──
+  // Workflow template editor state
   const [wfEditTemplateId, setWfEditTemplateId] = useState<string | null>(null);
   const [wfEditWorkflow, setWfEditWorkflow] = useState<WorkflowDsl | null>(null);
   const [wfTemplatePickerOpen, setWfTemplatePickerOpen] = useState(false);
@@ -476,7 +476,7 @@ export function RunModeManagementPage({
     showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateDeleted') });
   };
 
-  // ── Workflow template editor helpers ──
+  // Workflow template editor helpers
   const initWfEditor = () => {
     const preselectedId = workflowTemplateId || effectiveWorkflowTemplates?.lastUsedTemplateId;
     const initialTemplate = preselectedId
@@ -1046,28 +1046,29 @@ export function RunModeManagementPage({
             {/* Embedded workflow editor */}
             <div className="min-h-[480px] min-w-0">
               {wfEditWorkflow ? (
-                <WorkflowEditor
-                  value={wfEditWorkflow}
-                  agentRegistry={agentRegistry}
-                  profiles={profiles}
-                  workflowTemplates={effectiveWorkflowTemplates}
-                  currentTemplateId={wfEditTemplateId}
-                  currentTemplateName={selectedWfTemplate?.name ?? null}
-                  showSaveAction={false}
-                  allowAiDynamic={true}
-                  onChange={setWfEditWorkflow}
-                  onSave={async () => {
-                    if (canUpdateWfTemplate) await saveWfCurrent();
-                    else await saveWfAsNew();
-                  }}
-                />
-              ) : (
+                  <WorkflowEditor
+                    value={wfEditWorkflow}
+                    agentRegistry={agentRegistry}
+                    profiles={profiles}
+                    workflowTemplates={effectiveWorkflowTemplates}
+                    currentTemplateId={wfEditTemplateId}
+                    currentTemplateName={selectedWfTemplate?.name ?? null}
+                    showSaveAction={false}
+                    allowAiDynamic={true}
+                    onChange={setWfEditWorkflow}
+                    onSave={async () => {
+                      if (canUpdateWfTemplate) await saveWfCurrent();
+                      else await saveWfAsNew();
+                    }}
+                  />
+              ) : null}
+              {!wfEditWorkflow ? (
                 <div className="flex h-[480px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
                   {workflowTemplateList.length > 0
                     ? t('taskList.create.newWorkflowTemplate')
                     : t('taskList.create.noWorkflowTemplate')}
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         )}

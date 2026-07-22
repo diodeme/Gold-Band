@@ -1443,7 +1443,7 @@ export function App() {
           onSubmit={async (input) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'auto'
               ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId };
+              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
             setConversationRunMode(nextMode);
             setBusy(true);
             saveConversationRunMode(input.projectId, nextMode).catch(() => {});

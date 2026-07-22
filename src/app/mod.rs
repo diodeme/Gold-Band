@@ -118,13 +118,15 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
     paths
 }
 
+pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
     language: DesktopLanguage,
 ) -> WorkflowTemplate {
     let now = now_rfc3339_like();
     WorkflowTemplate {
-        id: "default".to_string(),
+        id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: "默认工作流".to_string(),
         workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
         created_at: now.clone(),
@@ -211,12 +213,21 @@ fn default_workflow_dsl(
     WorkflowDsl {
         version: "0.1".to_string(),
         id: "task-workflow".to_string(),
-        entry: "plan".to_string(),
+        entry: "interview".to_string(),
         control: WorkflowControl {
             max_attempts: None,
             max_rounds: None,
         },
         nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "interview",
+                "interview",
+                "Conduct a deep interview to clarify the requirement and produce a clear specification.",
+                false,
+                false,
+            ),
             worker(
                 provider,
                 profiles,
@@ -273,6 +284,13 @@ fn default_workflow_dsl(
             ),
         ],
         edges: vec![
+            EdgeDsl {
+                from: "interview".to_string(),
+                to: "plan".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
             EdgeDsl {
                 from: "plan".to_string(),
                 to: "dev".to_string(),
@@ -4286,5 +4304,33 @@ mod tests {
         let state = app.load_state().unwrap();
         assert_eq!(state.recent_desktop_workspaces.len(), 8);
         assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/Repo9");
+    }
+    #[test]
+    fn default_workflow_interview_node_succeeds_without_manual_check() {
+        let paths =
+            crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
+        let profiles = super::ensure_default_user_profiles(&paths).unwrap();
+        let workflow = super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+
+        let interview = workflow
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                NodeDsl::Worker(worker) if worker.id == "interview" => Some(worker),
+                _ => None,
+            })
+            .expect("default workflow contains an interview node");
+        let interview_node = NodeDsl::Worker(interview.clone());
+
+        // 采访节点默认成功：不开启人工 check，也没有 AI 输出验证，
+        // 产出 interview-spec.md 后直接走默认成功分支，无需人工判定。
+        assert!(
+            !interview_node.manual_check_enabled(),
+            "interview node must default to no manual check"
+        );
+        assert!(
+            interview.output.is_none() && interview.success_condition.is_none(),
+            "interview node must declare no output contract or success condition"
+        );
     }
 }

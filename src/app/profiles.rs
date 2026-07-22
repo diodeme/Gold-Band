@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
@@ -14,8 +15,9 @@ use crate::frontmatter::{
 };
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
-    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN, prompt_by_language,
+    PROFILE_DEV_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
+    PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
+    PROFILE_TEST_ZH_CN, prompt_by_language,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -162,6 +164,12 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         id: "pf-builtin-cleanup",
         name: "清理",
         summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+    },
+    DefaultProfileSeed {
+        key: "interview",
+        id: "pf-builtin-interview",
+        name: "访谈",
+        summary: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
     },
 ];
 
@@ -324,6 +332,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static st
         "test" => prompt_by_language(language, PROFILE_TEST_ZH_CN, PROFILE_TEST_EN),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN_ZH_CN, PROFILE_CLEAN_EN),
+        "interview" => prompt_by_language(language, PROFILE_INTERVIEW_ZH_CN, PROFILE_INTERVIEW_EN),
         _ => "",
     }
 }
@@ -346,7 +355,13 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
         if path.extension() != Some("md") {
             continue;
         }
-        let parsed = parse_profile_file(&path)?;
+        let parsed = match parse_profile_file(&path) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                warn!("skipping unreadable profile `{path}`: {:#}", error);
+                continue;
+            }
+        };
         profiles.push(ProfileEntry {
             id: parsed.id,
             name: parsed.name,
@@ -631,5 +646,47 @@ profile body
         .unwrap_err();
 
         assert!(err.to_string().contains("unknown field `scope`"));
+    }
+
+    #[test]
+    fn read_profile_dir_skips_corrupt_profile_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+
+        let good = paths.user_context_profiles_dir().join("role-pf-good.md");
+        fs::write(
+            good.as_std_path(),
+            "---\nid: pf-good\nname: role\nsummary: ok\ncreatedAt: 2026-07-09 10:00:00\nupdatedAt: 2026-07-09 10:00:00\n---\nbody\n",
+        )
+        .unwrap();
+
+        let corrupt = paths.user_context_profiles_dir().join("broken-pf-bad.md");
+        fs::write(corrupt.as_std_path(), "no front matter here\n").unwrap();
+
+        let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "pf-good");
+    }
+
+    #[test]
+    fn read_profile_dir_reads_bom_prefixed_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+
+        let path = paths.user_context_profiles_dir().join("role-pf-bom.md");
+        fs::write(
+            path.as_std_path(),
+            "\u{FEFF}---\nid: pf-bom\nname: role\nsummary: bom\ncreatedAt: 2026-07-09 10:00:00\nupdatedAt: 2026-07-09 10:00:00\n---\nbody\n",
+        )
+        .unwrap();
+
+        let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "pf-bom");
     }
 }

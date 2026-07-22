@@ -213,7 +213,7 @@ fn get_system_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-const HEARTBEAT_INTERVAL_SECS: u64 = 300; // 5 minutes
+const HEARTBEAT_INTERVAL_SECS: u64 = 900; // 15 minutes
 
 pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
@@ -286,6 +286,7 @@ pub struct NodeMetricItem {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reported_at: Option<String>,
+    pub session_elapsed_seconds: u64,
 }
 
 #[derive(Serialize)]
@@ -350,6 +351,7 @@ pub fn start_sentinel_metric(
         total_tokens: 0,
         status: "SUCCESS".to_string(),
         reported_at: Some(reported_at.to_string()),
+        session_elapsed_seconds: 0,
     }
 }
 
@@ -436,14 +438,27 @@ pub fn create_metrics_subscriber<R: Runtime>(
                 let predecessor_item = match &predecessor {
                     Some(pred) => {
                         // Read predecessor tokens from ITS attempt_dir
-                        let (input_tokens, output_tokens, cache_read_tokens, total_tokens) = pred
+                        let (
+                            input_tokens,
+                            output_tokens,
+                            cache_read_tokens,
+                            total_tokens,
+                            session_elapsed_seconds,
+                        ) = pred
                             .attempt_dir
                             .as_ref()
                             .map(|d| {
                                 let path = Utf8PathBuf::from(d).join("acp.session.json");
-                                gold_band::acp::events::read_session_tokens(&path)
+                                let m = gold_band::acp::events::read_session_metrics(&path);
+                                (
+                                    m.input_tokens,
+                                    m.output_tokens,
+                                    m.cache_read_tokens,
+                                    m.total_tokens,
+                                    m.session_elapsed_seconds,
+                                )
                             })
-                            .unwrap_or((0, 0, 0, 0));
+                            .unwrap_or((0, 0, 0, 0, 0));
 
                         NodeMetricItem {
                             workspace: repo_root.clone(),
@@ -462,6 +477,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                             output_tokens,
                             cache_read_tokens,
                             total_tokens,
+                            session_elapsed_seconds,
                             status: pred.status.clone(),
                             reported_at: Some(reported_at.clone()),
                         }
@@ -495,6 +511,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                     output_tokens: 0,
                     cache_read_tokens: 0,
                     total_tokens: 0,
+                    session_elapsed_seconds: 0,
                     status: node_status,
                     reported_at: Some(reported_at.clone()),
                 };
@@ -552,8 +569,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
 
                 // Read tokens from this node's attempt_dir
                 let path = Utf8PathBuf::from(&attempt_dir).join("acp.session.json");
-                let (input_tokens, output_tokens, cache_read_tokens, total_tokens) =
-                    gold_band::acp::events::read_session_tokens(&path);
+                let m = gold_band::acp::events::read_session_metrics(&path);
 
                 let last_node = NodeMetricItem {
                     workspace: repo_root.clone(),
@@ -568,10 +584,11 @@ pub fn create_metrics_subscriber<R: Runtime>(
                     attempt_count: 0,
                     started_at: Some(to_iso8601(&started_at)),
                     ended_at: finished_at.as_ref().map(|s| to_iso8601(s)),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    total_tokens,
+                    input_tokens: m.input_tokens,
+                    output_tokens: m.output_tokens,
+                    cache_read_tokens: m.cache_read_tokens,
+                    total_tokens: m.total_tokens,
+                    session_elapsed_seconds: m.session_elapsed_seconds,
                     status: outcome.clone(),
                     reported_at: Some(reported_at.clone()),
                 };
@@ -598,6 +615,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
                     output_tokens: 0,
                     cache_read_tokens: 0,
                     total_tokens: 0,
+                    session_elapsed_seconds: 0,
                     status: outcome,
                     reported_at: Some(reported_at.clone()),
                 };

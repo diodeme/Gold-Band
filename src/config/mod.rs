@@ -1118,6 +1118,7 @@ pub struct ConversationPin {
 pub struct ConversationRunModeEntry {
     pub mode: String,
     pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
     pub auto_config: Option<ConversationAutoConfig>,
 }
 

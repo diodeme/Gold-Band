@@ -9,6 +9,7 @@ use crate::prompts::{
     render as render_template,
 };
 use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
+use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
 use indexmap::IndexMap;
@@ -987,6 +988,7 @@ struct RuntimePromptTemplateContext {
     node_id: String,
     run_dir: String,
     node_dir: String,
+    config_dir_name: String,
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
@@ -1045,6 +1047,7 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
         node_id: req.runtime_context.node_id.clone(),
         run_dir: req.runtime_context.run_dir.to_string(),
         node_dir: req.runtime_context.node_dir.to_string(),
+        config_dir_name: active_storage_path_config().config_dir_name.to_string(),
         extra_system_sections: joined_extra_system_sections(req),
         profile: RuntimeProfileTemplateContext {
             id: req.profile.clone(),

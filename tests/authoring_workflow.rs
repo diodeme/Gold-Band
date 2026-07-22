@@ -311,6 +311,7 @@ fn default_workflow_template_binds_seeded_profile_ids() {
         .unwrap();
 
     for (node_id, profile_name) in [
+        ("interview", "访谈"),
         ("plan", "方案"),
         ("dev", "开发"),
         ("review", "审查"),
@@ -334,6 +335,8 @@ fn default_workflow_template_binds_seeded_profile_ids() {
         };
         assert_eq!(worker.profile.as_deref(), Some(expected.id.as_str()));
     }
+
+    assert_eq!(default.workflow.entry, "interview");
 }
 
 #[test]
@@ -862,4 +865,34 @@ fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
         gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
     assert_eq!(snapshot.entry, "plan");
     assert_eq!(authoring.entry, "dev");
+}
+
+#[test]
+fn builtin_interview_profile_exists_and_has_content() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let profiles = app.profiles().unwrap();
+    let interview = profiles
+        .profiles
+        .iter()
+        .find(|profile| profile.id == "pf-builtin-interview")
+        .expect("interview builtin profile should exist");
+
+    assert_eq!(interview.name, "访谈");
+    assert!(interview.is_built_in);
+    assert!(
+        !interview.content.trim().is_empty(),
+        "interview profile content must not be empty"
+    );
+    assert!(
+        interview.content.contains("interview-spec.md"),
+        "interview profile must declare its interview-spec.md artifact"
+    );
+
+    let shown = app.profile_show("pf-builtin-interview").unwrap();
+    assert_eq!(shown.id, "pf-builtin-interview");
+    assert!(shown.is_built_in);
+    assert!(!shown.content.trim().is_empty());
 }

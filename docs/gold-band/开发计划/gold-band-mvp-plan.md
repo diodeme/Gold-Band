@@ -52,6 +52,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-07-22：默认工作流“需求采访”开关收敛为 workspace 级偏好，仅在内置 `default` 模板显示；自定义模板拓扑不受影响。elicitation 回答后不再生成独立用户消息气泡，保留 `AskUserQuestion` 工具卡片；response signal 改由 runtime 完成 JSON-RPC 回包后清理，修复 completed run follow-up 提交后卡在“发送中”。
 - 使用 Tauri 2.x + Vite + React + TypeScript 生成桌面端应用。
 - `src-tauri/` 作为桌面后端，通过 path dependency 复用 Rust core 的 `App`、runtime、storage 与 config。
 - `web/` 作为桌面前端，实现左侧一级功能导航 + 右侧递进式任务编排页面栈；点击“任务编排”一级入口会重置到任务列表根页面。

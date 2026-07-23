@@ -323,3 +323,13 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - completed run 上的 follow-up 仍可能存在实时 ACP prompt。后端必须读取 per-attempt `Starting / Running / CancelRequested` 活动状态；只有没有实时活动时，terminal runtime 才能压制磁盘残留的 stale `running` session snapshot。
 - 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，输入锁定、停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复。
 - prompt 写入 terminal session snapshot 前必须先将实时活动标记为 finished，避免终态事件到达后 UI 仍被旧活动状态锁定。
+
+## Agent 单轮回复通知
+
+- 系统通知区分“workflow run 完成”和“ACP prompt turn 完成”。普通 Workflow/AUTO 的自动运行完成继续使用“任务完成”；Direct 首轮、Direct 后续追问，以及 Workflow/AUTO 节点完成后的手动追问统一使用“{Agent} 回复完成 / 回复失败”。
+- 手动追问通知只覆盖 `submit_conversation_prompt -> acp-prompt` 的非 runtime continue 路径。停止/异常后的 runtime continue 仍属于 workflow 生命周期，由既有 intervention/run completion 通知表达，不能同时再发一条 Agent turn 通知。
+- 每个手动 prompt 在进入 ACP 前必须拥有稳定 `turnId`。前端未提供时由后端生成并写入 prompt event；通知去重键必须包含 `run / round / node / attempt / turnId`，同一 attempt 的连续追问不能互相去重。
+- turn 终态统一为 `Completed / Failed / Cancelled`。Completed 和 Failed 产生通知；用户主动停止对应 Cancelled，不产生完成或失败通知。adapter transport interrupted 属于 Failed，不得伪装为用户停止。
+- Direct 首轮仍由内部单 Worker run 驱动，但 `RunCompleted` 事件必须携带从 `authoring/conversation.json` 固化的 Agent 展示身份。通知订阅器不得根据 `direct-agent` 等节点 ID 判断 Direct，也不得依赖当前 UI 工作区回读元数据。
+- 当前窗口失焦、最小化、隐藏，或用户正在查看其他 task/run/session 时发送通知；当前目标 session 正在前台可见时抑制通知。permission 与 elicitation 继续沿用即时通知，不等待 turn 结束。
+- 通知正文不包含 Agent 回复原文、工具参数或附件内容，避免在操作系统通知中心泄露会话正文；点击“查看详情”仍定位到对应 task/run/attempt。

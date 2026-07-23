@@ -90,6 +90,7 @@
 - 删除 `App.intervention_notifier`、`with_intervention_notifier`、`notify_intervention` 和 orchestrator 里直接读取 `app.intervention_notifier` 的逻辑。
 - metrics 改成 lifecycle bus 的 subscriber，继续消费 `NodeStarted/NodeCompleted`。
 - intervention notification 改成 lifecycle bus 的 subscriber，只消费语义化通知事件：`InterventionRequested` 与 `RunCompleted`。`RunPaused` 只保留运行时暂停事实，不再直接等价为系统通知。
+- 2026-07-24 补齐非 runtime ACP turn 通知：通知 subscriber 额外消费 `AcpTurnFinished`。Direct 后续追问与 Workflow/AUTO 节点完成后的手动追问按 turnId 分别发送“Agent 回复完成/失败”；用户主动停止不通知。runtime continue 不发该事件，继续只由 workflow lifecycle 表达，避免与 `RunCompleted` 双重通知。
 - lifecycle/session UI refresh 可以作为 subscriber 或统一 emit 触发点，但只能通知前端重新取/合并后端 lifecycle，不能在 subscriber 里重新定义业务状态。
 
 边界：

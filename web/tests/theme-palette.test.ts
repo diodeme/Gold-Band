@@ -34,29 +34,29 @@ const expectedThemes = {
   },
   dark: {
     selector: /:root,\s*:root\[data-theme='dark'\]\s*\{([\s\S]*?)\n\}/,
-    background: '#0e0e0e',
-    surface: '#1a1a1a',
-    workspace: '#0e0e0e',
+    background: '#181818',
+    surface: '#242424',
+    workspace: '#181818',
     border: '#333333',
-    primary: '#4d9fff',
-    primaryForeground: '#08111f',
-    foreground: '#f7f7f7',
-    muted: '#b8bec8',
-    success: '#23c343',
-    danger: '#f76560',
+    primary: '#313131',
+    primaryForeground: '#f5f5f5',
+    foreground: '#e8e8e8',
+    muted: '#9a9a9a',
+    success: '#59b68b',
+    danger: '#df6b6b',
   },
   black: {
     selector: /:root\[data-theme='black'\]\s*\{([\s\S]*?)\n\}/,
-    background: '#090a0c',
-    surface: '#14161a',
-    workspace: '#060709',
-    border: '#2b3038',
-    primary: '#a1aacb',
-    primaryForeground: '#0d101c',
-    foreground: '#f3f4f6',
-    muted: '#aeb6c3',
-    success: '#35c979',
-    danger: '#f06f6b',
+    background: '#111111',
+    surface: '#1b1b1b',
+    workspace: '#111111',
+    border: '#2b2b2b',
+    primary: '#2d2d2d',
+    primaryForeground: '#f2f2f2',
+    foreground: '#e8e8e8',
+    muted: '#929292',
+    success: '#59b68b',
+    danger: '#df6b6b',
   },
 } as const satisfies Record<ConcreteDesktopTheme, ThemeExpectation>;
 
@@ -107,8 +107,8 @@ describe('desktop theme palettes', () => {
     expect(lightBlock).toContain('--background: #fafafb');
     expect(lightBlock).toContain('--primary: #5b6ba8');
     expect(warmBlock).not.toContain('#f7f2e8');
-    expect(darkBlock).not.toContain('#c7a667');
-    expect(blackBlock).not.toContain('#8295d1');
+    expect(darkBlock).not.toContain('#4d9fff');
+    expect(blackBlock).not.toContain('#a1aacb');
   });
 });
 

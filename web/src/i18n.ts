@@ -982,9 +982,9 @@ const resources = {
         themeWarmLightDescription:
           "暖瓷白与古铜金强调，柔和而不泛黄。",
         themeGoldDark: "石墨深色",
-        themeGoldDarkDescription: "中性石墨灰阶与冷蓝操作色，清晰专注。",
+        themeGoldDarkDescription: "Codex 风格中性炭灰，彩色只保留给状态。",
         themeBlack: "终端黑",
-        themeBlackDescription: "深墨黑与低饱和灰紫强调，安静沉浸。",
+        themeBlackDescription: "同源无彩黑灰，整体更深、更安静。",
         fontDefault: "默认字体 · MiSans",
         fontDefaultDescription: "应用内置，作为所有设备上的稳定默认字体。",
         fontPreview: "字体预览",
@@ -2264,10 +2264,10 @@ const resources = {
           "Warm porcelain surfaces with restrained antique-brass accents.",
         themeGoldDark: "Graphite Dark",
         themeGoldDarkDescription:
-          "Neutral graphite layers with a focused cool-blue action color.",
+          "Codex-like neutral charcoal with color reserved for status.",
         themeBlack: "Terminal Black",
         themeBlackDescription:
-          "Deep ink-black surfaces with restrained gray-violet accents.",
+          "The same achromatic system, tuned darker and quieter.",
         fontDefault: "Built-in default · MiSans",
         fontDefaultDescription:
           "Bundled with the app for consistent rendering across devices.",

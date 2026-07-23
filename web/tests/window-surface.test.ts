@@ -8,8 +8,8 @@ describe('desktop window surface', () => {
   it('maps every concrete theme to the workspace surface used during native resize', () => {
     expect(desktopThemeWindowSurface('light')).toBe('#f1f2f5');
     expect(desktopThemeWindowSurface('light-warm')).toBe('#f0ede7');
-    expect(desktopThemeWindowSurface('dark')).toBe('#0e0e0e');
-    expect(desktopThemeWindowSurface('black')).toBe('#060709');
+    expect(desktopThemeWindowSurface('dark')).toBe('#181818');
+    expect(desktopThemeWindowSurface('black')).toBe('#111111');
   });
 
   it('uses the Windows composition resize path and keeps the window hidden until the first themed frame', () => {

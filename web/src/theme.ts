@@ -68,35 +68,35 @@ export const desktopThemeOptions = [
   {
     id: 'dark',
     mode: 'dark',
-    windowSurface: '#0e0e0e',
+    windowSurface: '#181818',
     labelKey: 'settings.themeGoldDark',
     descriptionKey: 'settings.themeGoldDarkDescription',
     preview: {
-      background: '#0e0e0e',
-      surface: '#1a1a1a',
+      background: '#181818',
+      surface: '#242424',
       border: '#333333',
-      primary: '#4d9fff',
-      foreground: '#f7f7f7',
-      muted: '#b8bec8',
-      success: '#23c343',
-      danger: '#f76560',
+      primary: '#313131',
+      foreground: '#e8e8e8',
+      muted: '#9a9a9a',
+      success: '#59b68b',
+      danger: '#df6b6b',
     },
   },
   {
     id: 'black',
     mode: 'dark',
-    windowSurface: '#060709',
+    windowSurface: '#111111',
     labelKey: 'settings.themeBlack',
     descriptionKey: 'settings.themeBlackDescription',
     preview: {
-      background: '#090a0c',
-      surface: '#14161a',
-      border: '#2b3038',
-      primary: '#a1aacb',
-      foreground: '#f3f4f6',
-      muted: '#aeb6c3',
-      success: '#35c979',
-      danger: '#f06f6b',
+      background: '#111111',
+      surface: '#1b1b1b',
+      border: '#2b2b2b',
+      primary: '#2d2d2d',
+      foreground: '#e8e8e8',
+      muted: '#929292',
+      success: '#59b68b',
+      danger: '#df6b6b',
     },
   },
 ] as const satisfies readonly DesktopThemeOption[];
@@ -129,7 +129,7 @@ export function desktopThemeMode(theme: ConcreteDesktopTheme): DesktopThemeMode 
 }
 
 export function desktopThemeWindowSurface(theme: ConcreteDesktopTheme): string {
-  return desktopThemeOptions.find((option) => option.id === theme)?.windowSurface ?? '#0e0e0e';
+  return desktopThemeOptions.find((option) => option.id === theme)?.windowSurface ?? '#181818';
 }
 
 export function syncDesktopWindowSurface(theme: ConcreteDesktopTheme): Promise<void> {

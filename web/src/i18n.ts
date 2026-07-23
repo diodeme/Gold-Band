@@ -1112,7 +1112,14 @@ const resources = {
           settings: "设置",
         },
         home: {
-          title: "新会话",
+          greeting: {
+            morning: "早上好，今天想一起做点什么？",
+            lateMorning: "上午好，今天想一起做点什么？",
+            noon: "中午好，今天想一起做点什么？",
+            afternoon: "下午好，今天想一起做点什么？",
+            evening: "晚上好，今天想一起做点什么？",
+            lateNight: "夜深了，想一起做点什么？",
+          },
           inputPlaceholder: "输入你的需求…",
           workspace: "工作空间",
           selectWorkspace: "选择工作空间",
@@ -2394,7 +2401,14 @@ const resources = {
           settings: "Settings",
         },
         home: {
-          title: "New Conversation",
+          greeting: {
+            morning: "Good morning. What would you like to work on together today?",
+            lateMorning: "Good morning. What would you like to work on together today?",
+            noon: "Good afternoon. What would you like to work on together today?",
+            afternoon: "How is your afternoon going? What would you like to work on together?",
+            evening: "Good evening. What would you like to work on together today?",
+            lateNight: "It's getting late. What would you like to work on together?",
+          },
           inputPlaceholder: "Describe what you need…",
           workspace: "Workspace",
           selectWorkspace: "Select workspace",

@@ -266,8 +266,14 @@ export function ConversationComposer({
             disabled={busy || submittingAttachments}
           />
           <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
-          <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/40 pt-3">
-            <div className="flex min-w-0 items-center gap-2">
+          <div
+            data-slot="conversation-composer-toolbar"
+            className="mt-3 flex flex-wrap items-center gap-3 border-t border-border/40 pt-3"
+          >
+            <div
+              data-slot="conversation-composer-leading-actions"
+              className="flex min-w-0 flex-1 basis-[15rem] flex-wrap items-center gap-2"
+            >
               <input
                 ref={fileInputRef}
                 type="file"
@@ -291,7 +297,7 @@ export function ConversationComposer({
               ) : null}
               {workspaces.length > 1 ? (
                 <Select value={selectedProjectId} onValueChange={(id) => { setSelectedProjectId(id); onWorkspaceChange(id); }}>
-                  <SelectTrigger className="h-9 min-w-[170px] max-w-[240px] gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
+                  <SelectTrigger className="h-9 min-w-[140px] max-w-[240px] flex-1 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
                       <SelectValue />
@@ -304,13 +310,16 @@ export function ConversationComposer({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="flex h-9 min-w-[170px] max-w-[240px] items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground">
+                <div className="flex h-9 min-w-[140px] max-w-[240px] flex-1 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground">
                   <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
                   <span className="truncate">{workspaceName}</span>
                 </div>
               )}
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div
+              data-slot="conversation-composer-trailing-actions"
+              className="ml-auto flex min-w-0 flex-1 basis-[22rem] flex-wrap items-center justify-end gap-2"
+            >
               {isDirect ? (
                 <>
                   {directModels.length > 0 ? (
@@ -323,7 +332,7 @@ export function ConversationComposer({
                         permissionMode: selectedDirectPermissionMode || undefined,
                       });
                     }}>
-                      <SelectTrigger className="h-8 w-[150px] rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
+                      <SelectTrigger className="h-8 min-w-[130px] max-w-[180px] flex-1 rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
                         <SelectValue placeholder={t('conversation.home.selectModel')} />
                       </SelectTrigger>
                       <SelectContent position="popper" align="end">
@@ -341,7 +350,7 @@ export function ConversationComposer({
                       permissionMode: permissionMode || undefined,
                     });
                   }}>
-                    <SelectTrigger className="h-8 w-[150px] rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
+                    <SelectTrigger className="h-8 min-w-[130px] max-w-[180px] flex-1 rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
                       <SelectValue placeholder={t('runMode.permissionMode')} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="end">

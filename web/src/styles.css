@@ -327,7 +327,7 @@
   }
 
   body {
-    @apply m-0 min-h-[680px] min-w-[1040px] overflow-hidden bg-background font-sans text-foreground;
+    @apply m-0 overflow-hidden bg-background font-sans text-foreground;
   }
 
   #root {
@@ -341,20 +341,6 @@
 
   [data-tauri-drag-region] {
     user-select: none;
-  }
-
-  .app-window-shell {
-    position: relative;
-  }
-
-  .app-window-shell::before {
-    position: absolute;
-    inset: 0;
-    z-index: 60;
-    pointer-events: none;
-    content: "";
-    border: 1px solid var(--gold-window-outline);
-    border-top-color: var(--gold-window-top-outline);
   }
 
   .app-titlebar-drag-region {

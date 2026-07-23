@@ -1,4 +1,6 @@
 import type { ConcreteDesktopTheme, DesktopFontPreference, DesktopThemeMode, DesktopThemePreference } from './types';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isTauriRuntime } from './api/shared';
 
 export interface ThemePreviewPalette {
   background: string;
@@ -126,6 +128,17 @@ export function desktopThemeMode(theme: ConcreteDesktopTheme): DesktopThemeMode 
   return desktopThemeOptions.find((option) => option.id === theme)?.mode ?? 'dark';
 }
 
+export function desktopThemeWindowSurface(theme: ConcreteDesktopTheme): string {
+  return desktopThemeOptions.find((option) => option.id === theme)?.windowSurface ?? '#0e0e0e';
+}
+
+export function syncDesktopWindowSurface(theme: ConcreteDesktopTheme): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
+  return getCurrentWindow()
+    .setBackgroundColor(desktopThemeWindowSurface(theme))
+    .catch(() => {});
+}
+
 export function rememberConcreteThemePreference(theme: ConcreteDesktopTheme) {
   const mode = desktopThemeMode(theme);
   const preferredThemes = preferredThemeByMode();
@@ -165,6 +178,8 @@ export function applyTheme(theme: DesktopThemePreference) {
   if (theme !== 'system') rememberConcreteThemePreference(theme);
   root.dataset.theme = resolved;
   root.classList.toggle('dark', desktopThemeMode(resolved) === 'dark');
+  void syncDesktopWindowSurface(resolved);
+  return resolved;
 }
 
 export function fontFamilyForPreference(font: DesktopFontPreference) {

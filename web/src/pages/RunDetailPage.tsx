@@ -23,7 +23,7 @@ export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinue
   const canStopRun = isRunStoppable(vm.run.status);
 
   return (
-    <Page className="space-y-6 p-8">
+    <Page className="@container/run-detail space-y-6 p-5 xl:p-8">
       <PageHeader
         eyebrow="Run"
         title={vm.run.id}
@@ -36,7 +36,7 @@ export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinue
           </>
         )}
       />
-      <div className="grid min-h-[520px] grid-cols-[420px_minmax(0,1fr)] gap-6">
+      <div className="grid min-h-[520px] grid-cols-1 gap-4 @4xl/run-detail:grid-cols-[minmax(320px,420px)_minmax(0,1fr)] @4xl/run-detail:gap-6">
         <AppCard className="gap-0 py-0">
           <CardHeader className="border-b px-5 py-3 !pb-3"><CardTitle>Rounds</CardTitle></CardHeader>
           <CardContent className="px-0 py-0">

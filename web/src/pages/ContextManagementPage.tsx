@@ -484,28 +484,32 @@ export function ContextManagementPage() {
         >
           {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
           {vm && profileListTab === 'built-in' ? (
-            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-              {builtInProfiles.map((profile) => (
-                <BuiltInProfileCard
-                  key={`${profile.scope}:${profile.id}`}
-                  profile={profile}
-                  onView={() => openSheet('view', profile)}
-                  onEdit={() => openSheet('edit', profile)}
-                />
-              ))}
+            <div className="@container/profile-list">
+              <div className="grid gap-3 p-4 @2xl/profile-list:grid-cols-2 @6xl/profile-list:grid-cols-3">
+                {builtInProfiles.map((profile) => (
+                  <BuiltInProfileCard
+                    key={`${profile.scope}:${profile.id}`}
+                    profile={profile}
+                    onView={() => openSheet('view', profile)}
+                    onEdit={() => openSheet('edit', profile)}
+                  />
+                ))}
+              </div>
             </div>
           ) : null}
           {vm && profileListTab === 'custom' ? (
-            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-              {pagedCustomProfiles.map((profile) => (
-                <CustomProfileCard
-                  key={`${profile.scope}:${profile.id}`}
-                  profile={profile}
-                  onView={() => openSheet('view', profile)}
-                  onEdit={() => openSheet('edit', profile)}
-                  onDelete={() => openDeleteDialog(profile)}
-                />
-              ))}
+            <div className="@container/profile-list">
+              <div className="grid gap-3 p-4 @2xl/profile-list:grid-cols-2 @6xl/profile-list:grid-cols-3">
+                {pagedCustomProfiles.map((profile) => (
+                  <CustomProfileCard
+                    key={`${profile.scope}:${profile.id}`}
+                    profile={profile}
+                    onView={() => openSheet('view', profile)}
+                    onEdit={() => openSheet('edit', profile)}
+                    onDelete={() => openDeleteDialog(profile)}
+                  />
+                ))}
+              </div>
             </div>
           ) : null}
           {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
@@ -1221,7 +1225,7 @@ function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; o
       <CardContent className="flex flex-1 flex-col px-4 pb-0">
         <CardDescription className="line-clamp-3 leading-6">{profile.summary}</CardDescription>
       </CardContent>
-      <CardFooter className="mt-auto justify-end gap-2 px-4 py-4 pt-3">
+      <CardFooter className="mt-auto flex-wrap justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
         <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
       </CardFooter>
@@ -1249,7 +1253,7 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
           <div className="flex gap-1"><dt>{t('contextManagement.updatedAt')}:</dt><dd>{formatLocalDateTime(profile.updatedAt)}</dd></div>
         </dl>
       </CardContent>
-      <CardFooter className="justify-end gap-2 px-4 py-4 pt-3">
+      <CardFooter className="flex-wrap justify-end gap-2 px-4 py-4 pt-3">
         <Button variant="outline" size="sm" onClick={onView}><Eye />{t('common.detail')}</Button>
         <Button variant="outline" size="sm" onClick={onEdit}><Edit />{t('contextManagement.editProfile')}</Button>
         <Button

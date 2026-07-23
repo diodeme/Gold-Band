@@ -423,14 +423,15 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="grid min-h-[620px] gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="@container/workflow-editor">
+      <div className="grid min-h-[620px] gap-3 @5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]">
       <AppCard className="min-h-0 gap-0 overflow-hidden py-0">
-        <CardHeader className="flex flex-row items-center justify-between border-b px-4 py-3">
+        <CardHeader className="flex flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
           <div className="min-w-0">
             <CardTitle>{t('workflowEditor.title')}</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Tabs value={tab} onValueChange={(value) => setTab(value as EditorTab)}>
               <TabsList>
                 <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
@@ -444,7 +445,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
         <CardContent className="min-h-0 flex-1 p-0">
           {tab === 'canvas' ? (
             <div className="relative h-[560px] min-h-0">
-              <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-full border border-border/70 bg-background/75 p-1 shadow-sm shadow-background/20 backdrop-blur-md">
+              <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-background/75 p-1 shadow-sm shadow-background/20 backdrop-blur-md">
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-3 text-xs font-medium hover:bg-muted/80" onClick={addWorkerNode}>
                   <Plus className="size-3.5" />
                   {t('workflowEditor.addWorkerNode')}
@@ -556,6 +557,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
           </ScrollArea>
         </CardContent>
       </AppCard>
+    </div>
     </div>
     </>
   );

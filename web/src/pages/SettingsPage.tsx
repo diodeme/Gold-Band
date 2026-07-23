@@ -209,7 +209,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'appearance' | 'advanced')} className="space-y-4">
-        <TabsList className="grid w-fit grid-cols-3">
+        <TabsList className="grid w-full max-w-md grid-cols-3">
           <TabsTrigger value="general">{t('settings.tabs.general')}</TabsTrigger>
           <TabsTrigger value="appearance">{t('settings.tabs.appearance')}</TabsTrigger>
           <TabsTrigger value="advanced">
@@ -239,7 +239,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         <TabsContent value="appearance" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.appearance')}>
-              <div className="flex items-center justify-between gap-4 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-4 py-2">
                 <div className="min-w-0 space-y-1">
                   <div className="text-sm font-semibold">{t('settings.syncWithOs')}</div>
                   <div className="text-xs text-muted-foreground">{t('settings.syncWithOsDescription')}</div>
@@ -265,7 +265,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
               <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
                 {syncWithOs ? (
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
                     <ThemeSummaryCard
                       eyebrow={t('settings.lightDefaultTheme')}
                       option={preferredLightTheme}
@@ -293,7 +293,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   <SheetHeader className="border-b px-5 py-4">
                     <SheetTitle>{themeDrawerMode === 'light' ? t('settings.chooseLightTheme') : themeDrawerMode === 'dark' ? t('settings.chooseDarkTheme') : t('settings.themeDrawerTitle')}</SheetTitle>
                   </SheetHeader>
-                  <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-2">
+                  <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-2">
                     {(themeDrawerMode === 'all' || themeDrawerMode === 'light') ? (
                       <ThemeOptionGroup
                         title={t('settings.lightThemes')}
@@ -581,9 +581,11 @@ function formatCheckedAt(value: string) {
 
 function SettingsSection({ title, children, divided = false }: { title: ReactNode; children: ReactNode; divided?: boolean }) {
   return (
-    <section className={cn('grid gap-4 px-5 py-5 lg:grid-cols-[160px_minmax(0,1fr)]', divided && 'border-t border-border/45')}>
-      <h2 className="text-base font-semibold text-foreground">{title}</h2>
-      <div className="min-w-0 space-y-4">{children}</div>
+    <section className={cn('@container/settings-section', divided && 'border-t border-border/45')}>
+      <div className="grid gap-4 px-5 py-5 @3xl/settings-section:grid-cols-[160px_minmax(0,1fr)]">
+        <h2 className="text-base font-semibold text-foreground">{title}</h2>
+        <div className="@container/settings-content min-w-0 space-y-4">{children}</div>
+      </div>
     </section>
   );
 }
@@ -614,19 +616,19 @@ interface ThemeSummaryCardProps {
 function ThemeSummaryCard({ eyebrow, option, active = false, buttonLabel, onOpen }: ThemeSummaryCardProps) {
   const { t } = useTranslation();
   return (
-    <div className={cn('flex items-center justify-between gap-4 rounded-lg border border-border/35 bg-transparent p-3 transition-colors', active && 'border-primary/45 bg-primary/[0.04]')}>
-      <div className="flex min-w-0 items-center gap-4">
+    <div className="@container/theme-summary">
+      <div className={cn('grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 transition-colors @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]', active && 'border-primary/45 bg-primary/[0.04]')}>
         <TerminalPreview palette={option.preview} compact />
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">{eyebrow}</span>
-            {active ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">{eyebrow}</span>
+              {active ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
+            </div>
+            <div className="text-base font-semibold">{t(option.labelKey)}</div>
+            <div className="break-words text-xs text-muted-foreground">{t(option.descriptionKey)}</div>
           </div>
-          <div className="text-base font-semibold">{t(option.labelKey)}</div>
-          <div className="text-xs text-muted-foreground">{t(option.descriptionKey)}</div>
-        </div>
+        <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto" onClick={onOpen}>{buttonLabel}</Button>
       </div>
-      <Button variant="outline" className="shrink-0" onClick={onOpen}>{buttonLabel}</Button>
     </div>
   );
 }
@@ -641,7 +643,7 @@ interface ThemeOptionGroupProps {
 
 function ThemeOptionGroup({ title, options, currentTheme, resolvedTheme, onSelect }: ThemeOptionGroupProps) {
   return (
-    <section className="grid gap-3 py-4 lg:grid-cols-[72px_minmax(0,1fr)]">
+    <section className="grid gap-3 py-4 @lg/theme-drawer:grid-cols-[72px_minmax(0,1fr)]">
       <div className="pt-3 text-sm font-semibold text-muted-foreground">{title}</div>
       <div className="grid gap-3">
         {options.map((option) => (

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -33,6 +35,11 @@ describe('AppTitleBar', () => {
 
     expect(html).toContain('common.minimizeWindow');
     expect(html).toContain('common.closeWindow');
+    expect(html).toContain('bg-titlebar text-titlebar-foreground');
+    expect(html).not.toContain('bg-titlebar pr-2.5');
+    expect(html).toContain('w-max flex-none items-stretch pl-2');
+    expect(html.match(/w-11 flex-none/g)).toHaveLength(2);
+    expect(html).toContain('w-12 flex-none');
   });
 
   it('keeps the shared titlebar draggable while excluding interactive controls', () => {
@@ -47,6 +54,14 @@ describe('AppTitleBar', () => {
     expect(html).toContain('data-tauri-drag-region');
     expect(html).toContain('app-titlebar-no-drag');
     expect(html).toContain('data-titlebar-no-drag="true"');
+  });
+
+  it('synchronizes maximize state on native resize and disposes the listener', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
+
+    expect(source).toContain('appWindow.onResized(() =>');
+    expect(source).toContain('unlisten?.()');
+    expect(source).not.toContain('windowControlsRightOffset');
   });
 
   it('does not expose the workbench mode switch', () => {

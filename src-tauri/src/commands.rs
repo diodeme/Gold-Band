@@ -1662,6 +1662,8 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
+        .map_err(command_error)?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;

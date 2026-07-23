@@ -1,16 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canOpenRunModeManagement,
+  CONVERSATION_RUN_MODE_ORDER,
   conversationRunModeOrDefault,
+  directConfigForAgent,
   includeInterviewForSubmit,
   isDefaultWorkflowTemplate,
   mergeConversationRunMode,
   normalizeConversationAutoConfigForSubmit,
+  normalizeConversationDirectConfigForSubmit,
   normalizeOptionalRunModeText,
   optionalRunModeText,
   shouldShowInterviewToggle,
 } from '../src/lib/conversation-run-mode-config';
 
 describe('conversation run mode config text fields', () => {
+  it('keeps quick-session tabs ordered Direct, Workflow, AUTO', () => {
+    expect(CONVERSATION_RUN_MODE_ORDER).toEqual(['direct', 'workflow', 'auto']);
+  });
+
+  it('keeps Direct configuration inside the quick-session composer', () => {
+    expect(canOpenRunModeManagement('direct')).toBe(false);
+    expect(canOpenRunModeManagement('workflow')).toBe(true);
+    expect(canOpenRunModeManagement('auto')).toBe(true);
+  });
   it('uses default AUTO when a workspace has no saved run mode', () => {
     expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'auto' });
     expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'auto' });
@@ -72,6 +85,52 @@ describe('conversation run mode config text fields', () => {
         modelId: 'sonnet',
       },
     });
+  });
+
+  it('normalizes Direct config without adding runtime prompt fields', () => {
+    expect(normalizeConversationDirectConfigForSubmit({
+      agentType: ' codex-acp ',
+      modelId: 'gpt-direct',
+      permissionMode: 'ask',
+    })).toEqual({
+      agentType: 'codex-acp',
+      modelId: 'gpt-direct',
+      permissionMode: 'ask',
+    });
+    expect(normalizeConversationDirectConfigForSubmit({ agentType: '  ' })).toBeUndefined();
+  });
+
+  it('restores Direct model and permission per Agent inside a workspace', () => {
+    const mode = {
+      mode: 'direct' as const,
+      directConfig: { agentType: 'claude-acp', modelId: 'sonnet', permissionMode: 'ask' },
+      directPreferences: {
+        'claude-acp': { agentType: 'claude-acp', modelId: 'sonnet', permissionMode: 'ask' },
+        'codex-acp': { agentType: 'codex-acp', modelId: 'gpt-direct', permissionMode: 'full-access' },
+      },
+    };
+
+    expect(directConfigForAgent(mode, 'codex-acp')).toEqual({
+      agentType: 'codex-acp',
+      modelId: 'gpt-direct',
+      permissionMode: 'full-access',
+    });
+    expect(directConfigForAgent(mode, 'gemini')).toEqual({ agentType: 'gemini' });
+  });
+
+  it('preserves Direct preferences while switching through Workflow and AUTO', () => {
+    const current = {
+      mode: 'direct' as const,
+      directConfig: { agentType: 'codex-acp', modelId: 'gpt-direct' },
+      directPreferences: {
+        'codex-acp': { agentType: 'codex-acp', modelId: 'gpt-direct' },
+      },
+    };
+    const workflow = mergeConversationRunMode(current, { mode: 'workflow', workflowTemplateId: 'default' });
+    const auto = mergeConversationRunMode(workflow, { mode: 'auto', autoConfig: { agentType: 'claude-acp' } });
+
+    expect(auto.directConfig).toEqual(current.directConfig);
+    expect(auto.directPreferences).toEqual(current.directPreferences);
   });
 
   it('preserves workflow template when switching back to AUTO mode', () => {

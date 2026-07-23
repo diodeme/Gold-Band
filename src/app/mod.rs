@@ -207,6 +207,7 @@ fn default_workflow_dsl(
             }),
             permission_mode: Some("bypassPermissions".to_string()),
             manual_check: manual_check.then_some(true),
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         })
     }
 
@@ -3356,6 +3357,7 @@ mod tests {
                 success_condition: None,
                 output: None,
                 manual_check: None,
+                prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             })],
             edges: vec![crate::dsl::EdgeDsl {
                 from: "dev".to_string(),

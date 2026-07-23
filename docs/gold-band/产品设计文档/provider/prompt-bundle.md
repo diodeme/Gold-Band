@@ -307,3 +307,12 @@ Provider 能力中新增 `supports_system_prompt`。支持该能力的 provider 
 ## 8. 一句话总结
 
 > `prompt bundle` 是 provider 调用前的最终模型输入层：system prompt 承载工作流运行约束和输出 DSL，user prompt 承载任务目标、反馈和冷数据索引。
+
+## 9. Prompt Envelope
+
+`WorkerInvocation` 增加冻结的 `promptEnvelope`：
+
+- `runtime-managed`：普通 Workflow/AUTO 节点，继续使用本规范中的 system/user prompt 模板、profile、hidden runtime context、output contract 和 repair 规则。
+- `raw-agent`：仅供 Direct 内部单 Worker 执行壳使用。`systemPrompt` 严格为空；首轮 `userPrompt` 等于用户创建会话时的原始输入，continue `userPrompt` 等于本轮追问原文。
+
+`raw-agent` 不允许注入 Gold Band runtime/profile/goal/hidden/output/repair 文本，也不创建“空提示词”文件。附件、MCP、模型、权限、usage、timing、permission 和 elicitation 不属于 prompt envelope，继续沿用现有 provider 管道。空 system prompt 不写入 ACP `session/new` / `session/load` 的 `_meta.systemPrompt`，也不会被 Codex ACP 内联为 stable hidden block。

@@ -1116,10 +1116,40 @@ pub struct ConversationPin {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunModeEntry {
-    pub mode: String,
+    pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
     pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfig>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub direct_preferences: std::collections::HashMap<String, ConversationDirectConfig>,
     pub auto_config: Option<ConversationAutoConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationRunMode {
+    Direct,
+    Workflow,
+    #[default]
+    Auto,
+}
+
+impl ConversationRunMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Workflow => "workflow",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDirectConfig {
+    pub agent_type: String,
+    pub model_id: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

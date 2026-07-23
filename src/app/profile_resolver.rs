@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 
 use crate::config::{DesktopLanguage, ProfileSource, ResolvedProfileRef};
-use crate::dsl::{NodeDsl, WorkflowDsl};
+use crate::dsl::{NodeDsl, PromptEnvelopeMode, WorkflowDsl};
 use crate::storage::GoldBandPaths;
 
 use super::profiles::find_profile_by_id;
@@ -21,6 +21,18 @@ pub(crate) fn resolve_workflow_profiles(
     let mut profiles = Vec::new();
     for node in &workflow.nodes {
         match node {
+            NodeDsl::Worker(worker) if worker.prompt_envelope == PromptEnvelopeMode::RawAgent => {
+                if worker
+                    .profile
+                    .as_deref()
+                    .is_some_and(|profile| !profile.trim().is_empty())
+                {
+                    bail!(
+                        "raw-agent node `{}` must not be associated with role",
+                        node.id()
+                    );
+                }
+            }
             NodeDsl::Worker(worker) => push_profile(
                 paths,
                 &mut profiles,
@@ -32,6 +44,75 @@ pub(crate) fn resolve_workflow_profiles(
         }
     }
     Ok(ResolvedWorkflowMetadata { profiles })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_workflow_profiles;
+    use crate::config::DesktopLanguage;
+    use crate::dsl::{
+        END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
+    };
+    use crate::storage::GoldBandPaths;
+    use camino::Utf8PathBuf;
+
+    fn worker(prompt_envelope: PromptEnvelopeMode, profile: Option<&str>) -> WorkflowDsl {
+        WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "profile-resolution".to_string(),
+            entry: "worker".to_string(),
+            control: Default::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "worker".to_string(),
+                provider: Some("claude-acp".to_string()),
+                model: None,
+                profile: profile.map(str::to_string),
+                goal: None,
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                manual_check: None,
+                prompt_envelope,
+            })],
+            edges: vec![EdgeDsl {
+                from: "worker".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn raw_agent_worker_does_not_require_role_resolution() {
+        let paths = GoldBandPaths::new(Utf8PathBuf::from("profile-resolver-raw-agent"));
+        let resolved = resolve_workflow_profiles(
+            &paths,
+            &worker(PromptEnvelopeMode::RawAgent, None),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+
+        assert!(resolved.profiles.is_empty());
+    }
+
+    #[test]
+    fn raw_agent_worker_rejects_role_association() {
+        let paths = GoldBandPaths::new(Utf8PathBuf::from("profile-resolver-raw-agent-role"));
+        let error = resolve_workflow_profiles(
+            &paths,
+            &worker(PromptEnvelopeMode::RawAgent, Some("pf-should-not-load")),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not be associated with role")
+        );
+    }
 }
 
 fn push_profile(

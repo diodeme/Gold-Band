@@ -897,8 +897,10 @@ export interface ConversationTaskRowVm {
   taskId: string;
   title: string;
   autoTitle: boolean;
-  runMode: 'auto' | 'workflow';
+  runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
+  agentIdentity?: ConversationAgentIdentityVm | null;
+  lastActivityAt?: string | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
@@ -942,6 +944,7 @@ export interface ConversationRuntimeFacetVm {
 
 export interface ConversationAcpFacetVm {
   status?: string | null;
+  phase?: 'starting' | 'running' | 'cancel-requested' | null;
   active: boolean;
   stopping: boolean;
   terminal: boolean;
@@ -1016,8 +1019,11 @@ export interface ConversationRunVm {
   runId: string;
   title: string;
   autoTitle: boolean;
-  runMode: 'auto' | 'workflow';
+  runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  agentIdentity?: ConversationAgentIdentityVm | null;
+  lastActivityAt?: string | null;
   runStatus: string;
   runOutcome?: string | null;
   sessionTree: ConversationSessionTreeVm;
@@ -1058,10 +1064,24 @@ export interface ConversationActiveSessionVm {
 }
 
 export interface ConversationRunModeVm {
-  mode: 'auto' | 'workflow';
+  mode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
   includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  directPreferences?: Record<string, ConversationDirectConfigVm>;
   autoConfig?: ConversationAutoConfigVm | null;
+}
+
+export interface ConversationDirectConfigVm {
+  agentType: string;
+  modelId?: string | null;
+  permissionMode?: string | null;
+}
+
+export interface ConversationAgentIdentityVm {
+  agentType: string;
+  displayName: string;
+  iconKey: string;
 }
 
 export interface ConversationAutoConfigVm {
@@ -1085,9 +1105,10 @@ export interface ConversationAutoConfigVm {
 export interface ConversationCreateInput {
   projectId: string;
   content: string;
-  runMode: 'auto' | 'workflow';
+  runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
   includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
 }
@@ -1112,6 +1133,9 @@ export interface ConversationSearchResultVm {
   description?: string | null;
   requirementPreview: string;
   latestRun?: ConversationRunSummaryVm | null;
+  runMode: 'direct' | 'auto' | 'workflow';
+  agentIdentity?: ConversationAgentIdentityVm | null;
+  lastActivityAt?: string | null;
 }
 
 export interface AcpModelVm {

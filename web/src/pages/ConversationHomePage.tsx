@@ -14,6 +14,7 @@ interface ConversationHomePageProps {
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -30,6 +31,7 @@ export function ConversationHomePage({
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
 }: ConversationHomePageProps) {
@@ -55,6 +57,7 @@ export function ConversationHomePage({
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
+          onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}
         />

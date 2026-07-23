@@ -144,6 +144,33 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('restores a completed-run live follow-up from backend lifecycle without optimistic state', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'completed',
+          outcome: 'success',
+          pauseReason: null,
+          resumable: false,
+          current: false,
+          active: false,
+          continuable: false,
+          phase: 'provider-running',
+        },
+        acp: { status: 'running', phase: 'running', active: true, stopping: false, terminal: false },
+      }),
+      acpStatus: 'running',
+      sending: false,
+      awaitingResponse: false,
+      waitingForOptimisticPrompt: false,
+    }));
+
+    expect(state.mode).toBe('runtime-active');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canStop).toBe(true);
+    expect(state.showStatus).toBe(true);
+  });
+
   it('keeps stopping locked while ACP is cancelling', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

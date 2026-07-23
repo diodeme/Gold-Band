@@ -434,3 +434,11 @@ RuntimeLifecycleBus
 - 不继续让 dynamic inner `send_acp_prompt` 直接调用 `client::run_prompt`。
 - 不通过简单删除 `suppressStaleRuntimeActive` 解决空白状态；真正的状态归属要移到后端。
 - 不保留 lifecycle 双轨、prompt submit 双轨或 intervention 通知专用回调。
+
+## 2026-07-23：completed-run ACP follow-up 生命周期持久化
+
+- 根因确认：旧实现只看持久化 session status，并在 runtime terminal 时无条件压制 ACP active；前端只能用组件本地 `awaitingResponse` 补齐，因此页面切换后丢失思考中、计时和停止能力。
+- 修复：provider control 以 attempt 为键暴露 `Starting / Running / CancelRequested`。连接启动前即注册 Starting，terminal session snapshot 写入前标记 finished。
+- lifecycle composer 继续是唯一业务状态源：terminal runtime + live prompt 仍派生为 active/stopping；terminal runtime + 无 live prompt 才压制 stale `running`。
+- `activeSessions`、selected leaf、composer、停止按钮和页面重挂载统一消费该 lifecycle；前端 optimistic 状态仅覆盖 command 往返窗口。
+- 已增加 Rust lifecycle matrix 与 Web composer 回归，覆盖 completed + Starting/Running/CancelRequested 以及无 optimistic state 的重挂载恢复。

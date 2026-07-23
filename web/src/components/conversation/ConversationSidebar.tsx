@@ -10,6 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -374,8 +375,14 @@ export function canOpenConversationSidebarRunMenu(scope: 'task' | 'run') {
   return scope === 'run';
 }
 
-export function shouldShowConversationSidebarRunList(task: { runs: unknown[] }) {
-  return task.runs.length >= 1;
+export function shouldShowConversationSidebarRunList(
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'runs'>,
+) {
+  return task.runMode !== 'direct' && task.runs.length >= 1;
+}
+
+export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>) {
+  return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
 }
 
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
@@ -479,9 +486,12 @@ function TaskRow({
   const hasRuns = shouldShowConversationSidebarRunList(task);
 
   const latestRun = task.latestRun;
+  const isDirect = task.runMode === 'direct';
+  const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
-  const relativeTime = latestRun && latestRun.status !== 'running'
-    ? formatRelativeTime(latestRun.updatedAt, t)
+  const relativeTimeSource = isDirect ? task.lastActivityAt : latestRun?.updatedAt;
+  const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
+    ? formatRelativeTime(relativeTimeSource, t)
     : null;
 
   const handleRowClick = () => {
@@ -534,7 +544,18 @@ function TaskRow({
       )}
       onClick={handleRowClick}
     >
-      <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {useAgentIdentity && task.agentIdentity ? (
+          <img
+            src={agentIconSrc(task.agentIdentity.iconKey)}
+            alt=""
+            title={task.agentIdentity.displayName}
+            className={agentIconClass(task.agentIdentity.iconKey, 'size-3')}
+          />
+        ) : (
+          <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+        )}
+      </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
         {editing ? (
           <input

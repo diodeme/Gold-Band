@@ -190,6 +190,7 @@ export function ConversationRunPage({
   }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
 
   const isRunning = run.runStatus === 'running';
+  const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
   const showLaunchingSession = isRunning && !selectedLeaf;
@@ -288,15 +289,15 @@ export function ConversationRunPage({
     ?? (selectedSessionRuntimeError
       ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
       : null);
-  const canViewWorkflow = canViewConversationRuntimeWorkflow(run, selectedLeaf);
+  const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         lifecycle: selectedLeaf.lifecycle,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
-        workflowValid: run.workflowValid,
-        workflowError: t('conversation.runtime.workflowInvalid'),
-        pauseMessage: translatePauseReason(selectedSessionPauseReason),
-        runtimeError: selectedRuntimeErrorMessage,
+        workflowValid: isDirect || run.workflowValid,
+        workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
+        pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
+        runtimeError: isDirect ? undefined : selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
       }
     : undefined;
@@ -320,7 +321,7 @@ export function ConversationRunPage({
           />
 
           {/* Session switcher dropdown */}
-          {sessionSwitcherOpen ? (
+          {!isDirect && sessionSwitcherOpen ? (
             <div className="absolute right-5 top-12 z-50">
               <ConversationSessionSwitcher
                 tree={run.sessionTree}
@@ -335,7 +336,7 @@ export function ConversationRunPage({
         </div>
 
       {/* Active sessions indicator */}
-      {run.activeSessions.length > 1 ? (
+      {!isDirect && run.activeSessions.length > 1 ? (
         <div className="shrink-0 border-b bg-muted/5 px-5 py-2">
           <div className="flex flex-wrap gap-2">
             {run.activeSessions.map((session) => (
@@ -390,6 +391,7 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
+            showSystemPromptAction={!isDirect}
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}
@@ -423,7 +425,7 @@ export function ConversationRunPage({
       </AlertDialog>
 
       {/* Workflow sheet (edit / view) */}
-      <WorkflowSheet
+      {!isDirect ? <WorkflowSheet
         open={workflowSheet.open}
         mode={workflowSheet.mode}
         workflowJson={run.workflowJson}
@@ -438,7 +440,7 @@ export function ConversationRunPage({
         onClose={handleWorkflowSheetClose}
         onNodeOpenSession={handleWorkflowNodeOpenSession}
         t={t}
-      />
+      /> : null}
     </div>
     </TooltipProvider>
   );

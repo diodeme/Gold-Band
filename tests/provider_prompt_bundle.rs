@@ -40,6 +40,7 @@ fn runtime_context() -> PromptRuntimeContext {
 fn invocation() -> WorkerInvocation {
     WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
+        prompt_envelope: gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
         profile: Some("developer".to_string()),
         profile_content: Some("你是负责实现当前节点的开发角色。".to_string()),
         requirement_path: None,

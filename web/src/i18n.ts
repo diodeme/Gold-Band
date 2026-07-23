@@ -977,14 +977,14 @@ const resources = {
         chooseDarkTheme: "选择深色主题",
         themeDrawerTitle: "选择主题",
         themeDefaultLight: "默认浅色",
-        themeDefaultLightDescription: "白色界面与蓝色强调，适合日间工作。",
+        themeDefaultLightDescription: "瓷白界面与低饱和靛蓝强调，清晰克制。",
         themeWarmLight: "暖色浅色",
         themeWarmLightDescription:
-          "象牙白界面与暖金强调，保留 Gold Band 质感。",
-        themeGoldDark: "Gold Band 深色",
-        themeGoldDarkDescription: "石墨黑界面与香槟金强调，克制且高级。",
+          "暖瓷白与古铜金强调，柔和而不泛黄。",
+        themeGoldDark: "石墨深色",
+        themeGoldDarkDescription: "中性石墨灰阶与冷蓝操作色，清晰专注。",
         themeBlack: "终端黑",
-        themeBlackDescription: "近黑界面与冷蓝强调，更接近代码终端。",
+        themeBlackDescription: "深墨黑与低饱和灰紫强调，安静沉浸。",
         fontDefault: "默认字体 · MiSans",
         fontDefaultDescription: "应用内置，作为所有设备上的稳定默认字体。",
         fontPreview: "字体预览",
@@ -2251,16 +2251,16 @@ const resources = {
         themeDrawerTitle: "Choose theme",
         themeDefaultLight: "Default Light",
         themeDefaultLightDescription:
-          "White surfaces with blue accents for daytime work.",
+          "Porcelain surfaces with restrained indigo accents.",
         themeWarmLight: "Warm Light",
         themeWarmLightDescription:
-          "Ivory surfaces with warm gold accents for Gold Band texture.",
-        themeGoldDark: "Gold Band Dark",
+          "Warm porcelain surfaces with restrained antique-brass accents.",
+        themeGoldDark: "Graphite Dark",
         themeGoldDarkDescription:
-          "Graphite surfaces with champagne accents for a calmer premium feel.",
+          "Neutral graphite layers with a focused cool-blue action color.",
         themeBlack: "Terminal Black",
         themeBlackDescription:
-          "Near-black surfaces with cool blue accents for a terminal feel.",
+          "Deep ink-black surfaces with restrained gray-violet accents.",
         fontDefault: "Built-in default · MiSans",
         fontDefaultDescription:
           "Bundled with the app for consistent rendering across devices.",

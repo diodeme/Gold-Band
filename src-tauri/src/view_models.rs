@@ -2327,7 +2327,11 @@ fn dynamic_internal_graph_vm(
         .enumerate()
         .map(|(index, node)| {
             let current = graph.run.current_node_ids.iter().any(|id| id == &node.id);
-            let pause_reason = graph.run.pause_reason.as_ref().map(enum_label);
+            let pause_reason = node
+                .pause_reason
+                .as_ref()
+                .or(graph.run.pause_reason.as_ref())
+                .map(enum_label);
             let run_status = enum_label(&graph.run.status);
             dynamic_node_graph_vm(
                 app,

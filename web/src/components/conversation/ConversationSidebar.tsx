@@ -622,7 +622,7 @@ function TaskRow({
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
-                      ? 'bg-sidebar-accent text-sidebar-primary'
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
                   )}
                   onPointerDown={(event) => event.preventDefault()}
@@ -688,7 +688,7 @@ function SidebarButton({
       className={cn(
         compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
           : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-        active && 'bg-sidebar-accent text-sidebar-primary',
+        active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}
     >

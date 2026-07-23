@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, mpsc};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -311,7 +311,21 @@ pub struct AdapterConnection {
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialized_capabilities: Mutex<Option<Value>>,
     active_prompts: Mutex<usize>,
+    session_config_transaction: SessionConfigTransaction,
     transport_closed: Mutex<bool>,
+}
+
+#[derive(Debug, Default)]
+struct SessionConfigTransaction {
+    lock: Mutex<()>,
+}
+
+impl SessionConfigTransaction {
+    fn lock(&self) -> Result<MutexGuard<'_, ()>> {
+        self.lock
+            .lock()
+            .map_err(|_| anyhow!("ACP session config transaction lock poisoned"))
+    }
 }
 
 impl AdapterConnection {
@@ -371,6 +385,7 @@ impl AdapterConnection {
             unrouted_warnings: Mutex::new(HashMap::new()),
             initialized_capabilities: Mutex::new(None),
             active_prompts: Mutex::new(0),
+            session_config_transaction: SessionConfigTransaction::default(),
             transport_closed: Mutex::new(false),
         });
 
@@ -399,6 +414,10 @@ impl AdapterConnection {
 
     pub fn adapter(&self) -> &ResolvedAcpAdapter {
         &self.adapter
+    }
+
+    pub(crate) fn lock_session_config_transaction(&self) -> Result<MutexGuard<'_, ()>> {
+        self.session_config_transaction.lock()
     }
 
     pub fn pid(&self) -> u32 {
@@ -1142,16 +1161,33 @@ static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
 mod tests {
     use camino::Utf8PathBuf;
     use serde_json::json;
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
 
     use super::{
-        AdapterConnectionKey, SessionRouteTryRecvError, persist_cancelled_session_snapshot,
-        record_unrouted_warning, session_id_from_frame, session_route_pair,
-        settle_attempt_for_session_close,
+        AdapterConnectionKey, SessionConfigTransaction, SessionRouteTryRecvError,
+        persist_cancelled_session_snapshot, record_unrouted_warning, session_id_from_frame,
+        session_route_pair, settle_attempt_for_session_close,
     };
+
+    #[test]
+    fn session_config_transactions_do_not_overlap() {
+        let transaction = Arc::new(SessionConfigTransaction::default());
+        let first_guard = transaction.lock().unwrap();
+        let waiting_transaction = Arc::clone(&transaction);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let _guard = waiting_transaction.lock().unwrap();
+            entered_tx.send(()).unwrap();
+        });
+
+        assert!(entered_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first_guard);
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        waiter.join().unwrap();
+    }
     use crate::{
         acp::{
             events::{load_timeline_items, permission_request_event, write_timeline_items},

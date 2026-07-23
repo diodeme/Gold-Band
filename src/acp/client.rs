@@ -1221,6 +1221,10 @@ impl<'a> AcpRuntime<'a> {
         permission_mode: Option<&str>,
         model: Option<&str>,
     ) -> Result<()> {
+        // Some adapters persist both options into one process-global config file.
+        // Keep the pair atomic across all sessions sharing this adapter process.
+        let connection = Arc::clone(&self.connection);
+        let _transaction = connection.lock_session_config_transaction()?;
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
             self.set_session_model(m)?;
         }

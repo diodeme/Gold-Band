@@ -612,8 +612,12 @@ fn display_pause_reason_for_dynamic_attempt(
     outer_attempt_id: &str,
     node_id: &str,
     attempt_id: &str,
+    dynamic_node: &gold_band::dynamic::DynamicNodeState,
     run_pause_reason: Option<&str>,
 ) -> Option<String> {
+    if let Some(pause_reason) = dynamic_node.pause_reason.as_ref() {
+        return Some(enum_label(pause_reason));
+    }
     if run_pause_reason.is_some_and(|reason| {
         normalize_lifecycle_code(reason) == "error-blocked"
             || is_runtime_continue_pause_reason(Some(reason))
@@ -930,6 +934,35 @@ fn runtime_error_message(
                 format!("{}：{}", failure.title, failure.message)
             }
         })
+}
+
+fn dynamic_leaf_runtime_error_message(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    leaf: &ConversationSessionLeafVm,
+) -> Option<String> {
+    let (outer_node_id, outer_attempt_id) = leaf
+        .outer_node_id
+        .as_deref()
+        .zip(leaf.outer_attempt_id.as_deref())?;
+    let graph_path = app.paths.dynamic_graph_file(
+        task_id,
+        run_id,
+        &leaf.round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let graph = read_json::<DynamicGraphState>(&graph_path).ok()?;
+    let diagnostic = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == leaf.node_id)?
+        .runtime_error
+        .as_ref()?
+        .diagnostic
+        .trim();
+    (!diagnostic.is_empty()).then(|| format_runtime_error_reason(diagnostic))
 }
 
 fn runtime_error_message_from_summary(summary: &str) -> Option<String> {
@@ -1349,6 +1382,7 @@ pub fn conversation_attempt_lifecycle_vm(
             outer_attempt_id,
             node_id,
             attempt_id,
+            dynamic_node,
             run_pause_reason.as_deref(),
         );
         let runtime_status = if run.status == RunStatus::Paused
@@ -1682,6 +1716,7 @@ pub fn conversation_run_vm(
                                     &latest_attempt.attempt_id,
                                     &dyn_node.id,
                                     dyn_attempt_id,
+                                    dyn_node,
                                     run_pause_reason.as_deref(),
                                 );
                                 let dyn_status = if run.status == RunStatus::Paused
@@ -2039,13 +2074,18 @@ pub fn conversation_run_vm(
     let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
-    let runtime_error_message = runtime_error_message(
-        app,
-        task_id,
-        run_id,
-        run_pause_reason.as_deref(),
-        run_outcome.as_deref(),
-    );
+    let runtime_error_message = selected_leaf
+        .as_ref()
+        .and_then(|leaf| dynamic_leaf_runtime_error_message(app, task_id, run_id, leaf))
+        .or_else(|| {
+            runtime_error_message(
+                app,
+                task_id,
+                run_id,
+                run_pause_reason.as_deref(),
+                run_outcome.as_deref(),
+            )
+        });
 
     let (workflow_valid, workflow_json) = if let Some(ref dsl) = workflow_snapshot {
         (true, Some(serde_json::to_string(dsl).unwrap_or_default()))
@@ -3378,6 +3418,67 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_leaf_pause_reason_overrides_legacy_graph_reason() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "paused",
+            Vec::new(),
+        );
+        write_dynamic_node_pause_details(
+            &app,
+            "runtime-abnormal",
+            Some("session/set_config_option: failed to persist config.toml"),
+        );
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            lifecycle.runtime.pause_reason.as_deref(),
+            Some("runtime-abnormal")
+        );
+        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+    }
+
+    #[test]
+    fn selected_dynamic_leaf_runtime_error_overrides_run_fallback() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "paused",
+            Vec::new(),
+        );
+        write_dynamic_node_pause_details(
+            &app,
+            "runtime-abnormal",
+            Some("provider `codex-acp`: session/set_config_option: failed to persist config.toml"),
+        );
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("provider `codex-acp`: session/set_config_option: failed to persist config.toml")
+        );
+    }
+
+    #[test]
     fn dynamic_leaf_provider_failure_does_not_flash_runtime_error_before_pause_reason() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -4147,6 +4248,30 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    fn write_dynamic_node_pause_details(app: &App, pause_reason: &str, diagnostic: Option<&str>) {
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["nodes"][0]["pauseReason"] = json!(pause_reason);
+        graph["nodes"][0]["runtimeError"] = diagnostic.map_or(json!(null), |diagnostic| {
+            json!({
+                "code": { "domain": "provider", "code": "provider.acp-error" },
+                "domain": "provider",
+                "recovery": "manual",
+                "retryPolicy": null,
+                "params": { "method": "session/set_config_option" },
+                "diagnostic": diagnostic,
+                "raw": null
+            })
+        });
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
     }
 
     fn write_conversation_assets_fixture(app: &App) {

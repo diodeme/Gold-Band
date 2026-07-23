@@ -51,6 +51,10 @@
 - `RunPaused` 与 `RunCompleted` 现在都会通过 `gold-band://conversation-run-state-updated` 触发前端刷新当前 run 与 sidebar；人工 check 从 `launching-next-node` 中间态收敛到 `manual_check_pending` 等待态依赖后端第二帧权威通知，不在前端按 manual check 写补丁判断。
 - `RuntimeStopProbe` 在 attempt-level paused/outcome=null 判断中排除 `manual_check_pending=true`，避免人工 check 判定门被误认为用户停止，普通 ACP 追问可继续发送给 agent，同时 runtime 仍保持 paused 等待成功/失败判定。
 - ACP completed 后继续追问被定义为通用 same-session 新 turn：旧 terminal snapshot 不能压掉当前本地 turn 的发送中/处理中/计时状态；submit 返回 rejected、空 session 或 terminal 且未接受 prompt 时必须显式收敛 optimistic 状态，不能永久卡在“发送中”。
+- AUTO 并行 AI-DYNAMIC 的异常归属已从事件日志提升为状态事实：`DynamicNodeState` 新增结构化 `pauseReason/runtimeError`，leaf 异常时立即持久化；graph 在 sibling 仍运行时保持 running，最后一个 sibling 结束后从 paused leaf 聚合真实原因，不再硬编码 `process-interrupted`。
+- Conversation lifecycle、workflow graph 与选中会话错误展示已改为 leaf-first：优先读取 dynamic leaf 的暂停原因和完整错误链，旧 graph/run reason 与 ACP cancelled 仅作为历史数据回退。恢复目标 leaf 时同步清除其旧错误，其他 paused sibling 不受影响。
+- 共享 ACP adapter 的 session 配置增加 connection-scoped 事务锁，将模型与权限设置作为一个不可交错序列执行，消除 Codex 并行 session 同时写 `config.toml` 的概率性竞争；锁不覆盖后续 prompt 流式执行。
+- 回归测试覆盖：旧 dynamic node JSON 兼容、结构化错误 serde、并行 leaf 异常持久化、sibling 完成后的 graph 原因继承、目标 leaf 恢复清理、ACP 配置事务互斥、完整 anyhow 错误链，以及 Conversation leaf-first 生命周期/错误展示。
 
 ## 最终架构
 

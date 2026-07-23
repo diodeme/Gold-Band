@@ -2341,6 +2341,8 @@ impl App {
             if dynamic_node.status != DynamicNodeStatus::Completed {
                 dynamic_node.status = DynamicNodeStatus::Paused;
                 dynamic_node.outcome = None;
+                dynamic_node.pause_reason = Some(pause_reason);
+                dynamic_node.runtime_error = None;
                 dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
@@ -3654,6 +3656,8 @@ mod tests {
             task: id.to_string(),
             status,
             outcome: None,
+            pause_reason: None,
+            runtime_error: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,

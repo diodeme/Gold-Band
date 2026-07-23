@@ -231,7 +231,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - composer 内也有 stop 按钮（ACP 会话停止）
 - composer 内的 ACP 停止表示“中断当前响应”，不是 workflow 配置错误；停止后的 attempt 应显示为可继续暂停
 - 会话内停止使用 `stop_active_session` 单一路径；旧 UI Run 停止与新 UI 侧边栏 run 右键“停止”使用 `pause_run`。新 UI 侧边栏停止菜单只挂在具体 run 行，不挂在任务/需求标题行；菜单打开和菜单内容二次右键都必须阻止 WebView 原生右键菜单。二者共享普通中断语义但作用域不同：`stop_active_session` 只停止当前 leaf/session，AI-DYNAMIC fan-out 中不会拖停兄弟 leaf；`pause_run` 停止整个 run，会把该 run 下所有 active leaf 一起写成 `paused + process-interrupted` 并分别发送 `session/cancel`。若运行线程控制句柄不可用，则通过 live ACP connection registry 对目标 attempt 的真实 ACP session 发 best-effort `session/cancel`。活跃 ACP runtime 不因 cancel notification 已发出就立刻退出，而是继续 drain 当前 `session/prompt`；cancel timeout 必须暴露为明确错误，不能 kill adapter 伪装成功。停止不是 kill run，不能把 run/round/node/dynamic node 写成 `killed`。
-- 新 UI 侧边栏 task 只要存在 run，就必须展示 run 子列表；只有一个 run 时也展示 `run-001` 行，确保右键停止菜单始终挂在具体 run 行上，而不是回退到 task 行。
+- 新 UI 侧边栏的 Workflow/AUTO task 只要存在 run，就必须展示 run 子列表；只有一个 run 时也展示 `run-001` 行，确保右键停止菜单始终挂在具体 run 行上，而不是回退到 task 行。Direct task 不展示 run 子列表，停止当前回复继续使用会话 composer 内的统一停止入口。
 - 新 UI 侧边栏的置顶区与普通工作区是两个独立的列表区域；同一会话同时出现在两处时，run 子列表开合状态必须按区域隔离。置顶区内部一次只展开一个会话实例，普通工作区内部一次只展开一个会话实例，点击其中一区不得联动展开另一区的同一 task。
 - 新 UI 侧边栏的选中高亮同样按区域隔离；同一会话同时出现在置顶区与普通工作区时，只高亮用户最后交互的那个区域实例，另一处保持普通展示，避免用户误判两处列表被同步选中。
 - 停止期间会话窗口显示全局“正在停止”遮罩，停止正常交互与流式观感；后端只合并已经进入 ACP runtime channel 的事件，不再等待额外文件信号。命令返回后前端按后端 lifecycle 和最终 snapshot 对齐已确认消息。侧边栏 run 级“停止”点击后也必须立即关闭菜单并展示页面级“正在停止当前运行”遮罩；遮罩不只跟随 `pause_run` 命令返回，而是等当前 run VM 刷新确认 run 非 running、active sessions 清空且选中 ACP session 已 terminal 后再消失，避免用户误以为操作没有生效。
@@ -307,3 +307,14 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - runtime 已将输出作为控制候选处理但 JSON 不合法时，也会写入 `parseStatus=invalid` 展示标记；这类消息同样拆分展示为自然语言 + 控制条，展开后展示原始 JSON-like 内容。
 - 未带标记的 assistant JSON 始终按普通 Markdown 消息展示，包括节点完成后的普通追问、用户要求 agent 输出的业务 JSON、调试说明和代码示例。
 - 控制条视觉参考 tool call 的紧凑结构；`parseStatus=valid` 使用 Gold Band 主色和控制清单图标弱强调，`parseStatus=invalid` 使用告警色和告警图标弱强调。收起态只保留单行控制条，展示标题、路由语义和 artifact 名称，不展示 JSON 预览；展开后在控制条下方展示完整格式化 JSON。
+
+## Direct 运行时呈现
+
+- Direct 对用户呈现为一个持续 Agent 对话，不展示 workflow、round/node/attempt path、run outcome、session switcher、重跑或工作流查看/编辑入口。
+- 顶部保留会话标题，并展示 Agent icon、名称、创建时选定的 model 与 permission mode；`runId` 只保留在高级诊断数据中。
+- Direct ACP header 不展示“系统提示”按钮；Direct 的 system prompt 本就为空，不保留无效或禁用态入口。原始帧与其他诊断能力继续保留。
+- 消息、thought、plan、tool call、permission、elicitation、附件、raw frame、token、cost、context 和耗时继续复用现有 ACP/prompt-kit 管道。
+- composer 内的发送中、思考中、工具执行中、回复中、停止中和计时仍由 canonical lifecycle 驱动，不新增 Direct 专用 chat 组件。
+- completed run 上的 follow-up 仍可能存在实时 ACP prompt。后端必须读取 per-attempt `Starting / Running / CancelRequested` 活动状态；只有没有实时活动时，terminal runtime 才能压制磁盘残留的 stale `running` session snapshot。
+- 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，输入锁定、停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复。
+- prompt 写入 terminal session snapshot 前必须先将实时活动标记为 finished，避免终态事件到达后 UI 仍被旧活动状态锁定。

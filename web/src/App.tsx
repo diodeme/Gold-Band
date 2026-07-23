@@ -1441,9 +1441,20 @@ export function App() {
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
-            const nextMode: ConversationRunModeVm = input.runMode === 'auto'
-              ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
+            const nextMode: ConversationRunModeVm = input.runMode === 'direct'
+              ? {
+                mode: 'direct',
+                directConfig: input.directConfig ?? conversationRunMode.directConfig,
+                directPreferences: input.directConfig
+                  ? {
+                    ...conversationRunMode.directPreferences,
+                    [input.directConfig.agentType]: input.directConfig,
+                  }
+                  : conversationRunMode.directPreferences,
+              }
+              : input.runMode === 'auto'
+                ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
+                : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
             setConversationRunMode(nextMode);
             setBusy(true);
             saveConversationRunMode(input.projectId, nextMode).catch(() => {});
@@ -1477,6 +1488,7 @@ export function App() {
               setBusy(false);
             }
           }}
+          onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
@@ -1634,6 +1646,7 @@ export function App() {
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
+        onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
           resetConversationComposerDraft(composerDraftRef.current);

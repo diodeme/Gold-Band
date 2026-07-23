@@ -17,6 +17,7 @@ describe('RunModeTabsToolbar', () => {
     expect(html).toContain('data-testid="run-mode-tabs-toolbar"');
     expect(html).toContain('工作流模板');
     expect(html).toContain('AUTO 设置');
+    expect(html).not.toContain('Direct');
     expect(html).not.toContain('保存</button>');
     expect(html).not.toContain('已保存');
   });

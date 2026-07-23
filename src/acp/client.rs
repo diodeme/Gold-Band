@@ -77,9 +77,17 @@ impl std::error::Error for AcpTransportInterrupted {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderControlState {
+    Starting,
     Running,
     CancelRequested,
     Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptActivity {
+    Starting,
+    Running,
+    CancelRequested,
 }
 
 #[derive(Debug)]
@@ -91,7 +99,7 @@ struct ProviderControl {
 impl ProviderControl {
     fn new() -> Self {
         Self {
-            state: Mutex::new(ProviderControlState::Running),
+            state: Mutex::new(ProviderControlState::Starting),
             cancel_sent: Mutex::new(false),
         }
     }
@@ -108,7 +116,7 @@ impl ProviderControl {
             return false;
         };
         match *state {
-            ProviderControlState::Running => {
+            ProviderControlState::Starting | ProviderControlState::Running => {
                 *state = ProviderControlState::CancelRequested;
                 true
             }
@@ -125,6 +133,14 @@ impl ProviderControl {
         } else {
             *sent = true;
             true
+        }
+    }
+
+    fn mark_running(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && *state == ProviderControlState::Starting
+        {
+            *state = ProviderControlState::Running;
         }
     }
 
@@ -150,6 +166,21 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
         .and_then(|controls| controls.get(&key).cloned())
         .map(|control| control.request_prompt_cancel())
         .unwrap_or(false)
+}
+
+pub fn prompt_activity(attempt_dir: &Utf8Path) -> Option<PromptActivity> {
+    let key = attempt_control_key(attempt_dir);
+    let state = PROVIDER_CONTROLS
+        .lock()
+        .ok()
+        .and_then(|controls| controls.get(&key).cloned())
+        .map(|control| control.state())?;
+    match state {
+        ProviderControlState::Starting => Some(PromptActivity::Starting),
+        ProviderControlState::Running => Some(PromptActivity::Running),
+        ProviderControlState::CancelRequested => Some(PromptActivity::CancelRequested),
+        ProviderControlState::Stopped => None,
+    }
 }
 
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
@@ -497,6 +528,7 @@ pub fn run_prompt(
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
     runtime.record_user_prompt_event(provider_id, prompt, restored, session_update.is_none())?;
+    runtime.control.mark_running();
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -558,6 +590,7 @@ pub fn run_prompt(
                 restored,
                 Some("error".to_string()),
             )?;
+            runtime.control.mark_stopped();
             runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
             if let Some(session_update) = session_update {
                 let _ = session_update();
@@ -573,6 +606,7 @@ pub fn run_prompt(
         restored,
         stop_reason.clone(),
     )?;
+    runtime.control.mark_stopped();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
         let _ = session_update();
@@ -838,6 +872,7 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
+        let control = register_provider_control(&paths.attempt_dir);
         let key = AdapterConnectionKey::new(provider_id, cwd.clone());
         let adapter_started_at = Instant::now();
         let resolution = AdapterConnectionManager::shared()
@@ -849,6 +884,7 @@ impl<'a> AcpRuntime<'a> {
                 require_local_claude_executable,
             )
             .map_err(|error| {
+                unregister_provider_control(&paths.attempt_dir, &control);
                 let _ = append_diagnostic(
                     &paths.diagnostics,
                     "error",
@@ -881,6 +917,7 @@ impl<'a> AcpRuntime<'a> {
             Some(key),
             connection,
             paths,
+            control,
             raw_max_size,
             raw_target_size,
             live_update,
@@ -903,6 +940,7 @@ impl<'a> AcpRuntime<'a> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
         ensure_parent_dir(&paths.raw)?;
         ensure_parent_dir(&paths.diagnostics)?;
+        let control = register_provider_control(&paths.attempt_dir);
         let connection = AdapterConnection::spawn_standalone(
             config,
             &cwd,
@@ -910,6 +948,7 @@ impl<'a> AcpRuntime<'a> {
             require_local_claude_executable,
         )
         .map_err(|error| {
+            unregister_provider_control(&paths.attempt_dir, &control);
             let _ = append_diagnostic(
                 &paths.diagnostics,
                 "error",
@@ -928,6 +967,7 @@ impl<'a> AcpRuntime<'a> {
             None,
             connection,
             paths,
+            control,
             raw_max_size,
             raw_target_size,
             live_update,
@@ -941,6 +981,7 @@ impl<'a> AcpRuntime<'a> {
         connection_key: Option<AdapterConnectionKey>,
         connection: Arc<AdapterConnection>,
         paths: AcpAttemptPaths,
+        control: Arc<ProviderControl>,
         raw_max_size: u64,
         raw_target_size: u64,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
@@ -951,7 +992,6 @@ impl<'a> AcpRuntime<'a> {
             paths.provider_pid.as_std_path(),
             connection.pid().to_string(),
         )?;
-        let control = register_provider_control(&paths.attempt_dir);
         let seq = initial_acp_source_seq(&paths);
         let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
         let timing_state = AcpTimingState::from_timeline_item_refs(&loaded_timeline_items);
@@ -2919,17 +2959,37 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptBundle, PromptVisibility,
+        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle, PromptVisibility,
         RuntimeStopProbe, active_timeline_streams, cleanup_doctor_acp_dir_after_success,
         contributes_to_final_text, merge_tool_raw_input, permission_decision_timeline_event,
-        resolve_permission_mode, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, take_pending_live_update_for_stream_switch,
+        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text,
+        take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn provider_control_exposes_prompt_activity_phases() {
+        let attempt_dir = camino::Utf8Path::new("test/provider-control-activity");
+        let control = register_provider_control(attempt_dir);
+        assert_eq!(prompt_activity(attempt_dir), Some(PromptActivity::Starting));
+
+        control.mark_running();
+        assert_eq!(prompt_activity(attempt_dir), Some(PromptActivity::Running));
+
+        assert!(request_prompt_cancel(attempt_dir));
+        assert_eq!(
+            prompt_activity(attempt_dir),
+            Some(PromptActivity::CancelRequested)
+        );
+
+        unregister_provider_control(attempt_dir, &control);
+        assert_eq!(prompt_activity(attempt_dir), None);
+    }
 
     fn timeline_event(
         id: &str,
@@ -3471,6 +3531,16 @@ mod tests {
             load_params["_meta"]["systemPrompt"]["append"],
             "node constraints"
         );
+    }
+
+    #[test]
+    fn direct_session_setup_omits_empty_system_prompt_metadata() {
+        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "", &[]);
+        assert!(new_params.get("_meta").is_none());
+
+        let load_params =
+            session_load_params(camino::Utf8Path::new("/repo"), "session-123", "", &[]);
+        assert!(load_params.get("_meta").is_none());
     }
 
     #[test]

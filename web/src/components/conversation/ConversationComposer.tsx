@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, Folders } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
+import { Send, Paperclip, Workflow, Bot, Folders, Plus } from 'lucide-react';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { cn } from '@/lib/utils';
-import { includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { selectableAgentOptions, validateAutoConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
+import { selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -24,6 +26,7 @@ interface ConversationComposerProps {
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -40,6 +43,7 @@ export function ConversationComposer({
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
 }: ConversationComposerProps) {
@@ -47,6 +51,9 @@ export function ConversationComposer({
   const composerDraft = useConversationComposerDraft();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
+  const [selectedDirectAgent, setSelectedDirectAgent] = useState(runMode.directConfig?.agentType ?? '');
+  const [selectedDirectModel, setSelectedDirectModel] = useState(runMode.directConfig?.modelId ?? '');
+  const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
@@ -81,12 +88,20 @@ export function ConversationComposer({
   useWindowDragGuard();
 
   const isAuto = runMode.mode === 'auto';
+  const isDirect = runMode.mode === 'direct';
+  const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
-  const agentOptions = selectableAgentOptions(agentRegistry, t);
-  const agents = agentOptions.filter((item) => item.selectable).map((item) => item.agent);
+  const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
+  const agents = useMemo(
+    () => agentOptions.filter((item) => item.selectable).map((item) => item.agent),
+    [agentOptions],
+  );
   const selectedAgentObj = agents.find((a) => a.agentType === selectedAgent);
+  const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
+  const directModels = selectedDirectAgentObj?.supportedModels ?? [];
+  const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
   const templates = workflowTemplates?.templates ?? [];
@@ -94,12 +109,38 @@ export function ConversationComposer({
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
 
   useEffect(() => {
+    const fallbackAgent = runMode.directConfig?.agentType
+      || agents[0]?.agentType
+      || '';
+    const directConfig = fallbackAgent ? directConfigForAgent(runMode, fallbackAgent) : undefined;
+    setSelectedDirectAgent(fallbackAgent);
+    setSelectedDirectModel(directConfig?.modelId ?? '');
+    setSelectedDirectPermissionMode(directConfig?.permissionMode ?? '');
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
     setSelectedModel(runMode.autoConfig?.modelId ?? '');
     setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
-  }, [runMode, workflowTemplates]);
+  }, [runMode, workflowTemplates, agents]);
+
+  const updateDirectConfig = (config: ConversationDirectConfigVm) => {
+    onRunModeChange({
+      mode: 'direct',
+      directConfig: config,
+      directPreferences: {
+        ...runMode.directPreferences,
+        [config.agentType]: config,
+      },
+    });
+  };
+
+  const selectDirectAgent = (agentType: string) => {
+    const remembered = directConfigForAgent(runMode, agentType);
+    setSelectedDirectAgent(agentType);
+    setSelectedDirectModel(remembered.modelId ?? '');
+    setSelectedDirectPermissionMode(remembered.permissionMode ?? '');
+    updateDirectConfig(remembered);
+  };
 
   const patchedValue = <K extends keyof ConversationAutoConfigVm>(
     patch: Partial<ConversationAutoConfigVm>,
@@ -147,17 +188,26 @@ export function ConversationComposer({
       projectId: selectedProjectId,
       content: trimmed,
       runMode: runMode.mode,
-      workflowTemplateId: isAuto ? undefined : selectedWorkflowTemplateId,
+      workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
       includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+      directConfig: isDirect
+        ? normalizeConversationDirectConfigForSubmit({
+          agentType: selectedDirectAgent,
+          modelId: selectedDirectModel || undefined,
+          permissionMode: selectedDirectPermissionMode || undefined,
+        })
+        : undefined,
       autoConfig: isAuto
         ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
         : undefined,
     };
     setSubmittingAttachments(true);
     try {
-      const localIssues = isAuto
-        ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
-        : await validateWorkflowTemplateForConversationStartWithFreshProfiles(
+      const localIssues = isDirect
+        ? validateDirectConfig(inputBase.directConfig, agentRegistry, t)
+        : isAuto
+          ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
+          : await validateWorkflowTemplateForConversationStartWithFreshProfiles(
           inputBase.workflowTemplateId,
           agentRegistry,
           profiles,
@@ -260,10 +310,52 @@ export function ConversationComposer({
                 </div>
               )}
             </div>
-            <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
-              <Send className="size-3.5" />
-              {t('acp.send')}
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              {isDirect ? (
+                <>
+                  {directModels.length > 0 ? (
+                    <Select value={selectedDirectModel || '__default__'} onValueChange={(value) => {
+                      const modelId = value === '__default__' ? '' : value;
+                      setSelectedDirectModel(modelId);
+                      updateDirectConfig({
+                        agentType: selectedDirectAgent,
+                        modelId: modelId || undefined,
+                        permissionMode: selectedDirectPermissionMode || undefined,
+                      });
+                    }}>
+                      <SelectTrigger className="h-8 w-[150px] rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
+                        <SelectValue placeholder={t('conversation.home.selectModel')} />
+                      </SelectTrigger>
+                      <SelectContent position="popper" align="end">
+                        <SelectItem value="__default__">{t('conversation.home.defaultModel')}</SelectItem>
+                        {directModels.map((model) => <SelectItem value={model.id} key={model.id}>{model.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  ) : null}
+                  <Select value={selectedDirectPermissionMode || '__default__'} onValueChange={(value) => {
+                    const permissionMode = value === '__default__' ? '' : value;
+                    setSelectedDirectPermissionMode(permissionMode);
+                    updateDirectConfig({
+                      agentType: selectedDirectAgent,
+                      modelId: selectedDirectModel || undefined,
+                      permissionMode: permissionMode || undefined,
+                    });
+                  }}>
+                    <SelectTrigger className="h-8 w-[150px] rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
+                      <SelectValue placeholder={t('runMode.permissionMode')} />
+                    </SelectTrigger>
+                    <SelectContent position="popper" align="end">
+                      <SelectItem value="__default__">{t('workflowEditor.permissionModeDefault')}</SelectItem>
+                      {directPermissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </>
+              ) : null}
+              <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
+                <Send className="size-3.5" />
+                {t('acp.send')}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -284,36 +376,75 @@ export function ConversationComposer({
         {/* Run mode selector */}
         <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
           <span className="text-xs font-medium text-muted-foreground">{t('conversation.home.runMode')}</span>
-          <div className="flex rounded-lg bg-muted p-0.5">
-            <button
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-                !isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              )}
-              onClick={() => onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview })}
-            >
-              {t('conversation.home.workflow')}
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1 text-xs font-medium transition-colors',
-                isAuto ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              )}
-              onClick={() => onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() })}
-            >
-              {t('conversation.home.auto')}
-            </button>
-          </div>
+          <Tabs value={runMode.mode} onValueChange={(value) => {
+            if (value === 'direct') {
+              const agentType = selectedDirectAgent || agents[0]?.agentType || '';
+              if (agentType) {
+                const config = directConfigForAgent(runMode, agentType);
+                selectDirectAgent(config.agentType);
+              } else {
+                onRunModeChange({ mode: 'direct', directPreferences: runMode.directPreferences });
+              }
+            } else if (value === 'workflow') {
+              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview });
+            } else {
+              onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() });
+            }
+          }}>
+            <TabsList className="h-8">
+              {CONVERSATION_RUN_MODE_ORDER.map((mode) => (
+                <TabsTrigger value={mode} className="px-3 text-xs" key={mode}>
+                  {t(`conversation.home.${mode}`)}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
 
-          <Button variant="ghost" size="sm" className="ml-auto h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
-            <Workflow className="size-3" />
-            {t('conversation.home.configureNow')}
-          </Button>
+          {showRunModeManagement ? (
+            <Button variant="ghost" size="sm" className="ml-auto h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
+              <Workflow className="size-3" />
+              {t('conversation.home.configureNow')}
+            </Button>
+          ) : null}
         </div>
 
-        {isAuto ? (
+        {isDirect ? (
+          <div className="flex min-h-14 items-center gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+            <span className="mr-1 text-xs font-medium text-muted-foreground">{t('conversation.home.selectAgent')}</span>
+            <TooltipProvider>
+              <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent}>
+                <TabsList className="h-10 gap-1 bg-transparent p-0">
+                  {agentOptions.map(({ agent, selectable, reason }) => (
+                    <Tooltip key={agent.agentType}>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <TabsTrigger
+                            value={agent.agentType}
+                            disabled={!selectable}
+                            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+                          >
+                            <img
+                              src={agentIconSrc(agent.iconKey)}
+                              alt=""
+                              className={agentIconClass(agent.iconKey, 'size-5')}
+                            />
+                            {selectedDirectAgent === agent.agentType ? (
+                              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
+                            ) : null}
+                          </TabsTrigger>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{reason || agent.displayName}</TooltipContent>
+                    </Tooltip>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </TooltipProvider>
+            {agentOptions.length === 0 ? (
+              <DirectAgentEmptyState onOpenAgentManagement={onOpenAgentManagement} />
+            ) : null}
+          </div>
+        ) : isAuto ? (
           <div className="space-y-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
             <div className="flex items-center gap-3">
               <Bot className="size-4 text-muted-foreground" />
@@ -425,10 +556,12 @@ export function ConversationComposer({
         {runModeError ? (
           <div className="flex items-start gap-3 whitespace-pre-wrap rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             <span className="min-w-0 flex-1">{runModeError}</span>
-            <Button variant="outline" size="sm" className="h-7 shrink-0 border-destructive/30 bg-background/40 px-2 text-xs text-destructive hover:text-destructive" onClick={onOpenRunModeSettings}>
-              <Workflow className="mr-1 size-3" />
-              {t('conversation.runtime.repairAction')}
-            </Button>
+            {showRunModeManagement ? (
+              <Button variant="outline" size="sm" className="h-7 shrink-0 border-destructive/30 bg-background/40 px-2 text-xs text-destructive hover:text-destructive" onClick={onOpenRunModeSettings}>
+                <Workflow className="mr-1 size-3" />
+                {t('conversation.runtime.repairAction')}
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -440,5 +573,29 @@ export function ConversationComposer({
         onCloseText={() => setTextPreview(null)}
       />
     </>
+  );
+}
+
+export function DirectAgentEmptyState({
+  onOpenAgentManagement,
+}: {
+  onOpenAgentManagement: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="truncate text-xs text-muted-foreground">{t('conversation.home.noAgent')}</span>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
+        aria-label={t('agentManagement.addAgent')}
+        title={t('agentManagement.addAgent')}
+        onClick={onOpenAgentManagement}
+      >
+        <Plus className="size-3.5" />
+      </Button>
+    </div>
   );
 }

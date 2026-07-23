@@ -8013,6 +8013,7 @@ fn build_dynamic_worker_invocation(
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
+        prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         profile,
         profile_content,
         requirement_path: None,

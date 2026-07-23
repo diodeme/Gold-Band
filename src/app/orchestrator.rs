@@ -1821,6 +1821,7 @@ fn emit_run_completed_lifecycle_event(
         node_label: node_label(node),
         outcome,
         task_title: task_title(app, task_id),
+        completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
     });
 }
 

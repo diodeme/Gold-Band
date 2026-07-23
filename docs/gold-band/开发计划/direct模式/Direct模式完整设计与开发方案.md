@@ -1244,3 +1244,27 @@ web/tests/*
 - 本地 `/chat` 深链路：已验证 `Direct / 工作流 / AUTO` 顺序、Agent icon picker、composer 右下角权限/模型区域；运行模式管理页仅展示工作流与 AUTO。
 - 本地 Direct runtime 预览：已验证 header 仅展示标题与 Agent identity，不展示 runId、session switcher、workflow 或重跑心智；验证期间发现并修复 Direct picker 缺失 `TooltipProvider` 的运行时错误。
 - 验证 tab、Vite dev server 和测试进程已清理。
+
+## 24. 2026-07-24 多轮回复通知补齐
+
+状态：已完成实现与全量 Rust 回归验证。
+
+根因不是 Direct 通知按钮或前端页面状态缺失，而是通知总线此前只消费 `InterventionRequested / RunCompleted`。Direct 首轮会结束内部单 Worker run，因此能收到一次 `RunCompleted`；后续追问直接调用 ACP `session/prompt`，没有 turn 级 lifecycle 终态，所以无论 Direct 还是 Workflow/AUTO 节点完成后的手动追问都不会通知。
+
+本次按统一 ACP turn 生命周期修复：
+
+- [x] 新增 `AcpTurnOutcome::{Completed, Failed, Cancelled}` 与 `RuntimeLifecycleEvent::AcpTurnFinished`。
+- [x] `send_acp_prompt` 为每个 prompt 固化 `turnId`；调用方未传时后端生成 UUID，并把同一 ID写入 prompt bundle 与终态事件。
+- [x] Direct 后续追问及 Workflow/AUTO 节点完成后的普通手动追问，成功和失败都发送 turn 终态事件。
+- [x] 用户主动停止映射为 Cancelled，通知构造器直接返回 None；transport interrupted 映射为 Failed。
+- [x] 新增 `AgentTurnFinished` 通知类型和包含 turnId 的去重键，避免同一 attempt 的后续追问被首轮去重。
+- [x] Direct 首轮继续复用 `RunCompleted`，但事件生成时从持久化 conversation metadata 写入 `completionAgentLabel`，通知层转换为 Agent 回复语义；不依赖节点 ID，也不依赖当前 UI 工作区。
+- [x] 前台同 session 抑制、失焦/最小化/隐藏/其他会话通知的既有 attention policy 保持不变。
+- [x] permission / elicitation 即时通知保持不变，runtime continue 不额外发 turn 通知，避免双重提醒。
+- [x] 新增通知文案、turnId 去重、取消抑制、stop reason 分类与 lifecycle event 字段回归测试。
+
+验证结果：
+
+- `cargo check -p gold-band -p gold-band-desktop`：通过。
+- 通知、attention policy、turn outcome 与 lifecycle event 定向测试：通过。
+- `cargo test --workspace`：通过；核心库 322 项、桌面端 115 项及全部 integration/doc tests 无失败。

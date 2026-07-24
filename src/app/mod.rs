@@ -10,8 +10,8 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key,
-    make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
+    InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
+    make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;

@@ -132,11 +132,11 @@
 
 系统通知只用于用户可能没有看到当前会话页时的关键提醒，不替代会话内状态展示。
 
-会触发系统通知的事件范围固定为：任务完成、权限审批请求、ACP elicitation 提问、节点结束后请求人工判断是否成功、异常中断或错误阻塞。用户主动停止、会话内普通运行中、拉起下一节点中、普通 ACP 追问完成不触发系统通知。
+会触发系统通知的事件范围固定为：任务完成、Agent 单轮回复完成/失败、权限审批请求、ACP elicitation 提问、节点结束后请求人工判断是否成功、异常中断或错误阻塞。用户主动停止、会话内普通运行中、拉起下一节点中不触发系统通知；当前目标 session 在前台可见时继续抑制 OS 通知。
 
 通知发送前必须判断桌面注意力状态：窗口未聚焦、窗口最小化、窗口不可见，或当前前端页面不是该事件对应的 run/session 时才发送；如果用户正聚焦在 Gold Band 并查看对应 `taskId/runId/roundId/nodeId/attemptId`，则只更新页面内 composer、session tree 和工作流图，不弹 OS 通知。
 
-ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention notification 机制：runtime 控制下的暂停由 lifecycle 事件触发通知，ACP live event 同时做旁路桥接补齐实时提醒。这样权限请求、elicitation、人工判断、异常中断和任务完成共享同一套去重、点击跳转和前台抑制规则；其中 elicitation 必须使用独立 dedup key，不能与 `waiting-for-user-input` 的人工确认通知互相覆盖。
+ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention notification 机制：runtime 控制下的暂停由 lifecycle 事件触发通知，ACP live event 同时做旁路桥接补齐实时提醒。这样权限请求、elicitation、人工判断、异常中断和任务完成共享同一套去重、点击跳转和前台抑制规则。permission/elicitation 的 canonical event id 必须包含 ACP request id：同一请求的重复 live update 只通知一次，同一 attempt 或 Direct 长会话中的后续请求必须独立通知；elicitation 还必须与 `waiting-for-user-input` 的人工确认通知使用不同 kind suffix。通知展示身份不得暴露 `direct-agent` 等内部 node id：Direct 使用 conversation metadata 中的 Agent 名称，普通节点优先使用实际 provider/Agent 展示名，只有历史数据缺失时才回退 node id。
 
 ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
 

@@ -2402,12 +2402,12 @@ const resources = {
         },
         home: {
           greeting: {
-            morning: "Good morning. What would you like to work on together today?",
-            lateMorning: "Good morning. What would you like to work on together today?",
-            noon: "Good afternoon. What would you like to work on together today?",
-            afternoon: "How is your afternoon going? What would you like to work on together?",
-            evening: "Good evening. What would you like to work on together today?",
-            lateNight: "It's getting late. What would you like to work on together?",
+            morning: "Good morning. What shall we work on?",
+            lateMorning: "Good morning. What shall we work on?",
+            noon: "Good afternoon. What shall we work on?",
+            afternoon: "Good afternoon. What shall we work on?",
+            evening: "Good evening. What shall we work on?",
+            lateNight: "It's late. What shall we work on?",
           },
           inputPlaceholder: "Describe what you need…",
           workspace: "Workspace",

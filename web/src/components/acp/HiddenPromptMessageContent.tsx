@@ -16,7 +16,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   if (parts.length === 0) return null;
 
   return (
-    <div className="min-w-0 space-y-2">
+    <div className="inline-grid min-w-0 max-w-full gap-2">
       {parts.map((part, index) => {
         if (part.type === "hidden") {
           return (
@@ -56,11 +56,18 @@ function HiddenPromptSection({ title, text }: { title?: string; text: string }) 
   const label = hiddenPromptTitle(title, t);
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <Collapsible
+      className={cn(
+        "w-full min-w-0",
+        !open && "[contain:inline-size]",
+      )}
+      open={open}
+      onOpenChange={setOpen}
+    >
       <CollapsibleTrigger
         className={cn(
-          "group flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 px-3 py-2 text-left text-xs text-muted-foreground transition hover:bg-background/50",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "group flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.045]",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
         )}
       >
         <span className="min-w-0 truncate font-medium text-foreground/80">
@@ -76,8 +83,8 @@ function HiddenPromptSection({ title, text }: { title?: string; text: string }) 
           />
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <pre className="mt-2 max-h-72 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-background/45 px-3 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
+      <CollapsibleContent className="w-full min-w-0 max-w-full">
+        <pre className="mt-2 max-h-72 w-max min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
           {text.trim()}
         </pre>
       </CollapsibleContent>

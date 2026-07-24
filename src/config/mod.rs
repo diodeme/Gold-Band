@@ -120,7 +120,7 @@ impl FromStr for ConsoleThemeName {
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopThemePreference {
     Light,
-    LightWarm,
+    LightGray,
     Dark,
     Black,
     System,
@@ -132,7 +132,7 @@ impl FromStr for DesktopThemePreference {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "light" => Ok(Self::Light),
-            "light-warm" => Ok(Self::LightWarm),
+            "light-gray" => Ok(Self::LightGray),
             "dark" => Ok(Self::Dark),
             "black" => Ok(Self::Black),
             "system" => Ok(Self::System),
@@ -757,8 +757,8 @@ mod tests {
             DesktopThemePreference::Light
         ));
         assert!(matches!(
-            DesktopThemePreference::from_str("light-warm").unwrap(),
-            DesktopThemePreference::LightWarm
+            DesktopThemePreference::from_str("light-gray").unwrap(),
+            DesktopThemePreference::LightGray
         ));
         assert!(matches!(
             DesktopThemePreference::from_str("dark").unwrap(),
@@ -772,6 +772,7 @@ mod tests {
             DesktopThemePreference::from_str("system").unwrap(),
             DesktopThemePreference::System
         ));
+        assert!(DesktopThemePreference::from_str("light-warm").is_err());
         assert!(matches!(
             DesktopLanguage::from_str("zh-cn").unwrap(),
             DesktopLanguage::ZhCn

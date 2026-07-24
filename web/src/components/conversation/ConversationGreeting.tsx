@@ -42,7 +42,7 @@ export function ConversationGreeting() {
   }, []);
 
   return (
-    <h1 className="text-2xl font-semibold tracking-tight text-foreground/80">
+    <h1 className="text-2xl font-semibold tracking-tight text-title">
       {t(`conversation.home.greeting.${period}`)}
     </h1>
   );

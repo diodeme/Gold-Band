@@ -978,15 +978,10 @@ const resources = {
         chooseLightTheme: "选择浅色主题",
         chooseDarkTheme: "选择深色主题",
         themeDrawerTitle: "选择主题",
-        themeDefaultLight: "默认浅色",
-        themeDefaultLightDescription: "瓷白界面与低饱和靛蓝强调，清晰克制。",
-        themeWarmLight: "暖色浅色",
-        themeWarmLightDescription:
-          "暖瓷白与古铜金强调，柔和而不泛黄。",
+        themeDefaultLight: "瓷白",
+        themeTechGray: "科技灰",
         themeGoldDark: "石墨深色",
-        themeGoldDarkDescription: "Codex 风格中性炭灰，彩色只保留给状态。",
         themeBlack: "终端黑",
-        themeBlackDescription: "同源无彩黑灰，整体更深、更安静。",
         fontDefault: "默认字体 · MiSans",
         fontDefaultDescription: "应用内置，作为所有设备上的稳定默认字体。",
         fontPreview: "字体预览",
@@ -2261,18 +2256,10 @@ const resources = {
         chooseLightTheme: "Choose light theme",
         chooseDarkTheme: "Choose dark theme",
         themeDrawerTitle: "Choose theme",
-        themeDefaultLight: "Default Light",
-        themeDefaultLightDescription:
-          "Porcelain surfaces with restrained indigo accents.",
-        themeWarmLight: "Warm Light",
-        themeWarmLightDescription:
-          "Warm porcelain surfaces with restrained antique-brass accents.",
+        themeDefaultLight: "Porcelain",
+        themeTechGray: "Tech Gray",
         themeGoldDark: "Graphite Dark",
-        themeGoldDarkDescription:
-          "Codex-like neutral charcoal with color reserved for status.",
         themeBlack: "Terminal Black",
-        themeBlackDescription:
-          "The same achromatic system, tuned darker and quieter.",
         fontDefault: "Built-in default · MiSans",
         fontDefaultDescription:
           "Bundled with the app for consistent rendering across devices.",

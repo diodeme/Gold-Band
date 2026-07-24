@@ -41,7 +41,7 @@ export function ConversationRunHeader({
   const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
 
   return (
-    <div className="shrink-0 bg-gold-surface-high/60 px-5 pb-0.5 pt-0.5">
+    <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
         <EditableConversationTitle
           title={run.title}

@@ -1,4 +1,6 @@
 import type { ConcreteDesktopTheme, DesktopFontPreference, DesktopThemeMode, DesktopThemePreference } from './types';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isTauriRuntime } from './api/shared';
 
 export interface ThemePreviewPalette {
   background: string;
@@ -14,6 +16,7 @@ export interface ThemePreviewPalette {
 export interface DesktopThemeOption {
   id: ConcreteDesktopTheme;
   mode: DesktopThemeMode;
+  windowSurface: string;
   labelKey: string;
   descriptionKey: string;
   preview: ThemePreviewPalette;
@@ -31,65 +34,69 @@ export const desktopThemeOptions = [
   {
     id: 'light',
     mode: 'light',
+    windowSurface: '#f1f2f5',
     labelKey: 'settings.themeDefaultLight',
     descriptionKey: 'settings.themeDefaultLightDescription',
     preview: {
-      background: '#f7faff',
-      surface: '#fbfdff',
-      border: '#d4deeb',
-      primary: '#3157d5',
-      foreground: '#111827',
+      background: '#fafafb',
+      surface: '#ffffff',
+      border: '#e1e3e9',
+      primary: '#5b6ba8',
+      foreground: '#191c24',
       muted: '#667085',
-      success: '#15803d',
-      danger: '#dc2626',
+      success: '#16794b',
+      danger: '#c93c48',
     },
   },
   {
     id: 'light-warm',
     mode: 'light',
+    windowSurface: '#f0ede7',
     labelKey: 'settings.themeWarmLight',
     descriptionKey: 'settings.themeWarmLightDescription',
     preview: {
-      background: '#f7f2e8',
-      surface: '#fffaf1',
-      border: '#dccfba',
-      primary: '#9a6b1f',
-      foreground: '#211d16',
-      muted: '#756d60',
-      success: '#15803d',
-      danger: '#c83e43',
+      background: '#faf9f6',
+      surface: '#fffdfc',
+      border: '#e3ded5',
+      primary: '#8a6a32',
+      foreground: '#29251f',
+      muted: '#736b60',
+      success: '#397451',
+      danger: '#b84850',
     },
   },
   {
     id: 'dark',
     mode: 'dark',
+    windowSurface: '#181818',
     labelKey: 'settings.themeGoldDark',
     descriptionKey: 'settings.themeGoldDarkDescription',
     preview: {
-      background: '#0b0d10',
-      surface: '#101215',
-      border: '#242832',
-      primary: '#d6b36a',
-      foreground: '#f4efe6',
-      muted: '#9b9488',
-      success: '#3ddc97',
-      danger: '#ff6b76',
+      background: '#181818',
+      surface: '#242424',
+      border: '#333333',
+      primary: '#313131',
+      foreground: '#e8e8e8',
+      muted: '#9a9a9a',
+      success: '#59b68b',
+      danger: '#df6b6b',
     },
   },
   {
     id: 'black',
     mode: 'dark',
+    windowSurface: '#111111',
     labelKey: 'settings.themeBlack',
     descriptionKey: 'settings.themeBlackDescription',
     preview: {
-      background: '#050814',
-      surface: '#080c17',
-      border: '#172236',
-      primary: '#6ea8fe',
-      foreground: '#edf4ff',
-      muted: '#98a6bd',
-      success: '#2dd48f',
-      danger: '#ff7185',
+      background: '#111111',
+      surface: '#1b1b1b',
+      border: '#2b2b2b',
+      primary: '#2d2d2d',
+      foreground: '#e8e8e8',
+      muted: '#929292',
+      success: '#59b68b',
+      danger: '#df6b6b',
     },
   },
 ] as const satisfies readonly DesktopThemeOption[];
@@ -119,6 +126,17 @@ type PreferredThemeByMode = Record<DesktopThemeMode, ConcreteDesktopTheme>;
 
 export function desktopThemeMode(theme: ConcreteDesktopTheme): DesktopThemeMode {
   return desktopThemeOptions.find((option) => option.id === theme)?.mode ?? 'dark';
+}
+
+export function desktopThemeWindowSurface(theme: ConcreteDesktopTheme): string {
+  return desktopThemeOptions.find((option) => option.id === theme)?.windowSurface ?? '#181818';
+}
+
+export function syncDesktopWindowSurface(theme: ConcreteDesktopTheme): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
+  return getCurrentWindow()
+    .setBackgroundColor(desktopThemeWindowSurface(theme))
+    .catch(() => {});
 }
 
 export function rememberConcreteThemePreference(theme: ConcreteDesktopTheme) {
@@ -160,6 +178,8 @@ export function applyTheme(theme: DesktopThemePreference) {
   if (theme !== 'system') rememberConcreteThemePreference(theme);
   root.dataset.theme = resolved;
   root.classList.toggle('dark', desktopThemeMode(resolved) === 'dark');
+  void syncDesktopWindowSurface(resolved);
+  return resolved;
 }
 
 export function fontFamilyForPreference(font: DesktopFontPreference) {

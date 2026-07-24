@@ -158,8 +158,11 @@ pub fn auto_runtime_error_info(
 }
 
 pub fn normalize_runtime_error(error: &anyhow::Error) -> RuntimeErrorInfo {
-    if let Some(error) = error.downcast_ref::<RuntimeError>() {
-        return error.info.clone();
+    let diagnostic = format!("{error:#}");
+    if let Some(runtime_error) = error.downcast_ref::<RuntimeError>() {
+        let mut info = runtime_error.info.clone();
+        info.diagnostic = diagnostic.clone();
+        return info;
     }
     if error.chain().any(|source| {
         source
@@ -169,15 +172,15 @@ pub fn normalize_runtime_error(error: &anyhow::Error) -> RuntimeErrorInfo {
         return auto_runtime_error_info(
             RuntimeErrorDomain::RuntimeIo,
             "runtime.io.temporary-resource-unavailable",
-            error.to_string(),
+            diagnostic.clone(),
             serde_json::json!({}),
         );
     }
-    normalize_error_text(&error.to_string()).unwrap_or_else(|| {
+    normalize_error_text(&diagnostic).unwrap_or_else(|| {
         blocked_runtime_error_info(
             RuntimeErrorDomain::Internal,
             "internal.unknown",
-            error.to_string(),
+            diagnostic,
             serde_json::json!({}),
         )
     })
@@ -533,5 +536,21 @@ mod tests {
         );
 
         assert!(normalize_provider_failure(Some("refusal"), "model refused", None).is_none());
+    }
+
+    #[test]
+    fn structured_runtime_error_keeps_anyhow_context_chain() {
+        let error = runtime_error(manual_runtime_error_info(
+            RuntimeErrorDomain::Provider,
+            "provider.acp-error",
+            "session/set_config_option: failed to persist config.toml",
+            serde_json::json!({}),
+        ))
+        .context("provider `codex-acp` failed to run `good-morning`");
+
+        let info = normalize_runtime_error(&error);
+
+        assert!(info.diagnostic.contains("provider `codex-acp`"));
+        assert!(info.diagnostic.contains("session/set_config_option"));
     }
 }

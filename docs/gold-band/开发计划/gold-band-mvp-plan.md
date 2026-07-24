@@ -669,3 +669,14 @@ attempt-001/
 ## 结论
 
 建议主实现语言使用 Rust，先围绕 CLI + runtime + Claude Code provider 跑通 MVP 闭环，再逐步补 provider 扩展、progress 观测与插件层。
+
+---
+
+## 2026-07-23：Direct 持续 Agent 会话
+
+- 新增 Direct 运行模式：外观是单一持续 Agent 对话，底层复用单 Worker execution shell 和现有 ACP/session/storage 管道。
+- Direct 使用 RawAgent prompt envelope，首轮与追问的 system prompt 均为空；不注入 Gold Band runtime/profile/hidden/output/repair 内容。
+- 修复 completed run follow-up 生命周期：per-attempt live activity 区分真实 Starting/Running/CancelRequested 与 stale disk snapshot，页面重挂载后 composer、停止、耗时和 token 不丢失。
+- 快速会话、runtime header、侧边栏和搜索完成 Direct 交互；Agent/model/permission 只在快速会话配置并按 workspace + Agent 记忆，运行模式管理仅保留工作流与 AUTO，Direct 历史使用 Agent icon 与 `lastActivityAt`。
+- Direct 内部 `raw-agent` worker 不参与 profile 解析且禁止绑定 profile，避免角色解析阻断创建或向空 system prompt 注入 Gold Band 上下文。
+- 回归范围包含 prompt、lifecycle、创建/config、前端 composer 状态、tab 顺序和 sidebar identity；合入前要求 Rust workspace、Web tests/build 与 `/chat`、Direct run deep link 实际验证通过。

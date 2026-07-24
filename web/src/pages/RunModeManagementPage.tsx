@@ -193,7 +193,7 @@ export function RunModeManagementPage({
   onBack,
 }: RunModeManagementPageProps) {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode);
+  const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode === 'auto' ? 'auto' : 'workflow');
   const [agentStrategy, setAgentStrategy] = useState<'fixed' | 'dynamic'>(runMode.autoConfig?.agentStrategy ?? 'fixed');
   const [agent, setAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [bootstrapAgent, setBootstrapAgent] = useState(runMode.autoConfig?.bootstrapAgentType ?? runMode.autoConfig?.agentType ?? '');
@@ -268,7 +268,7 @@ export function RunModeManagementPage({
     const projectChanged = previousProjectIdRef.current !== projectId;
     previousProjectIdRef.current = projectId;
 
-    setMode(runMode.mode);
+    setMode(runMode.mode === 'auto' ? 'auto' : 'workflow');
     const config = runMode.autoConfig ?? null;
     setAgentStrategy(config?.agentStrategy ?? 'fixed');
     setAgent(config?.agentType ?? '');
@@ -404,6 +404,7 @@ export function RunModeManagementPage({
 
   const persistRunModeSelection = (nextMode: RunModeManagementTab, autoConfig?: ConversationAutoConfigVm, templateId = wfEditTemplateId ?? workflowTemplateId) => {
     const updated: ConversationRunModeVm = {
+      ...runMode,
       mode: nextMode,
       workflowTemplateId: templateId || undefined,
       autoConfig: autoConfig ?? buildAutoConfig(),

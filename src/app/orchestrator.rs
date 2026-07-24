@@ -616,9 +616,7 @@ pub(crate) fn pause_dynamic_leaf_runtime_state(
         if graph.nodes[target_index].status == DynamicNodeStatus::Completed {
             return Ok(());
         }
-        graph.nodes[target_index].status = DynamicNodeStatus::Paused;
-        graph.nodes[target_index].outcome = None;
-        graph.nodes[target_index].finished_at = Some(now.clone());
+        mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
         refresh_dynamic_current_leaf_ids(&mut graph);
         let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
         if has_active_leaf {
@@ -783,11 +781,12 @@ pub(crate) fn prepare_dynamic_leaf_continue_state(
     match graph.nodes[target_index].status {
         DynamicNodeStatus::Paused => {
             if parent_was_paused {
-                graph.nodes[target_index].status = DynamicNodeStatus::Ready;
-                graph.nodes[target_index].finished_at = None;
+                rearm_dynamic_node(&mut graph.nodes[target_index], DynamicNodeStatus::Ready);
             }
         }
         DynamicNodeStatus::Ready if parent_was_paused => {
+            graph.nodes[target_index].pause_reason = None;
+            graph.nodes[target_index].runtime_error = None;
             graph.nodes[target_index].finished_at = None;
         }
         _ => bail!("dynamic node `{dynamic_node_id}` is not paused"),
@@ -1822,6 +1821,7 @@ fn emit_run_completed_lifecycle_event(
         node_label: node_label(node),
         outcome,
         task_title: task_title(app, task_id),
+        completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
     });
 }
 
@@ -1993,9 +1993,7 @@ fn recover_legacy_cancelled_dynamic_leaves_for_paused_graph(
             outer_attempt_id,
             node,
         ) {
-            node.status = DynamicNodeStatus::Paused;
-            node.outcome = None;
-            node.finished_at = Some(now_rfc3339_like());
+            mark_dynamic_node_paused(node, PauseReason::ProcessInterrupted, None);
             changed = true;
         }
     }
@@ -3533,10 +3531,49 @@ fn rearm_dynamic_resume_target(
         "dynamic node `{}` is not paused",
         resume.node_id
     );
-    target.status = DynamicNodeStatus::Ready;
-    target.outcome = None;
-    target.finished_at = None;
+    rearm_dynamic_node(target, DynamicNodeStatus::Ready);
     Ok(())
+}
+
+fn mark_dynamic_node_paused(
+    node: &mut DynamicNodeState,
+    pause_reason: PauseReason,
+    runtime_error: Option<RuntimeErrorInfo>,
+) {
+    node.status = DynamicNodeStatus::Paused;
+    node.outcome = None;
+    node.pause_reason = Some(pause_reason);
+    node.runtime_error = runtime_error;
+    node.finished_at = Some(now_rfc3339_like());
+}
+
+fn rearm_dynamic_node(node: &mut DynamicNodeState, status: DynamicNodeStatus) {
+    node.status = status;
+    node.outcome = None;
+    node.pause_reason = None;
+    node.runtime_error = None;
+    node.finished_at = None;
+}
+
+fn dynamic_pause_reason_priority(reason: PauseReason) -> u8 {
+    match reason {
+        PauseReason::ErrorBlocked => 5,
+        PauseReason::RuntimeAbnormal => 4,
+        PauseReason::PermissionRequested => 3,
+        PauseReason::WaitingForUserInput => 2,
+        PauseReason::ProcessInterrupted => 1,
+    }
+}
+
+fn aggregate_dynamic_pause_reason(graph: &DynamicGraphState) -> PauseReason {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == DynamicNodeStatus::Paused && node.outcome.is_none())
+        .filter_map(|node| node.pause_reason)
+        .max_by_key(|reason| dynamic_pause_reason_priority(*reason))
+        .or(graph.run.pause_reason)
+        .unwrap_or(PauseReason::ProcessInterrupted)
 }
 
 fn apply_dynamic_resume_overrides(
@@ -3625,8 +3662,7 @@ fn rearm_paused_workflow_invocations_for_parent_continue(graph: &mut DynamicGrap
             && node.status == DynamicNodeStatus::Paused
             && node.outcome.is_none()
         {
-            node.status = DynamicNodeStatus::Ready;
-            node.finished_at = None;
+            rearm_dynamic_node(node, DynamicNodeStatus::Ready);
             changed = true;
         }
     }
@@ -3687,6 +3723,8 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         task: "Design the first internal dynamic step for this AI-DYNAMIC node.".to_string(),
         status: DynamicNodeStatus::Ready,
         outcome: None,
+        pause_reason: None,
+        runtime_error: None,
         group_id: None,
         chain_id: "bootstrap".to_string(),
         depth: 0,
@@ -3906,10 +3944,11 @@ fn drive_dynamic_graph(
                 }
                 continue;
             }
+            let pause_reason = aggregate_dynamic_pause_reason(graph);
             pause_dynamic_graph(
                 ctx,
                 graph,
-                PauseReason::ProcessInterrupted,
+                pause_reason,
                 "dynamic graph is waiting for paused dynamic leaf continue",
             )?;
             return Ok(());
@@ -3954,7 +3993,7 @@ fn launch_ready_dynamic_nodes(
             .nodes
             .get_mut(index)
             .ok_or_else(|| anyhow!("dynamic node index out of range"))?;
-        node.status = DynamicNodeStatus::Running;
+        rearm_dynamic_node(node, DynamicNodeStatus::Running);
         node.started_at.get_or_insert_with(now_rfc3339_like);
         let node_clone = node.clone();
         let node_id_for_job = node_clone.id.clone();
@@ -4053,6 +4092,7 @@ fn persist_paused_dynamic_leaf_or_graph(
     pause_reason: PauseReason,
     reason: &str,
 ) -> Result<bool> {
+    graph.nodes[index].pause_reason = Some(pause_reason);
     refresh_dynamic_current_leaf_ids(graph);
     let has_active_leaf = dynamic_graph_has_active_leaf(graph);
     if has_active_leaf {
@@ -4085,12 +4125,10 @@ fn apply_dynamic_execution_message(
     let result = match message.result {
         Ok(result) => result,
         Err(error) => {
-            let reason = error.to_string();
+            let reason = format!("{error:#}");
             let info = normalize_runtime_error(&error);
-            graph.nodes[index].status = DynamicNodeStatus::Paused;
-            graph.nodes[index].outcome = None;
-            graph.nodes[index].finished_at = Some(now_rfc3339_like());
             let pause_reason = info.pause_reason_after_retry_boundary();
+            mark_dynamic_node_paused(&mut graph.nodes[index], pause_reason, Some(info.clone()));
             append_dynamic_event(
                 ctx,
                 "dynamic_runtime_error",
@@ -4113,9 +4151,11 @@ fn apply_dynamic_execution_message(
         if !(dynamic_result_is_successful_completion(&result)
             && try_restore_outer_attempt_running_for_dynamic_completion(ctx)?)
         {
-            graph.nodes[index].status = DynamicNodeStatus::Paused;
-            graph.nodes[index].outcome = None;
-            graph.nodes[index].finished_at = Some(now_rfc3339_like());
+            mark_dynamic_node_paused(
+                &mut graph.nodes[index],
+                PauseReason::ProcessInterrupted,
+                None,
+            );
             if outer_attempt_is_current_recoverable_pause(ctx)? {
                 persist_paused_dynamic_leaf_or_graph(
                     ctx,
@@ -4153,6 +4193,8 @@ fn apply_dynamic_execution_message(
             }
             _ => PauseReason::ProcessInterrupted,
         };
+        graph.nodes[index].pause_reason = Some(pause_reason);
+        graph.nodes[index].runtime_error = None;
         persist_paused_dynamic_leaf_or_graph(
             ctx,
             graph,
@@ -4176,9 +4218,17 @@ fn apply_dynamic_execution_message(
     }
     if !accepted_any {
         if let Some(source_node_id) = rejected_source_node_id {
-            graph.nodes[index].status = DynamicNodeStatus::Paused;
-            graph.nodes[index].outcome = None;
-            graph.nodes[index].finished_at = Some(now_rfc3339_like());
+            let blocked_error = blocked_runtime_error_info(
+                RuntimeErrorDomain::Dynamic,
+                "dynamic.proposal-rejected",
+                format!("dynamic proposal from `{source_node_id}` was rejected"),
+                serde_json::json!({ "sourceNodeId": source_node_id }),
+            );
+            mark_dynamic_node_paused(
+                &mut graph.nodes[index],
+                PauseReason::ErrorBlocked,
+                Some(blocked_error),
+            );
             let has_active_leaf = persist_paused_dynamic_leaf_or_graph(
                 ctx,
                 graph,
@@ -5220,7 +5270,7 @@ fn execute_dynamic_workflow_invocation(
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
     ensure_dynamic_workspace(ctx, &mut node)?;
-    let workflow_id = node.workflow_id.as_deref().ok_or_else(|| {
+    let workflow_id = node.workflow_id.clone().ok_or_else(|| {
         blocked_runtime_error(format!(
             "workflow invocation `{}` is missing workflowId",
             node.id
@@ -5308,9 +5358,7 @@ fn execute_dynamic_workflow_invocation(
             let pause_reason = child_run
                 .pause_reason
                 .unwrap_or(PauseReason::ProcessInterrupted);
-            node.status = DynamicNodeStatus::Paused;
-            node.outcome = None;
-            node.finished_at = Some(now_rfc3339_like());
+            mark_dynamic_node_paused(&mut node, pause_reason, None);
             append_dynamic_event(
                 ctx,
                 "dynamic_child_workflow_paused",
@@ -5333,6 +5381,8 @@ fn execute_dynamic_workflow_invocation(
                 Some(RunOutcome::Success) => NodeOutcome::Success,
                 _ => NodeOutcome::Failure,
             });
+            node.pause_reason = None;
+            node.runtime_error = None;
         }
         RunStatus::Running => {
             bail!("child workflow invocation `{}` is still running", node.id);
@@ -5466,10 +5516,14 @@ fn finalize_dynamic_worker_result(
             }
             node.status = DynamicNodeStatus::Completed;
             node.outcome = Some(NodeOutcome::Success);
+            node.pause_reason = None;
+            node.runtime_error = None;
         }
         ProviderRunStatus::Failure => {
             node.status = DynamicNodeStatus::Completed;
             node.outcome = Some(NodeOutcome::Failure);
+            node.pause_reason = None;
+            node.runtime_error = None;
         }
         ProviderRunStatus::Interrupted
         | ProviderRunStatus::WaitingForUserInput
@@ -5628,6 +5682,8 @@ fn try_accept_interrupted_dynamic_completion(
     }
     node.status = DynamicNodeStatus::Completed;
     node.outcome = Some(NodeOutcome::Success);
+    node.pause_reason = None;
+    node.runtime_error = None;
     node.finished_at = Some(now_rfc3339_like());
     validate_dynamic_node_state(node)?;
     append_dynamic_event(
@@ -7185,6 +7241,8 @@ fn dynamic_node_state_from_spec(
         task: spec.task,
         status: DynamicNodeStatus::Pending,
         outcome: None,
+        pause_reason: None,
+        runtime_error: None,
         group_id,
         chain_id,
         depth: source.depth + 1,
@@ -7537,6 +7595,8 @@ fn create_dynamic_merge_node(
         task,
         status: DynamicNodeStatus::Ready,
         outcome: None,
+        pause_reason: None,
+        runtime_error: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -7590,6 +7650,8 @@ fn create_dynamic_acceptance_node(
         task,
         status: DynamicNodeStatus::Ready,
         outcome: None,
+        pause_reason: None,
+        runtime_error: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -8013,6 +8075,7 @@ fn build_dynamic_worker_invocation(
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "assemble_invocation");
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
+        prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         profile,
         profile_content,
         requirement_path: None,
@@ -9748,12 +9811,10 @@ fn auto_retry_delay_ms(info: &RuntimeErrorInfo, completed_retries: u32) -> Optio
         .or_else(|| policy.backoff_ms.last().copied())
 }
 
-fn pause_active_dynamic_leaves(graph: &mut DynamicGraphState) {
-    let now = now_rfc3339_like();
+fn pause_active_dynamic_leaves(graph: &mut DynamicGraphState, pause_reason: PauseReason) {
     for node in &mut graph.nodes {
         if dynamic_leaf_is_active(node.status) && node.outcome.is_none() {
-            node.status = DynamicNodeStatus::Paused;
-            node.finished_at = Some(now.clone());
+            mark_dynamic_node_paused(node, pause_reason, None);
         }
     }
     refresh_dynamic_current_leaf_ids(graph);
@@ -9769,7 +9830,7 @@ fn pause_dynamic_graph(
         pause_reason,
         PauseReason::ErrorBlocked | PauseReason::RuntimeAbnormal
     ) {
-        pause_active_dynamic_leaves(graph);
+        pause_active_dynamic_leaves(graph, pause_reason);
     } else {
         refresh_dynamic_current_leaf_ids(graph);
     }
@@ -10801,6 +10862,8 @@ mod tests {
             task: id.to_string(),
             status: DynamicNodeStatus::Ready,
             outcome: None,
+            pause_reason: None,
+            runtime_error: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -12720,7 +12783,101 @@ mod tests {
         assert_eq!(graph.run.pause_reason, None);
         assert_eq!(graph.run.current_node_ids, vec!["good-night".to_string()]);
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            graph.nodes[0].pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
         assert_eq!(graph.nodes[1].status, DynamicNodeStatus::Running);
+    }
+
+    #[test]
+    fn dynamic_runtime_error_is_owned_by_leaf_and_converges_to_graph() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut failed = test_worktree_node("good-morning");
+        failed.status = DynamicNodeStatus::Running;
+        let mut sibling = test_worktree_node("good-night");
+        sibling.status = DynamicNodeStatus::Running;
+        let mut graph = test_dynamic_graph(vec![failed, sibling]);
+
+        apply_dynamic_execution_message(
+            &ctx,
+            &mut graph,
+            DynamicExecutionMessage {
+                node_id: "good-morning".to_string(),
+                result: Err(recoverable_runtime_error(
+                    "session/set_config_option: failed to persist config.toml",
+                )
+                .context("provider `codex-acp` failed to run `good-morning`")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(graph.run.status, DynamicRunStatus::Running);
+        assert_eq!(graph.run.pause_reason, None);
+        assert_eq!(graph.run.current_node_ids, vec!["good-night".to_string()]);
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            graph.nodes[0].pause_reason,
+            Some(PauseReason::RuntimeAbnormal)
+        );
+        let runtime_error = graph.nodes[0].runtime_error.as_ref().unwrap();
+        assert_eq!(runtime_error.code_str(), "runtime.recoverable");
+        assert!(runtime_error.diagnostic.contains("provider `codex-acp`"));
+        assert!(
+            runtime_error
+                .diagnostic
+                .contains("session/set_config_option")
+        );
+
+        graph.nodes[1].status = DynamicNodeStatus::Completed;
+        graph.nodes[1].outcome = Some(NodeOutcome::Success);
+        graph.nodes[1].finished_at = Some(now_rfc3339_like());
+        refresh_dynamic_current_leaf_ids(&mut graph);
+        drive_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    }
+
+    #[test]
+    fn rearming_dynamic_leaf_clears_only_its_pause_details() {
+        let mut first = test_worktree_node("good-morning");
+        mark_dynamic_node_paused(
+            &mut first,
+            PauseReason::RuntimeAbnormal,
+            Some(manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "provider.acp-error",
+                "first failed",
+                serde_json::json!({}),
+            )),
+        );
+        let mut second = test_worktree_node("good-night");
+        mark_dynamic_node_paused(&mut second, PauseReason::PermissionRequested, None);
+        let mut graph = test_dynamic_graph(vec![first, second]);
+        let resume = DynamicResumeOverride {
+            node_id: "good-morning".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            prompt: "continue".to_string(),
+            prompt_id: None,
+            attachment_paths: Vec::new(),
+            model_override: None,
+            permission_mode_override: None,
+        };
+
+        rearm_dynamic_resume_target(&mut graph, &resume).unwrap();
+
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Ready);
+        assert_eq!(graph.nodes[0].pause_reason, None);
+        assert_eq!(graph.nodes[0].runtime_error, None);
+        assert_eq!(
+            graph.nodes[1].pause_reason,
+            Some(PauseReason::PermissionRequested)
+        );
     }
 
     #[test]
@@ -13242,6 +13399,14 @@ mod tests {
         assert_eq!(graph.run.status, DynamicRunStatus::Paused);
         assert_eq!(graph.run.pause_reason, Some(PauseReason::ErrorBlocked));
         assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(graph.nodes[0].pause_reason, Some(PauseReason::ErrorBlocked));
+        assert_eq!(
+            graph.nodes[0]
+                .runtime_error
+                .as_ref()
+                .map(|error| error.code_str()),
+            Some("dynamic.blocked")
+        );
         assert!(graph.nodes[0].finished_at.is_some());
     }
 }

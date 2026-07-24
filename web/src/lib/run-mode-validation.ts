@@ -2,6 +2,7 @@ import { validateWorkflowForSave } from '@/components/WorkflowEditor';
 import type {
   AgentRegistryVm,
   ConversationAutoConfigVm,
+  ConversationDirectConfigVm,
   ManagedAgentVm,
   ProfileVm,
   WorkflowTemplate,
@@ -184,4 +185,31 @@ export function validateAutoConfig(
   }
 
   return Array.from(new Set(issues));
+}
+
+export function validateDirectConfig(
+  config: ConversationDirectConfigVm | null | undefined,
+  agentRegistry: AgentRegistryVm | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string[] {
+  const agentType = config?.agentType.trim();
+  if (!agentType) return [t('conversation.home.selectAgent')];
+  const agent = agentRegistry?.agents.find((candidate) => candidate.agentType === agentType);
+  if (!agent) return [t('runMode.validationAgentMissing', { label: t('runMode.agent'), agent: agentType })];
+  const reason = agentDoctorReason(agent, t);
+  if (reason) {
+    return [t('runMode.validationAgentUnavailable', {
+      label: t('runMode.agent'),
+      agent: agent.displayName,
+      reason,
+    })];
+  }
+  const issues: string[] = [];
+  if (config?.modelId && !(agent.supportedModels ?? []).some((model) => model.id === config.modelId)) {
+    issues.push(t('conversation.validation.model.not-found'));
+  }
+  if (config?.permissionMode && !(agent.supportedModes ?? []).some((mode) => mode.id === config.permissionMode)) {
+    issues.push(t('conversation.validation.permission.not-found'));
+  }
+  return issues;
 }

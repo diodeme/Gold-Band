@@ -419,6 +419,10 @@ pub fn create_intervention_notification_subscriber(
     app_handle: AppHandle,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event| {
+        let Some(state) = app_handle.try_state::<DesktopState>() else {
+            warn!("DesktopState unavailable; intervention notification dropped");
+            return;
+        };
         let notification = match event {
             RuntimeLifecycleEvent::InterventionRequested {
                 task_id,
@@ -430,7 +434,7 @@ pub fn create_intervention_notification_subscriber(
                 node_label,
                 kind,
                 ..
-            } => InterventionNotification::from_intervention_kind(
+            } => Some(InterventionNotification::from_intervention_kind(
                 &task_id,
                 task_title.as_deref(),
                 &run_id,
@@ -439,8 +443,9 @@ pub fn create_intervention_notification_subscriber(
                 &attempt_id,
                 &node_label,
                 kind,
-            ),
+            )),
             RuntimeLifecycleEvent::RunCompleted {
+                event_id,
                 task_id,
                 task_title,
                 run_id,
@@ -449,8 +454,10 @@ pub fn create_intervention_notification_subscriber(
                 attempt_id,
                 node_label,
                 outcome,
+                completion_agent_label,
                 ..
-            } => InterventionNotification::run_completed(
+            } => InterventionNotification::from_run_completion(
+                &event_id,
                 &task_id,
                 task_title.as_deref(),
                 &run_id,
@@ -459,14 +466,33 @@ pub fn create_intervention_notification_subscriber(
                 &attempt_id,
                 &node_label,
                 outcome,
+                completion_agent_label.as_deref(),
             ),
-            _ => return,
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                task_id,
+                task_title,
+                run_id,
+                round_id,
+                node_id,
+                attempt_id,
+                turn_id,
+                agent_label,
+                outcome,
+                ..
+            } => InterventionNotification::agent_turn_finished(
+                &task_id,
+                task_title.as_deref(),
+                &run_id,
+                &round_id,
+                &node_id,
+                &attempt_id,
+                &turn_id,
+                &agent_label,
+                outcome,
+            ),
+            _ => None,
         };
-        let Some(state) = app_handle.try_state::<DesktopState>() else {
-            warn!(
-                dedup_key = %notification.dedup_key,
-                "DesktopState unavailable; intervention notification dropped"
-            );
+        let Some(notification) = notification else {
             return;
         };
         let target = crate::state::NotificationAttentionTarget {

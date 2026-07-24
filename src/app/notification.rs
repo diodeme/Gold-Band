@@ -15,7 +15,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{PauseReason, RunOutcome};
 
-use super::RuntimeInterventionKind;
+use super::{AcpTurnOutcome, RuntimeInterventionKind};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationNotificationMetadata {
+    run_mode: String,
+    agent_identity: Option<ConversationNotificationAgentIdentity>,
+    direct_config: Option<ConversationNotificationDirectConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationNotificationAgentIdentity {
+    display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationNotificationDirectConfig {
+    agent_type: String,
+}
 
 /// 去重表软上限。常驻 EXE 必须有界，达到上限后按最旧淘汰，防止内存无限增长。
 pub const NOTIFICATION_DEDUP_SOFT_CAP: usize = 5000;
@@ -34,6 +54,8 @@ pub enum InterventionType {
     ErrorBlocked,
     /// 任务完成 → 查看运行结果。
     RunCompleted,
+    /// Agent 单轮回复结束（成功或失败）→ 查看对应会话。
+    AgentTurnFinished,
 }
 
 /// 一次干预提醒的核心数据契约。
@@ -187,15 +209,127 @@ impl InterventionNotification {
             intervention_type: InterventionType::RunCompleted,
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_run_completion(
+        event_id: &str,
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        node_label: &str,
+        outcome: RunOutcome,
+        completion_agent_label: Option<&str>,
+    ) -> Option<Self> {
+        let Some(agent_label) = completion_agent_label else {
+            return Some(Self::run_completed(
+                task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, outcome,
+            ));
+        };
+        let turn_outcome = match outcome {
+            RunOutcome::Success => AcpTurnOutcome::Completed,
+            RunOutcome::Failure => AcpTurnOutcome::Failed,
+            RunOutcome::Killed => AcpTurnOutcome::Cancelled,
+        };
+        Self::agent_turn_finished(
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            event_id,
+            agent_label,
+            turn_outcome,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn agent_turn_finished(
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        turn_id: &str,
+        agent_label: &str,
+        outcome: AcpTurnOutcome,
+    ) -> Option<Self> {
+        if outcome == AcpTurnOutcome::Cancelled {
+            return None;
+        }
+        let task_label = task_title.unwrap_or(task_id);
+        let agent_label = agent_label.trim();
+        let agent_label = if agent_label.is_empty() {
+            "Agent"
+        } else {
+            agent_label
+        };
+        let (title, body) = match outcome {
+            AcpTurnOutcome::Completed => (
+                format!("{agent_label} 回复完成"),
+                format!("{task_label} · 已回复"),
+            ),
+            AcpTurnOutcome::Failed => (
+                format!("{agent_label} 回复失败"),
+                format!("{task_label} · 回复失败，请查看详情"),
+            ),
+            AcpTurnOutcome::Cancelled => unreachable!("cancelled handled above"),
+        };
+        Some(Self {
+            dedup_key: make_turn_dedup_key(run_id, round_id, node_id, attempt_id, turn_id),
+            task_id: task_id.to_string(),
+            task_title: task_title.map(str::to_string),
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            node_label: agent_label.to_string(),
+            pause_reason: PauseReason::WaitingForUserInput,
+            title,
+            body,
+            intervention_type: InterventionType::AgentTurnFinished,
+        })
+    }
 }
 
 pub fn pause_reason_for_intervention(kind: RuntimeInterventionKind) -> PauseReason {
     kind.into()
 }
 
+/// 读取 Direct 会话的通知展示身份。该判断基于持久化会话领域数据，而不是生成的
+/// workflow/node id；在 lifecycle 事件产生时调用，使跨工作区通知也不依赖当前 UI 上下文。
+pub(crate) fn direct_conversation_agent_label(app: &super::App, task_id: &str) -> Option<String> {
+    let metadata: ConversationNotificationMetadata = crate::storage::read_json(
+        &app.paths
+            .task_dir(task_id)
+            .join("authoring")
+            .join("conversation.json"),
+    )
+    .ok()?;
+    if metadata.run_mode != "direct" {
+        return None;
+    }
+    metadata
+        .agent_identity
+        .map(|identity| identity.display_name)
+        .filter(|label| !label.trim().is_empty())
+        .or_else(|| {
+            let agent_type = metadata.direct_config?.agent_type;
+            app.managed_agent(&agent_type)
+                .ok()
+                .map(|(_, config)| config.adapter.display_name.clone())
+                .filter(|label| !label.trim().is_empty())
+        })
+}
+
 /// Dedup suffix used by both `InterventionNotification::run_completed` and
 /// `emit_run_completed_lifecycle_event` in orchestrator.
 pub const RUN_COMPLETED_DEDUP_SUFFIX: &str = "run-completed";
+pub const ACP_TURN_FINISHED_DEDUP_SUFFIX: &str = "acp-turn-finished";
 
 pub fn make_completion_dedup_key(
     run_id: &str,
@@ -204,6 +338,18 @@ pub fn make_completion_dedup_key(
     attempt_id: &str,
 ) -> String {
     format!("{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}")
+}
+
+/// 单次 ACP prompt turn 的稳定去重键。attempt 只标识会话容器，turn_id 才能区分
+/// 同一会话中的连续追问。
+pub fn make_turn_dedup_key(
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    turn_id: &str,
+) -> String {
+    format!("{run_id}:{round_id}:{node_id}:{attempt_id}:{turn_id}:{ACP_TURN_FINISHED_DEDUP_SUFFIX}")
 }
 
 /// 生成统一去重键 `run:round:node:attempt:reason`（不含 request_id，方案 §8.2）。
@@ -321,6 +467,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
+    use crate::storage::write_json;
+    use camino::Utf8PathBuf;
+    use tempfile::tempdir;
 
     fn sample(reason: PauseReason) -> InterventionNotification {
         InterventionNotification::new(
@@ -419,6 +569,142 @@ mod tests {
         assert_eq!(n.title, "任务完成");
         assert_eq!(n.intervention_type, InterventionType::RunCompleted);
         assert_eq!(n.dedup_key, "run-1:round-1:node-1:attempt-1:run-completed");
+    }
+
+    #[test]
+    fn direct_run_completion_maps_to_agent_turn_and_killed_is_suppressed() {
+        let completed = InterventionNotification::from_run_completion(
+            "initial-turn-event",
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "Direct Agent",
+            RunOutcome::Success,
+            Some("Claude"),
+        )
+        .unwrap();
+        assert_eq!(completed.title, "Claude 回复完成");
+        assert_eq!(
+            completed.dedup_key,
+            "run-1:round-1:node-1:attempt-1:initial-turn-event:acp-turn-finished"
+        );
+
+        assert!(
+            InterventionNotification::from_run_completion(
+                "initial-turn-event",
+                "task-1",
+                None,
+                "run-1",
+                "round-1",
+                "node-1",
+                "attempt-1",
+                "Direct Agent",
+                RunOutcome::Killed,
+                Some("Claude"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn agent_turn_notification_uses_turn_id_for_dedup() {
+        let first = InterventionNotification::agent_turn_finished(
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "turn-1",
+            "Claude",
+            AcpTurnOutcome::Completed,
+        )
+        .unwrap();
+        let second = InterventionNotification::agent_turn_finished(
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "turn-2",
+            "Claude",
+            AcpTurnOutcome::Completed,
+        )
+        .unwrap();
+
+        assert_eq!(first.title, "Claude 回复完成");
+        assert_eq!(first.intervention_type, InterventionType::AgentTurnFinished);
+        assert_eq!(
+            first.dedup_key,
+            "run-1:round-1:node-1:attempt-1:turn-1:acp-turn-finished"
+        );
+        assert_ne!(first.dedup_key, second.dedup_key);
+    }
+
+    #[test]
+    fn agent_turn_failure_has_failure_copy_and_cancelled_has_no_notification() {
+        let failed = InterventionNotification::agent_turn_finished(
+            "task-1",
+            None,
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "turn-1",
+            "Codex",
+            AcpTurnOutcome::Failed,
+        )
+        .unwrap();
+        assert_eq!(failed.title, "Codex 回复失败");
+        assert!(failed.body.contains("回复失败"));
+
+        assert!(
+            InterventionNotification::agent_turn_finished(
+                "task-1",
+                None,
+                "run-1",
+                "round-1",
+                "node-1",
+                "attempt-1",
+                "turn-2",
+                "Codex",
+                AcpTurnOutcome::Cancelled,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn direct_completion_agent_label_comes_from_conversation_metadata() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-1";
+        write_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "runMode": "direct",
+                "agentIdentity": {
+                    "displayName": "Claude"
+                },
+                "directConfig": {
+                    "agentType": "claude-acp"
+                }
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            direct_conversation_agent_label(&app, task_id).as_deref(),
+            Some("Claude")
+        );
     }
 
     #[test]

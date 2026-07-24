@@ -67,9 +67,19 @@ fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
     let mut tauri_context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
+        // WebView2's opaque controller visibly lags behind Win32 edge resizing and exposes
+        // black/white bars. Composition mode avoids that artifact while the CSS root still
+        // paints an opaque application surface. Keep the native shadow so DWM continues to
+        // provide the standard rounded corners on Windows 11.
+        window.transparent = true;
+        window.shadow = true;
+    }
     #[cfg(target_os = "macos")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
         window.decorations = true;
+        window.shadow = true;
         window.title_bar_style = tauri::TitleBarStyle::Overlay;
         window.hidden_title = true;
     }

@@ -172,9 +172,10 @@ export function ConversationShell({
           </div>
           <div
             className={cn(
-              'absolute right-0 top-0 bottom-0 z-20 w-1 cursor-col-resize transition-colors hover:bg-primary/40 active:bg-primary/60',
+              'absolute right-0 top-0 bottom-0 z-20 w-2 cursor-col-resize bg-transparent',
               sidebarCollapsed && 'pointer-events-none opacity-0',
             )}
+            data-testid="conversation-sidebar-resize-handle"
             onMouseDown={handleMouseDown}
           />
         </div>

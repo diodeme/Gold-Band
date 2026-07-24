@@ -1,5 +1,5 @@
-import { useTranslation } from 'react-i18next';
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
+import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
 
 interface ConversationHomePageProps {
@@ -14,6 +14,7 @@ interface ConversationHomePageProps {
   onRunModeChange: (mode: ConversationRunModeVm) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
 }
@@ -30,18 +31,15 @@ export function ConversationHomePage({
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
 }: ConversationHomePageProps) {
-  const { t } = useTranslation();
-
   return (
-    <div className="flex h-full flex-col items-center justify-center px-8">
-      <div className="w-full max-w-2xl space-y-5">
+    <div className="flex h-full flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
+      <div className="w-full max-w-4xl space-y-5">
         <div className="text-center space-y-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            {t('conversation.home.title')}
-          </h1>
+          <ConversationGreeting />
         </div>
         <ConversationComposer
           projectId={projectId}
@@ -55,6 +53,7 @@ export function ConversationHomePage({
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
+          onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}
         />

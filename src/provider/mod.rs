@@ -115,6 +115,8 @@ impl Default for UserPromptRenderMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
+    #[serde(default)]
+    pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub profile: Option<String>,
     pub profile_content: Option<String>,
     pub requirement_path: Option<Utf8PathBuf>,
@@ -834,8 +836,20 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         | UserPromptRenderMode::UserMessage => String::new(),
     };
 
-    let system_prompt = render_system_prompt(req);
-    let user_prompt = render_user_prompt(req, &requirement_text);
+    let (system_prompt, user_prompt) = match req.prompt_envelope {
+        crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
+            render_system_prompt(req),
+            render_user_prompt(req, &requirement_text),
+        ),
+        crate::dsl::PromptEnvelopeMode::RawAgent => (
+            String::new(),
+            if matches!(req.session_mode, SessionMode::Continue) {
+                req.resume_prompt.clone().unwrap_or_default()
+            } else {
+                requirement_text.clone()
+            },
+        ),
+    };
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     // Resolve task input attachments
@@ -1433,8 +1447,9 @@ mod tests {
             ),
             task_inputs_dir: None,
         };
-        let req = WorkerInvocation {
+        let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             profile: None,
             profile_content: None,
             requirement_path: None,
@@ -1471,6 +1486,27 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+
+        req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        req.requirement_text = Some("  original direct prompt\n".to_string());
+        req.profile_content = Some("PROFILE MUST NOT LEAK".to_string());
+        req.task_instruction = Some("RUNTIME MUST NOT LEAK".to_string());
+        req.extra_system_sections = vec!["SYSTEM MUST NOT LEAK".to_string()];
+        req.extra_hidden_sections = vec![PromptHiddenSection {
+            title: "hidden".to_string(),
+            content: "HIDDEN MUST NOT LEAK".to_string(),
+        }];
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.system_prompt, "");
+        assert_eq!(prompt.user_prompt, "  original direct prompt\n");
+
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+        req.resume_prompt = Some("  follow-up direct prompt\n".to_string());
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.system_prompt, "");
+        assert_eq!(prompt.user_prompt, "  follow-up direct prompt\n");
+        assert!(!prompt.user_prompt.contains("MUST NOT LEAK"));
     }
 
     #[test]

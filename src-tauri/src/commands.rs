@@ -1822,7 +1822,7 @@ pub async fn submit_conversation_prompt(
 
     if submit_target == "runtime-continue" {
         let attempt_dir = locator.attempt_dir(&app);
-        let model_override = current_acp_session_model(&attempt_dir);
+        let model_override = current_acp_session_model_override(&attempt_dir);
         let permission_mode_override = current_acp_session_permission_mode(&attempt_dir);
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
@@ -1983,7 +1983,8 @@ pub async fn send_acp_prompt(
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
             let permission_mode = current_acp_session_permission_mode(&attempt_dir)
                 .or_else(|| node.permission_mode.clone());
-            let model = current_acp_session_model(&attempt_dir).or_else(|| node.model.clone());
+            let model =
+                current_acp_session_model_override(&attempt_dir).or_else(|| node.model.clone());
             let (session_mode, continue_ref) = if worker_ref_path.exists() {
                 let worker_ref =
                     read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
@@ -2197,7 +2198,7 @@ pub async fn send_acp_prompt(
             None,
             None,
         ));
-        let model = current_acp_session_model(&attempt_dir);
+        let model = current_acp_session_model_override(&attempt_dir);
         let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
@@ -3131,8 +3132,27 @@ fn current_acp_session_value(
         .map(str::to_string)
 }
 
-fn current_acp_session_model(attempt_dir: &Utf8PathBuf) -> Option<String> {
-    current_acp_session_value(attempt_dir, "models", "currentModelId", "model")
+fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return None;
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|value| {
+            value
+                .get("modelOverride")
+                .and_then(|item| item.as_str())
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+        })
 }
 
 fn current_acp_session_permission_mode(attempt_dir: &Utf8PathBuf) -> Option<String> {
@@ -3218,6 +3238,12 @@ pub async fn set_acp_session_model(
         )
     })?;
 
+    if let Some(session) = value.as_object_mut() {
+        session.insert(
+            "modelOverride".to_string(),
+            serde_json::Value::String(model_id.clone()),
+        );
+    }
     // Update models.currentModelId
     if let Some(models) = value.get_mut("models").and_then(|m| m.as_object_mut()) {
         models.insert(
@@ -4006,6 +4032,43 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn acp_follow_up_uses_only_gold_band_model_override() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-model-override-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "models": { "currentModelId": "default" },
+                "configOptions": [
+                    { "id": "model", "currentValue": "default" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(current_acp_session_model_override(&attempt_dir), None);
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "modelOverride": "default",
+                "models": { "currentModelId": "default" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("default")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {

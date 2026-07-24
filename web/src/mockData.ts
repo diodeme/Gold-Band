@@ -432,6 +432,10 @@ export const mockAgentRegistry: AgentRegistryVm = {
         reason: null,
         checkedAt: '2026-05-16 10:42:00',
       },
+      supportedModels: [
+        { id: 'default', name: 'Default (recommended)' },
+        { id: 'glm-5.2-hs', name: 'GLM 5.2' },
+      ],
       supportedModes: [
         { id: 'ask', name: 'Ask' },
         { id: 'bypass', name: 'Bypass' },

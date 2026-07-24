@@ -8,7 +8,7 @@
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。
 - 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
-- ACP session 初始化与后续追问都必须同时沿用当前会话的模型与权限模式；用户在会话窗口切换模型或权限后，下一次 `session/prompt` 继续使用最新 `currentModelId / currentModeId`，不回退到节点初始值。
+- ACP session 初始化与后续追问必须分别维护 Gold Band 显式模型覆盖和 Agent 当前模型：模型只继承 `modelOverride`，权限模式继续继承 `currentModeId`。Gold Band 发起会话的“不指定”写为 `modelOverride = null`，不得从 Agent 返回的 `currentModelId` 反推 override；用户在会话窗口选择任意 Agent 模型后写入具体 override，下一次 `session/prompt` 继续使用该值。
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。

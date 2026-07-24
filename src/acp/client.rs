@@ -366,6 +366,7 @@ struct AcpRuntime<'a> {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    model_override: Option<String>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
     used_tokens: Option<u64>,
@@ -489,6 +490,7 @@ pub fn run_prompt(
         live_update,
         stop_probe,
     )?;
+    runtime.model_override = model.clone();
     let capabilities = match runtime.initialize() {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -1021,6 +1023,7 @@ impl<'a> AcpRuntime<'a> {
             models: None,
             modes: None,
             config_options: None,
+            model_override: None,
             system_prompt_append: None,
             session_title: None,
             used_tokens: prior.used_tokens,
@@ -2168,6 +2171,7 @@ impl<'a> AcpRuntime<'a> {
             models: self.models.clone(),
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
+            model_override: self.model_override.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.used_tokens,
             context_window_size: self.context_window_size,

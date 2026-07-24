@@ -7,6 +7,7 @@ import type { AcpSessionConfigVm } from "@/types";
 
 function baseConfig(): AcpSessionConfigVm {
   return {
+    modelOverrideId: "gpt-5",
     currentModelId: "gpt-5",
     currentModelName: "GPT-5",
     currentModeId: "ask",
@@ -51,6 +52,46 @@ describe("ACP session config view model", () => {
     });
 
     expect(second.signature).not.toBe(first.signature);
+  });
+
+  it("keeps Gold Band unspecified separate from the Agent current model", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: null,
+      currentModelId: "default",
+      currentModelName: "Default (recommended)",
+      models: {
+        availableModels: [
+          { modelId: "default", name: "Default (recommended)" },
+          { modelId: "glm-5.2-hs", name: "GLM 5.2" },
+        ],
+      },
+    });
+
+    expect(viewModel.modelOverrideId).toBeNull();
+    expect(viewModel.modelOverrideName).toBeNull();
+    expect(viewModel.canSelectUnspecifiedModel).toBe(true);
+    expect(viewModel.currentModelId).toBe("default");
+    expect(viewModel.availableModels.map((option) => option.id)).toEqual([
+      "default",
+      "glm-5.2-hs",
+    ]);
+  });
+
+  it("treats an Agent default option as explicit after the user selects it", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      modelOverrideId: "default",
+      currentModelId: "default",
+      currentModelName: "Default (recommended)",
+      models: {
+        availableModels: [
+          { modelId: "default", name: "Default (recommended)" },
+        ],
+      },
+    });
+
+    expect(viewModel.modelOverrideId).toBe("default");
+    expect(viewModel.modelOverrideName).toBe("Default (recommended)");
+    expect(viewModel.canSelectUnspecifiedModel).toBe(false);
   });
 
   it("normalizes grouped model and permission mode options", () => {

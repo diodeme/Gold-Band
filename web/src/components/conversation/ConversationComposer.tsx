@@ -330,7 +330,7 @@ export function ConversationComposer({
                         <SelectValue placeholder={t('conversation.home.selectModel')} />
                       </SelectTrigger>
                       <SelectContent position="popper" align="end">
-                        <SelectItem value="__default__">{t('conversation.home.defaultModel')}</SelectItem>
+                        <SelectItem value="__default__">{t('conversation.home.unspecifiedModel')}</SelectItem>
                         {directModels.map((model) => <SelectItem value={model.id} key={model.id}>{model.name}</SelectItem>)}
                       </SelectContent>
                     </Select>

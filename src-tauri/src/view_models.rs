@@ -678,6 +678,7 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub model_override_id: Option<String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -5143,6 +5144,12 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
+    let model_override_id = session
+        .get("modelOverride")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let current_model_id = models
         .as_ref()
         .and_then(|value| value.get("currentModelId"))
@@ -5164,7 +5171,8 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
             .or_else(|| config_option_display_name(config_options.as_ref(), "mode", mode_id))
     });
 
-    if current_model_id.is_none()
+    if model_override_id.is_none()
+        && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
         && current_mode_name.is_none()
@@ -5176,6 +5184,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        model_override_id,
         current_model_id,
         current_model_name,
         current_mode_id,
@@ -6755,6 +6764,7 @@ mod tests {
         }))
         .unwrap();
 
+        assert!(config.model_override_id.is_none());
         assert!(config.current_model_id.is_none());
         assert!(config.current_mode_id.is_none());
         assert_eq!(
@@ -6765,6 +6775,34 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    #[test]
+    fn acp_session_config_separates_gold_band_override_from_agent_current_model() {
+        let unspecified = acp_session_config_vm(&json!({
+            "models": {
+                "currentModelId": "default",
+                "availableModels": [
+                    { "modelId": "default", "name": "Default (recommended)" },
+                    { "modelId": "glm-5.2-hs", "name": "GLM 5.2" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(unspecified.model_override_id.is_none());
+        assert_eq!(unspecified.current_model_id.as_deref(), Some("default"));
+
+        let explicit = acp_session_config_vm(&json!({
+            "modelOverride": "default",
+            "models": {
+                "currentModelId": "default",
+                "availableModels": [
+                    { "modelId": "default", "name": "Default (recommended)" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(explicit.model_override_id.as_deref(), Some("default"));
     }
 
     #[test]

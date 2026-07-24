@@ -9,6 +9,9 @@ export type AcpSessionConfigOption = {
 };
 
 export type AcpSessionConfigViewModel = {
+  modelOverrideId: string | null;
+  modelOverrideName: string | null;
+  canSelectUnspecifiedModel: boolean;
   currentModelId: string | null;
   currentModelName: string | null;
   currentModeId: string | null;
@@ -36,6 +39,12 @@ export function createAcpSessionConfigViewModel(
     config?.configOptions,
     "mode",
   );
+  const modelOverrideId = config?.modelOverrideId ?? null;
+  const modelOverrideName = modelOverrideId
+    ? availableModels.find((option) => option.id === modelOverrideId)?.name
+      ?? (currentModelId === modelOverrideId ? currentModelName : null)
+      ?? modelOverrideId
+    : null;
   const resolvedCurrentModelName = currentModelName ?? (
     currentModelId ? null : singleOptionName(availableModels)
   );
@@ -44,6 +53,9 @@ export function createAcpSessionConfigViewModel(
   );
   const resolvedModeLabel = resolvedCurrentModeName ?? currentModeId;
   const viewModel = {
+    modelOverrideId,
+    modelOverrideName,
+    canSelectUnspecifiedModel: modelOverrideId === null,
     currentModelId,
     currentModelName: resolvedCurrentModelName,
     currentModeId,
@@ -90,6 +102,9 @@ function createAcpSessionConfigSignature(
   viewModel: Omit<AcpSessionConfigViewModel, "signature">,
 ) {
   return JSON.stringify({
+    modelOverrideId: viewModel.modelOverrideId,
+    modelOverrideName: viewModel.modelOverrideName,
+    canSelectUnspecifiedModel: viewModel.canSelectUnspecifiedModel,
     currentModelId: viewModel.currentModelId,
     currentModelName: viewModel.currentModelName,
     currentModeId: viewModel.currentModeId,

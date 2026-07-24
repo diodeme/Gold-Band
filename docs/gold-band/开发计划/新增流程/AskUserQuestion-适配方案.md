@@ -527,7 +527,7 @@ Agent 消费结构化 elicitation `content`；UI 不再生成第二份格式化�
 **现状**：单选字段（`oneOf`）点击即提交。优点：步数少。缺点：用户无法反悔。
 
 **期望行为**：
-- 点击选项 → 高亮选中态（蓝色边框/背景），不提交
+- 点击选项 → 高亮选中态，不提交；浅色主题沿用主题强调色，深色主题使用高层灰面、明亮边界、内描边与实心勾选标记
 - 底部出现"确认"按钮
 - 用户可更改选择后点击"确认"
 - 与多选操作模式一致
@@ -536,6 +536,7 @@ Agent 消费结构化 elicitation `content`；UI 不再生成第二份格式化�
 - `ElicitationCard` 内部新增 `selectedValue` 状态
 - 点击选项设置 `selectedValue` → 显示确认按钮
 - 确认按钮点击 → 调用 `handleSelect`（单步选择）或 `onRespond`（最后一步提交）
+- 单选与多选共享 `accent` / `accent-foreground` 选中语义，并通过 `aria-pressed` 固化可访问状态；实心勾选标记使用 `accent-foreground` 底与 `background` 反色勾线，不能把带透明度的 `accent` 用作图标前景；禁止回退到低对比的 `border-primary bg-primary/5`。
 
 ### 回答历史展示决策 ✅ 已收敛
 
@@ -588,6 +589,7 @@ elicitation 答案是结构化工具交互结果，不是新的用户 prompt。�
 | ✅ 已完成 | 删除死代码 ElicitationDialog.tsx | web/src/components/acp/ | — |
 | ✅ 已完成 | 删除死代码 format_elicitation_answer | elicitation.rs | — |
 | ✅ 已完成 | 答案文本格式化改用 i18n 分隔符 | ElicitationCard.tsx (formatConfirmedChoice) + i18n.ts | 小 |
+| ✅ 已完成 | 深色主题问答选项选中态对比度增强，统一单选/多选语义与 `aria-pressed` | ElicitationCard.tsx | 小 |
 | P2 | 可配置超时时长 | elicitation.rs + config | 小 |
 | P3 | enum/enumNames 支持 | ElicitationCard.tsx + elicitation.rs | 小 |
 

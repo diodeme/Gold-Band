@@ -1,9 +1,28 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { ElicitationPropertySchema } from '../../src/components/acp/ElicitationCard';
 import { elicitationOptions, elicitationQuestionText } from '../../src/components/acp/ElicitationCard';
 
 describe('ElicitationCard question text', () => {
+  it('uses a high-contrast semantic treatment for selected options', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../../src/components/acp/ElicitationCard.tsx'),
+      'utf8',
+    );
+
+    expect(source).toContain(
+      'border-accent-foreground/55 bg-accent text-accent-foreground shadow-[inset_3px_0_0_var(--accent-foreground)]',
+    );
+    expect(source).toContain('border-accent-foreground bg-accent-foreground text-background');
+    expect(source).not.toContain('bg-accent-foreground text-accent');
+    expect(source).toContain('aria-pressed={sel}');
+    expect(source).toContain('aria-pressed={selected}');
+    expect(source).not.toContain('border-primary bg-primary/5');
+    expect(source).not.toContain('text-primary shrink-0');
+  });
+
   it('uses the schema field description as the visible question', () => {
     expect(
       elicitationQuestionText(

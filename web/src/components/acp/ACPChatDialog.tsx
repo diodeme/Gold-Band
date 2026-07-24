@@ -2,11 +2,13 @@ import {
   forwardRef,
   memo,
   startTransition,
+  type AnimationEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -3149,17 +3151,22 @@ export function ACPSessionHeader({
   onOpenSystemPrompt: () => void;
 }) {
   const { t } = useTranslation();
-  const [sessionIdCopied, setSessionIdCopied] = useState(false);
-  const [sessionIdTooltipOpen, setSessionIdTooltipOpen] = useState(false);
+  const [sessionIdTooltip, dispatchSessionIdTooltip] = useReducer(
+    reduceAcpSessionIdTooltipState,
+    ACP_SESSION_ID_TOOLTIP_INITIAL_STATE,
+  );
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
 
-  useEffect(() => () => {
+  const clearCopyFeedbackTimer = useCallback(() => {
     if (copyFeedbackTimerRef.current !== null) {
       window.clearTimeout(copyFeedbackTimerRef.current);
+      copyFeedbackTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => clearCopyFeedbackTimer, [clearCopyFeedbackTimer]);
 
   const handleCopySessionId = useCallback(async () => {
     const sessionId = session.sessionId?.trim();
@@ -3171,17 +3178,26 @@ export function ACPSessionHeader({
       return;
     }
 
-    if (copyFeedbackTimerRef.current !== null) {
-      window.clearTimeout(copyFeedbackTimerRef.current);
-    }
-    setSessionIdCopied(true);
-    setSessionIdTooltipOpen(true);
+    clearCopyFeedbackTimer();
+    dispatchSessionIdTooltip({ type: "copy-succeeded" });
     copyFeedbackTimerRef.current = window.setTimeout(() => {
-      setSessionIdCopied(false);
-      setSessionIdTooltipOpen(false);
-      copyFeedbackTimerRef.current = null;
+      dispatchSessionIdTooltip({ type: "feedback-elapsed" });
+      copyFeedbackTimerRef.current = window.setTimeout(() => {
+        dispatchSessionIdTooltip({ type: "close-settled" });
+        copyFeedbackTimerRef.current = null;
+      }, SESSION_ID_TOOLTIP_CLOSE_SETTLE_MS);
     }, SESSION_ID_COPY_FEEDBACK_MS);
-  }, [session.sessionId]);
+  }, [clearCopyFeedbackTimer, session.sessionId]);
+
+  const handleSessionIdTooltipAnimationEnd = useCallback((event: AnimationEvent<HTMLDivElement>) => {
+    if (
+      event.currentTarget.dataset.state !== "closed" ||
+      sessionIdTooltip.phase === "idle"
+    ) return;
+
+    clearCopyFeedbackTimer();
+    dispatchSessionIdTooltip({ type: "close-settled" });
+  }, [clearCopyFeedbackTimer, sessionIdTooltip.phase]);
 
   return (
     <div className={cn(
@@ -3195,7 +3211,7 @@ export function ACPSessionHeader({
         {directSessionHeader ? (
           <EditableConversationTitle
             title={directSessionHeader.title}
-            className="min-w-0 max-w-[40%] shrink"
+            className="mr-2 min-w-0 max-w-[40%] shrink"
             showEditIcon={false}
             onTitleChange={directSessionHeader.onTitleChange}
           />
@@ -3209,35 +3225,38 @@ export function ACPSessionHeader({
         ) : (
           <Bot aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
         )}
-        <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
-          {session.adapterDisplayName ?? session.provider}
-        </span>
-        {session.sessionId ? (
-          <Tooltip
-            open={sessionIdTooltipOpen}
-            onOpenChange={(open) => {
-              if (!sessionIdCopied) setSessionIdTooltipOpen(open);
-            }}
-          >
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="min-w-0 truncate rounded px-1 py-0.5 text-[10px] text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                aria-label={t("acp.copySessionId")}
-                onClick={handleCopySessionId}
-              >
-                {session.sessionId}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              {sessionIdCopied ? t("acp.sessionIdCopied") : t("acp.copySessionId")}
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          <span className="truncate text-[10px] text-muted-foreground/82">
-            {t("acp.noSessionId")}
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
+            {session.adapterDisplayName ?? session.provider}
           </span>
-        )}
+          {session.sessionId ? (
+            <Tooltip
+              open={sessionIdTooltip.open}
+              onOpenChange={(open) => dispatchSessionIdTooltip({ type: "open-changed", open })}
+            >
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="min-w-0 truncate rounded px-1 py-0 text-[10px] leading-5 text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  aria-label={t("acp.copySessionId")}
+                  onClick={handleCopySessionId}
+                >
+                  {formatAcpSessionIdForDisplay(session.sessionId)}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                onAnimationEnd={handleSessionIdTooltipAnimationEnd}
+              >
+                {sessionIdTooltip.phase === "idle" ? session.sessionId : t("acp.sessionIdCopied")}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <span className="truncate text-[10px] leading-5 text-muted-foreground/82">
+              {t("acp.noSessionId")}
+            </span>
+          )}
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showSystemPromptAction ? (
             <Button
@@ -3289,6 +3308,52 @@ export function ACPSessionHeader({
 }
 
 const SESSION_ID_COPY_FEEDBACK_MS = 1200;
+const SESSION_ID_TOOLTIP_CLOSE_SETTLE_MS = 200;
+const SESSION_ID_DISPLAY_PREFIX_LENGTH = 8;
+const SESSION_ID_DISPLAY_SUFFIX_LENGTH = 4;
+
+type AcpSessionIdTooltipState = {
+  open: boolean;
+  phase: "idle" | "copied" | "closing";
+};
+
+type AcpSessionIdTooltipEvent =
+  | { type: "open-changed"; open: boolean }
+  | { type: "copy-succeeded" }
+  | { type: "feedback-elapsed" }
+  | { type: "close-settled" };
+
+const ACP_SESSION_ID_TOOLTIP_INITIAL_STATE: AcpSessionIdTooltipState = {
+  open: false,
+  phase: "idle",
+};
+
+export function reduceAcpSessionIdTooltipState(
+  state: AcpSessionIdTooltipState,
+  event: AcpSessionIdTooltipEvent,
+): AcpSessionIdTooltipState {
+  switch (event.type) {
+    case "open-changed":
+      if (event.open && state.phase !== "idle") return state;
+      return { ...state, open: event.open };
+    case "copy-succeeded":
+      return { open: true, phase: "copied" };
+    case "feedback-elapsed":
+      return state.phase === "copied"
+        ? { open: false, phase: "closing" }
+        : state;
+    case "close-settled":
+      return ACP_SESSION_ID_TOOLTIP_INITIAL_STATE;
+  }
+}
+
+export function formatAcpSessionIdForDisplay(sessionId: string) {
+  const compactLength =
+    SESSION_ID_DISPLAY_PREFIX_LENGTH + SESSION_ID_DISPLAY_SUFFIX_LENGTH + 1;
+  if (sessionId.length <= compactLength) return sessionId;
+
+  return `${sessionId.slice(0, SESSION_ID_DISPLAY_PREFIX_LENGTH)}…${sessionId.slice(-SESSION_ID_DISPLAY_SUFFIX_LENGTH)}`;
+}
 
 const SystemPromptDialog = memo(function SystemPromptDialog({
   open,

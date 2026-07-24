@@ -257,6 +257,8 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 ## 会话信息栏（ACPSessionHeader）
 
 - 单行布局：Agent icon + Agent 名称 + 可复制 sessionId + 操作按钮；权限模式属于可变运行配置，不在会话身份栏中展示
+- Agent 名称与 sessionId 必须放在共享的文本基线容器中，并使用一致的行高节奏；外层图标与操作区仍按控件中心对齐，禁止通过单独的 top/margin 像素偏移补偿字号差异
+- Direct 组合页头通过留白区分“会话标题”和“Agent 身份”两组信息：标题末尾保留约 12px 组间距，Agent 名称与 sessionId 保留约 6px 组内距；长 sessionId 默认显示前 8 位与后 4 位，中间使用省略号，Tooltip 与复制操作继续使用完整值
 - 会话信息栏与运行标题栏保持同一套紧凑节奏：缩小上下 padding、降低主标题字号、压低按钮高度，减少双层头部对内容区的挤压
 - 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
 - Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头
@@ -265,7 +267,8 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - Gold Band runtime prompt 中的 `<hidden data-gold-band-hidden="true">` 段在用户消息气泡内默认折叠展示，折叠块与可见 requirement/goal 同属一个 bubble；展开后展示隐藏原文，再次点击收起。该规则适用于 workflow new 和 workflow resume，并覆盖会话态与旧工作台复用的 ACPChatDialog；用户手动追问和 runtime repair 不注入 hidden runtime context。hidden 后面的可见片段只在展示层去掉开头换行，真实 prompt 事件内容不变。
 - 产物来源固定为当前选中 session（含 AI-DYNAMIC 内部节点）的 artifacts / attachments，不使用 run 级聚合占位数据
 - 产物弹窗遮罩使用轻量弱化遮罩（低透明深色 + blur），主体面板保持半透明而不过度强调，不做厚重黑色卡片
-- sessionId 与 Agent 身份同行，不再单独占行；点击 sessionId 直接复制完整值，并显示会自动消失的轻量“已复制”提示
+- sessionId 与 Agent 身份同行，不再单独占行；长值采用“前 8 位…后 4 位”的紧凑投影，点击仍复制完整值，悬浮显示完整值，并在复制后显示会自动消失的轻量“已复制”提示
+- sessionId Tooltip 的复制反馈采用 `idle -> copied -> closing -> idle` 单一状态生命周期：反馈到期时先保持“已复制”内容关闭 Tooltip，关闭过渡完成后才恢复完整 ID 内容；`closing` 阶段忽略悬浮重开，禁止在关闭动画中闪现完整 ID
 
 ## 产物/附件信息区
 

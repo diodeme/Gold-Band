@@ -23,7 +23,7 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
-  onRunModeChange: (mode: ConversationRunModeVm) => void;
+  onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenAgentManagement: () => void;
@@ -61,12 +61,6 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState(projectId);
-
-  useEffect(() => {
-    setSelectedProjectId(projectId);
-  }, [projectId]);
-
   const {
     attachments,
     fileError,
@@ -131,7 +125,7 @@ export function ConversationComposer({
         ...runMode.directPreferences,
         [config.agentType]: config,
       },
-    });
+    }, projectId);
   };
 
   const selectDirectAgent = (agentType: string) => {
@@ -178,14 +172,14 @@ export function ConversationComposer({
   };
 
   const updateAutoSession = (patch: Partial<ConversationAutoConfigVm>) => {
-    onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) });
+    onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) }, projectId);
   };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const trimmed = content.trim();
     const inputBase: ConversationCreateInput = {
-      projectId: selectedProjectId,
+      projectId,
       content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
@@ -296,7 +290,7 @@ export function ConversationComposer({
                 </span>
               ) : null}
               {workspaces.length > 1 ? (
-                <Select value={selectedProjectId} onValueChange={(id) => { setSelectedProjectId(id); onWorkspaceChange(id); }}>
+                <Select value={projectId} onValueChange={onWorkspaceChange}>
                   <SelectTrigger className="h-9 min-w-[140px] max-w-[240px] flex-1 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
@@ -392,12 +386,12 @@ export function ConversationComposer({
                 const config = directConfigForAgent(runMode, agentType);
                 selectDirectAgent(config.agentType);
               } else {
-                onRunModeChange({ mode: 'direct', directPreferences: runMode.directPreferences });
+                onRunModeChange({ mode: 'direct', directPreferences: runMode.directPreferences }, projectId);
               }
             } else if (value === 'workflow') {
-              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview });
+              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview }, projectId);
             } else {
-              onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() });
+              onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() }, projectId);
             }
           }}>
             <TabsList className="h-8">
@@ -534,7 +528,7 @@ export function ConversationComposer({
         ) : (
           <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
             <Workflow className="size-4 text-muted-foreground" />
-            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, includeInterview: runMode.includeInterview }); }}>
+            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, includeInterview: runMode.includeInterview }, projectId); }}>
               <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
                 <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
               </SelectTrigger>
@@ -552,7 +546,7 @@ export function ConversationComposer({
                 <span className="text-xs text-muted-foreground">{t('conversation.home.includeInterview')}</span>
                 <Switch
                   checked={runMode.includeInterview ?? true}
-                  onCheckedChange={(checked) => onRunModeChange({ ...runMode, includeInterview: checked })}
+                  onCheckedChange={(checked) => onRunModeChange({ ...runMode, includeInterview: checked }, projectId)}
                 />
               </label>
             ) : null}

@@ -19,6 +19,10 @@ const runHeaderSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationRunHeader.tsx', import.meta.url)),
   'utf8',
 );
+const stylesSource = readFileSync(
+  fileURLToPath(new URL('../src/styles.css', import.meta.url)),
+  'utf8',
+);
 
 describe('ACP message theme contract', () => {
   it('uses the shared user-message semantic surface without primary tint, border, or elevation', () => {
@@ -36,11 +40,31 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).not.toContain('bg-background/45');
   });
 
-  it('lets collapsed hidden context follow visible prompt width and expand from hidden content on demand', () => {
+  it('sizes the user bubble from every currently visible prompt section', () => {
     expect(hiddenPromptSource).toContain('inline-grid min-w-0 max-w-full gap-2');
-    expect(hiddenPromptSource).toContain('!open && "[contain:inline-size]"');
-    expect(hiddenPromptSource).toContain('group flex w-full min-w-0');
+    expect(chatSource).toContain('[container-type:inline-size]');
+    expect(chatSource).toContain('data-acp-message-row={isUser ? "user" : "assistant"}');
+    expect(stylesSource).toContain(
+      '--conversation-message-max-inline-size: 82cqi;',
+    );
+    expect(hiddenPromptSource).toContain(
+      'resolvePromptBubbleInlineSize',
+    );
+    expect(hiddenPromptSource).toContain('measuredLineInlineSizes');
+    expect(hiddenPromptSource).toContain('getClientRects()');
+    expect(hiddenPromptSource).toContain('style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}');
+    expect(hiddenPromptSource).not.toContain('max-w-4xl');
+    expect(hiddenPromptSource).not.toContain('max-w-6xl');
+    expect(hiddenPromptSource).toContain('className="grid min-w-0 max-w-full"');
+    expect(hiddenPromptSource).toContain(
+      'group grid min-w-0 grid-cols-[minmax(0,1fr)_auto]',
+    );
+    expect(hiddenPromptSource).toContain(
+      '<CollapsibleContent className="min-w-0 max-w-full">',
+    );
     expect(hiddenPromptSource).toContain('max-h-72 w-max min-w-0 max-w-full');
+    expect(hiddenPromptSource).not.toContain('[contain:inline-size]');
+    expect(hiddenPromptSource).not.toContain('w-full min-w-0');
     expect(hiddenPromptSource).not.toContain('open ? "w-full" : "w-fit"');
   });
 

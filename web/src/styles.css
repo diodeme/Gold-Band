@@ -90,6 +90,10 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+:root {
+  --conversation-message-max-inline-size: 82cqi;
+}
+
 :root,
 :root[data-theme='dark'] {
   color-scheme: dark;

@@ -2,8 +2,39 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import type { ElicitationPropertySchema } from '../../src/components/acp/ElicitationCard';
-import { elicitationOptions, elicitationQuestionText } from '../../src/components/acp/ElicitationCard';
+import type {
+  ElicitationField,
+  ElicitationPropertySchema,
+} from '../../src/components/acp/ElicitationCard';
+import {
+  buildElicitationContent,
+  clearElicitationFieldAnswer,
+  elicitationFieldDraft,
+  elicitationOptions,
+  elicitationQuestionText,
+  replaceElicitationFieldAnswer,
+} from '../../src/components/acp/ElicitationCard';
+
+const multiField: ElicitationField = {
+  key: 'question_a',
+  isSelect: true,
+  isMulti: true,
+  isCustom: false,
+  hasCustomVariant: false,
+  options: [
+    { value: 'A1', label: 'A1' },
+    { value: 'A2', label: 'A2' },
+  ],
+};
+
+const singleField: ElicitationField = {
+  key: 'question_b',
+  isSelect: true,
+  isMulti: false,
+  isCustom: false,
+  hasCustomVariant: false,
+  options: [{ value: 'B1', label: 'B1' }],
+};
 
 describe('ElicitationCard question text', () => {
   it('uses a high-contrast semantic treatment for selected options', () => {
@@ -82,5 +113,48 @@ describe('ElicitationCard question text', () => {
       '交互问候',
       '时间戳',
     ]);
+  });
+
+  it('restores a confirmed multi-select answer when navigating back', () => {
+    const answers = replaceElicitationFieldAnswer({}, multiField, ['A1', 'A2']);
+
+    expect(elicitationFieldDraft(answers, multiField)).toMatchObject({
+      multiValues: ['A1', 'A2'],
+      customActive: false,
+    });
+  });
+
+  it('removes an earlier answer when the user returns and skips that question', () => {
+    let answers = replaceElicitationFieldAnswer({}, multiField, ['A1']);
+    answers = replaceElicitationFieldAnswer(answers, singleField, 'B1');
+
+    const skippedAnswers = clearElicitationFieldAnswer(answers, multiField);
+
+    expect(buildElicitationContent([multiField, singleField], skippedAnswers)).toEqual({
+      question_b: 'B1',
+    });
+  });
+
+  it('clears the custom sibling value when a predefined option replaces it', () => {
+    const field: ElicitationField = {
+      ...singleField,
+      customVariantKey: 'question_b_custom',
+      hasCustomVariant: true,
+    };
+    let answers = replaceElicitationFieldAnswer(
+      {},
+      field,
+      '自定义答案',
+      'question_b_custom',
+    );
+
+    expect(elicitationFieldDraft(answers, field)).toMatchObject({
+      customActive: true,
+      customText: '自定义答案',
+    });
+
+    answers = replaceElicitationFieldAnswer(answers, field, 'B1');
+
+    expect(buildElicitationContent([field], answers)).toEqual({ question_b: 'B1' });
   });
 });
